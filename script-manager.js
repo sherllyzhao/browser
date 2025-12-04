@@ -53,19 +53,34 @@ class ScriptManager {
 
         // 将配置文件中的脚本加载到 manifest
         for (const [url, scriptFile] of Object.entries(config.scripts)) {
-          const scriptPath = path.join(this.scriptsDir, scriptFile);
+          // 支持两种格式：字符串（单个脚本）和数组（多个脚本，依赖注入）
+          const scriptFiles = Array.isArray(scriptFile) ? scriptFile : [scriptFile];
 
-          if (fs.existsSync(scriptPath)) {
+          // 验证所有脚本文件是否存在
+          const allFilesExist = scriptFiles.every(file => {
+            const scriptPath = path.join(this.scriptsDir, file);
+            return fs.existsSync(scriptPath);
+          });
+
+          if (allFilesExist) {
             // 使用配置文件中的文件名，不重新生成哈希
             this.manifest.scripts[url] = {
-              filename: scriptFile,
+              filename: scriptFiles, // 可以是字符串或数组
               url: url,
               savedAt: new Date().toISOString(),
               source: 'config' // 标记这是从配置文件加载的
             };
-            console.log(`✓ Loaded: ${url} -> ${scriptFile}`);
+            const filesDisplay = Array.isArray(scriptFiles)
+              ? scriptFiles.join(' -> ')
+              : scriptFiles;
+            console.log(`✓ Loaded: ${url} -> ${filesDisplay}`);
           } else {
-            console.warn(`✗ Script file not found: ${scriptPath} for URL: ${url}`);
+            const missingFiles = scriptFiles.filter(file => {
+              const scriptPath = path.join(this.scriptsDir, file);
+              return !fs.existsSync(scriptPath);
+            });
+            console.warn(`✗ Script file(s) not found for URL: ${url}`);
+            console.warn(`  Missing: ${missingFiles.join(', ')}`);
           }
         }
       }
@@ -144,14 +159,29 @@ class ScriptManager {
         return '';
       }
 
-      const filepath = path.join(this.scriptsDir, scriptInfo.filename);
+      // 支持单个脚本或多个脚本（数组）
+      const filenames = Array.isArray(scriptInfo.filename)
+        ? scriptInfo.filename
+        : [scriptInfo.filename];
 
-      if (fs.existsSync(filepath)) {
-        const content = await fs.readFile(filepath, 'utf-8');
-        return content;
+      console.log(`[ScriptManager] 加载脚本:`, filenames);
+
+      // 按顺序读取所有脚本文件，并连接内容
+      const scriptContents = [];
+      for (const filename of filenames) {
+        const filepath = path.join(this.scriptsDir, filename);
+
+        if (fs.existsSync(filepath)) {
+          const content = await fs.readFile(filepath, 'utf-8');
+          scriptContents.push(`// ===== ${filename} =====\n${content}`);
+          console.log(`[ScriptManager] ✓ 已加载: ${filename} (${content.length} chars)`);
+        } else {
+          console.warn(`[ScriptManager] ✗ 文件不存在: ${filename}`);
+        }
       }
 
-      return '';
+      // 将所有脚本内容连接起来，用分隔符分开
+      return scriptContents.join('\n\n');
     } catch (err) {
       console.error('Failed to read script:', err);
       return '';

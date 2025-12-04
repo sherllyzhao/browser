@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 There's a file modification bug in Claude Code. The workaround is: always use complete absolute Windows paths with drive letters and backslashes for ALL file operations. Apply this rule going forward, not just for this file.
 
+父级页面的项目在E:\项目\资海云\视频剪辑\ai-media-edit\src\views\short-video\components\AddAccount.vue
+
 ## Project Overview
 
 This is a custom Electron-based programmable browser with Chromium engine, featuring JavaScript injection and inter-page communication capabilities. The browser is designed for automation, testing, and operational tasks with a fixed homepage at `http://localhost:5173/`.
@@ -108,7 +110,40 @@ window.browserAPI.onMessageFromMain((message) => { ... });
 - **Manifest**: `manifest.json` tracks all scripts with metadata
 - **Filename**: MD5 hash of URL (e.g., `a1b2c3d4e5f6.js`)
 - **Config File**: `scripts-config.json` for predefined URL→script mappings
+- **Dependency Injection**: Supports script dependencies via array notation
 - **Import/Export**: Scripts can be exported/imported with original structure
+
+### Script Dependencies
+
+Scripts **cannot use ES6 `import`** because they're injected via `executeJavaScript()`. Instead, use dependency injection:
+
+**Configuration** (`scripts-config.json`):
+```json
+{
+  "scripts": {
+    "https://example.com/*": ["common.js", "main.js"]
+  }
+}
+```
+
+**Execution Order**:
+1. `common.js` injected first → defines global functions
+2. `main.js` injected second → can use functions from `common.js`
+
+**Available in `common.js`**:
+- `waitForElement(selector, timeout, checkInterval)` - Wait for element to appear
+- `retryOperation(operation, maxRetries, delay)` - Retry failed operations
+
+**Example Usage** in dependent script:
+```javascript
+// main.js can directly call functions from common.js
+waitForElement('.button', 10000)
+  .then(btn => btn.click());
+
+retryOperation(async () => await fetch('/api'), 3, 1000);
+```
+
+See `如何使用common.js.md` for detailed documentation.
 
 ## Development Notes
 

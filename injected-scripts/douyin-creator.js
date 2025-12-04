@@ -1,6 +1,8 @@
 /**
  * 抖音创作者平台授权脚本
  * 用于处理授权流程和数据传输
+ *
+ * 依赖: common.js (会在此脚本之前注入)
  */
 
 (function() {
@@ -12,35 +14,35 @@
   console.log('🕐 注入时间:', new Date().toLocaleString());
   console.log('═══════════════════════════════════════');
 
+  // 检查 common.js 是否已加载
+  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
+    console.error('[抖音授权] ❌ common.js 未加载！脚本可能无法正常工作');
+  } else {
+    console.log('[抖音授权] ✅ common.js 已加载，工具函数可用');
+  }
+
   // ===========================
-  // 1. 获取传递的数据
+  // 1. 从 URL 获取授权数据
   // ===========================
 
   const urlParams = new URLSearchParams(window.location.search);
   const companyId = urlParams.get('company_id');
   const transferId = urlParams.get('transfer_id');
-  const platform = urlParams.get('platform');
 
-  console.log('[抖音授权] 接收到的参数:');
-  console.log('  - Company ID:', companyId);
-  console.log('  - Transfer ID:', transferId);
-  console.log('  - Platform:', platform);
+  console.log('[抖音授权] URL 参数:', {
+    companyId,
+    transferId
+  });
 
-  // 存储到全局变量
+  // 存储授权数据到全局
   window.__AUTH_DATA__ = {
-    company_id: companyId,
-    transfer_id: transferId,
-    platform: platform
+    companyId,
+    transferId,
+    timestamp: Date.now()
   };
 
-  // 如果有 transferId，尝试从 IndexedDB 获取完整数据
-  if (transferId && window.indexedDB) {
-    // 这里可以使用 dataTransfer 工具获取大数据
-    console.log('[抖音授权] 检测到 Transfer ID，可以获取完整数据');
-  }
-
   // ===========================
-  // 2. 发送消息到父窗口的辅助函数
+  // 2. 发送消息到父窗口的辅助函数（使用 common.js）
   // ===========================
 
   function sendMessageToParent(message) {
@@ -185,35 +187,75 @@
   // ===========================
   // 6. 接收来自父窗口的消息
   // ===========================
+  console.log('[抖音授权] 注册消息监听器...');
 
-  window.addEventListener('message', (event) => {
-    // 安全检查：只接受来自 localhost:5173 的消息
-    const allowedOrigins = ['http://localhost:5173', 'https://localhost:5173'];
+  if (!window.browserAPI) {
+    console.error('[抖音授权] ❌ browserAPI 不可用！');
+  } else {
+    console.log('[抖音授权] ✅ browserAPI 可用');
 
-    if (!allowedOrigins.includes(event.origin)) {
-      return;
+    if (!window.browserAPI.onMessageFromHome) {
+      console.error('[抖音授权] ❌ browserAPI.onMessageFromHome 不可用！');
+    } else {
+      console.log('[抖音授权] ✅ browserAPI.onMessageFromHome 可用');
+
+      window.browserAPI.onMessageFromHome(async (message) => {
+        console.log('[抖音授权] 🎉 收到来自父窗口的消息:', message);
+
+        // 接收完整的授权数据（直接传递，不使用 IndexedDB）
+        if (message.type === 'auth-data') {
+          console.log('[抖音授权] ✅ 收到授权数据:', message.data);
+
+          // 更新全局变量
+          if (message.data) {
+            window.__AUTH_DATA__ = {
+              ...window.__AUTH_DATA__,
+              ...message.data,
+              receivedAt: Date.now()
+            };
+            console.log('[抖音授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
+
+            // 更新横幅显示
+            const banner = document.getElementById('douyin-auth-banner');
+            if (banner) {
+              const companyInfo = banner.querySelector('div');
+              if (companyInfo) {
+                companyInfo.innerHTML = `
+                  <div>
+                    🎵 抖音授权脚本已运行 | Company ID: ${message.data.company_id || '未知'} | Platform: ${message.data.platform_value || '未知'}
+                  </div>
+                  <div>
+                    <button onclick="window.__DOUYIN_AUTH__.notifySuccess()" style="
+                      background: rgba(255,255,255,0.2);
+                      border: 1px solid rgba(255,255,255,0.5);
+                      color: white;
+                      padding: 6px 16px;
+                      border-radius: 4px;
+                      cursor: pointer;
+                      margin-left: 10px;
+                      font-size: 13px;
+                    ">测试发送消息</button>
+                    <button onclick="this.parentElement.parentElement.parentElement.remove()" style="
+                      background: rgba(255,255,255,0.2);
+                      border: 1px solid rgba(255,255,255,0.5);
+                      color: white;
+                      padding: 6px 16px;
+                      border-radius: 4px;
+                      cursor: pointer;
+                      margin-left: 10px;
+                      font-size: 13px;
+                    ">关闭</button>
+                  </div>
+                `;
+              }
+            }
+          }
+        }
+      });
+
+      console.log('[抖音授权] ✅ 消息监听器注册成功');
     }
-
-    console.log('[抖音授权] 收到父窗口消息:', event.data);
-
-    // 处理不同类型的消息
-    if (event.data && typeof event.data === 'object') {
-      switch (event.data.type) {
-        case 'CHECK_STATUS':
-          // 父窗口询问状态
-          sendMessageToParent({
-            type: 'STATUS_RESPONSE',
-            authorized: !!urlParams.get('code')
-          });
-          break;
-
-        case 'CLOSE_WINDOW':
-          // 父窗口要求关闭
-          window.close();
-          break;
-      }
-    }
-  });
+  }
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 抖音授权脚本初始化完成');

@@ -9,6 +9,7 @@ let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 let openInNewWindow = false; // 跟踪新窗口模式：false=当前窗口，true=新窗口
 const HOME_URL = 'http://localhost:5173/';
+const childWindows = []; // 跟踪所有打开的子窗口
 
 function createWindow() {
   // 创建主窗口
@@ -336,26 +337,54 @@ ipcMain.handle('execute-script-now', async (event, script) => {
 
 // 从内容页面发送消息到首页
 ipcMain.on('content-to-home', (event, message) => {
+  console.log('[IPC] 收到 content-to-home 消息:', message);
+
+  // 向 BrowserView 中的首页发送消息
   if (browserView) {
-    // 向首页发送消息
     browserView.webContents.executeJavaScript(`
-      if (window.location.href === '${HOME_URL}') {
-        window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${JSON.stringify(message)} }, '*');
-      }
-    `).catch(err => console.error('Failed to send message to home:', err));
+      (function() {
+        const isHome = window.location.href === '${HOME_URL}' || window.location.href.startsWith('${HOME_URL}#');
+        console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
+        if (isHome) {
+          console.log('[Main] 向首页发送消息:', ${JSON.stringify(message)});
+          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${JSON.stringify(message)} }, '*');
+        }
+      })();
+    `).catch(err => console.error('[Main] Failed to send message to home (BrowserView):', err));
   }
 });
 
 // 从首页发送消息到其他页面
 ipcMain.on('home-to-content', (event, message) => {
+  console.log('[IPC] 收到 home-to-content 消息:', message);
+  console.log('[IPC] 当前打开的子窗口数量:', childWindows.length);
+
+  // 向 BrowserView 中的非首页发送消息
   if (browserView) {
-    // 向当前页面发送消息（只要不是首页）
     browserView.webContents.executeJavaScript(`
-      if (window.location.href !== '${HOME_URL}') {
-        window.postMessage({ type: 'FROM_HOME', data: ${JSON.stringify(message)} }, '*');
-      }
-    `).catch(err => console.error('Failed to send message to content:', err));
+      (function() {
+        const isHome = window.location.href === '${HOME_URL}' || window.location.href.startsWith('${HOME_URL}#');
+        console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
+        if (!isHome) {
+          console.log('[Main] 向其他页面发送消息:', ${JSON.stringify(message)});
+          window.postMessage({ type: 'FROM_HOME', data: ${JSON.stringify(message)} }, '*');
+        }
+      })();
+    `).catch(err => console.error('[Main] Failed to send message to BrowserView:', err));
   }
+
+  // 向所有子窗口广播消息
+  childWindows.forEach((childWindow, index) => {
+    if (childWindow && !childWindow.isDestroyed()) {
+      console.log(`[IPC] 向子窗口 ${index} 发送消息`);
+      childWindow.webContents.executeJavaScript(`
+        (function() {
+          console.log('[Child Window] 收到来自首页的消息:', ${JSON.stringify(message)});
+          window.postMessage({ type: 'FROM_HOME', data: ${JSON.stringify(message)} }, '*');
+        })();
+      `).catch(err => console.error(`[Main] Failed to send message to child window ${index}:`, err));
+    }
+  });
 });
 
 // 从控制面板转发消息到当前页面
@@ -399,6 +428,19 @@ ipcMain.handle('open-new-window', async (event, url) => {
         contextIsolation: true,
         nodeIntegration: false,
         session: browserView.webContents.session // 使用相同的 session
+      }
+    });
+
+    // 添加到子窗口列表
+    childWindows.push(newWindow);
+    console.log('[Window Manager] 新窗口已添加，当前窗口数量:', childWindows.length);
+
+    // 监听窗口关闭事件
+    newWindow.on('closed', () => {
+      const index = childWindows.indexOf(newWindow);
+      if (index > -1) {
+        childWindows.splice(index, 1);
+        console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
     });
 
