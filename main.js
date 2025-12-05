@@ -359,6 +359,9 @@ ipcMain.on('home-to-content', (event, message) => {
   console.log('[IPC] 收到 home-to-content 消息:', message);
   console.log('[IPC] 当前打开的子窗口数量:', childWindows.length);
 
+  // 序列化消息一次，用于日志和传输
+  const messageStr = JSON.stringify(message);
+
   // 向 BrowserView 中的非首页发送消息
   if (browserView) {
     browserView.webContents.executeJavaScript(`
@@ -366,8 +369,9 @@ ipcMain.on('home-to-content', (event, message) => {
         const isHome = window.location.href === '${HOME_URL}' || window.location.href.startsWith('${HOME_URL}#');
         console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
         if (!isHome) {
-          console.log('[Main] 向其他页面发送消息:', ${JSON.stringify(message)});
-          window.postMessage({ type: 'FROM_HOME', data: ${JSON.stringify(message)} }, '*');
+          const messageData = ${messageStr};
+          console.log('[Main] 向其他页面发送消息:', messageData);
+          window.postMessage({ type: 'FROM_HOME', data: messageData }, '*');
         }
       })();
     `).catch(err => console.error('[Main] Failed to send message to BrowserView:', err));
@@ -379,8 +383,9 @@ ipcMain.on('home-to-content', (event, message) => {
       console.log(`[IPC] 向子窗口 ${index} 发送消息`);
       childWindow.webContents.executeJavaScript(`
         (function() {
-          console.log('[Child Window] 收到来自首页的消息:', ${JSON.stringify(message)});
-          window.postMessage({ type: 'FROM_HOME', data: ${JSON.stringify(message)} }, '*');
+          const messageData = ${messageStr};
+          console.log('[Child Window] 收到来自首页的消息:', messageData);
+          window.postMessage({ type: 'FROM_HOME', data: messageData }, '*');
         })();
       `).catch(err => console.error(`[Main] Failed to send message to child window ${index}:`, err));
     }

@@ -9,27 +9,48 @@ const messageCallbacks = {
 
 // 全局消息监听器（只注册一次）
 window.addEventListener('message', (event) => {
-  if (!event.data || !event.data.type) return;
+  // 只处理字符串类型的 type（过滤掉抖音等第三方消息）
+  if (!event.data || typeof event.data.type !== 'string') {
+    // 不再输出干扰日志
+    return;
+  }
+
+  console.log('[BrowserAPI] ✅ 收到有效 postMessage:', {
+    origin: event.origin,
+    type: event.data.type,
+    data: event.data.data
+  });
 
   switch (event.data.type) {
     case 'FROM_HOME':
+      console.log('[BrowserAPI] 检测到 FROM_HOME 消息');
       if (messageCallbacks.fromHome) {
-        console.log('[BrowserAPI] 收到 FROM_HOME 消息:', event.data.data);
+        console.log('[BrowserAPI] 调用 fromHome 回调，数据:', event.data.data);
         messageCallbacks.fromHome(event.data.data);
+      } else {
+        console.warn('[BrowserAPI] ⚠️ fromHome 回调未注册！');
       }
       break;
     case 'FROM_OTHER_PAGE':
+      console.log('[BrowserAPI] 检测到 FROM_OTHER_PAGE 消息');
       if (messageCallbacks.fromOtherPage) {
-        console.log('[BrowserAPI] 收到 FROM_OTHER_PAGE 消息:', event.data.data);
+        console.log('[BrowserAPI] 调用 fromOtherPage 回调');
         messageCallbacks.fromOtherPage(event.data.data);
+      } else {
+        console.warn('[BrowserAPI] ⚠️ fromOtherPage 回调未注册！');
       }
       break;
     case 'FROM_MAIN':
+      console.log('[BrowserAPI] 检测到 FROM_MAIN 消息');
       if (messageCallbacks.fromMain) {
-        console.log('[BrowserAPI] 收到 FROM_MAIN 消息:', event.data.data);
+        console.log('[BrowserAPI] 调用 fromMain 回调');
         messageCallbacks.fromMain(event.data.data);
+      } else {
+        console.warn('[BrowserAPI] ⚠️ fromMain 回调未注册！');
       }
       break;
+    default:
+      console.log('[BrowserAPI] 未知消息类型:', event.data.type);
   }
 });
 

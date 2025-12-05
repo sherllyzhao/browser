@@ -9,7 +9,8 @@
       "Bash(npm cache clean:*)",
       "Bash(dir:*)",
       "Bash(findstr:*)",
-      "Bash(netstat:*)"
+      "Bash(netstat:*)",
+      "Bash(node -e:*)"
     ],
     "deny": [],
     "ask": []

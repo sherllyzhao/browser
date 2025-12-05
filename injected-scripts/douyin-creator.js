@@ -177,15 +177,7 @@
   }
 
   // ===========================
-  // 5. 页面加载完成向父窗口发送消息
-  // ===========================
-
-  // 页面加载完成后向父窗口发送消息
-  console.log('[抖音授权] 页面加载完成，发送 PAGE_LOADED 消息');
-  sendMessageToParent('PAGE_LOADED');
-
-  // ===========================
-  // 6. 接收来自父窗口的消息
+  // 5. 接收来自父窗口的消息（必须在发送 PAGE_LOADED 之前注册！）
   // ===========================
   console.log('[抖音授权] 注册消息监听器...');
 
@@ -197,10 +189,16 @@
     if (!window.browserAPI.onMessageFromHome) {
       console.error('[抖音授权] ❌ browserAPI.onMessageFromHome 不可用！');
     } else {
-      console.log('[抖音授权] ✅ browserAPI.onMessageFromHome 可用');
+      console.log('[抖音授权] ✅ browserAPI.onMessageFromHome 可用，正在注册...');
 
       window.browserAPI.onMessageFromHome(async (message) => {
-        console.log('[抖音授权] 🎉 收到来自父窗口的消息:', message);
+        console.log('═══════════════════════════════════════');
+        console.log('[抖音授权] 🎉 收到来自父窗口的消息!');
+        console.log('[抖音授权] 消息类型:', typeof message);
+        console.log('[抖音授权] 消息内容:', message);
+        console.log('[抖音授权] 消息.type:', message?.type);
+        console.log('[抖音授权] 消息.data:', message?.data);
+        console.log('═══════════════════════════════════════');
 
         // 接收完整的授权数据（直接传递，不使用 IndexedDB）
         if (message.type === 'auth-data') {
@@ -210,44 +208,26 @@
           if (message.data) {
             window.__AUTH_DATA__ = {
               ...window.__AUTH_DATA__,
-              ...message.data,
+              message: JSON.parse(message.data),
               receivedAt: Date.now()
             };
             console.log('[抖音授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
+            const messageData = JSON.parse(message.data);
+            console.log("🚀 ~  ~ messageData: ", messageData);
 
             // 更新横幅显示
             const banner = document.getElementById('douyin-auth-banner');
             if (banner) {
-              const companyInfo = banner.querySelector('div');
+              // 选中显示信息的第一个 div（在 flex 容器内）
+              const companyInfo = banner.querySelector('div > div:first-child');
               if (companyInfo) {
-                companyInfo.innerHTML = `
-                  <div>
-                    🎵 抖音授权脚本已运行 | Company ID: ${message.data.company_id || '未知'} | Platform: ${message.data.platform_value || '未知'}
-                  </div>
-                  <div>
-                    <button onclick="window.__DOUYIN_AUTH__.notifySuccess()" style="
-                      background: rgba(255,255,255,0.2);
-                      border: 1px solid rgba(255,255,255,0.5);
-                      color: white;
-                      padding: 6px 16px;
-                      border-radius: 4px;
-                      cursor: pointer;
-                      margin-left: 10px;
-                      font-size: 13px;
-                    ">测试发送消息</button>
-                    <button onclick="this.parentElement.parentElement.parentElement.remove()" style="
-                      background: rgba(255,255,255,0.2);
-                      border: 1px solid rgba(255,255,255,0.5);
-                      color: white;
-                      padding: 6px 16px;
-                      border-radius: 4px;
-                      cursor: pointer;
-                      margin-left: 10px;
-                      font-size: 13px;
-                    ">关闭</button>
-                  </div>
-                `;
+                companyInfo.textContent = `🎵 抖音授权脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
+                console.log('[抖音授权] ✅ 横幅已更新:', companyInfo.textContent);
+              } else {
+                console.error('[抖音授权] ❌ 未找到横幅信息 div');
               }
+            } else {
+              console.error('[抖音授权] ❌ 未找到横幅元素');
             }
           }
         }
@@ -256,6 +236,14 @@
       console.log('[抖音授权] ✅ 消息监听器注册成功');
     }
   }
+
+  // ===========================
+  // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）
+  // ===========================
+
+  // 页面加载完成后向父窗口发送消息
+  console.log('[抖音授权] 页面加载完成，发送 PAGE_LOADED 消息');
+  sendMessageToParent('PAGE_LOADED');
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 抖音授权脚本初始化完成');
