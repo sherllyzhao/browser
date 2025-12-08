@@ -507,6 +507,32 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
   }
 });
 
+// 关闭当前窗口（仅对子窗口有效，不能关闭主窗口）
+ipcMain.handle('close-current-window', async (event) => {
+  try {
+    // 查找发送请求的窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
+    // 如果是主窗口，拒绝关闭
+    if (senderWindow === mainWindow) {
+      console.log('[Window Manager] 拒绝关闭主窗口');
+      return { success: false, error: 'Cannot close main window' };
+    }
+
+    // 如果是子窗口，关闭它
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      console.log('[Window Manager] 关闭子窗口');
+      senderWindow.close();
+      return { success: true };
+    }
+
+    return { success: false, error: 'No window to close' };
+  } catch (err) {
+    console.error('[Window Manager] 关闭窗口失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 脚本管理功能 ==========
 
 // 获取所有已保存的脚本列表

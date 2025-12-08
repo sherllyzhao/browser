@@ -96,7 +96,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 导航控制 API
   openNewWindow: (url) => ipcRenderer.invoke('open-new-window', url),
-  navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url)
+  navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
+  closeCurrentWindow: () => ipcRenderer.invoke('close-current-window')
 });
 
 // 在页面加载时注入通信代码

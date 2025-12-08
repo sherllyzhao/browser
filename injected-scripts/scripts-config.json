@@ -2,7 +2,9 @@
   "scripts": {
     "http://localhost:5173/#/short-video/auth": "auth.js",
     "https://creator.douyin.com/*": ["common.js", "douyin-creator.js"],
-    "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"]
+    "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
+    "https://creator.xiaohongshu.com/new/home": ["common.js", "xiaohongshu-creator.js"],
+    "https://channels.weixin.qq.com/platform": ["common.js", "shipinhao-creator.js"]
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"
