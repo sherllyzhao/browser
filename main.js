@@ -89,9 +89,10 @@ function createWindow() {
   console.log('Session storage path:', app.getPath('userData'));
   console.log('Session partition:', persistentSession.getStoragePath());
 
-  // 设置自定义 User-Agent
-  persistentSession.setUserAgent('zh.Cloud-browse');
-  console.log('User-Agent set to: zh.Cloud-browse');
+  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  persistentSession.setUserAgent(customUA);
+  console.log('User-Agent set to:', customUA);
 
   // 创建 BrowserView 用于显示网页内容
   browserView = new BrowserView({
