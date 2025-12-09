@@ -7,7 +7,6 @@ let browserView;
 let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
-let openInNewWindow = false; // 跟踪新窗口模式：false=当前窗口，true=新窗口
 const HOME_URL = 'http://localhost:5173/';
 const childWindows = []; // 跟踪所有打开的子窗口
 
@@ -100,6 +99,7 @@ function createWindow() {
       preload: path.join(__dirname, 'content-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false, // 禁用沙箱以支持 window.opener
       session: persistentSession // 直接使用 session 对象
     }
   });
@@ -169,50 +169,58 @@ function createWindow() {
   // 监听页面加载完成，注入自定义脚本
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
-  // 监听新窗口请求
+  // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
   browserView.webContents.setWindowOpenHandler(({ url }) => {
-    console.log('[Window Open Handler] Intercepted window.open:', url);
-    console.log('[Window Open Handler] Current mode:', openInNewWindow ? 'New Window' : 'Current Window');
+    console.log('[Window Open] Opening new window for:', url);
 
-    if (openInNewWindow) {
-      // 新窗口模式：创建新的 BrowserWindow
-      console.log('[Window Open Handler] Creating new window for:', url);
-      const newWindow = new BrowserWindow({
+    // 使用 allow 模式，保持 window.opener 引用
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
         width: 1200,
         height: 800,
         webPreferences: {
           preload: path.join(__dirname, 'content-preload.js'),
           contextIsolation: true,
           nodeIntegration: false,
+          sandbox: false, // 禁用沙箱以支持 window.opener
           session: browserView.webContents.session // 使用相同的 session
         }
-      });
+      }
+    };
+  });
 
-      // 自动打开 DevTools
-      newWindow.webContents.openDevTools();
+  // 监听新窗口创建完成（用于添加脚本注入等功能）
+  browserView.webContents.on('did-create-window', (newWindow) => {
+    console.log('[Window Created] New window created');
 
-      // 为新窗口添加脚本注入
-      newWindow.webContents.on('did-finish-load', async () => {
-        const currentURL = newWindow.webContents.getURL();
-        console.log('[New Window] Page loaded:', currentURL);
-        await injectScriptForUrl(newWindow.webContents, currentURL);
-      });
+    // 添加到子窗口列表
+    childWindows.push(newWindow);
 
-      // 监听新窗口内的导航（SPA 路由）
-      newWindow.webContents.on('did-navigate-in-page', async (event, url) => {
-        console.log('[New Window] SPA Navigation:', url);
-        await injectScriptForUrl(newWindow.webContents, url);
-      });
+    // 监听窗口关闭事件
+    newWindow.on('closed', () => {
+      const index = childWindows.indexOf(newWindow);
+      if (index > -1) {
+        childWindows.splice(index, 1);
+        console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
+      }
+    });
 
-      newWindow.loadURL(url);
-      console.log('[Window Open Handler] New window created, denying default behavior');
-      return { action: 'deny' }; // 阻止默认行为，因为我们已经手动创建窗口
-    } else {
-      // 当前窗口模式：在当前 BrowserView 中打开
-      console.log('[Window Open Handler] Navigating current window to:', url);
-      browserView.webContents.loadURL(url);
-      return { action: 'deny' };
-    }
+    // 自动打开 DevTools
+    newWindow.webContents.openDevTools();
+
+    // 为新窗口添加脚本注入
+    newWindow.webContents.on('did-finish-load', async () => {
+      const currentURL = newWindow.webContents.getURL();
+      console.log('[New Window] Page loaded:', currentURL);
+      await injectScriptForUrl(newWindow.webContents, currentURL);
+    });
+
+    // 监听新窗口内的导航（SPA 路由）
+    newWindow.webContents.on('did-navigate-in-page', async (event, url) => {
+      console.log('[New Window] SPA Navigation:', url);
+      await injectScriptForUrl(newWindow.webContents, url);
+    });
   });
 }
 
@@ -405,17 +413,6 @@ ipcMain.on('main-to-content', (event, message) => {
 ipcMain.on('script-panel-toggle', (event, isOpen) => {
   isScriptPanelOpen = isOpen;
   updateBrowserViewBounds(isOpen);
-});
-
-// 切换新窗口模式
-ipcMain.handle('toggle-new-window-mode', async () => {
-  openInNewWindow = !openInNewWindow;
-  return { openInNewWindow };
-});
-
-// 获取当前新窗口模式状态
-ipcMain.handle('get-new-window-mode', async () => {
-  return { openInNewWindow };
 });
 
 // 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
