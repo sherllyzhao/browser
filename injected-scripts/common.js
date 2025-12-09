@@ -70,3 +70,23 @@ async function retryOperation(operation, maxRetries = 3, delay = 1000) {
         }
     }
 }
+
+// 发送消息到父窗口
+function sendMessageToParent(message) {
+    console.log('发送消息到父窗口:', message);
+
+    // 方式 2: 使用 browserAPI (运营助手浏览器)
+    if (window.browserAPI?.sendToHome) {
+        try {
+            window.browserAPI.sendToHome(message);
+            console.log('✅ 已通过 browserAPI.sendToHome 发送');
+            return true;
+        } catch (e) {
+            console.error('❌ browserAPI.sendToHome 失败:', e);
+        }
+    } else {
+        console.warn('⚠️ browserAPI 不可用');
+    }
+
+    return false;
+}

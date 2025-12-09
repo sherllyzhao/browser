@@ -54,25 +54,6 @@
   // 2. 发送消息到父窗口的辅助函数（使用 common.js）
   // ===========================
 
-  function sendMessageToParent(message) {
-    console.log('[百家号授权] 发送消息到父窗口:', message);
-
-    // 方式 2: 使用 browserAPI (运营助手浏览器)
-    if (window.browserAPI?.sendToHome) {
-      try {
-        window.browserAPI.sendToHome(message);
-        console.log('[百家号授权] ✅ 已通过 browserAPI.sendToHome 发送');
-        return true;
-      } catch (e) {
-        console.error('[百家号授权] ❌ browserAPI.sendToHome 失败:', e);
-      }
-    } else {
-      console.warn('[百家号授权] ⚠️ browserAPI 不可用');
-    }
-
-    return false;
-  }
-
   // ===========================
   // 3. 暴露全局方法供手动调用
   // ===========================
