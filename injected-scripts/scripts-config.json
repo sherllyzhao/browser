@@ -1,6 +1,5 @@
 {
   "scripts": {
-    "http://localhost:5173/#/short-video/auth": "auth.js",
     "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
     "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
     "https://creator.xiaohongshu.com/new/home": ["common.js", "xiaohongshu-creator.js"],

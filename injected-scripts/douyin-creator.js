@@ -130,13 +130,30 @@
     </div>
   `;
 
-  if (document.body) {
-    document.body.appendChild(banner);
-  } else {
-    document.addEventListener('DOMContentLoaded', () => {
+  // 添加横幅到页面
+  function addBannerToPage() {
+    if (document.body) {
+      console.log('[抖音授权] ✅ document.body 存在，立即添加横幅');
       document.body.appendChild(banner);
-    });
+    } else {
+      console.log('[抖音授权] ⚠️ document.body 不存在，等待 DOM 加载');
+      document.addEventListener('DOMContentLoaded', () => {
+        console.log('[抖音授权] ✅ DOMContentLoaded 触发，添加横幅');
+        if (document.body) {
+          document.body.appendChild(banner);
+        }
+      });
+      // 如果 DOMContentLoaded 已经触发过，用定时器重试
+      setTimeout(() => {
+        if (document.body && !document.getElementById('douyin-auth-banner')) {
+          console.log('[抖音授权] ✅ 使用定时器添加横幅');
+          document.body.appendChild(banner);
+        }
+      }, 100);
+    }
   }
+
+  addBannerToPage();
 
   // ===========================
   // 5. 接收来自父窗口的消息（必须在发送 页面加载完成 之前注册！）

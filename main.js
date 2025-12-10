@@ -101,6 +101,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false, // 禁用沙箱以支持 window.opener
+      webSecurity: false, // 禁用跨域限制，允许下载外部视频资源
       session: persistentSession // 直接使用 session 对象
     }
   });
