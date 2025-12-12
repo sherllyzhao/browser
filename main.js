@@ -508,26 +508,59 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
 
 // 关闭当前窗口（仅对子窗口有效，不能关闭主窗口）
 ipcMain.handle('close-current-window', async (event) => {
+  console.log('[Window Manager] ========== 收到关闭窗口请求 ==========');
   try {
     // 查找发送请求的窗口
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    console.log('[Window Manager] senderWindow:', senderWindow ? 'Found' : 'NULL');
+    console.log('[Window Manager] mainWindow:', mainWindow ? 'Exists' : 'NULL');
+    console.log('[Window Manager] senderWindow === mainWindow:', senderWindow === mainWindow);
+    console.log('[Window Manager] childWindows.length:', childWindows.length);
+    console.log('[Window Manager] event.sender.getType():', event.sender.getType());
 
     // 如果是主窗口，拒绝关闭
     if (senderWindow === mainWindow) {
-      console.log('[Window Manager] 拒绝关闭主窗口');
+      console.log('[Window Manager] ❌ 拒绝关闭主窗口');
       return { success: false, error: 'Cannot close main window' };
+    }
+
+    // 如果 senderWindow 是 null，可能是来自 BrowserView
+    if (!senderWindow) {
+      console.log('[Window Manager] ⚠️ senderWindow 为 null，可能来自 BrowserView');
+      console.log('[Window Manager] ⚠️ 尝试查找包含此 webContents 的窗口...');
+
+      // 遍历所有子窗口，查找匹配的 webContents
+      for (let i = 0; i < childWindows.length; i++) {
+        const child = childWindows[i];
+        if (child && !child.isDestroyed() && child.webContents === event.sender) {
+          console.log(`[Window Manager] ✅ 在子窗口列表中找到匹配窗口 [${i}]`);
+          child.close();
+          return { success: true };
+        }
+      }
+
+      console.log('[Window Manager] ❌ 未在子窗口列表中找到匹配窗口');
+      return { success: false, error: 'Sender is BrowserView, not a window' };
     }
 
     // 如果是子窗口，关闭它
     if (senderWindow && !senderWindow.isDestroyed()) {
-      console.log('[Window Manager] 关闭子窗口');
-      senderWindow.close();
-      return { success: true };
+      const isChildWindow = childWindows.includes(senderWindow);
+      console.log('[Window Manager] isChildWindow:', isChildWindow);
+
+      if (isChildWindow) {
+        console.log('[Window Manager] ✅ 关闭子窗口');
+        senderWindow.close();
+        return { success: true };
+      } else {
+        console.log('[Window Manager] ⚠️ 窗口存在但不在子窗口列表中');
+      }
     }
 
+    console.log('[Window Manager] ❌ No window to close');
     return { success: false, error: 'No window to close' };
   } catch (err) {
-    console.error('[Window Manager] 关闭窗口失败:', err);
+    console.error('[Window Manager] ❌ 关闭窗口失败:', err);
     return { success: false, error: err.message };
   }
 });
