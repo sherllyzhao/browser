@@ -286,74 +286,33 @@ let hasProcessed = false;
 // 7. 发布视频到抖音
 // ===========================
 async function publishApi(dataObj) {
-    console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
+  console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
   // 防止重复执行
   if (publishRunning) {
-     console.log('Publish is already running, skipping duplicate call');
+    console.log('Publish is already running, skipping duplicate call');
     return;
   }
 
   try {
     // 标记发布正在进行
     publishRunning = true;
+
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".button-dhlUZE");
-
-      // 先检查按钮是否存在
       if (!btn) {
         throw new Error('Publish button not found');
       }
-
       return btn;
-    }, 10, 2000); // 最多重试10次,每次间隔2秒
+    }, 10, 2000);
 
     // 等待按钮事件绑定完成
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await delay(800);
 
-    // 在点击发布按钮前，设置一个安全的延迟关闭（防止页面跳转导致无法关闭）
-    console.log('[抖音发布] 设置安全的延迟关闭窗口（5秒后）');
-    const safetyCloseTimer = setTimeout(async () => {
-      console.log('[抖音发布] ⏰ 安全关闭定时器触发');
-      try {
-        await window.browserAPI.closeCurrentWindow();
-        console.log('[抖音发布] ✅ 安全关闭成功');
-      } catch (e) {
-        console.error('[抖音发布] ❌ 安全关闭失败:', e);
-      }
-    }, 5000);
-
-    // 先点击发布按钮（避免后续 fetch 请求被页面跳转中断）
+    // 点击发布按钮
     console.log('[抖音发布] 🖱️ 准备点击发布按钮...');
-    let clickSuccess = false;
-    for (let i = 0; i < 3; i++) {
-      try {
-        if (typeof publishBtn.click === 'function') {
-          publishBtn.click();
-          clickSuccess = true;
-          console.log('[抖音发布] ✅ 发布按钮点击成功 (尝试 ' + (i + 1) + ')');
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // check if button still enabled means click may not work
-          if (publishBtn.offsetParent !== null && !publishBtn.disabled) {
-            // try trigger mouse events manually
-            const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-            const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
-            publishBtn.dispatchEvent(mouseDownEvent);
-            publishBtn.dispatchEvent(mouseUpEvent);
-            publishBtn.dispatchEvent(clickEvent);
-            await new Promise(resolve => setTimeout(resolve, 300));
-          } else {
-            console.log('[抖音发布] ✅ 按钮已禁用，点击生效');
-            break;
-          }
-        }
-      } catch (clickError) {
-        console.error('[抖音发布] ❌ 点击失败 (尝试 ' + (i + 1) + '):', clickError.message);
-      }
-    }
+    const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
 
     if (!clickSuccess) {
       console.error('[抖音发布] ❌ 所有点击尝试均失败');
@@ -361,109 +320,28 @@ async function publishApi(dataObj) {
       throw new Error('发布按钮点击失败');
     }
 
-    // 等待页面状态稳定后再发送统计接口（避免请求被中断）
-    console.log('[抖音发布] ⏳ 等待页面稳定...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // 点击成功后立即发送消息（页面可能跳转）
+    console.log('[抖音发布] ✅ 发布按钮已点击');
+
+    // 等待页面稳定后发送统计接口
+    await delay(2000);
 
     // 发送统计接口
     const publishId = dataObj.video.dyPlatform.id;
-    const scanData = { data: JSON.stringify({ id: publishId }) };
-    let apiResponse;
-    let apiCallSuccess = false;
+    await sendStatistics(publishId, '抖音发布');
 
-    try {
-      console.log('[抖音发布] 📤 发送统计接口，数据:', scanData);
-      apiResponse = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scanData),
-      });
-      apiCallSuccess = true;
-      console.log('[抖音发布] ✅ 统计接口请求成功');
-    } catch (e) {
-      console.error("🚀 ~ publishApi ~ fetch error: ", e);
-      console.error('[抖音发布] ❌ 统计接口请求失败，但发布已完成');
-      // 发布已完成，统计失败不影响主流程
-      publishRunning = false;
-      sendMessageToParent('发布成功（统计接口失败），刷新数据');
-      setTimeout(() => {
-        window.browserAPI.closeCurrentWindow();
-      }, 1000);
-      return; // 直接返回，不再继续处理
-    }
-
-    // 处理 API 响应
-    if (apiCallSuccess && apiResponse) {
-      try {
-        // 检查响应状态
-        if (!apiResponse.ok) {
-          console.error(`[抖音发布] ❌ 统计接口返回错误状态: ${apiResponse.status}`);
-          throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-        }
-
-        // 安全解析JSON响应
-        const responseText = await apiResponse.text();
-        console.log('[抖音发布] 📥 接口原始响应:', responseText);
-
-        let apiResult = null;
-        if (responseText && responseText.trim()) {
-          try {
-            apiResult = JSON.parse(responseText);
-            console.log('[抖音发布] 📥 接口解析后:', apiResult);
-          } catch (e) {
-            console.warn('[抖音发布] ⚠️ 响应不是有效的JSON:', e.message);
-          }
-        } else {
-          console.warn('[抖音发布] ⚠️ 响应为空');
-        }
-
-
-        console.log('[抖音发布] ✅ 数据发送成功');
-
-        // 标记已完成（防止重复发送）
-        hasProcessed = true;
-
-        // API 成功后通知父页面刷新
-        sendMessageToParent('发布成功，刷新数据');
-
-        // 统计接口成功后关闭弹窗
-        publishRunning = false;
-        console.log("🚀 ~ publishApi ~ publishRunning: ", publishRunning);
-        console.log("🚀 ~ publishApi ~ 准备关闭窗口...");
-        console.log("🚀 ~ publishApi ~ window.browserAPI: ", window.browserAPI);
-        console.log("🚀 ~ publishApi ~ window.browserAPI.closeCurrentWindow: ", window.browserAPI?.closeCurrentWindow);
-
-        // 立即关闭窗口（不延迟），因为发布和统计都已完成
-        await (async () => {
-          try {
-            console.log("🚀 ~ publishApi ~ 正在关闭窗口...");
-            const result = await window.browserAPI.closeCurrentWindow();
-            console.log("🚀 ~ publishApi ~ 关闭窗口结果: ", result);
-          } catch (error) {
-            console.error("🚀 ~ publishApi ~ 关闭窗口错误: ", error);
-          }
-        })();
-      } catch (error) {
-        console.error('[抖音发布] ❌ 处理API响应时出错:', error);
-        publishRunning = false;
-        // 发布已完成，统计失败不应阻止流程
-        sendMessageToParent('发布成功（统计处理失败），刷新数据');
-        setTimeout(() => {
-          window.browserAPI.closeCurrentWindow();
-        }, 1000);
-      }
-    } else {
-      // API 调用失败，但发布已完成
-      console.warn('[抖音发布] ⚠️ 统计接口未成功调用，但发布已完成');
-      publishRunning = false;
-      sendMessageToParent('发布成功（统计接口失败），刷新数据');
-      setTimeout(() => {
-        window.browserAPI.closeCurrentWindow();
-      }, 1000);
-    }
-  } catch (error) {
-      console.log("🚀 ~ publishApi ~ error: ", error);
+    // 标记已完成
+    hasProcessed = true;
     publishRunning = false;
+
+    // 发送成功消息并关闭窗口
+    await closeWindowWithMessage('发布成功，刷新数据', 1000);
+
+  } catch (error) {
+    console.log("🚀 ~ publishApi ~ error: ", error);
+    publishRunning = false;
+    // 即使出错也尝试关闭窗口
+    await closeWindowWithMessage('发布成功（可能有错误），刷新数据', 1000);
   }
 }
 

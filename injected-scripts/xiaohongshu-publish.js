@@ -286,61 +286,33 @@ let hasProcessed = false;
 // 7. 发布视频到小红书
 // ===========================
 async function publishApi(dataObj) {
-    console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
+  console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
   // 防止重复执行
   if (publishRunning) {
-     console.log('Publish is already running, skipping duplicate call');
+    console.log('Publish is already running, skipping duplicate call');
     return;
   }
 
   try {
     // 标记发布正在进行
     publishRunning = true;
+
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".submit > .custom-button.red");
-
-      // 先检查按钮是否存在
       if (!btn) {
         throw new Error('Publish button not found');
       }
-
       return btn;
-    }, 10, 2000); // 最多重试10次,每次间隔2秒
+    }, 10, 2000);
 
     // 等待按钮事件绑定完成
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await delay(800);
 
-    // 先点击发布按钮（避免后续 fetch 请求被页面跳转中断）
-    let clickSuccess = false;
-    for (let i = 0; i < 3; i++) {
-      try {
-        if (typeof publishBtn.click === 'function') {
-          publishBtn.click();
-          clickSuccess = true;
-          console.log('[小红书发布] ✅ 发布按钮点击成功 (尝试 ' + (i + 1) + ')');
-          await new Promise(resolve => setTimeout(resolve, 500));
-
-          // check if button still enabled means click may not work
-          if (publishBtn.offsetParent !== null && !publishBtn.disabled) {
-            // try trigger mouse events manually
-            const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-            const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
-            publishBtn.dispatchEvent(mouseDownEvent);
-            publishBtn.dispatchEvent(mouseUpEvent);
-            publishBtn.dispatchEvent(clickEvent);
-            await new Promise(resolve => setTimeout(resolve, 300));
-          } else {
-            console.log('[小红书发布] ✅ 按钮已禁用，点击生效');
-            break;
-          }
-        }
-      } catch (clickError) {
-        console.error('[小红书发布] ❌ 点击失败 (尝试 ' + (i + 1) + '):', clickError.message);
-      }
-    }
+    // 点击发布按钮
+    console.log('[小红书发布] 🖱️ 准备点击发布按钮...');
+    const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
 
     if (!clickSuccess) {
       console.error('[小红书发布] ❌ 所有点击尝试均失败');
@@ -348,90 +320,24 @@ async function publishApi(dataObj) {
       throw new Error('发布按钮点击失败');
     }
 
-    // 等待页面状态稳定后再发送统计接口（避免请求被中断）
-    console.log('[小红书发布] ⏳ 等待页面稳定...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('[小红书发布] ✅ 发布按钮已点击');
+
+    // 等待页面稳定后发送统计接口
+    await delay(2000);
 
     // 发送统计接口
     const publishId = dataObj.video.dyPlatform.id;
-    const scanData = { data: JSON.stringify({ id: publishId }) };
-    let apiResponse;
-    let apiCallSuccess = false;
+    await sendStatistics(publishId, '小红书发布');
 
-    try {
-      console.log('[小红书发布] 📤 发送统计接口，数据:', scanData);
-      apiResponse = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scanData),
-      });
-      apiCallSuccess = true;
-      console.log('[小红书发布] ✅ 统计接口请求成功');
-    } catch (e) {
-      console.error("🚀 ~ publishApi ~ fetch error: ", e);
-      console.error('[小红书发布] ❌ 统计接口请求失败，但发布已完成');
-      // 发布已完成，统计失败不影响主流程
-      publishRunning = false;
-      sendMessageToParent('发布成功（统计接口失败），刷新数据');
-      return; // 直接返回，不再继续处理
-    }
+    // 标记已完成
+    hasProcessed = true;
+    publishRunning = false;
 
-    // 处理 API 响应
-    if (apiCallSuccess && apiResponse) {
-      try {
-        // 检查响应状态
-        if (!apiResponse.ok) {
-          console.error(`[小红书发布] ❌ 统计接口返回错误状态: ${apiResponse.status}`);
-          throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-        }
+    // 发送成功消息（小红书会自动跳转到成功页，由 publish-success.js 关闭窗口）
+    sendMessageToParent('发布成功，刷新数据');
 
-        // 安全解析JSON响应
-        const responseText = await apiResponse.text();
-        console.log('[小红书发布] 📥 接口原始响应:', responseText);
-
-        let apiResult = null;
-        if (responseText && responseText.trim()) {
-          try {
-            apiResult = JSON.parse(responseText);
-            console.log('[小红书发布] 📥 接口解析后:', apiResult);
-          } catch (e) {
-            console.warn('[小红书发布] ⚠️ 响应不是有效的JSON:', e.message);
-          }
-        } else {
-          console.warn('[小红书发布] ⚠️ 响应为空');
-        }
-
-
-        console.log('[小红书发布] ✅ 数据发送成功');
-
-        // 标记已完成（防止重复发送）
-        hasProcessed = true;
-
-        // API 成功后通知父页面刷新
-        sendMessageToParent('发布成功，刷新数据');
-
-        // 统计接口成功后关闭弹窗
-        publishRunning = false;
-      } catch (error) {
-        console.error('[小红书发布] ❌ 处理API响应时出错:', error);
-        publishRunning = false;
-        // 发布已完成，统计失败不应阻止流程
-        sendMessageToParent('发布成功（统计处理失败），刷新数据');
-        setTimeout(() => {
-          window.browserAPI.closeCurrentWindow();
-        }, 1000);
-      }
-    } else {
-      // API 调用失败，但发布已完成
-      console.warn('[小红书发布] ⚠️ 统计接口未成功调用，但发布已完成');
-      publishRunning = false;
-      sendMessageToParent('发布成功（统计接口失败），刷新数据');
-      setTimeout(() => {
-        window.browserAPI.closeCurrentWindow();
-      }, 1000);
-    }
   } catch (error) {
-      console.log("🚀 ~ publishApi ~ error: ", error);
+    console.log("🚀 ~ publishApi ~ error: ", error);
     publishRunning = false;
   }
 }

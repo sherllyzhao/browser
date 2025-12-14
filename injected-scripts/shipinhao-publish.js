@@ -402,7 +402,6 @@ let hasProcessed = false;
 async function publishApi(dataObj) {
   // 防止重复执行
   if (publishRunning) {
-    // alert('Publish is already running, skipping duplicate call');
     return;
   }
 
@@ -423,10 +422,7 @@ async function publishApi(dataObj) {
         throw new Error('Video element #fullScreenVideo not found');
       }
 
-      console.log('[视频号发布] 📹 找到视频元素:', video);
-      console.log('[视频号发布] 📹 视频状态 - src:', video.src ? '有' : '无');
-      console.log('[视频号发布] 📹 视频状态 - readyState:', video.readyState);
-      console.log('[视频号发布] 📹 视频状态 - duration:', video.duration);
+      console.log('[视频号发布] 📹 视频状态 - src:', video.src ? '有' : '无', ', readyState:', video.readyState, ', duration:', video.duration);
 
       // 检查视频是否有 src
       if (!video.src) {
@@ -434,7 +430,6 @@ async function publishApi(dataObj) {
       }
 
       // 检查视频是否可以播放 (readyState >= 2 表示有足够数据可以播放)
-      // readyState: 0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA
       if (video.readyState < 2) {
         throw new Error('Video not ready to play, readyState=' + video.readyState);
       }
@@ -458,60 +453,46 @@ async function publishApi(dataObj) {
     const publishBtn = await retryOperation(async () => {
       const btn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 5000);
 
-      // 先检查按钮是否存在
       if (!btn) {
         throw new Error('Publish button not found');
       }
 
-      // 再检查按钮是否被禁用
       if (btn.classList && btn.classList.contains("weui-desktop-btn_disabled")) {
         throw new Error('Publish button is disabled');
       }
 
       return btn;
-    }, 10, 2000); // 最多重试10次,每次间隔2秒
+    }, 10, 2000);
 
     // 等待按钮事件绑定完成
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    let apiResponse = null;
-    let apiCallSuccess = false;
+    await delay(800);
 
     // 先发送统计接口（在点击发布按钮前，确保能发出去）
     const publishId = dataObj.video.dyPlatform.id;
-    const scanData = { data: JSON.stringify({ id: publishId }) };
-    try {
-      apiResponse = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scanData),
-      });
-      apiCallSuccess = true;
-      console.log('[视频号发布] ✅ 统计接口请求成功');
-    } catch (e) {
-      console.log('[视频号发布] ❌ 统计接口请求失败:', e);
-    }
+    await sendStatistics(publishId, '视频号发布');
 
-    // 多次尝试点击发布按钮
+    // 点击发布按钮（视频号的按钮需要特殊处理）
+    console.log('[视频号发布] 🖱️ 准备点击发布按钮...');
     let clickSuccess = false;
     for (let i = 0; i < 3; i++) {
       try {
         if (typeof publishBtn.click === 'function') {
           publishBtn.click();
           clickSuccess = true;
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await delay(500);
 
-          // check if button still enabled means click may not work
+          // 检查按钮是否被禁用
           if (!publishBtn.classList.contains("weui-desktop-btn_disabled")) {
-            // try trigger mouse events manually
+            // 尝试模拟鼠标事件
             const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
             const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
             const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
             publishBtn.dispatchEvent(mouseDownEvent);
             publishBtn.dispatchEvent(mouseUpEvent);
             publishBtn.dispatchEvent(clickEvent);
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await delay(300);
           } else {
+            console.log('[视频号发布] ✅ 按钮已禁用，点击生效');
             break;
           }
         }
@@ -523,23 +504,19 @@ async function publishApi(dataObj) {
     if (!clickSuccess) {
       console.log('[视频号发布] ❌ 点击发布按钮失败');
     } else {
-      // 点击成功后立即发送消息（因为页面可能会跳转，后面的代码可能不会执行）
-      console.log('[视频号发布] ✅ 发布按钮已点击，发送成功消息...');
+      // 点击成功后立即发送消息
+      console.log('[视频号发布] ✅ 发布按钮已点击');
       sendMessageToParent('发布成功，刷新数据');
       hasProcessed = true;
     }
 
     // 点击后等待一会，然后关闭窗口
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await delay(3000);
 
-    // 如果页面没跳转，尝试关闭窗口
-    console.log('[视频号发布] 尝试关闭窗口...');
+    // 关闭窗口
     publishRunning = false;
-    try {
-      await window.browserAPI.closeCurrentWindow();
-    } catch (e) {
-      console.log('[视频号发布] 关闭窗口失败:', e);
-    }
+    await closeWindowWithMessage('', 0); // 消息已发送，只关闭窗口
+
   } catch (error) {
     console.log('[视频号发布] publishApi 错误:', error);
     publishRunning = false;

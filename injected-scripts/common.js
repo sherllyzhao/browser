@@ -124,6 +124,49 @@ async function uploadFileToInput(inputElement, file) {
     }
 }
 
+// 通用文件下载函数（绕过跨域限制）
+async function downloadFile(url, defaultType = 'application/octet-stream') {
+    if (!url) {
+        throw new Error('Download URL is required');
+    }
+
+    console.log('[downloadFile] 开始下载:', url);
+
+    let blob;
+    let contentType = defaultType;
+
+    // 优先使用主进程下载（绕过跨域限制）
+    if (window.browserAPI?.downloadVideo) {
+        console.log('[downloadFile] 使用主进程下载...');
+        const result = await window.browserAPI.downloadVideo(url);
+
+        if (!result.success) {
+            throw new Error('Download failed: ' + result.error);
+        }
+
+        // 将 base64 转换为 Blob
+        const binaryString = atob(result.data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        blob = new Blob([bytes], { type: result.contentType });
+        contentType = result.contentType;
+        console.log('[downloadFile] 主进程下载成功，大小:', result.size, 'bytes, 类型:', contentType);
+    } else {
+        // 回退到 fetch（可能有跨域问题）
+        console.log('[downloadFile] browserAPI.downloadVideo 不可用，使用 fetch...');
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error('HTTP error! status: ' + response.status);
+        }
+        blob = await response.blob();
+        contentType = response.headers.get('Content-Type') || blob.type || defaultType;
+    }
+
+    return { blob, contentType };
+}
+
 // 上传视频到input元素
 async function uploadVideo(dataObj, shadowRoot = undefined) {
     const pathImage = dataObj?.video?.video?.url;
@@ -317,4 +360,95 @@ function deepShadowSearch(rootElement, selector, maxDepth = 3) {
 
         searchInShadow(rootElement, 0);
     });
+}
+
+// ===========================
+// 公共发布方法
+// ===========================
+
+// 发送统计接口
+async function sendStatistics(publishId, platform = '') {
+    const scanData = { data: JSON.stringify({ id: publishId }) };
+    try {
+        console.log(`[${platform || '发布'}] 📤 发送统计接口，ID: ${publishId}`);
+        const response = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(scanData),
+        });
+        console.log(`[${platform || '发布'}] ✅ 统计接口请求成功`);
+        return { success: true, response };
+    } catch (e) {
+        console.error(`[${platform || '发布'}] ❌ 统计接口请求失败:`, e);
+        return { success: false, error: e };
+    }
+}
+
+// 带重试的点击按钮
+async function clickWithRetry(element, maxRetries = 3, delay = 300) {
+    if (!element) {
+        console.error('[clickWithRetry] 元素不存在');
+        return false;
+    }
+
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            // 尝试普通点击
+            if (typeof element.click === 'function') {
+                element.click();
+            }
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            // 检查按钮是否仍然可见/可用（如果已消失说明点击成功）
+            if (element.offsetParent === null || element.disabled) {
+                console.log(`[clickWithRetry] ✅ 点击成功 (尝试 ${i + 1})`);
+                return true;
+            }
+
+            // 尝试模拟鼠标事件
+            const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+            const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+            element.dispatchEvent(mouseDownEvent);
+            element.dispatchEvent(mouseUpEvent);
+            element.dispatchEvent(clickEvent);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            // 再次检查
+            if (element.offsetParent === null || element.disabled) {
+                console.log(`[clickWithRetry] ✅ 点击成功 (尝试 ${i + 1}，使用MouseEvent)`);
+                return true;
+            }
+        } catch (e) {
+            console.log(`[clickWithRetry] 尝试 ${i + 1} 失败:`, e.message);
+        }
+    }
+
+    console.log('[clickWithRetry] ❌ 所有点击尝试均失败');
+    return false;
+}
+
+// 发送成功消息并关闭窗口
+async function closeWindowWithMessage(message = '发布成功，刷新数据', delay = 1000) {
+    console.log(`[closeWindow] 发送消息: ${message}`);
+    sendMessageToParent(message);
+
+    if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    try {
+        console.log('[closeWindow] 尝试关闭窗口...');
+        await window.browserAPI.closeCurrentWindow();
+        console.log('[closeWindow] ✅ 窗口已关闭');
+        return true;
+    } catch (e) {
+        console.error('[closeWindow] ❌ 关闭窗口失败:', e);
+        return false;
+    }
+}
+
+// 延迟执行（Promise 包装的 setTimeout）
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
