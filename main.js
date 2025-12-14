@@ -654,3 +654,91 @@ ipcMain.handle('get-session-path', async () => {
   }
   return { success: false };
 });
+
+// ========== 视频下载功能（通过主进程绕过跨域限制） ==========
+ipcMain.handle('download-video', async (event, url) => {
+  console.log('[Video Download] 开始下载:', url);
+
+  if (!url) {
+    return { success: false, error: 'No URL provided' };
+  }
+
+  // 内部下载函数，支持重定向
+  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
+    return new Promise((resolve) => {
+      if (redirectCount > 5) {
+        resolve({ success: false, error: 'Too many redirects' });
+        return;
+      }
+
+      const https = require('https');
+      const http = require('http');
+      const protocol = downloadUrl.startsWith('https') ? https : http;
+
+      const request = protocol.get(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      }, (response) => {
+        // 处理重定向
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          let redirectUrl = response.headers.location;
+          // 处理相对路径重定向
+          if (!redirectUrl.startsWith('http')) {
+            const urlObj = new URL(downloadUrl);
+            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+          }
+          console.log('[Video Download] 重定向到:', redirectUrl);
+          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
+          return;
+        }
+
+        const chunks = [];
+        const contentType = response.headers['content-type'] || 'video/mp4';
+
+        response.on('data', (chunk) => {
+          chunks.push(chunk);
+        });
+
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const base64Data = buffer.toString('base64');
+          console.log('[Video Download] 下载完成，大小:', buffer.length, 'bytes');
+          resolve({
+            success: true,
+            data: base64Data,
+            contentType: contentType,
+            size: buffer.length
+          });
+        });
+
+        response.on('error', (err) => {
+          console.error('[Video Download] 响应错误:', err);
+          resolve({ success: false, error: err.message });
+        });
+      });
+
+      request.on('error', (err) => {
+        console.error('[Video Download] 请求错误:', err);
+        resolve({ success: false, error: err.message });
+      });
+
+      request.setTimeout(60000, () => {
+        request.destroy();
+        resolve({ success: false, error: 'Download timeout' });
+      });
+    });
+  };
+
+  try {
+    return await downloadWithRedirect(url);
+  } catch (err) {
+    console.error('[Video Download] 异常:', err);
+    return { success: false, error: err.message };
+  }
+});

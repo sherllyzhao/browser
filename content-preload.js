@@ -97,7 +97,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 导航控制 API
   openNewWindow: (url) => ipcRenderer.invoke('open-new-window', url),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
-  closeCurrentWindow: () => ipcRenderer.invoke('close-current-window')
+  closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
+
+  // 视频下载 API（通过主进程绕过跨域限制）
+  downloadVideo: (url) => ipcRenderer.invoke('download-video', url)
 });
 
 // 在页面加载时注入通信代码

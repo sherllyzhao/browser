@@ -131,14 +131,40 @@ async function uploadVideo(dataObj) {
         //alert('No video URL found');
         return;
     }
-    const response = await fetch(pathImage);
-    if (!response.ok) {
-        throw new Error('HTTP error! status: ' + response.status);
-    }
-    const blob = await response.blob();
 
-    // 获取真实的 MIME 类型
-    const contentType = response.headers.get('Content-Type') || blob.type || 'video/mp4';
+    console.log('[uploadVideo] 开始下载视频:', pathImage);
+
+    let blob;
+    let contentType = 'video/mp4';
+
+    // 优先使用主进程下载（绕过跨域限制）
+    if (window.browserAPI?.downloadVideo) {
+        console.log('[uploadVideo] 使用主进程下载...');
+        const result = await window.browserAPI.downloadVideo(pathImage);
+
+        if (!result.success) {
+            throw new Error('Video download failed: ' + result.error);
+        }
+
+        // 将 base64 转换为 Blob
+        const binaryString = atob(result.data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        blob = new Blob([bytes], { type: result.contentType });
+        contentType = result.contentType;
+        console.log('[uploadVideo] 主进程下载成功，大小:', result.size, 'bytes');
+    } else {
+        // 回退到 fetch（可能有跨域问题）
+        console.log('[uploadVideo] browserAPI.downloadVideo 不可用，使用 fetch...');
+        const response = await fetch(pathImage);
+        if (!response.ok) {
+            throw new Error('HTTP error! status: ' + response.status);
+        }
+        blob = await response.blob();
+        contentType = response.headers.get('Content-Type') || blob.type || 'video/mp4';
+    }
 
     // 从 URL 或 Content-Type 中提取文件扩展名
     let extension = '.mp4'; // 默认扩展名

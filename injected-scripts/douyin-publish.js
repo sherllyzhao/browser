@@ -288,8 +288,6 @@ let hasProcessed = false;
 // ===========================
 async function publishApi(dataObj) {
     console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
-  // 保存当前URL，用于后续判断
-  const currentUrl = window.location.href;
 
   // 防止重复执行
   if (publishRunning) {
