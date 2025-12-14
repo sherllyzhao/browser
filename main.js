@@ -10,6 +10,19 @@ let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const HOME_URL = 'http://localhost:5173/';
 const childWindows = []; // 跟踪所有打开的子窗口
 
+// 优化：限制最大子窗口数量，防止内存泄漏
+const MAX_CHILD_WINDOWS = 5;
+
+// 优化：定期清理已销毁的窗口引用
+function cleanupDestroyedWindows() {
+  for (let i = childWindows.length - 1; i >= 0; i--) {
+    if (!childWindows[i] || childWindows[i].isDestroyed()) {
+      childWindows.splice(i, 1);
+    }
+  }
+  console.log('[Window Manager] 清理后窗口数量:', childWindows.length);
+}
+
 function createWindow() {
   // 创建主窗口
   mainWindow = new BrowserWindow({
@@ -252,7 +265,7 @@ app.whenReady().then(() => {
 
   // 定期保存 session 数据（每 30 秒）
   const saveInterval = setInterval(async () => {
-    if (browserView) {
+    if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const ses = browserView.webContents.session;
         await ses.flushStorageData();
@@ -262,6 +275,16 @@ app.whenReady().then(() => {
       }
     }
   }, 30000);
+
+  // 优化：定期清理已销毁的窗口引用（每 60 秒）
+  setInterval(() => {
+    cleanupDestroyedWindows();
+    // 强制垃圾回收（如果可用）
+    if (global.gc) {
+      global.gc();
+      console.log('[Memory] 强制垃圾回收完成');
+    }
+  }, 60000);
 });
 
 app.on('window-all-closed', function () {
@@ -656,6 +679,9 @@ ipcMain.handle('get-session-path', async () => {
 });
 
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========
+// 优化：添加文件大小限制，防止内存溢出
+const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB 限制
+
 ipcMain.handle('download-video', async (event, url) => {
   console.log('[Video Download] 开始下载:', url);
 
@@ -698,10 +724,26 @@ ipcMain.handle('download-video', async (event, url) => {
           return;
         }
 
+        // 优化：检查文件大小
+        const contentLength = parseInt(response.headers['content-length'], 10);
+        if (contentLength && contentLength > MAX_VIDEO_SIZE) {
+          response.destroy();
+          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_VIDEO_SIZE / 1024 / 1024}MB)` });
+          return;
+        }
+
         const chunks = [];
+        let totalSize = 0;
         const contentType = response.headers['content-type'] || 'video/mp4';
 
         response.on('data', (chunk) => {
+          totalSize += chunk.length;
+          // 优化：实时检查大小，防止超限
+          if (totalSize > MAX_VIDEO_SIZE) {
+            response.destroy();
+            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+            return;
+          }
           chunks.push(chunk);
         });
 
@@ -709,6 +751,10 @@ ipcMain.handle('download-video', async (event, url) => {
           const buffer = Buffer.concat(chunks);
           const base64Data = buffer.toString('base64');
           console.log('[Video Download] 下载完成，大小:', buffer.length, 'bytes');
+
+          // 优化：立即清理 chunks 数组释放内存
+          chunks.length = 0;
+
           resolve({
             success: true,
             data: base64Data,
@@ -728,9 +774,10 @@ ipcMain.handle('download-video', async (event, url) => {
         resolve({ success: false, error: err.message });
       });
 
-      request.setTimeout(60000, () => {
+      // 优化：增加超时时间到 120 秒
+      request.setTimeout(120000, () => {
         request.destroy();
-        resolve({ success: false, error: 'Download timeout' });
+        resolve({ success: false, error: 'Download timeout (120s)' });
       });
     });
   };

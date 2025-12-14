@@ -19,11 +19,11 @@ let hasProcessed = false;
   // ===========================
   // 防止脚本重复注入
   // ===========================
-  if (window.__DOUYIN_SCRIPT_LOADED__) {
+  if (window.__XHS_SCRIPT_LOADED__) {
     console.log('[小红书发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
-  window.__DOUYIN_SCRIPT_LOADED__ = true;
+  window.__XHS_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 小红书发布脚本已注入');
@@ -62,7 +62,7 @@ let hasProcessed = false;
   // 2. 暴露全局方法供手动调用
   // ===========================
 
-  window.__DOUYIN_AUTH__ = {
+  window.__XHS_AUTH__ = {
     // 发送发布成功消息
     notifySuccess: () => {
       sendMessageToParent('发布成功');
@@ -110,7 +110,7 @@ let hasProcessed = false;
         🎵 小红书发布脚本已运行 | Company ID: ${companyId || '未知'}
       </div>
       <div>
-        <button onclick="window.__DOUYIN_AUTH__.notifySuccess()" style="
+        <button onclick="window.__XHS_AUTH__.notifySuccess()" style="
           background: rgba(255,255,255,0.2);
           border: 1px solid rgba(255,255,255,0.5);
           color: white;
@@ -218,7 +218,7 @@ let hasProcessed = false;
             if (infoDisplay) {
               console.log('[小红书发布] 更新前的内容:', infoDisplay.textContent);
 
-              const newContent = `🎵 ���音发布脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
+              const newContent = `🎵 小红书发布脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
               console.log('[小红书发布] 准备更新为:', newContent);
 
               // 使用 textContent 更新
@@ -274,11 +274,10 @@ let hasProcessed = false;
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 小红书发布脚本初始化完成');
-  console.log('📝 全局方法: window.__DOUYIN_AUTH__');
+  console.log('📝 全局方法: window.__XHS_AUTH__');
   console.log('  - notifySuccess()  : 发送发布成功消息');
   console.log('  - sendMessage(msg) : 发送自定义消息');
   console.log('  - getAuthData()    : 获取发布数据');
-  console.log('  - sendAuthCode(code): 发送发布码');
   console.log('═══════════════════════════════════════');
 
 })();

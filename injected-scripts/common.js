@@ -125,7 +125,7 @@ async function uploadFileToInput(inputElement, file) {
 }
 
 // 上传视频到input元素
-async function uploadVideo(dataObj) {
+async function uploadVideo(dataObj, shadowRoot = undefined) {
     const pathImage = dataObj?.video?.video?.url;
     if (!pathImage) {
         //alert('No video URL found');
@@ -191,7 +191,15 @@ async function uploadVideo(dataObj) {
 
     // 等待上传按钮
     //alert('Looking for upload input...');
-    const uploadInput = await waitForElement('input[type="file"]', 15000);
+    let uploadInput;
+    if (!shadowRoot) {
+        // alert('wujie-app has no shadow root, trying to access iframe directly');
+        // 如果没有Shadow DOM，尝试直接查找iframe
+        uploadInput = await waitForElement('input[type="file"]', 3000);
+    } else {
+        // 深入Shadow DOM查找
+        uploadInput = await deepShadowSearch(shadowRoot, 'input[type="file"]', 3);
+    }
 
     // 执行文件上传
     //alert('Uploading file: ' + file.name);
@@ -252,58 +260,61 @@ const setNativeValue = (el, value) => {
     }
 };
 
-// 检测上传进度是否完成
-async function waitForUploadComplete(timeout = 120000) {
+// 等待Shadow DOM中的元素
+function waitForShadowElement(hostSelector, shadowSelector, timeout = 30000) {
+    return waitForElement(hostSelector, timeout).then(host => {
+        if (!host.shadowRoot) {
+            throw new Error(`Host element has no shadow root: ${hostSelector}`);
+        }
+        return waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
+    });
+}
+
+// 深度搜索Shadow DOM中的元素
+function deepShadowSearch(rootElement, selector, maxDepth = 3) {
     return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        const checkInterval = 500; // 每500ms检查一次
-
-        function checkProgress() {
-            try {
-                // 检查进度条元素是否存在
-                const progressBg = document.querySelector('.ant-progress-bg');
-
-                if (!progressBg) {
-                    // 如果进度条不存在，可能已经上传完成或还未开始
-                    // 再检查一下是否有其他上传中的标识
-                    const uploadingIndicator = document.querySelector('.ant-progress');
-                    if (!uploadingIndicator) {
-                        // 没有进度条元素，认为上传已完成
-                        // alert('✅ No progress bar found, upload likely complete');
-                        resolve(true);
-                        return;
-                    }
-                } else {
-                    // 进度条存在，检查宽度
-                    const style = window.getComputedStyle(progressBg);
-                    const width = style.width;
-                    const widthPercent = parseFloat(width);
-                    const parentWidth = parseFloat(window.getComputedStyle(progressBg.parentElement).width);
-                    const percentage = (widthPercent / parentWidth) * 100;
-
-                    // alert(`Upload progress: ${percentage.toFixed(2)}%`);
-
-                    // 检查是否达到100%
-                    if (percentage >= 99.9) {
-                        // alert('✅ Upload complete (100%)');
-                        resolve(true);
-                        return;
-                    }
-                }
-
-                // 检查是否超时
-                if (Date.now() - startTime > timeout) {
-                    reject(new Error('Upload timeout'));
-                    return;
-                }
-
-                // 继续检查
-                setTimeout(checkProgress, checkInterval);
-            } catch (error) {
-                reject(error);
+        function searchInShadow(element, depth) {
+            if (depth > maxDepth) {
+                reject(new Error(`Max shadow depth reached: ${maxDepth}`));
+                return;
             }
+
+            // 在当前元素中查找
+            const found = element.querySelector(selector);
+            if (found) {
+                resolve(found);
+                return;
+            }
+
+            // 查找Shadow DOM
+            if (element.shadowRoot) {
+                searchInShadow(element.shadowRoot, depth + 1);
+            }
+
+            // 查找iframe
+            const iframes = element.querySelectorAll('iframe');
+            for (const iframe of iframes) {
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                    if (iframeDoc) {
+                        searchInShadow(iframeDoc, depth + 1);
+                    }
+                } catch (error) {
+                    // 跨域iframe无法访问，跳过
+                }
+            }
+
+            // 递归查找子元素
+            const children = element.children || element.childNodes;
+            for (const child of children) {
+                if (child.nodeType === Node.ELEMENT_NODE) {
+                    searchInShadow(child, depth + 1);
+                }
+            }
+
+            reject(new Error(`Element not found: ${selector}`));
         }
 
-        checkProgress();
+        searchInShadow(rootElement, 0);
     });
 }

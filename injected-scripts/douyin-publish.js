@@ -218,7 +218,7 @@ let hasProcessed = false;
             if (infoDisplay) {
               console.log('[抖音发布] 更新前的内容:', infoDisplay.textContent);
 
-              const newContent = `🎵 ���音发布脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
+              const newContent = `🎵 抖音发布脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
               console.log('[抖音发布] 准备更新为:', newContent);
 
               // 使用 textContent 更新
@@ -278,7 +278,6 @@ let hasProcessed = false;
   console.log('  - notifySuccess()  : 发送发布成功消息');
   console.log('  - sendMessage(msg) : 发送自定义消息');
   console.log('  - getAuthData()    : 获取发布数据');
-  console.log('  - sendAuthCode(code): 发送发布码');
   console.log('═══════════════════════════════════════');
 
 })();
