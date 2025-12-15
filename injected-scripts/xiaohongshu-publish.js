@@ -67,14 +67,6 @@ let hasProcessed = false;
     notifySuccess: () => {
       sendMessageToParent('发布成功');
     },
-
-    // 发送自定义消息
-    sendMessage: (message) => {
-      sendMessageToParent(message);
-    },
-
-    // 获取发布数据
-    getAuthData: () => window.__AUTH_DATA__,
   };
 
   // ===========================

@@ -212,6 +212,12 @@ function createWindow() {
     // 添加到子窗口列表
     childWindows.push(newWindow);
 
+    // 忽略页面的 beforeunload 事件，允许直接关闭窗口
+    newWindow.webContents.on('will-prevent-unload', (event) => {
+      console.log('[Window Manager] 忽略页面的 beforeunload 事件，强制关闭窗口');
+      event.preventDefault();
+    });
+
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
       const index = childWindows.indexOf(newWindow);
@@ -461,6 +467,12 @@ ipcMain.handle('open-new-window', async (event, url) => {
     // 添加到子窗口列表
     childWindows.push(newWindow);
     console.log('[Window Manager] 新窗口已添加，当前窗口数量:', childWindows.length);
+
+    // 忽略页面的 beforeunload 事件，允许直接关闭窗口
+    newWindow.webContents.on('will-prevent-unload', (event) => {
+      console.log('[Window Manager] 忽略页面的 beforeunload 事件，强制关闭窗口');
+      event.preventDefault();
+    });
 
     // 监听窗口关闭事件
     newWindow.on('closed', () => {

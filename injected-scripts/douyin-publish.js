@@ -298,6 +298,13 @@ async function publishApi(dataObj) {
     // 标记发布正在进行
     publishRunning = true;
 
+    // 发送统计接口
+    const publishId = dataObj.video.dyPlatform.id;
+    await sendStatistics(publishId, '抖音发布');
+
+    // 等待页面稳定后发送统计接口
+    await delay(2000);
+
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".button-dhlUZE");
@@ -325,10 +332,6 @@ async function publishApi(dataObj) {
 
     // 等待页面稳定后发送统计接口
     await delay(2000);
-
-    // 发送统计接口
-    const publishId = dataObj.video.dyPlatform.id;
-    await sendStatistics(publishId, '抖音发布');
 
     // 标记已完成
     hasProcessed = true;

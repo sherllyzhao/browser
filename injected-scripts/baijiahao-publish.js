@@ -332,6 +332,9 @@ async function publishApi(dataObj) {
     hasProcessed = true;
     publishRunning = false;
 
+    // 等待页面稳定后发送统计接口
+    await delay(2000);
+
     // 发送成功消息并关闭窗口
     await closeWindowWithMessage('发布成功，刷新数据', 1000);
 
