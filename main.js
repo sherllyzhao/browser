@@ -333,6 +333,255 @@ app.whenReady().then(() => {
     }
   });
 
+  // 注册全局快捷键后门清除指定域名的 Cookies (Ctrl+Alt+C)
+  console.log('[Main] 尝试注册清除 Cookies 快捷键: Ctrl+Alt+C');
+  const registerResult = globalShortcut.register('CommandOrControl+Alt+C', async () => {
+    console.log('[Clear Cookies] ========== 后门快捷键触发 ==========');
+
+    // 使用 Electron 的对话框让用户输入域名
+    const { dialog } = require('electron');
+
+    console.log('[Clear Cookies] 显示选择对话框...');
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['取消', '清除所有登录状态', '清除指定域名'],
+      defaultId: 2,
+      title: '清除 Cookies',
+      message: '选择要清除的范围：',
+      detail: '清除所有：删除所有网站的登录状态\n清除指定域名：删除特定网站的登录状态（如：douyin.com）'
+    });
+
+    console.log('[Clear Cookies] 用户选择:', result.response);
+
+    if (result.response === 0) {
+      // 取消
+      console.log('[Clear Cookies] 用户取消操作');
+      return;
+    }
+
+    if (result.response === 1) {
+      // 清除所有
+      console.log('[Clear Cookies] 开始清除所有登录状态...');
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        const ses = browserView.webContents.session;
+        const cookiesBefore = await ses.cookies.get({});
+        console.log(`[Clear Cookies] 清除前有 ${cookiesBefore.length} 个 cookies`);
+
+        await ses.clearStorageData({
+          storages: ['cookies', 'localstorage', 'sessionstorage']
+        });
+
+        const cookiesAfter = await ses.cookies.get({});
+        console.log(`[Clear Cookies] 清除后有 ${cookiesAfter.length} 个 cookies`);
+        console.log('[Clear Cookies] ✅ 已清除所有登录状态');
+
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: '清除成功',
+          message: '已清除所有网站的登录状态',
+          detail: `删除了 ${cookiesBefore.length} 个 cookies`,
+          buttons: ['确定']
+        });
+      }
+      return;
+    }
+
+    if (result.response === 2) {
+      // 清除指定域名
+      console.log('[Clear Cookies] 用户选择清除指定域名，准备显示输入窗口...');
+
+      // 直接使用简化的prompt对话框
+      const { BrowserWindow } = require('electron');
+
+      const inputWindow = new BrowserWindow({
+        width: 500,
+        height: 220,
+        parent: mainWindow,
+        modal: true,
+        show: false,
+        autoHideMenuBar: true,
+        webPreferences: {
+          nodeIntegration: true,  // 启用nodeIntegration以便使用ipcRenderer
+          contextIsolation: false  // 关闭上下文隔离
+        }
+      });
+
+      console.log('[Clear Cookies] 输入窗口已创建');
+
+      // 监听来自输入窗口的域名
+      let receivedDomain = null;
+      ipcMain.once('submit-domain', async (event, domain) => {
+        console.log('[Clear Cookies] 收到域名:', domain);
+        receivedDomain = domain;
+
+        if (domain && browserView && !browserView.webContents.isDestroyed()) {
+          console.log('[Clear Cookies] 开始清除域名:', domain);
+
+          const ses = browserView.webContents.session;
+          const cookies = await ses.cookies.get({});
+          console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+
+          let deletedCount = 0;
+          for (const cookie of cookies) {
+            // 匹配域名（包括子域名）
+            const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+            const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+
+            if (shouldDelete) {
+              const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
+              try {
+                await ses.cookies.remove(cookieUrl, cookie.name);
+                deletedCount++;
+                console.log(`[Clear Cookies] ✓ 删除: ${cookie.name} @ ${cookie.domain}`);
+              } catch (err) {
+                console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+              }
+            }
+          }
+
+          console.log(`[Clear Cookies] ========== 清除完成 ==========`);
+          console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+          await dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: '清除成功',
+            message: `已清除域名 "${domain}" 的登录状态`,
+            detail: `共删除 ${deletedCount} 个 cookies\n\n刷新页面即可看到效果`,
+            buttons: ['确定']
+          });
+        } else {
+          console.log('[Clear Cookies] 域名为空或browserView不可用');
+        }
+      });
+
+      inputWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>清除指定域名的 Cookies</title>
+          <style>
+            body {
+              font-family: 'Microsoft YaHei', Arial, sans-serif;
+              padding: 30px;
+              background: #f5f5f5;
+              margin: 0;
+            }
+            .container {
+              background: white;
+              padding: 25px;
+              border-radius: 8px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h3 {
+              margin: 0 0 15px 0;
+              color: #333;
+              font-size: 16px;
+            }
+            input {
+              width: 100%;
+              padding: 10px;
+              border: 2px solid #ddd;
+              border-radius: 4px;
+              font-size: 14px;
+              box-sizing: border-box;
+              font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            input:focus {
+              outline: none;
+              border-color: #ee0a24;
+            }
+            .buttons {
+              margin-top: 20px;
+              display: flex;
+              gap: 10px;
+              justify-content: flex-end;
+            }
+            button {
+              padding: 10px 24px;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 14px;
+              font-family: 'Microsoft YaHei', Arial, sans-serif;
+            }
+            .cancel {
+              background: #e0e0e0;
+              color: #333;
+            }
+            .submit {
+              background: #ee0a24;
+              color: white;
+            }
+            .cancel:hover {
+              background: #d0d0d0;
+            }
+            .submit:hover {
+              background: #d00a20;
+            }
+            .hint {
+              font-size: 12px;
+              color: #666;
+              margin-top: 10px;
+              line-height: 1.5;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h3>🔑 输入要清除的域名</h3>
+            <input type="text" id="domain" placeholder="例如: douyin.com 或 creator.douyin.com" autofocus />
+            <div class="hint">💡 提示: 只输入主域名(如 douyin.com)将清除所有相关子域名的登录状态</div>
+            <div class="buttons">
+              <button class="cancel" onclick="window.close()">取消</button>
+              <button class="submit" onclick="submit()">清除</button>
+            </div>
+          </div>
+          <script>
+            const { ipcRenderer } = require('electron');
+            console.log('输入窗口脚本已加载');
+
+            document.getElementById('domain').focus();
+            document.getElementById('domain').addEventListener('keypress', (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submit();
+              }
+            });
+
+            function submit() {
+              const domain = document.getElementById('domain').value.trim();
+              console.log('用户输入域名:', domain);
+              if (domain) {
+                console.log('发送域名到主进程:', domain);
+                ipcRenderer.send('submit-domain', domain);
+                window.close();
+              } else {
+                alert('请输入域名！');
+              }
+            }
+          </script>
+        </body>
+        </html>
+      `)}`);
+
+      inputWindow.once('ready-to-show', () => {
+        console.log('[Clear Cookies] 输入窗口准备完成，显示窗口');
+        inputWindow.show();
+      });
+
+      inputWindow.on('close', () => {
+        console.log('[Clear Cookies] 输入窗口已关闭');
+      });
+    }
+  });
+
+  if (registerResult) {
+    console.log('[Main] ✅ 清除 Cookies 快捷键注册成功 (Ctrl+Alt+C)');
+  } else {
+    console.error('[Main] ❌ 清除 Cookies 快捷键注册失败，可能被占用');
+  }
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
       isQuitting = false; // 重置标志

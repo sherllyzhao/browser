@@ -1,28 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm install)",
-      "Bash(npm start)",
-      "Bash(dir)",
-      "Bash(npx electron:*)",
-      "Bash(timeout:*)",
-      "Bash(npm cache clean:*)",
-      "Bash(dir:*)",
-      "Bash(findstr:*)",
-      "Bash(netstat:*)",
-      "Bash(node -e:*)",
-      "Bash(npm run build:*)",
-      "Bash(set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/)",
-      "Bash(npm run build:dir:*)",
-      "Bash(set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/)",
-      "Bash(where /r \"D:\\浏览器\\运营助手\\node_modules\" electron*.zip)",
-      "Bash(npm cache ls:*)",
-      "Bash(rd /s /q node_modules)",
-      "Bash(taskkill:*)",
-      "Bash(git checkout:*)",
-      "Bash(cat:*)",
-      "Bash(node:*)",
-      "Bash(ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node:*)"
+      "Bash(tasklist:*)",
+      "Bash(powershell -Command \"Remove-Item -Path ''C:\\Users\\Administrator\\AppData\\Roaming\\custom-browser\\Partitions'' -Recurse -Force; Write-Host ''登录状态已清除''\")"
     ],
     "deny": [],
     "ask": []

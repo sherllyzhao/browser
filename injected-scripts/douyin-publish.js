@@ -133,10 +133,6 @@ let hasProcessed = false;
             const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
 
-            // 更新横幅显示
-            const infoDisplay = document.getElementById('auth-info-display');
-            console.log('[抖音发布] 查找横幅元素 #auth-info-display:', infoDisplay);
-
             await uploadVideo(messageData);
             try{
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
@@ -551,12 +547,12 @@ async function fillFormData(dataObj) {
 
       if (checkElement.textContent.includes('作品未见异常')) {
         console.log('[检测结果] ✅ 检测通过，准备发布');
-        // 发布
-        await publishApi(dataObj);
       } else {
         console.log('[检测结果] ⚠️ 检测未通过，不执行发布');
         console.log('[检测结果] 内容:', checkElement.textContent);
       }
+      // 发布
+      await publishApi(dataObj);
     } catch (error) {
       console.log('[检测结果] ❌ 等待检测元素超时（5分钟）:', error.message);
       // 超时不执行发布，避免发布失败
