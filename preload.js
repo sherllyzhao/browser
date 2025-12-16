@@ -1,7 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 检测是否为生产环境（打包后运行）
+const isProduction = process.resourcesPath && process.resourcesPath.includes('app.asar');
+
 // 为主窗口（控制面板）提供 API
 contextBridge.exposeInMainWorld('electronAPI', {
+  // 环境信息
+  isProduction: isProduction,
+
   // 导航控制
   navigateTo: (url) => ipcRenderer.invoke('navigate-to', url),
   refreshPage: () => ipcRenderer.invoke('refresh-page'),

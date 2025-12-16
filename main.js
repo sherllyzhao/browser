@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut } = require('electron');
 const path = require('path');
 const ScriptManager = require('./script-manager');
 
@@ -7,7 +7,8 @@ let browserView;
 let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
-const HOME_URL = app.isPackaged
+const isProduction = app.isPackaged; // 是否生产环境
+const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const childWindows = []; // 跟踪所有打开的子窗口
@@ -26,10 +27,18 @@ function cleanupDestroyedWindows() {
 }
 
 function createWindow() {
+  // 生产环境隐藏菜单栏
+  if (isProduction) {
+    Menu.setApplicationMenu(null);
+  }
+
   // 创建主窗口
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    show: false, // 先隐藏窗口，等内容准备好再显示
+    autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
+    backgroundColor: '#f2f7fa', // 设置背景色避免白闪
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -37,6 +46,18 @@ function createWindow() {
       webviewTag: true
     }
   });
+
+  // 窗口准备好后立即显示
+  let windowShown = false;
+  const showWindow = () => {
+    if (!windowShown) {
+      windowShown = true;
+      mainWindow.show();
+    }
+  };
+  mainWindow.once('ready-to-show', showWindow);
+  // 保险措施：最多等待 2 秒后强制显示
+  setTimeout(showWindow, 2000);
 
   // 为主窗口打开开发者工具（用于调试控制面板）
   // mainWindow.webContents.openDevTools();
@@ -132,30 +153,16 @@ function createWindow() {
     updateBrowserViewBounds(isScriptPanelOpen);
   });
 
-  // 显示加载提示（生产环境）
-  if (app.isPackaged) {
-    browserView.webContents.loadURL(`data:text/html,
-      <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f2f7fa;font-family:Arial,sans-serif;">
-          <div style="text-align:center;">
-            <div style="font-size:24px;color:#333;">加载中...</div>
-            <div style="margin-top:10px;color:#666;">正在连接服务器</div>
-          </div>
-        </body>
-      </html>
-    `);
-    // 延迟加载实际页面
-    setTimeout(() => {
-      browserView.webContents.loadURL(HOME_URL);
-    }, 100);
-  } else {
-    // 开发环境直接加载
-    browserView.webContents.loadURL(HOME_URL);
-  }
+  // 直接加载首页，不再使用占位页（减少空白时间）
+  browserView.webContents.loadURL(HOME_URL);
 
   // 脚本注入函数（提取为公共函数，可复用）
   const injectScriptForUrl = async (webContents, url) => {
+    // 检查 webContents 是否已销毁
+    if (!webContents || webContents.isDestroyed()) {
+      return;
+    }
+
     console.log('==================================================');
     console.log('[Script Injection] Checking URL:', url);
 
@@ -163,6 +170,10 @@ function createWindow() {
     const script = await scriptManager.getScript(url);
 
     if (script) {
+      // 再次检查（异步操作后可能已销毁）
+      if (webContents.isDestroyed()) {
+        return;
+      }
       console.log('[Script Injection] Script found! Length:', script.length);
       console.log('[Script Injection] Preview:', script.substring(0, 100) + '...');
       console.log('✅ [Script Injection] Executing...');
@@ -171,7 +182,10 @@ function createWindow() {
         console.log('✅ [Script Injection] Script executed successfully!');
         console.log('[Script Injection] Execution result:', result);
       } catch (err) {
-        console.error('❌ [Script Injection] Script execution error:', err);
+        // 忽略窗口销毁导致的错误
+        if (!err.message.includes('destroyed')) {
+          console.error('❌ [Script Injection] Script execution error:', err);
+        }
       }
     } else {
       // 没有脚本时，只显示简单的调试信息
@@ -182,23 +196,33 @@ function createWindow() {
 
   // BrowserView 的脚本注入函数
   const injectScriptForCurrentPage = async () => {
+    // 检查 webContents 是否已销毁
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      return;
+    }
     const currentURL = browserView.webContents.getURL();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
     mainWindow.webContents.send('url-changed', currentURL);
     await injectScriptForUrl(browserView.webContents, currentURL);
   };
 
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面导航完成
   browserView.webContents.on('did-navigate', (event, url) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
   browserView.webContents.on('did-navigate-in-page', async (event, url) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
     // 单页应用路由切换时也需要注入脚本
@@ -251,8 +275,10 @@ function createWindow() {
       }
     });
 
-    // 自动打开 DevTools
-    newWindow.webContents.openDevTools();
+    // 开发环境自动打开 DevTools
+    if (!isProduction) {
+      newWindow.webContents.openDevTools();
+    }
 
     // 为新窗口添加脚本注入
     newWindow.webContents.on('did-finish-load', async () => {
@@ -271,9 +297,10 @@ function createWindow() {
 
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   const { width, height } = mainWindow.getContentBounds();
-  // 为工具栏留出 60px 的空间，如果脚本面板打开，则右侧留出 400px 空间
+  // 生产环境不需要工具栏空间，开发环境为工具栏留出 60px
+  const toolbarHeight = isProduction ? 0 : 60;
   const viewWidth = scriptPanelOpen ? width - 400 : width;
-  browserView.setBounds({ x: 0, y: 60, width: viewWidth, height: height - 60 });
+  browserView.setBounds({ x: 0, y: toolbarHeight, width: viewWidth, height: height - toolbarHeight });
 }
 
 app.whenReady().then(() => {
@@ -291,6 +318,20 @@ app.whenReady().then(() => {
   scriptManager = new ScriptManager(scriptsBaseDir);
 
   createWindow();
+
+  // 注册全局快捷键后门打开 DevTools (Ctrl+Shift+F12)
+  globalShortcut.register('CommandOrControl+Shift+F12', () => {
+    console.log('[DevTools] 后门快捷键触发');
+    // 打开当前聚焦窗口的 DevTools
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    if (focusedWindow) {
+      focusedWindow.webContents.toggleDevTools();
+    }
+    // 也打开 BrowserView 的 DevTools
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.toggleDevTools();
+    }
+  });
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -324,6 +365,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', function () {
+  // 注销所有全局快捷键
+  globalShortcut.unregisterAll();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -518,8 +561,10 @@ ipcMain.handle('open-new-window', async (event, url) => {
       }
     });
 
-    // 自动打开 DevTools
-    newWindow.webContents.openDevTools();
+    // 开发环境自动打开 DevTools
+    if (!isProduction) {
+      newWindow.webContents.openDevTools();
+    }
 
     // 为新窗口添加脚本注入
     newWindow.webContents.on('did-finish-load', async () => {

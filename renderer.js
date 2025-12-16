@@ -1,3 +1,13 @@
+// 生产环境隐藏工具栏和脚本按钮
+if (window.electronAPI && window.electronAPI.isProduction) {
+  const toolbar = document.querySelector('.toolbar');
+  const toggleScript = document.getElementById('toggleScript');
+  const scriptPanel = document.getElementById('scriptPanel');
+  if (toolbar) toolbar.style.display = 'none';
+  if (toggleScript) toggleScript.style.display = 'none';
+  if (scriptPanel) scriptPanel.style.display = 'none';
+}
+
 // UI 元素
 const homeBtn = document.getElementById('homeBtn');
 const backBtn = document.getElementById('backBtn');

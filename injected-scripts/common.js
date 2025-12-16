@@ -384,48 +384,33 @@ async function sendStatistics(publishId, platform = '') {
     }
 }
 
-// 带重试的点击按钮
+// 带重试的点击按钮（简化版 - 只点击一次）
 async function clickWithRetry(element, maxRetries = 3, delay = 300) {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
         return false;
     }
 
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            // 尝试普通点击
-            if (typeof element.click === 'function') {
-                element.click();
-            }
-            await new Promise(resolve => setTimeout(resolve, delay));
-
-            // 检查按钮是否仍然可见/可用（如果已消失说明点击成功）
-            if (element.offsetParent === null || element.disabled) {
-                console.log(`[clickWithRetry] ✅ 点击成功 (尝试 ${i + 1})`);
-                return true;
-            }
-
-            // 尝试模拟鼠标事件
-            const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-            const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
-            element.dispatchEvent(mouseDownEvent);
-            element.dispatchEvent(mouseUpEvent);
-            element.dispatchEvent(clickEvent);
-            await new Promise(resolve => setTimeout(resolve, delay));
-
-            // 再次检查
-            if (element.offsetParent === null || element.disabled) {
-                console.log(`[clickWithRetry] ✅ 点击成功 (尝试 ${i + 1}，使用MouseEvent)`);
-                return true;
-            }
-        } catch (e) {
-            console.log(`[clickWithRetry] 尝试 ${i + 1} 失败:`, e.message);
-        }
+    // 检查元素是否已经不可见（可能已被点击）
+    if (element.offsetParent === null || element.disabled) {
+        console.log('[clickWithRetry] ✅ 按钮已不可见或已禁用，跳过点击');
+        return true;
     }
 
-    console.log('[clickWithRetry] ❌ 所有点击尝试均失败');
-    return false;
+    // 只点击一次
+    try {
+        console.log('[clickWithRetry] 点击按钮');
+        if (typeof element.click === 'function') {
+            element.click();
+        } else {
+            // 如果 click 方法不可用，使用事件
+            element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+        return true;
+    } catch (e) {
+        console.error('[clickWithRetry] 点击失败:', e.message);
+        return false;
+    }
 }
 
 // 发送成功消息并关闭窗口

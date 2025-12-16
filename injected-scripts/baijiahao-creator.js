@@ -130,12 +130,17 @@
     </div>
   `;
 
-  if (document.body) {
-    document.body.appendChild(banner);
-  } else {
-    document.addEventListener('DOMContentLoaded', () => {
+  // 生产环境不显示横幅
+  if (!window.browserAPI?.isProduction) {
+    if (document.body) {
       document.body.appendChild(banner);
-    });
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        document.body.appendChild(banner);
+      });
+    }
+  } else {
+    console.log('[百家号授权] 生产环境，跳过横幅显示');
   }
 
   // ===========================

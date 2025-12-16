@@ -130,8 +130,14 @@
     </div>
   `;
 
-  // 添加横幅到页面
+  // 添加横幅到页面（仅开发环境）
   function addBannerToPage() {
+    // 生产环境不显示横幅
+    if (window.browserAPI?.isProduction) {
+      console.log('[抖音授权] 生产环境，跳过横幅显示');
+      return;
+    }
+
     if (document.body) {
       console.log('[抖音授权] ✅ document.body 存在，立即添加横幅');
       document.body.appendChild(banner);

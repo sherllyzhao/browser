@@ -1,5 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 检测是否为生产环境（打包后运行）
+const isProduction = process.resourcesPath && process.resourcesPath.includes('app.asar');
+
 // 消息回调存储（单例模式 - 只保留最新的回调）
 const messageCallbacks = {
   fromHome: null,
@@ -56,6 +59,9 @@ window.addEventListener('message', (event) => {
 
 // 为内容页面提供 API
 contextBridge.exposeInMainWorld('browserAPI', {
+  // 环境信息
+  isProduction: isProduction,
+
   // 发送消息到首页
   sendToHome: (message) => {
     console.log('[BrowserAPI] 发送消息到首页:', message);
