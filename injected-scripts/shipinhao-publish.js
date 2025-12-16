@@ -231,132 +231,6 @@ let hasProcessed = false;
 
               console.log('[视频号发布] 更新后的内容:', infoDisplay.textContent);
               console.log('[视频号发布] ✅ 横幅已更新');
-
-              // 等待wujie-app元素
-              const wujieApp = await waitForElement("wujie-app", 15000);
-              if(wujieApp){
-                // 检测视频是否已经上传完成
-                let videoAlreadyUploaded = false;
-                try {
-                  const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
-                  if (fullScreenVideo && fullScreenVideo.src) {
-                    videoAlreadyUploaded = true;
-                  }
-                  // 如果视频已上传，跳过上传流程
-                  if (!videoAlreadyUploaded) {
-                    // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
-                    try {
-                      const wujieApp = await waitForElement("wujie-app", 5000);
-
-                      if (wujieApp && wujieApp.shadowRoot) {
-                        // 在Shadow DOM中查找上传按钮
-                        const uploadButtonSelectors = [
-                          '.upload-wrapper button',
-                          '.upload-btn',
-                          'button.upload',
-                          '.video-upload-btn',
-                          '[class*="upload"] button',
-                          'button[class*="upload"]'
-                        ];
-
-                        let uploadButtonClicked = false;
-                        for (const selector of uploadButtonSelectors) {
-                          try {
-                            const uploadButton = wujieApp.shadowRoot.querySelector(selector);
-                            if (uploadButton) {
-                              //alert(`找到上传按钮: ${selector}`);
-                              uploadButton.click();
-                              uploadButtonClicked = true;
-                              await new Promise(resolve => setTimeout(resolve, 1000));
-                              break;
-                            }
-                          } catch (error) {
-                            // 继续尝试下一个选择器
-                          }
-                        }
-
-                        if (!uploadButtonClicked) {
-                          //alert('未在Shadow DOM中找到上传按钮，直接查找input元素');
-                        }
-                      }
-                    } catch (error) {
-                      //alert('点击上传按钮失败: ' + error.message);
-                    }
-
-                    // 方式2: 查找并设置input元素
-                    let uploadInput = null;
-                    let retryCount = 0;
-                    const maxRetries = 20; // 最大重试20次
-
-                    // alert(`Starting upload input search in Shadow DOM. Will retry up to ${maxRetries} times.`);
-
-                    while (!uploadInput && retryCount < maxRetries) {
-                      const currentAttempt = retryCount + 1;
-                      // alert(`=== ATTEMPT ${currentAttempt}/${maxRetries} ===
-                      // Searching for upload input in Shadow DOM...`);
-
-                      try {
-                        // 首先检查wujie-app的Shadow DOM
-                        const wujieApp = await waitForElement("wujie-app", 5000);
-
-                        if (!wujieApp.shadowRoot) {
-                          // alert('wujie-app has no shadow root, trying to access iframe directly');
-                          // 如果没有Shadow DOM，尝试直接查找iframe
-                          uploadInput = await waitForElement('input[type="file"]', 3000);
-                        } else {
-                          // 深入Shadow DOM查找
-                          uploadInput = await deepShadowSearch(wujieApp, 'input[type="file"]', 3);
-                        }
-
-                        if (uploadInput) {
-                          break; // 找到元素后退出循环
-                        }
-                      } catch (error) {
-                        // 超时错误是预期的，继续重试
-                        // alert(`❌ ATTEMPT ${currentAttempt} FAILED
-                        // Error: ${error.message}
-                        // Will retry in 2 seconds...`);
-                      }
-
-                      // 只有在未找到元素时才增加重试计数和等待
-                      if (!uploadInput) {
-                        retryCount++;
-                        if (retryCount < maxRetries) {
-                          // alert(`🔄 RETRYING... (${retryCount}/${maxRetries})
-                          // Waiting 2 seconds before next attempt`);
-                          await new Promise(resolve => setTimeout(resolve, 2000)); // 重试前等待2秒
-                        } else {
-                          // alert(`❌ MAX RETRIES REACHED
-                          // Failed to find upload input after ${maxRetries} attempts`);
-                        }
-                      }
-                    }
-
-                    if (!uploadInput) {
-                      console.log('未找到上传input元素');
-                    } else {
-                      // 执行文件上传
-                      await uploadVideo(messageData, wujieApp.shadowRoot);
-                    }
-                  }
-                } catch (error) {
-                  // 忽略检测错误，继续正常流程
-                  console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
-                }
-              }else{
-                // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
-                await uploadVideo(messageData);
-              }
-              try{
-                await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-              }catch (e){
-                console.log('[视频号发布] ❌ 填写表单数据失败:', e);
-              }
-
-              console.log('[视频号发布] 📤 准备发送数据到接口...');
-              console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-              // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
-              // 窗口会在 publishApi 完成后自动关闭
             } else {
               console.error('[视频号发布] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[视频号发布] 尝试查找 banner...');
@@ -366,6 +240,132 @@ let hasProcessed = false;
                 console.log('[视频号发布] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
             }
+
+            // 等待wujie-app元素
+            const wujieApp = await waitForElement("wujie-app", 15000);
+            if(wujieApp){
+              // 检测视频是否已经上传完成
+              let videoAlreadyUploaded = false;
+              try {
+                const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+                if (fullScreenVideo && fullScreenVideo.src) {
+                  videoAlreadyUploaded = true;
+                }
+                // 如果视频已上传，跳过上传流程
+                if (!videoAlreadyUploaded) {
+                  // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
+                  try {
+                    const wujieApp = await waitForElement("wujie-app", 5000);
+
+                    if (wujieApp && wujieApp.shadowRoot) {
+                      // 在Shadow DOM中查找上传按钮
+                      const uploadButtonSelectors = [
+                        '.upload-wrapper button',
+                        '.upload-btn',
+                        'button.upload',
+                        '.video-upload-btn',
+                        '[class*="upload"] button',
+                        'button[class*="upload"]'
+                      ];
+
+                      let uploadButtonClicked = false;
+                      for (const selector of uploadButtonSelectors) {
+                        try {
+                          const uploadButton = wujieApp.shadowRoot.querySelector(selector);
+                          if (uploadButton) {
+                            //alert(`找到上传按钮: ${selector}`);
+                            uploadButton.click();
+                            uploadButtonClicked = true;
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            break;
+                          }
+                        } catch (error) {
+                          // 继续尝试下一个选择器
+                        }
+                      }
+
+                      if (!uploadButtonClicked) {
+                        //alert('未在Shadow DOM中找到上传按钮，直接查找input元素');
+                      }
+                    }
+                  } catch (error) {
+                    //alert('点击上传按钮失败: ' + error.message);
+                  }
+
+                  // 方式2: 查找并设置input元素
+                  let uploadInput = null;
+                  let retryCount = 0;
+                  const maxRetries = 20; // 最大重试20次
+
+                  // alert(`Starting upload input search in Shadow DOM. Will retry up to ${maxRetries} times.`);
+
+                  while (!uploadInput && retryCount < maxRetries) {
+                    const currentAttempt = retryCount + 1;
+                    // alert(`=== ATTEMPT ${currentAttempt}/${maxRetries} ===
+                    // Searching for upload input in Shadow DOM...`);
+
+                    try {
+                      // 首先检查wujie-app的Shadow DOM
+                      const wujieApp = await waitForElement("wujie-app", 5000);
+
+                      if (!wujieApp.shadowRoot) {
+                        // alert('wujie-app has no shadow root, trying to access iframe directly');
+                        // 如果没有Shadow DOM，尝试直接查找iframe
+                        uploadInput = await waitForElement('input[type="file"]', 3000);
+                      } else {
+                        // 深入Shadow DOM查找
+                        uploadInput = await deepShadowSearch(wujieApp, 'input[type="file"]', 3);
+                      }
+
+                      if (uploadInput) {
+                        break; // 找到元素后退出循环
+                      }
+                    } catch (error) {
+                      // 超时错误是预期的，继续重试
+                      // alert(`❌ ATTEMPT ${currentAttempt} FAILED
+                      // Error: ${error.message}
+                      // Will retry in 2 seconds...`);
+                    }
+
+                    // 只有在未找到元素时才增加重试计数和等待
+                    if (!uploadInput) {
+                      retryCount++;
+                      if (retryCount < maxRetries) {
+                        // alert(`🔄 RETRYING... (${retryCount}/${maxRetries})
+                        // Waiting 2 seconds before next attempt`);
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // 重试前等待2秒
+                      } else {
+                        // alert(`❌ MAX RETRIES REACHED
+                        // Failed to find upload input after ${maxRetries} attempts`);
+                      }
+                    }
+                  }
+
+                  if (!uploadInput) {
+                    console.log('未找到上传input元素');
+                  } else {
+                    // 执行文件上传
+                    await uploadVideo(messageData, wujieApp.shadowRoot);
+                  }
+                }
+              } catch (error) {
+                // 忽略检测错误，继续正常流程
+                console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
+              }
+            }else{
+              // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
+              await uploadVideo(messageData);
+            }
+            try{
+              await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+            }catch (e){
+              console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+            }
+
+            console.log('[视频号发布] 📤 准备发送数据到接口...');
+            console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+            // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
+            // 窗口会在 publishApi 完成后自动关闭
           }
 
           // 重置处理标志（无论成功或失败）

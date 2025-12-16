@@ -214,72 +214,6 @@
 
               console.log('[小红书授权] 更新后的内容:', infoDisplay.textContent);
               console.log('[小红书授权] ✅ 横幅已更新');
-
-              // 等待页面元素加载完成
-              await waitForElement('.account-name', 15000);
-
-              // 检查昵称元素是否有内容
-              const titleEle = document.querySelector('.account-name');
-              if (!titleEle || !titleEle.innerText) {
-                // alert('Account name element not ready, waiting...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-              }
-
-              // 收集用户信息
-              const accountNameEle = await waitForElement('.account-name', 5000);
-              const avatarEle = await waitForElement('.avatar img', 5000);
-              const followerCountEle = await waitForElement('.static.description-text >div:nth-of-type(2) .numerical', 5000);
-              const favoritingCountEle = await waitForElement('.static.description-text >div:nth-of-type(1) .numerical', 5000);
-              const totalFavoritedEle = await waitForElement('.static.description-text >div:nth-of-type(3) .numerical', 5000);
-              const uidEle = await waitForElement('.others.description-text > div:nth-of-type(1)', 5000);
-
-              const scanData = {
-                data: JSON.stringify({
-                  nickname: accountNameEle.innerText,
-                  avatar: avatarEle.getAttribute('src'),
-                  follower_count: followerCountEle.innerText,
-                  video: 0,
-                  uid: uidEle.innerText.replace('小红书账号: ', ''),
-                  favoriting_count: favoritingCountEle.innerText,
-                  total_favorited: totalFavoritedEle.innerText,
-                  company_id: messageData.company_id
-                })
-              };
-
-              console.log('[小红书授权] 📤 准备发送数据到接口...');
-              // 发送数据到服务器
-              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/xhsinfo', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(scanData)
-              });
-
-              // 检查响应状态
-              if (!apiResponse.ok) {
-                throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-              }
-
-              const apiResult = await apiResponse.json();
-              console.log('[小红书授权] 📥 接口响应:', apiResult);
-
-              if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-                console.log('[小红书授权] ✅ 数据发送成功');
-
-                // 标记已完成（防止重复发送）
-                hasProcessed = true;
-
-                // API 成功后通知父页面刷新
-                sendMessageToParent('授权成功，刷新数据');
-
-                // 统计接口成功后关闭弹窗
-                setTimeout(() => {
-                  window.browserAPI.closeCurrentWindow();
-                }, 1000);
-              } else {
-                throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-              }
             } else {
               console.error('[小红书授权] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[小红书授权] 尝试查找 banner...');
@@ -288,6 +222,72 @@
               if (banner) {
                 console.log('[小红书授权] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
+            }
+
+            // 等待页面元素加载完成
+            await waitForElement('.account-name', 15000);
+
+            // 检查昵称元素是否有内容
+            const titleEle = document.querySelector('.account-name');
+            if (!titleEle || !titleEle.innerText) {
+              // alert('Account name element not ready, waiting...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
+            // 收集用户信息
+            const accountNameEle = await waitForElement('.account-name', 5000);
+            const avatarEle = await waitForElement('.avatar img', 5000);
+            const followerCountEle = await waitForElement('.static.description-text >div:nth-of-type(2) .numerical', 5000);
+            const favoritingCountEle = await waitForElement('.static.description-text >div:nth-of-type(1) .numerical', 5000);
+            const totalFavoritedEle = await waitForElement('.static.description-text >div:nth-of-type(3) .numerical', 5000);
+            const uidEle = await waitForElement('.others.description-text > div:nth-of-type(1)', 5000);
+
+            const scanData = {
+              data: JSON.stringify({
+                nickname: accountNameEle.innerText,
+                avatar: avatarEle.getAttribute('src'),
+                follower_count: followerCountEle.innerText,
+                video: 0,
+                uid: uidEle.innerText.replace('小红书账号: ', ''),
+                favoriting_count: favoritingCountEle.innerText,
+                total_favorited: totalFavoritedEle.innerText,
+                company_id: messageData.company_id
+              })
+            };
+
+            console.log('[小红书授权] 📤 准备发送数据到接口...');
+            // 发送数据到服务器
+            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/xhsinfo', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(scanData)
+            });
+
+            // 检查响应状态
+            if (!apiResponse.ok) {
+              throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
+            }
+
+            const apiResult = await apiResponse.json();
+            console.log('[小红书授权] 📥 接口响应:', apiResult);
+
+            if (apiResult && 'code' in apiResult && apiResult.code === 200) {
+              console.log('[小红书授权] ✅ 数据发送成功');
+
+              // 标记已完成（防止重复发送）
+              hasProcessed = true;
+
+              // API 成功后通知父页面刷新
+              sendMessageToParent('授权成功，刷新数据');
+
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+            } else {
+              throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }
           }
 

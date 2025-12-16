@@ -214,70 +214,6 @@
 
               console.log('[百家号授权] 更新后的内容:', infoDisplay.textContent);
               console.log('[百家号授权] ✅ 横幅已更新');
-
-              // 获取用户信息
-              const response = await fetch('https://baijiahao.baidu.com/builder/app/appinfo', {
-                method: 'get'
-              });
-
-              if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-              }
-
-              const result = await response.json();
-              const {user} = result.data;
-
-              if (!user) {
-                throw new Error('User data not found in response');
-              }
-
-              const scanData = {
-                data: JSON.stringify({
-                  nickname: user.name,
-                  avatar: user.avatar,
-                  follow: 0,
-                  follower_count: user.ability.total_fans,
-                  video: user.ability.publish_num,
-                  uid: user.id,
-                  favoriting_count: 0,
-                  total_favorited: 0,
-                  company_id: messageData.company_id
-                })
-              };
-
-              // 发送数据到服务器
-              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/bjhinfo', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(scanData)
-              });
-
-              // 检查响应状态
-              if (!apiResponse.ok) {
-                throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-              }
-
-              const apiResult = await apiResponse.json();
-              console.log('[百家号授权] 📥 接口响应:', apiResult);
-
-              if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-                console.log('[百家号授权] ✅ 数据发送成功');
-
-                // 标记已完成（防止重复发送）
-                hasProcessed = true;
-
-                // API 成功后通知父页面刷新
-                sendMessageToParent('授权成功，刷新数据');
-
-                // 统计接口成功后关闭弹窗
-                setTimeout(() => {
-                  window.browserAPI.closeCurrentWindow();
-                }, 1000);
-              } else {
-                throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-              }
             } else {
               console.error('[百家号授权] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[百家号授权] 尝试查找 banner...');
@@ -286,6 +222,70 @@
               if (banner) {
                 console.log('[百家号授权] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
+            }
+
+            // 获取用户信息
+            const response = await fetch('https://baijiahao.baidu.com/builder/app/appinfo', {
+              method: 'get'
+            });
+
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const result = await response.json();
+            const {user} = result.data;
+
+            if (!user) {
+              throw new Error('User data not found in response');
+            }
+
+            const scanData = {
+              data: JSON.stringify({
+                nickname: user.name,
+                avatar: user.avatar,
+                follow: 0,
+                follower_count: user.ability.total_fans,
+                video: user.ability.publish_num,
+                uid: user.id,
+                favoriting_count: 0,
+                total_favorited: 0,
+                company_id: messageData.company_id
+              })
+            };
+
+            // 发送数据到服务器
+            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/bjhinfo', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(scanData)
+            });
+
+            // 检查响应状态
+            if (!apiResponse.ok) {
+              throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
+            }
+
+            const apiResult = await apiResponse.json();
+            console.log('[百家号授权] 📥 接口响应:', apiResult);
+
+            if (apiResult && 'code' in apiResult && apiResult.code === 200) {
+              console.log('[百家号授权] ✅ 数据发送成功');
+
+              // 标记已完成（防止重复发送）
+              hasProcessed = true;
+
+              // API 成功后通知父页面刷新
+              sendMessageToParent('授权成功，刷新数据');
+
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+            } else {
+              throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }
           }
 

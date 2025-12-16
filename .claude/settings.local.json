@@ -10,7 +10,19 @@
       "Bash(dir:*)",
       "Bash(findstr:*)",
       "Bash(netstat:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(npm run build:*)",
+      "Bash(set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/)",
+      "Bash(npm run build:dir:*)",
+      "Bash(set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/)",
+      "Bash(where /r \"D:\\浏览器\\运营助手\\node_modules\" electron*.zip)",
+      "Bash(npm cache ls:*)",
+      "Bash(rd /s /q node_modules)",
+      "Bash(taskkill:*)",
+      "Bash(git checkout:*)",
+      "Bash(cat:*)",
+      "Bash(node:*)",
+      "Bash(ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node:*)"
     ],
     "deny": [],
     "ask": []

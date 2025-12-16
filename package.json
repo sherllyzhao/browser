@@ -4,12 +4,48 @@
   "description": "自定义浏览器，支持JS注入和页面通信",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.zhcloud.browser",
+    "productName": "运营助手浏览器",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/**"
+    ],
+    "asarUnpack": [
+      "injected-scripts/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "运营助手浏览器"
+    }
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^39.2.1"
+    "electron": "^39.2.7",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0"
   }
 }

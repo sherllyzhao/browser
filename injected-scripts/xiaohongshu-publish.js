@@ -223,18 +223,6 @@ let hasProcessed = false;
 
               console.log('[小红书发布] 更新后的内容:', infoDisplay.textContent);
               console.log('[小红书发布] ✅ 横幅已更新');
-
-              await uploadVideo(messageData);
-              try{
-                await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-              }catch (e){
-                console.log('[小红书发布] ❌ 填写表单数据失败:', e);
-              }
-
-              console.log('[小红书发布] 📤 准备发送数据到接口...');
-              console.log('[小红书发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-              // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
-              // 窗口会在 publishApi 完成后自动关闭
             } else {
               console.error('[小红书发布] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[小红书发布] 尝试查找 banner...');
@@ -244,6 +232,18 @@ let hasProcessed = false;
                 console.log('[小红书发布] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
             }
+
+            await uploadVideo(messageData);
+            try{
+              await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+            }catch (e){
+              console.log('[小红书发布] ❌ 填写表单数据失败:', e);
+            }
+
+            console.log('[小红书发布] 📤 准备发送数据到接口...');
+            console.log('[小红书发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+            // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
+            // 窗口会在 publishApi 完成后自动关闭
           }
 
           // 重置处理标志（无论成功或失败）

@@ -7,7 +7,9 @@ let browserView;
 let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
-const HOME_URL = 'http://localhost:5173/';
+const HOME_URL = app.isPackaged
+  ? 'https://dev.china9.cn/aigc_browser/'
+  : 'http://localhost:5173/';
 const childWindows = []; // 跟踪所有打开的子窗口
 
 // 优化：限制最大子窗口数量，防止内存泄漏
@@ -119,6 +121,9 @@ function createWindow() {
     }
   });
 
+  // 设置背景色避免白屏
+  browserView.setBackgroundColor('#f2f7fa');
+
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
 
@@ -127,8 +132,27 @@ function createWindow() {
     updateBrowserViewBounds(isScriptPanelOpen);
   });
 
-  // 加载首页
-  browserView.webContents.loadURL(HOME_URL);
+  // 显示加载提示（生产环境）
+  if (app.isPackaged) {
+    browserView.webContents.loadURL(`data:text/html,
+      <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f2f7fa;font-family:Arial,sans-serif;">
+          <div style="text-align:center;">
+            <div style="font-size:24px;color:#333;">加载中...</div>
+            <div style="margin-top:10px;color:#666;">正在连接服务器</div>
+          </div>
+        </body>
+      </html>
+    `);
+    // 延迟加载实际页面
+    setTimeout(() => {
+      browserView.webContents.loadURL(HOME_URL);
+    }, 100);
+  } else {
+    // 开发环境直接加载
+    browserView.webContents.loadURL(HOME_URL);
+  }
 
   // 脚本注入函数（提取为公共函数，可复用）
   const injectScriptForUrl = async (webContents, url) => {
@@ -258,7 +282,13 @@ app.whenReady().then(() => {
   console.log('=================================');
 
   // 初始化脚本管理器
-  scriptManager = new ScriptManager(__dirname);
+  // 生产环境使用 app.asar.unpacked 路径，开发环境使用 __dirname
+  let scriptsBaseDir = __dirname;
+  if (app.isPackaged) {
+    scriptsBaseDir = __dirname.replace('app.asar', 'app.asar.unpacked');
+  }
+  console.log('Scripts base dir:', scriptsBaseDir);
+  scriptManager = new ScriptManager(scriptsBaseDir);
 
   createWindow();
 
@@ -377,13 +407,18 @@ ipcMain.handle('execute-script-now', async (event, script) => {
 // 从内容页面发送消息到首页
 ipcMain.on('content-to-home', (event, message) => {
   console.log('[IPC] 收到 content-to-home 消息:', message);
+  console.log('[IPC] HOME_URL:', HOME_URL);
 
   // 向 BrowserView 中的首页发送消息
   if (browserView) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const isHome = window.location.href === '${HOME_URL}' || window.location.href.startsWith('${HOME_URL}#');
-        console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
+        const homeUrl = '${HOME_URL}';
+        const currentUrl = window.location.href;
+        const isHome = currentUrl.startsWith(homeUrl);
+        console.log('[Main] HOME_URL:', homeUrl);
+        console.log('[Main] currentUrl:', currentUrl);
+        console.log('[Main] isHome:', isHome);
         if (isHome) {
           console.log('[Main] 向首页发送消息:', ${JSON.stringify(message)});
           window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${JSON.stringify(message)} }, '*');
@@ -405,7 +440,7 @@ ipcMain.on('home-to-content', (event, message) => {
   if (browserView) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const isHome = window.location.href === '${HOME_URL}' || window.location.href.startsWith('${HOME_URL}#');
+        const isHome = window.location.href.startsWith('${HOME_URL}');
         console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
         if (!isHome) {
           const messageData = ${messageStr};

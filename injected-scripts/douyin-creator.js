@@ -231,75 +231,6 @@
 
               console.log('[抖音授权] 更新后的内容:', infoDisplay.textContent);
               console.log('[抖音授权] ✅ 横幅已更新');
-
-              // 获取用户信息（带重试机制）
-              const user = await retryOperation(async () => {
-                const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
-                  method: 'get'
-                });
-
-                if (!response.ok) {
-                  throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const apiData = await response.json();
-                const {user} = apiData;
-
-                if (!user || !('nickname' in user) || !('follower_count' in user) || !('following_count' in user) || !('aweme_count' in user) || !('avatar_thumb' in user) || !('url_list' in user.avatar_thumb) || !user.avatar_thumb.url_list[0]) {
-                  throw new Error('Incomplete user data received');
-                }
-
-                return user;
-              }, 3, 2000);
-
-              const scanData = {
-                data: JSON.stringify({
-                  nickname: user.nickname,
-                  avatar: user.avatar_thumb.url_list[0],
-                  follow: user.following_count,
-                  follower_count: user.follower_count,
-                  video: user.aweme_count,
-                  uid: user.uid,
-                  favoriting_count: user.favoriting_count,
-                  total_favorited: user.total_favorited,
-                  company_id: messageData.company_id
-                })
-              };
-
-              console.log('[抖音授权] 📤 准备发送数据到接口...');
-              // 发送数据到服务器
-              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(scanData)
-              });
-
-              // 检查响应状态
-              if (!apiResponse.ok) {
-                throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-              }
-
-              const apiResult = await apiResponse.json();
-              console.log('[抖音授权] 📥 接口响应:', apiResult);
-
-              if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-                console.log('[抖音授权] ✅ 数据发送成功');
-
-                // 标记已完成（防止重复发送）
-                hasProcessed = true;
-
-                // API 成功后通知父页面刷新
-                sendMessageToParent('授权成功，刷新数据');
-
-                // 统计接口成功后关闭弹窗
-                setTimeout(() => {
-                  window.browserAPI.closeCurrentWindow();
-                }, 1000);
-              } else {
-                throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-              }
             } else {
               console.error('[抖音授权] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[抖音授权] 尝试查找 banner...');
@@ -308,6 +239,75 @@
               if (banner) {
                 console.log('[抖音授权] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
+            }
+
+            // 获取用户信息（带重试机制）
+            const user = await retryOperation(async () => {
+              const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
+                method: 'get'
+              });
+
+              if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+              }
+
+              const apiData = await response.json();
+              const {user} = apiData;
+
+              if (!user || !('nickname' in user) || !('follower_count' in user) || !('following_count' in user) || !('aweme_count' in user) || !('avatar_thumb' in user) || !('url_list' in user.avatar_thumb) || !user.avatar_thumb.url_list[0]) {
+                throw new Error('Incomplete user data received');
+              }
+
+              return user;
+            }, 3, 2000);
+
+            const scanData = {
+              data: JSON.stringify({
+                nickname: user.nickname,
+                avatar: user.avatar_thumb.url_list[0],
+                follow: user.following_count,
+                follower_count: user.follower_count,
+                video: user.aweme_count,
+                uid: user.uid,
+                favoriting_count: user.favoriting_count,
+                total_favorited: user.total_favorited,
+                company_id: messageData.company_id
+              })
+            };
+
+            console.log('[抖音授权] 📤 准备发送数据到接口...');
+            // 发送数据到服务器
+            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(scanData)
+            });
+
+            // 检查响应状态
+            if (!apiResponse.ok) {
+              throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
+            }
+
+            const apiResult = await apiResponse.json();
+            console.log('[抖音授权] 📥 接口响应:', apiResult);
+
+            if (apiResult && 'code' in apiResult && apiResult.code === 200) {
+              console.log('[抖音授权] ✅ 数据发送成功');
+
+              // 标记已完成（防止重复发送）
+              hasProcessed = true;
+
+              // API 成功后通知父页面刷新
+              sendMessageToParent('授权成功，刷新数据');
+
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+            } else {
+              throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }
           }
 

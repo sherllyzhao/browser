@@ -214,86 +214,6 @@
 
               console.log('[视频号授权] 更新后的内容:', infoDisplay.textContent);
               console.log('[视频号授权] ✅ 横幅已更新');
-
-              // 等待页面元素加载完成
-              await waitForElement('.finder-nickname', 15000);
-
-              // 检查昵称元素是否有内容
-              const nicknameEle = document.querySelector('.finder-nickname');
-              if (!nicknameEle || !nicknameEle.innerText) {
-                // alert('Nickname element not ready, waiting...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-              }
-
-              // 检查是否还在加载中 - 更宽松的检查
-              const loadingEle = document.querySelector('#container-wrap .wrap');
-              const isLoading = loadingEle && loadingEle.style.display !== 'none';
-
-              // 如果页面还在加载，等待一段时间再继续
-              if (isLoading) {
-                // alert('Page is still loading, waiting...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-
-                // 再次检查，如果还在加载则继续等待
-                const stillLoading = loadingEle && loadingEle.style.display !== 'none';
-                if (stillLoading) {
-                  // alert('Page still loading, continuing anyway...');
-                }
-              }
-
-              // 收集用户信息
-              const nicknameEleFinal = await waitForElement('.finder-nickname', 5000);
-              const avatarEle = await waitForElement('.avatar', 5000);
-              const followerCountEle = await waitForElement('.finder-content-info > div:nth-of-type(2) .finder-info-num', 5000);
-              const videoCountEle = await waitForElement('.finder-content-info > div:nth-of-type(1) .finder-info-num', 5000);
-              const uidEle = await waitForElement('.finder-uniq-id', 5000);
-
-              const scanData = {
-                data: JSON.stringify({
-                  nickname: nicknameEleFinal.innerText,
-                  avatar: avatarEle.getAttribute('src'),
-                  follower_count: followerCountEle.innerText,
-                  video: videoCountEle.innerText,
-                  uid: uidEle.innerText,
-                  favoriting_count: 0,
-                  total_favorited: 0,
-                  company_id: messageData.company_id
-                })
-              };
-
-              // 发送数据到服务器
-              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/sphinfo', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(scanData)
-              });
-
-              // 检查响应状态
-              if (!apiResponse.ok) {
-                throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-              }
-
-              const apiResult = await apiResponse.json();
-              console.log('[视频号授权] 📥 接口响应:', apiResult);
-
-              if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-                console.log('[视频号授权] ✅ 数据发送成功');
-
-                // 标记已完成（防止重复发送）
-                hasProcessed = true;
-
-                // API 成功后通知父页面刷新
-                sendMessageToParent('授权成功，刷新数据');
-
-                // 统计接口成功后关闭弹窗
-                setTimeout(() => {
-                  window.browserAPI.closeCurrentWindow();
-                }, 1000);
-              } else {
-                throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-              }
             } else {
               console.error('[视频号授权] ❌ 未找���横幅信息元素 #auth-info-display');
               console.log('[视频号授权] 尝试查找 banner...');
@@ -302,6 +222,86 @@
               if (banner) {
                 console.log('[视频号授权] banner.innerHTML:', banner.innerHTML.substring(0, 200));
               }
+            }
+
+            // 等待页面元素加载完成
+            await waitForElement('.finder-nickname', 15000);
+
+            // 检查昵称元素是否有内容
+            const nicknameEle = document.querySelector('.finder-nickname');
+            if (!nicknameEle || !nicknameEle.innerText) {
+              // alert('Nickname element not ready, waiting...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
+            // 检查是否还在加载中 - 更宽松的检查
+            const loadingEle = document.querySelector('#container-wrap .wrap');
+            const isLoading = loadingEle && loadingEle.style.display !== 'none';
+
+            // 如果页面还在加载，等待一段时间再继续
+            if (isLoading) {
+              // alert('Page is still loading, waiting...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+              // 再次检查，如果还在加载则继续等待
+              const stillLoading = loadingEle && loadingEle.style.display !== 'none';
+              if (stillLoading) {
+                // alert('Page still loading, continuing anyway...');
+              }
+            }
+
+            // 收集用户信息
+            const nicknameEleFinal = await waitForElement('.finder-nickname', 5000);
+            const avatarEle = await waitForElement('.avatar', 5000);
+            const followerCountEle = await waitForElement('.finder-content-info > div:nth-of-type(2) .finder-info-num', 5000);
+            const videoCountEle = await waitForElement('.finder-content-info > div:nth-of-type(1) .finder-info-num', 5000);
+            const uidEle = await waitForElement('.finder-uniq-id', 5000);
+
+            const scanData = {
+              data: JSON.stringify({
+                nickname: nicknameEleFinal.innerText,
+                avatar: avatarEle.getAttribute('src'),
+                follower_count: followerCountEle.innerText,
+                video: videoCountEle.innerText,
+                uid: uidEle.innerText,
+                favoriting_count: 0,
+                total_favorited: 0,
+                company_id: messageData.company_id
+              })
+            };
+
+            // 发送数据到服务器
+            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/sphinfo', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(scanData)
+            });
+
+            // 检查响应状态
+            if (!apiResponse.ok) {
+              throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
+            }
+
+            const apiResult = await apiResponse.json();
+            console.log('[视频号授权] 📥 接口响应:', apiResult);
+
+            if (apiResult && 'code' in apiResult && apiResult.code === 200) {
+              console.log('[视频号授权] ✅ 数据发送成功');
+
+              // 标记已完成（防止重复发送）
+              hasProcessed = true;
+
+              // API 成功后通知父页面刷新
+              sendMessageToParent('授权成功，刷新数据');
+
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+            } else {
+              throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }
           }
 
