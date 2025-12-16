@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(tasklist:*)",
-      "Bash(powershell -Command \"Remove-Item -Path ''C:\\Users\\Administrator\\AppData\\Roaming\\custom-browser\\Partitions'' -Recurse -Force; Write-Host ''登录状态已清除''\")"
+      "Bash(powershell -Command \"Remove-Item -Path ''C:\\Users\\Administrator\\AppData\\Roaming\\custom-browser\\Partitions'' -Recurse -Force; Write-Host ''登录状态已清除''\")",
+      "Bash(copy \"D:\\Downloads\\favicon.ico\" \"D:\\浏览器\\运营助手\\icon.ico\")"
     ],
     "deny": [],
     "ask": []

@@ -39,6 +39,7 @@ function createWindow() {
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
+    icon: path.join(__dirname, 'icon.ico'), // 应用图标
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
