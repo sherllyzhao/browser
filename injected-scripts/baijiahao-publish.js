@@ -81,90 +81,6 @@ let hasProcessed = false;
   // 4. 显示调试信息横幅
   // ===========================
 
-  // 先删除旧的横幅（如果存在）
-  const oldBanner = document.getElementById('bjh-auth-banner');
-  if (oldBanner) {
-    console.log('[百家号发布] 删除旧的横幅');
-    oldBanner.remove();
-  }
-
-  const banner = document.createElement('div');
-  banner.id = 'bjh-auth-banner';
-  banner.style.cssText = `
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    background: linear-gradient(135deg, #ee0a24 0%, #ff6034 100%);
-    color: white;
-    padding: 12px 20px;
-    text-align: center;
-    font-family: Arial, sans-serif;
-    z-index: 999999;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    font-size: 14px;
-  `;
-  banner.innerHTML = `
-    <div style="display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto;">
-      <div id="auth-info-display">
-        🎵 百家号发布脚本已运行 | Company ID: ${companyId || '未知'}
-      </div>
-      <div>
-        <button onclick="window.__BJH_AUTH__.notifySuccess()" style="
-          background: rgba(255,255,255,0.2);
-          border: 1px solid rgba(255,255,255,0.5);
-          color: white;
-          padding: 6px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          margin-left: 10px;
-          font-size: 13px;
-        ">测试发送消息</button>
-        <button onclick="this.parentElement.parentElement.parentElement.remove()" style="
-          background: rgba(255,255,255,0.2);
-          border: 1px solid rgba(255,255,255,0.5);
-          color: white;
-          padding: 6px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          margin-left: 10px;
-          font-size: 13px;
-        ">关闭</button>
-      </div>
-    </div>
-  `;
-
-  // 添加横幅到页面（仅开发环境）
-  function addBannerToPage() {
-    // 生产环境不显示横幅
-    if (window.browserAPI?.isProduction) {
-      console.log('[百家号发布] 生产环境，跳过横幅显示');
-      return;
-    }
-
-    if (document.body) {
-      console.log('[百家号发布] ✅ document.body 存在，立即添加横幅');
-      document.body.appendChild(banner);
-    } else {
-      console.log('[百家号发布] ⚠️ document.body 不存在，等待 DOM 加载');
-      document.addEventListener('DOMContentLoaded', () => {
-        console.log('[百家号发布] ✅ DOMContentLoaded 触发，添加横幅');
-        if (document.body) {
-          document.body.appendChild(banner);
-        }
-      });
-      // 如果 DOMContentLoaded 已经触发过，用定时器重试
-      setTimeout(() => {
-        if (document.body && !document.getElementById('bjh-auth-banner')) {
-          console.log('[百家号发布] ✅ 使用定时器添加横幅');
-          document.body.appendChild(banner);
-        }
-      }, 100);
-    }
-  }
-
-  addBannerToPage();
-
   // ===========================
   // 5. 接收来自父窗口的消息（必须在发送 页面加载完成 之前注册！）
   // ===========================
@@ -216,36 +132,6 @@ let hasProcessed = false;
             console.log('[百家号发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
             const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
-
-            // 更新横幅显示
-            const infoDisplay = document.getElementById('auth-info-display');
-            console.log('[百家号发布] 查找横幅元素 #auth-info-display:', infoDisplay);
-
-            if (infoDisplay) {
-              console.log('[百家号发布] 更新前的内容:', infoDisplay.textContent);
-
-              const newContent = `🎵 百家号发布脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
-              console.log('[百家号发布] 准备更新为:', newContent);
-
-              // 使用 textContent 更新
-              infoDisplay.textContent = newContent;
-
-              // 强制刷新样式
-              infoDisplay.style.display = 'none';
-              infoDisplay.offsetHeight; // 触发重排
-              infoDisplay.style.display = 'block';
-
-              console.log('[百家号发布] 更新后的内容:', infoDisplay.textContent);
-              console.log('[百家号发布] ✅ 横幅已更新');
-            } else {
-              console.error('[百家号发布] ❌ 未找到横幅信息元素 #auth-info-display');
-              console.log('[百家号发布] 尝试查找 banner...');
-              const banner = document.getElementById('bjh-auth-banner');
-              console.log('[百家号发布] banner 元素:', banner);
-              if (banner) {
-                console.log('[百家号发布] banner.innerHTML:', banner.innerHTML.substring(0, 200));
-              }
-            }
 
             try{
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);

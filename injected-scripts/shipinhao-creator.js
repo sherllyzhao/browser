@@ -77,72 +77,6 @@
   // 4. 显示调试信息横幅
   // ===========================
 
-  // 先删除旧的横幅（如果存在）
-  const oldBanner = document.getElementById('douyin-auth-banner');
-  if (oldBanner) {
-    console.log('[视频号授权] 删除旧的横幅');
-    oldBanner.remove();
-  }
-
-  const banner = document.createElement('div');
-  banner.id = 'douyin-auth-banner';
-  banner.style.cssText = `
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    background: linear-gradient(135deg, #ee0a24 0%, #ff6034 100%);
-    color: white;
-    padding: 12px 20px;
-    text-align: center;
-    font-family: Arial, sans-serif;
-    z-index: 999999;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-    font-size: 14px;
-  `;
-  banner.innerHTML = `
-    <div style="display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto;">
-      <div id="auth-info-display">
-        🎵 视频号授权脚本已运行 | Company ID: ${companyId || '未知'}
-      </div>
-      <div>
-        <button onclick="window.__DOUYIN_AUTH__.notifySuccess()" style="
-          background: rgba(255,255,255,0.2);
-          border: 1px solid rgba(255,255,255,0.5);
-          color: white;
-          padding: 6px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          margin-left: 10px;
-          font-size: 13px;
-        ">测试发送消息</button>
-        <button onclick="this.parentElement.parentElement.parentElement.remove()" style="
-          background: rgba(255,255,255,0.2);
-          border: 1px solid rgba(255,255,255,0.5);
-          color: white;
-          padding: 6px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          margin-left: 10px;
-          font-size: 13px;
-        ">关闭</button>
-      </div>
-    </div>
-  `;
-
-  // 生产环境不显示横幅
-  if (!window.browserAPI?.isProduction) {
-    if (document.body) {
-      document.body.appendChild(banner);
-    } else {
-      document.addEventListener('DOMContentLoaded', () => {
-        document.body.appendChild(banner);
-      });
-    }
-  } else {
-    console.log('[视频号授权] 生产环境，跳过横幅显示');
-  }
-
   // ===========================
   // 5. 接收来自父窗口的消息（必须在发送 页面加载完成 之前注册！）
   // ===========================
@@ -198,36 +132,6 @@
             console.log('[视频号授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
             const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
-
-            // 更新横幅显示
-            const infoDisplay = document.getElementById('auth-info-display');
-            console.log('[视频号授权] 查找横幅元素 #auth-info-display:', infoDisplay);
-
-            if (infoDisplay) {
-              console.log('[视频号授权] 更新前的内容:', infoDisplay.textContent);
-
-              const newContent = `🎵 ���音授权脚本已运行 | Company ID: ${messageData.company_id || '未知'} | Platform: ${messageData.platform_value || '未知'}`;
-              console.log('[视频号授权] 准备更新为:', newContent);
-
-              // 使用 textContent 更新
-              infoDisplay.textContent = newContent;
-
-              // 强制刷新样式
-              infoDisplay.style.display = 'none';
-              infoDisplay.offsetHeight; // 触发重排
-              infoDisplay.style.display = 'block';
-
-              console.log('[视频号授权] 更新后的内容:', infoDisplay.textContent);
-              console.log('[视频号授权] ✅ 横幅已更新');
-            } else {
-              console.error('[视频号授权] ❌ 未找���横幅信息元素 #auth-info-display');
-              console.log('[视频号授权] 尝试查找 banner...');
-              const banner = document.getElementById('douyin-auth-banner');
-              console.log('[视频号授权] banner 元素:', banner);
-              if (banner) {
-                console.log('[视频号授权] banner.innerHTML:', banner.innerHTML.substring(0, 200));
-              }
-            }
 
             // 等待页面元素加载完成
             await waitForElement('.finder-nickname', 15000);
