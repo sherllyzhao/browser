@@ -634,7 +634,7 @@ async function fillFormData(dataObj) {
 
       fillFormRunning = false;
       // alert('Automation process completed');
-    }, 2000);
+    }, 10000);
 
   } finally {
     // 无论成功还是失败，都重置标记
