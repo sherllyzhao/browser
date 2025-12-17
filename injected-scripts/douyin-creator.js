@@ -194,10 +194,24 @@
               // API 成功后通知父页面刷新
               sendMessageToParent('授权成功，刷新数据');
 
-              // 统计接口成功后关闭弹窗
-              setTimeout(() => {
-                window.browserAPI.closeCurrentWindow();
-              }, 1000);
+              // 检查是否有保存的发布页URL（从发布页跳转过来的）
+              const savedPublishUrl = localStorage.getItem('DOUYIN_PUBLISH_URL');
+
+              if (savedPublishUrl) {
+                console.log('[抖音授权] 🔄 检测到发布页URL，准备跳转:', savedPublishUrl);
+                // 清除发布页URL标记（避免重复跳转）
+                localStorage.removeItem('DOUYIN_PUBLISH_URL');
+                // 跳转回发布页（由发布页脚本的数据恢复功能接管）
+                setTimeout(() => {
+                  window.location.href = savedPublishUrl;
+                }, 1000);
+              } else {
+                console.log('[抖音授权] ℹ️ 没有发布页URL，关闭窗口');
+                // 统计接口成功后关闭弹窗
+                setTimeout(() => {
+                  window.browserAPI.closeCurrentWindow();
+                }, 1000);
+              }
             } else {
               throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }

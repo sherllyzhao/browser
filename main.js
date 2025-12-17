@@ -27,11 +27,6 @@ function cleanupDestroyedWindows() {
 }
 
 function createWindow() {
-  // 生产环境隐藏菜单栏
-  if (isProduction) {
-    Menu.setApplicationMenu(null);
-  }
-
   // 创建主窗口
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -154,8 +149,25 @@ function createWindow() {
     updateBrowserViewBounds(isScriptPanelOpen);
   });
 
-  // 直接加载首页，不再使用占位页（减少空白时间）
-  browserView.webContents.loadURL(HOME_URL);
+  // 等待 BrowserView 完全附加到窗口后再加载 URL
+  // 使用 process.nextTick 确保 BrowserView 已经完全准备好
+  process.nextTick(() => {
+    console.log(`[BrowserView] 准备加载首页: ${HOME_URL}`);
+    browserView.webContents.loadURL(HOME_URL)
+      .then(() => {
+        console.log('[BrowserView] ✅ 首页开始加载');
+      })
+      .catch(err => {
+        console.error('[BrowserView] ❌ 首页加载失败:', err);
+        // 失败后3秒重试一次
+        setTimeout(() => {
+          console.log('[BrowserView] 🔄 3秒后重试加载...');
+          browserView.webContents.loadURL(HOME_URL).catch(e => {
+            console.error('[BrowserView] ❌ 重试失败:', e);
+          });
+        }, 3000);
+      });
+  });
 
   // 脚本注入函数（提取为公共函数，可复用）
   const injectScriptForUrl = async (webContents, url) => {
@@ -307,7 +319,15 @@ function updateBrowserViewBounds(scriptPanelOpen = false) {
 app.whenReady().then(() => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
+  console.log(`环境: ${isProduction ? '生产环境' : '开发环境'}`);
+  console.log(`首页URL: ${HOME_URL}`);
   console.log('=================================');
+
+  // 生产环境立即移除菜单（必须在创建窗口之前）
+  if (isProduction) {
+    Menu.setApplicationMenu(null);
+    console.log('[Menu] ✅ 生产环境菜单已完全移除');
+  }
 
   // 初始化脚本管理器
   // 生产环境使用 app.asar.unpacked 路径，开发环境使用 __dirname

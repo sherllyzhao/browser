@@ -133,6 +133,22 @@ let hasProcessed = false;
             const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
 
+            // 💾 保存数据到 localStorage（用于授权跳转后恢复）
+            try {
+              localStorage.setItem('BJH_PUBLISH_DATA', message.data);
+              console.log('[百家号发布] 💾 数据已保存到 localStorage');
+            } catch (e) {
+              console.error('[百家号发布] ❌ 保存数据失败:', e);
+            }
+
+            // 🔖 保存当前发布页URL（用于授权跳转后返回）
+            try {
+              localStorage.setItem('BJH_PUBLISH_URL', window.location.href);
+              console.log('[百家号发布] 🔖 已保存发布页URL:', window.location.href);
+            } catch (e) {
+              console.error('[百家号发布] ❌ 保存发布页URL失败:', e);
+            }
+
             try{
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
             }catch (e){
@@ -170,6 +186,48 @@ let hasProcessed = false;
   console.log('  - sendMessage(msg) : 发送自定义消息');
   console.log('  - getAuthData()    : 获取发布数据');
   console.log('═══════════════════════════════════════');
+
+  // ===========================
+  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // ===========================
+  setTimeout(async () => {
+    try {
+      const savedData = localStorage.getItem('BJH_PUBLISH_DATA');
+      if (savedData && !isProcessing && !hasProcessed) {
+        console.log('[百家号发布] 🔄 检测到保存的发布数据，准备恢复...');
+        const messageData = JSON.parse(savedData);
+        console.log('[百家号发布] 📦 恢复的数据:', messageData);
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: messageData,
+          recoveredAt: Date.now()
+        };
+
+        // 执行填表流程
+        try {
+          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+        } catch (e) {
+          console.log('[百家号发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[百家号发布] 📤 恢复数据后准备发送数据到接口...');
+        console.log('[百家号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        // 重置处理标志
+        isProcessing = false;
+      } else {
+        console.log('[百家号发布] ℹ️ 没有需要恢复的数据');
+      }
+    } catch (error) {
+      console.error('[百家号发布] ❌ 恢复数据失败:', error);
+      isProcessing = false;
+    }
+  }, 2000); // 延迟2秒，等待页面完全加载
 
 })();
 
@@ -224,6 +282,14 @@ async function publishApi(dataObj) {
     hasProcessed = true;
     publishRunning = false;
 
+    // 🗑️ 清除 localStorage 中的数据（发布成功后）
+    try {
+      localStorage.removeItem('BJH_PUBLISH_DATA');
+      console.log('[百家号发布] 🗑️ 已清除 localStorage 数据');
+    } catch (e) {
+      console.error('[百家号发布] ❌ 清除数据失败:', e);
+    }
+
     // 等待页面稳定后发送统计接口
     await delay(2000);
 
@@ -233,6 +299,8 @@ async function publishApi(dataObj) {
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
     publishRunning = false;
+    // 即使出错也尝试关闭窗口
+    await closeWindowWithMessage('发布失败，刷新数据', 1000);
   }
 }
 
