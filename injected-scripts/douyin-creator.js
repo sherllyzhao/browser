@@ -194,7 +194,12 @@
               // API 成功后通知父页面刷新
               sendMessageToParent('授权成功，刷新数据');
 
-              // 检查是否有保存的发布页URL（从发布页跳转过来的）
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+
+              /* // 检查是否有保存的发布页URL（从发布页跳转过来的）
               const savedPublishUrl = localStorage.getItem('DOUYIN_PUBLISH_URL');
 
               if (savedPublishUrl) {
@@ -211,7 +216,7 @@
                 setTimeout(() => {
                   window.browserAPI.closeCurrentWindow();
                 }, 1000);
-              }
+              } */
             } else {
               throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }

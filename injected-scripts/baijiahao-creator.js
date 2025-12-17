@@ -189,8 +189,13 @@
               // API 成功后通知父页面刷新
               sendMessageToParent('授权成功，刷新数据');
 
+              // 统计接口成功后关闭弹窗
+              setTimeout(() => {
+                window.browserAPI.closeCurrentWindow();
+              }, 1000);
+
               // 检查是否有保存的发布页URL（从发布页跳转过来的）
-              const savedPublishUrl = localStorage.getItem('BJH_PUBLISH_URL');
+              /* const savedPublishUrl = localStorage.getItem('BJH_PUBLISH_URL');
 
               if (savedPublishUrl) {
                 console.log('[百家号授权] 🔄 检测到发布页URL，准备跳转:', savedPublishUrl);
@@ -206,7 +211,7 @@
                 setTimeout(() => {
                   window.browserAPI.closeCurrentWindow();
                 }, 1000);
-              }
+              } */
             } else {
               throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
             }
