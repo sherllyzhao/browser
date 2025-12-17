@@ -236,7 +236,7 @@ async function publishApi(dataObj) {
     console.log("🚀 ~ publishApi ~ error: ", error);
     publishRunning = false;
     // 即使出错也尝试关闭窗口
-    await closeWindowWithMessage('发布成功（可能有错误），刷新数据', 1000);
+    await closeWindowWithMessage('发布失败，刷新数据', 1000);
   }
 }
 

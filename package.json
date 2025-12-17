@@ -1,16 +1,17 @@
 {
   "name": "custom-browser",
   "version": "1.0.0",
-  "description": "自定义浏览器，支持JS注入和页面通信",
+  "description": "运营助手，用于运营抖音、小红书、视频号等平台",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "build:dir": "electron-builder --win --dir"
+    "build:dir": "electron-builder --win --dir",
+    "build:portable": "electron-builder --win portable --ia32"
   },
   "build": {
     "appId": "com.zhcloud.browser",
-    "productName": "运营助手浏览器",
+    "productName": "运营助手",
     "directories": {
       "output": "dist"
     },
@@ -25,7 +26,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "ia32"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "ia32"
+          ]
         }
       ],
       "icon": "icon.ico"
@@ -35,15 +44,15 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "运营助手浏览器"
+      "shortcutName": "运营助手"
     }
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^39.2.7",
-    "electron-builder": "^25.1.8"
+    "electron": "^21.4.4",
+    "electron-builder": "^24.6.4"
   },
   "dependencies": {
     "fs-extra": "^11.2.0"

@@ -1,3 +1,12 @@
+// ===========================
+// 防止脚本重复注入
+// ===========================
+if (typeof waitForElement !== 'undefined') {
+    console.log('[common.js] ⚠️ common.js 已经加载过，跳过重复注入');
+} else {
+
+console.log('[common.js] ✅ common.js 正在加载...');
+
 // 等待元素出现的通用函数
 function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = document) {
     return new Promise((resolve, reject) => {
@@ -313,52 +322,75 @@ function waitForShadowElement(hostSelector, shadowSelector, timeout = 30000) {
     });
 }
 
-// 深度搜索Shadow DOM中的元素
+// 深度搜索Shadow DOM中的元素（修复版 - 防止白屏）
 function deepShadowSearch(rootElement, selector, maxDepth = 3) {
     return new Promise((resolve, reject) => {
+        let resolved = false; // 防止多次 resolve
+
         function searchInShadow(element, depth) {
+            // 已经找到了，直接返回
+            if (resolved) {
+                return;
+            }
+
+            // 超过最大深度
             if (depth > maxDepth) {
-                reject(new Error(`Max shadow depth reached: ${maxDepth}`));
                 return;
             }
 
             // 在当前元素中查找
-            const found = element.querySelector(selector);
-            if (found) {
-                resolve(found);
-                return;
+            try {
+                const found = element.querySelector(selector);
+                if (found && !resolved) {
+                    resolved = true;
+                    resolve(found);
+                    return;
+                }
+            } catch (error) {
+                // querySelector 可能在某些情况下失败，继续搜索
             }
 
             // 查找Shadow DOM
-            if (element.shadowRoot) {
+            if (element.shadowRoot && !resolved) {
                 searchInShadow(element.shadowRoot, depth + 1);
             }
 
             // 查找iframe
-            const iframes = element.querySelectorAll('iframe');
-            for (const iframe of iframes) {
-                try {
-                    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (iframeDoc) {
-                        searchInShadow(iframeDoc, depth + 1);
+            if (!resolved) {
+                const iframes = element.querySelectorAll('iframe');
+                for (const iframe of iframes) {
+                    if (resolved) break; // 已找到，退出循环
+                    try {
+                        const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                        if (iframeDoc) {
+                            searchInShadow(iframeDoc, depth + 1);
+                        }
+                    } catch (error) {
+                        // 跨域iframe无法访问，跳过
                     }
-                } catch (error) {
-                    // 跨域iframe无法访问，跳过
                 }
             }
 
-            // 递归查找子元素
-            const children = element.children || element.childNodes;
-            for (const child of children) {
-                if (child.nodeType === Node.ELEMENT_NODE) {
-                    searchInShadow(child, depth + 1);
+            // 递归查找子元素中的 Shadow DOM（不递归普通子元素，避免爆炸）
+            if (!resolved && depth < maxDepth) {
+                const children = element.children || [];
+                for (const child of children) {
+                    if (resolved) break; // 已找到，退出循环
+                    if (child.nodeType === Node.ELEMENT_NODE && child.shadowRoot) {
+                        searchInShadow(child, depth + 1);
+                    }
                 }
             }
-
-            reject(new Error(`Element not found: ${selector}`));
         }
 
         searchInShadow(rootElement, 0);
+
+        // 如果一直没找到，延迟 reject（给递归一点时间）
+        setTimeout(() => {
+            if (!resolved) {
+                reject(new Error(`Element not found: ${selector}`));
+            }
+        }, 100);
     });
 }
 
@@ -384,33 +416,49 @@ async function sendStatistics(publishId, platform = '') {
     }
 }
 
-// 带重试的点击按钮（简化版 - 只点击一次）
+// 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
 async function clickWithRetry(element, maxRetries = 3, delay = 300) {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
         return false;
     }
 
-    // 检查元素是否已经不可见（可能已被点击）
-    if (element.offsetParent === null || element.disabled) {
-        console.log('[clickWithRetry] ✅ 按钮已不可见或已禁用，跳过点击');
-        return true;
+    for (let i = 0; i < maxRetries; i++) {
+        // 检查按钮是否可点击
+        if (element.offsetParent === null || element.disabled) {
+            console.log(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次尝试：按钮不可用（hidden or disabled）`);
+            if (i < maxRetries - 1) {
+                console.log(`[clickWithRetry] 等待 ${delay}ms 后重试...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            } else {
+                console.error('[clickWithRetry] ❌ 按钮始终不可用，所有重试失败');
+                return false;
+            }
+        }
+
+        // 尝试点击按钮
+        try {
+            console.log(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击按钮`);
+            if (typeof element.click === 'function') {
+                element.click();
+            } else {
+                // 如果 click 方法不可用，使用事件
+                element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            }
+            console.log('[clickWithRetry] ✅ 点击成功');
+            return true;
+        } catch (e) {
+            console.error(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击失败:`, e.message);
+            if (i < maxRetries - 1) {
+                console.log(`[clickWithRetry] 等待 ${delay}ms 后重试...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
     }
 
-    // 只点击一次
-    try {
-        console.log('[clickWithRetry] 点击按钮');
-        if (typeof element.click === 'function') {
-            element.click();
-        } else {
-            // 如果 click 方法不可用，使用事件
-            element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        }
-        return true;
-    } catch (e) {
-        console.error('[clickWithRetry] 点击失败:', e.message);
-        return false;
-    }
+    console.error('[clickWithRetry] ❌ 所有点击尝试均失败');
+    return false;
 }
 
 // 发送成功消息并关闭窗口
@@ -437,3 +485,5 @@ async function closeWindowWithMessage(message = '发布成功，刷新数据', d
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+} // 结束 common.js 防重复注入检查
