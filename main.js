@@ -324,11 +324,39 @@ function updateBrowserViewBounds(scriptPanelOpen = false) {
 // 启动时检查并清理损坏的数据
 async function validateAndCleanupUserData() {
   const fs = require('fs').promises;
+  const fsSync = require('fs');
   const userDataPath = app.getPath('userData');
   const sessionPath = path.join(userDataPath, 'Partitions', 'persist_browserview');
+  const firstRunMarker = path.join(userDataPath, '.first_run_completed');
 
   console.log('[Startup] 检查用户数据完整性...');
   console.log('[Startup] 用户数据路径:', userDataPath);
+
+  // 检查是否是首次运行（仅开发环境）
+  if (!isProduction && !fsSync.existsSync(firstRunMarker)) {
+    console.log('[Startup] 🆕 检测到首次运行（开发环境），清除旧的用户数据...');
+
+    try {
+      // 删除整个 Session 目录
+      if (fsSync.existsSync(sessionPath)) {
+        fsSync.rmSync(sessionPath, { recursive: true, force: true });
+        console.log('[Startup] ✅ 已清除旧的 Session 数据');
+      }
+
+      // 创建首次运行标记
+      await fs.writeFile(firstRunMarker, new Date().toISOString());
+      console.log('[Startup] ✅ 已创建首次运行标记');
+
+      return true;
+    } catch (err) {
+      console.error('[Startup] ⚠️ 清除数据失败:', err);
+    }
+  }
+
+  // 💡 开发提示：如需重新清除所有数据，请删除文件：
+  // Windows: %APPDATA%\运营助手\.first_run_completed
+  // 或直接删除整个目录：%APPDATA%\运营助手
+  console.log('[Startup] 💡 如需清除所有数据，请删除:', firstRunMarker);
 
   try {
     // 检查 Session 目录是否存在

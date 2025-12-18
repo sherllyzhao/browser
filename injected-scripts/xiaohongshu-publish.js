@@ -268,20 +268,36 @@ async function publishApi(dataObj) {
     // 等待按钮事件绑定完成
     await delay(800);
 
-    // 点击发布按钮
-    console.log('[小红书发布] 🖱️ 准备点击发布按钮...');
-    const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
+    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
+    const isDevEnvironment = window.browserAPI && !window.browserAPI.isProduction;
 
-    if (!clickSuccess) {
-      console.error('[小红书发布] ❌ 所有点击尝试均失败');
-      publishRunning = false;
-      throw new Error('发布按钮点击失败');
+    if (isDevEnvironment) {
+      console.log('[小红书发布] 🔧 检测到开发环境（未打包），跳过实际点击发布按钮');
+      console.log('[小红书发布] ⚠️ 如需真实发布，请使用打包后的生产版本');
+      console.log('[小红书发布] isProduction:', window.browserAPI?.isProduction);
+
+      // 等待一段时间模拟发布流程
+      await delay(2000);
+
+      console.log('[小红书发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
+    } else {
+      // 点击发布按钮（仅生产环境）
+      console.log('[小红书发布] 🖱️ 准备点击发布按钮（生产环境 - 已打包）...');
+      console.log('[小红书发布] isProduction:', window.browserAPI?.isProduction);
+
+      const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
+
+      if (!clickSuccess) {
+        console.error('[小红书发布] ❌ 所有点击尝试均失败');
+        publishRunning = false;
+        throw new Error('发布按钮点击失败');
+      }
+
+      console.log('[小红书发布] ✅ 发布按钮已点击');
+
+      // 等待页面稳定后发送统计接口
+      await delay(2000);
     }
-
-    console.log('[小红书发布] ✅ 发布按钮已点击');
-
-    // 等待页面稳定后发送统计接口
-    await delay(2000);
 
     // 发送统计接口
     const publishId = dataObj.video.dyPlatform.id;

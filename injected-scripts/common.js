@@ -1,7 +1,14 @@
 // ===========================
 // common.js - 公共工具库
 // ===========================
-// 每次都重新定义，确保函数可用（重复定义会覆盖，没有副作用）
+// 防止重复加载（检查关键函数是否已存在）
+
+if (typeof window.uploadVideo === 'function' &&
+    typeof window.waitForElement === 'function' &&
+    typeof window.setNativeValue === 'function') {
+    console.log('[common.js] ⚠️ common.js 已加载，跳过重复定义');
+    console.log('[common.js] 当前窗口:', window.location.href);
+} else {
 
 console.log('[common.js] ✅ common.js 开始加载...');
 console.log('[common.js] 当前窗口:', window.location.href);
@@ -10,7 +17,7 @@ console.log('[common.js] 当前窗口:', window.location.href);
 window.__COMMON_JS_LOADED__ = true;
 
 // 等待元素出现的通用函数
-function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = document) {
+window.waitForElement = function(selector, timeout = 30000, checkInterval = 200, ele = document) {
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
         let timeoutId;
@@ -49,10 +56,10 @@ function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = do
 
         check();
     });
-}
+};
 
 // 重试机制
-async function retryOperation(operation, maxRetries = 3, delay = 1000) {
+window.retryOperation = async function(operation, maxRetries = 3, delay = 1000) {
     // alert(`Starting operation with ${maxRetries} maximum retries`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -80,10 +87,10 @@ async function retryOperation(operation, maxRetries = 3, delay = 1000) {
             await new Promise(resolve => setTimeout(resolve, waitTime));
         }
     }
-}
+};
 
 // 发送消息到父窗口
-function sendMessageToParent(message) {
+window.sendMessageToParent = function(message) {
     console.log('发送消息到父窗口:', message);
 
     // 方式 2: 使用 browserAPI (运营助手浏览器)
@@ -100,10 +107,10 @@ function sendMessageToParent(message) {
     }
 
     return false;
-}
+};
 
 // 安全地上传文件到input元素
-async function uploadFileToInput(inputElement, file) {
+window.uploadFileToInput = async function(inputElement, file) {
     if (!inputElement || !file) {
         //alert('Upload failed: Invalid input element or file');
         return false;
@@ -133,10 +140,10 @@ async function uploadFileToInput(inputElement, file) {
         //alert('File upload failed: ' + error.message);
         return false;
     }
-}
+};
 
 // 通用文件下载函数（绕过跨域限制）
-async function downloadFile(url, defaultType = 'application/octet-stream') {
+window.downloadFile = async function(url, defaultType = 'application/octet-stream') {
     if (!url) {
         throw new Error('Download URL is required');
     }
@@ -176,10 +183,10 @@ async function downloadFile(url, defaultType = 'application/octet-stream') {
     }
 
     return { blob, contentType };
-}
+};
 
 // 上传视频到input元素
-async function uploadVideo(dataObj, shadowRoot = undefined) {
+window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
     const pathImage = dataObj?.video?.video?.url;
     if (!pathImage) {
         //alert('No video URL found');
@@ -261,10 +268,10 @@ async function uploadVideo(dataObj, shadowRoot = undefined) {
 
     // 等待上传完成并填写表单
     await new Promise(resolve => setTimeout(resolve, 3000));
-}
+};
 
 /* 给react的input、checkbox、radio赋值 */
-const setNativeValue = (el, value) => {
+window.setNativeValue = function(el, value) {
     if (!el) return false;
 
     const previousValue = el.value;
@@ -315,17 +322,17 @@ const setNativeValue = (el, value) => {
 };
 
 // 等待Shadow DOM中的元素
-function waitForShadowElement(hostSelector, shadowSelector, timeout = 30000) {
-    return waitForElement(hostSelector, timeout).then(host => {
+window.waitForShadowElement = function(hostSelector, shadowSelector, timeout = 30000) {
+    return window.waitForElement(hostSelector, timeout).then(host => {
         if (!host.shadowRoot) {
             throw new Error(`Host element has no shadow root: ${hostSelector}`);
         }
-        return waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
+        return window.waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
     });
-}
+};
 
 // 深度搜索Shadow DOM中的元素（修复版 - 防止白屏）
-function deepShadowSearch(rootElement, selector, maxDepth = 3) {
+window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
     return new Promise((resolve, reject) => {
         let resolved = false; // 防止多次 resolve
 
@@ -394,14 +401,14 @@ function deepShadowSearch(rootElement, selector, maxDepth = 3) {
             }
         }, 100);
     });
-}
+};
 
 // ===========================
 // 公共发布方法
 // ===========================
 
 // 发送统计接口
-async function sendStatistics(publishId, platform = '') {
+window.sendStatistics = async function(publishId, platform = '') {
     const scanData = { data: JSON.stringify({ id: publishId }) };
     try {
         console.log(`[${platform || '发布'}] 📤 发送统计接口，ID: ${publishId}`);
@@ -416,10 +423,10 @@ async function sendStatistics(publishId, platform = '') {
         console.error(`[${platform || '发布'}] ❌ 统计接口请求失败:`, e);
         return { success: false, error: e };
     }
-}
+};
 
 // 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
-async function clickWithRetry(element, maxRetries = 3, delay = 300) {
+window.clickWithRetry = async function(element, maxRetries = 3, delay = 300) {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
         return false;
@@ -461,12 +468,12 @@ async function clickWithRetry(element, maxRetries = 3, delay = 300) {
 
     console.error('[clickWithRetry] ❌ 所有点击尝试均失败');
     return false;
-}
+};
 
 // 发送成功消息并关闭窗口
-async function closeWindowWithMessage(message = '发布成功，刷新数据', delay = 1000) {
+window.closeWindowWithMessage = async function(message = '发布成功，刷新数据', delay = 1000) {
     console.log(`[closeWindow] 发送消息: ${message}`);
-    sendMessageToParent(message);
+    window.sendMessageToParent(message);
 
     if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -481,12 +488,29 @@ async function closeWindowWithMessage(message = '发布成功，刷新数据', d
         console.error('[closeWindow] ❌ 关闭窗口失败:', e);
         return false;
     }
-}
+};
 
 // 延迟执行（Promise 包装的 setTimeout）
-function delay(ms) {
+window.delay = function(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
+};
 
 console.log('[common.js] ✅ common.js 加载完成');
 console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
+
+} // 结束 if-else 块，所有函数在 else 块内定义
+
+// 定义全局别名，确保向后兼容
+if (typeof waitForElement === 'undefined') window.waitForElement && (waitForElement = window.waitForElement);
+if (typeof retryOperation === 'undefined') window.retryOperation && (retryOperation = window.retryOperation);
+if (typeof sendMessageToParent === 'undefined') window.sendMessageToParent && (sendMessageToParent = window.sendMessageToParent);
+if (typeof uploadFileToInput === 'undefined') window.uploadFileToInput && (uploadFileToInput = window.uploadFileToInput);
+if (typeof downloadFile === 'undefined') window.downloadFile && (downloadFile = window.downloadFile);
+if (typeof uploadVideo === 'undefined') window.uploadVideo && (uploadVideo = window.uploadVideo);
+if (typeof setNativeValue === 'undefined') window.setNativeValue && (setNativeValue = window.setNativeValue);
+if (typeof waitForShadowElement === 'undefined') window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);
+if (typeof deepShadowSearch === 'undefined') window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
+if (typeof sendStatistics === 'undefined') window.sendStatistics && (sendStatistics = window.sendStatistics);
+if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
+if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
+if (typeof delay === 'undefined') window.delay && (delay = window.delay);
