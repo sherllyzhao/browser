@@ -1,14 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tasklist:*)",
-      "Bash(powershell -Command \"Remove-Item -Path ''C:\\Users\\Administrator\\AppData\\Roaming\\custom-browser\\Partitions'' -Recurse -Force; Write-Host ''登录状态已清除''\")",
-      "Bash(copy \"D:\\Downloads\\favicon.ico\" \"D:\\浏览器\\运营助手\\icon.ico\")",
-      "Bash(identify:*)",
-      "Bash(powershell -Command \"Stop-Process -Name electron -Force -ErrorAction SilentlyContinue; Stop-Process -Name ''运营助手'' -Force -ErrorAction SilentlyContinue\")",
-      "Bash(npm run build:*)",
-      "Bash(dir /b \"D:\\浏览器\\运营助手\\injected-scripts\")",
-      "Bash(powershell -Command \"Start-Sleep -Seconds 20; Get-ChildItem ''D:\\浏览器\\运营助手\\dist\\*Setup*.exe'' | Select-Object Name, Length, LastWriteTime\")"
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []

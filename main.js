@@ -176,7 +176,12 @@ function createWindow() {
       return;
     }
 
+    // 获取窗口 ID 用于调试
+    const windowId = webContents.id;
+    const isNewWindow = !childWindows.some(win => win?.webContents?.id === windowId) && browserView?.webContents?.id !== windowId;
+
     console.log('==================================================');
+    console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
 
     // 注入对应的自定义脚本
@@ -187,8 +192,8 @@ function createWindow() {
       if (webContents.isDestroyed()) {
         return;
       }
-      console.log('[Script Injection] Script found! Length:', script.length);
-      console.log('[Script Injection] Preview:', script.substring(0, 100) + '...');
+      console.log('[Script Injection] Script found! Total length:', script.length);
+      console.log('[Script Injection] Preview:', script.substring(0, 150) + '...');
       console.log('✅ [Script Injection] Executing...');
       try {
         const result = await webContents.executeJavaScript(script);
@@ -316,12 +321,86 @@ function updateBrowserViewBounds(scriptPanelOpen = false) {
   browserView.setBounds({ x: 0, y: toolbarHeight, width: viewWidth, height: height - toolbarHeight });
 }
 
-app.whenReady().then(() => {
+// 启动时检查并清理损坏的数据
+async function validateAndCleanupUserData() {
+  const fs = require('fs').promises;
+  const userDataPath = app.getPath('userData');
+  const sessionPath = path.join(userDataPath, 'Partitions', 'persist_browserview');
+
+  console.log('[Startup] 检查用户数据完整性...');
+  console.log('[Startup] 用户数据路径:', userDataPath);
+
+  try {
+    // 检查 Session 目录是否存在
+    try {
+      await fs.access(sessionPath);
+    } catch (err) {
+      console.log('[Startup] ✅ Session 目录不存在（首次运行）');
+      return true;
+    }
+
+    // 检查 Cookies 文件
+    const cookiesFile = path.join(sessionPath, 'Cookies');
+    const cookiesJournalFile = path.join(sessionPath, 'Cookies-journal');
+
+    try {
+      await fs.access(cookiesFile);
+      const stats = await fs.stat(cookiesFile);
+
+      // 检查文件大小是否异常（小于 100 字节可能损坏）
+      if (stats.size < 100) {
+        console.log('[Startup] ⚠️ Cookies 文件大小异常:', stats.size, 'bytes');
+        throw new Error('Cookies file corrupted');
+      }
+
+      // 检查是否存在 journal 文件（表示上次未正常关闭）
+      try {
+        await fs.access(cookiesJournalFile);
+        console.log('[Startup] ⚠️ 检测到 Cookies-journal 文件，上次可能未正常关闭');
+        // 删除 journal 文件，让 SQLite 自动修复
+        await fs.unlink(cookiesJournalFile);
+        console.log('[Startup] ✅ 已删除 Cookies-journal 文件');
+      } catch (err) {
+        // journal 文件不存在是正常的
+      }
+
+      console.log('[Startup] ✅ 用户数据检查通过');
+      return true;
+    } catch (err) {
+      console.error('[Startup] ❌ 检测到数据损坏:', err.message);
+
+      // 备份损坏的数据
+      const backupPath = path.join(userDataPath, `Backup_${Date.now()}`);
+      try {
+        const fsSync = require('fs');
+        fsSync.cpSync(sessionPath, backupPath, { recursive: true });
+        console.log('[Startup] 📦 已备份损坏数据到:', backupPath);
+      } catch (backupErr) {
+        console.error('[Startup] ⚠️ 备份失败:', backupErr.message);
+      }
+
+      // 删除损坏的数据
+      const fsSync = require('fs');
+      fsSync.rmSync(sessionPath, { recursive: true, force: true });
+      console.log('[Startup] 🔧 已清理损坏数据，将重新初始化');
+
+      return true;
+    }
+  } catch (err) {
+    console.error('[Startup] 数据检查失败:', err);
+    return false;
+  }
+}
+
+app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   console.log(`环境: ${isProduction ? '生产环境' : '开发环境'}`);
   console.log(`首页URL: ${HOME_URL}`);
   console.log('=================================');
+
+  // 启动时验证数据完整性
+  await validateAndCleanupUserData();
 
   // 生产环境立即移除菜单（必须在创建窗口之前）
   if (isProduction) {

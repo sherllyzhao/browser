@@ -31,12 +31,23 @@ let hasProcessed = false;
   console.log('🕐 注入时间:', new Date().toLocaleString());
   console.log('═══════════════════════════════════════');
 
-  // 检查 common.js 是否已加载
-  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
-    console.error('[小红书发布] ❌ common.js 未加载！脚本可能无法正常工作');
-  } else {
-    console.log('[小红书发布] ✅ common.js 已加载，工具函数可用');
-  }
+  // 检查 common.js 是否已加载（延迟检查，给 common.js 时间执行）
+  setTimeout(() => {
+    if (!window.__COMMON_JS_LOADED__) {
+      console.error('[小红书发布] ❌ common.js 未加载！');
+    } else if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined' || typeof uploadVideo === 'undefined') {
+      console.error('[小红书发布] ❌ common.js 加载不完整！缺少必需函数');
+      console.error('[小红书发布] waitForElement:', typeof waitForElement);
+      console.error('[小红书发布] retryOperation:', typeof retryOperation);
+      console.error('[小红书发布] uploadVideo:', typeof uploadVideo);
+      console.error('[小红书发布] sendStatistics:', typeof sendStatistics);
+      console.error('[小红书发布] clickWithRetry:', typeof clickWithRetry);
+      console.error('[小红书发布] closeWindowWithMessage:', typeof closeWindowWithMessage);
+      console.error('[小红书发布] delay:', typeof delay);
+    } else {
+      console.log('[小红书发布] ✅ common.js 已完整加载，所有工具函数可用');
+    }
+  }, 100); // 延迟 100ms 检查
 
   // ===========================
   // 1. 从 URL 获取发布数据

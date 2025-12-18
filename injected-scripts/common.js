@@ -1,11 +1,13 @@
 // ===========================
-// 防止脚本重复注入
+// common.js - 公共工具库
 // ===========================
-if (typeof waitForElement !== 'undefined') {
-    console.log('[common.js] ⚠️ common.js 已经加载过，跳过重复注入');
-} else {
+// 每次都重新定义，确保函数可用（重复定义会覆盖，没有副作用）
 
-console.log('[common.js] ✅ common.js 正在加载...');
+console.log('[common.js] ✅ common.js 开始加载...');
+console.log('[common.js] 当前窗口:', window.location.href);
+
+// 标记为已加载
+window.__COMMON_JS_LOADED__ = true;
 
 // 等待元素出现的通用函数
 function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = document) {
@@ -486,4 +488,5 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-} // 结束 common.js 防重复注入检查
+console.log('[common.js] ✅ common.js 加载完成');
+console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
