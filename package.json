@@ -44,7 +44,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "运营助手"
+      "shortcutName": "运营助手",
+      "deleteAppDataOnUninstall": true,
+      "include": "installer.nsh"
     }
   },
   "keywords": [],

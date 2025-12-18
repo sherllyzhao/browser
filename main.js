@@ -1,5 +1,6 @@
 const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const ScriptManager = require('./script-manager');
 
 let mainWindow;
@@ -8,6 +9,40 @@ let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
+
+// 检测是否为便携版（通过检查是否在标准安装目录）
+// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
+const execPathLower = process.execPath.toLowerCase();
+const isInstalled = execPathLower.includes('program files') ||
+                    execPathLower.includes('programdata') ||
+                    execPathLower.includes('\\windows\\');
+const isPortable = isProduction && !isInstalled;
+
+// 设置用户数据路径
+if (isProduction) {
+  if (isPortable) {
+    // 便携版：数据存储在应用程序目录下的 UserData 文件夹
+    const portableDataPath = path.join(path.dirname(process.execPath), 'UserData');
+
+    // 确保目录存在
+    if (!fs.existsSync(portableDataPath)) {
+      try {
+        fs.mkdirSync(portableDataPath, { recursive: true });
+        console.log('[Portable Mode] 已创建 UserData 目录:', portableDataPath);
+      } catch (err) {
+        console.error('[Portable Mode] 创建目录失败:', err);
+      }
+    }
+
+    app.setPath('userData', portableDataPath);
+    console.log('[Portable Mode] ✅ 便携版模式启用');
+    console.log('[Portable Mode] 数据将存储在:', portableDataPath);
+  } else {
+    // 安装版：使用系统默认路径
+    console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
+  }
+}
+
 const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
@@ -31,6 +66,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    title: '运营助手',
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
@@ -67,13 +103,14 @@ function createWindow() {
       e.preventDefault();
       isQuitting = true;
 
-      console.log('Window closing, saving session data...');
+      console.log('========================================');
+      console.log('[Window Close] 窗口关闭，正在保存 Session 数据...');
 
       if (browserView) {
         try {
           const ses = browserView.webContents.session;
           const cookies = await ses.cookies.get({});
-          console.log(`Saving ${cookies.length} cookies before close`);
+          console.log(`[Window Close] 当前共有 ${cookies.length} 个 cookies`);
 
           // 将所有会话 Cookie 转换为持久化 Cookie（设置 1 年过期时间）
           const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
@@ -99,12 +136,16 @@ function createWindow() {
             }
           }
 
-          console.log(`Converted ${convertedCount} session cookies to persistent cookies`);
+          console.log(`[Window Close] ✅ 转换了 ${convertedCount} 个会话 Cookie 为持久化 Cookie`);
 
           await ses.flushStorageData();
-          console.log('Session data saved successfully');
+          console.log('[Window Close] ✅ Session 数据已写入磁盘');
+          if (isPortable) {
+            console.log(`[Window Close] 💾 便携版数据已保存到: ${app.getPath('userData')}`);
+          }
+          console.log('========================================');
         } catch (err) {
-          console.error('Error saving session data:', err);
+          console.error('[Window Close] ❌ 保存 Session 数据失败:', err);
         }
       }
 
@@ -118,8 +159,15 @@ function createWindow() {
   const persistentSession = session.fromPartition('persist:browserview', { cache: true });
 
   // 打印 session 存储路径
-  console.log('Session storage path:', app.getPath('userData'));
-  console.log('Session partition:', persistentSession.getStoragePath());
+  console.log('========================================');
+  console.log('[Session] Session 配置信息:');
+  console.log('[Session] userData 路径:', app.getPath('userData'));
+  console.log('[Session] Session 存储路径:', persistentSession.getStoragePath());
+  console.log('[Session] 是否便携版:', isPortable);
+  if (isPortable) {
+    console.log('[Session] 💾 便携版模式 - 数据将保存到应用程序目录');
+  }
+  console.log('========================================');
 
   // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
@@ -152,10 +200,15 @@ function createWindow() {
   // 等待 BrowserView 完全附加到窗口后再加载 URL
   // 使用 process.nextTick 确保 BrowserView 已经完全准备好
   process.nextTick(() => {
+    console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] 准备加载首页: ${HOME_URL}`);
+    console.log(`[BrowserView] HOME_URL 完整值: "${HOME_URL}"`);
+    console.log(`[BrowserView] isProduction: ${isProduction}`);
+    console.log('===================');
+
     browserView.webContents.loadURL(HOME_URL)
       .then(() => {
-        console.log('[BrowserView] ✅ 首页开始加载');
+        console.log('[BrowserView] ✅ 首页 loadURL 调用成功');
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 首页加载失败:', err);
@@ -219,6 +272,7 @@ function createWindow() {
       return;
     }
     const currentURL = browserView.webContents.getURL();
+    console.log(`[Navigation] 页面加载完成 → ${currentURL}`);
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
@@ -228,18 +282,21 @@ function createWindow() {
 
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
+    console.log(`[Navigation] 导航开始 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面导航完成
   browserView.webContents.on('did-navigate', (event, url) => {
+    console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
   browserView.webContents.on('did-navigate-in-page', async (event, url) => {
+    console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
@@ -421,10 +478,50 @@ async function validateAndCleanupUserData() {
 }
 
 app.whenReady().then(async () => {
+  // 设置日志文件（便携版和生产环境）
+  if (isProduction) {
+    const logPath = path.join(app.getPath('userData'), 'app.log');
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+    // 保存原始 console 方法
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+
+    // 重定向 console 输出到文件和控制台
+    console.log = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
+      originalLog.apply(console, args);
+    };
+
+    console.error = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
+      originalError.apply(console, args);
+    };
+
+    console.warn = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
+      originalWarn.apply(console, args);
+    };
+
+    console.log('=================================');
+    console.log('📝 日志文件已启用');
+    console.log('📂 日志路径:', logPath);
+    console.log('=================================');
+  }
+
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
+  console.log(`app.isPackaged: ${app.isPackaged}`);
+  console.log(`isProduction: ${isProduction}`);
+  console.log(`isPortable: ${isPortable}`);
   console.log(`环境: ${isProduction ? '生产环境' : '开发环境'}`);
   console.log(`首页URL: ${HOME_URL}`);
+  console.log(`execPath: ${process.execPath}`);
+  console.log(`userData路径: ${app.getPath('userData')}`);
   console.log('=================================');
 
   // 启动时验证数据完整性
@@ -722,10 +819,14 @@ app.whenReady().then(async () => {
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const ses = browserView.webContents.session;
+        const cookies = await ses.cookies.get({});
         await ses.flushStorageData();
-        console.log('Auto-saved session data');
+        console.log(`[Auto-Save] ✅ Session 数据已保存 - ${cookies.length} 个 cookies`);
+        if (isPortable) {
+          console.log(`[Auto-Save] 便携版数据路径: ${app.getPath('userData')}`);
+        }
       } catch (err) {
-        console.error('Auto-save error:', err);
+        console.error('[Auto-Save] ❌ 保存失败:', err);
       }
     }
   }, 30000);

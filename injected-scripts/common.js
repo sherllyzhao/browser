@@ -426,10 +426,10 @@ window.sendStatistics = async function(publishId, platform = '') {
 };
 
 // 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
-window.clickWithRetry = async function(element, maxRetries = 3, delay = 300) {
+window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, captureMessage = false) {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
-        return false;
+        return { success: false, message: '元素不存在' };
     }
 
     for (let i = 0; i < maxRetries; i++) {
@@ -442,21 +442,172 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300) {
                 continue;
             } else {
                 console.error('[clickWithRetry] ❌ 按钮始终不可用，所有重试失败');
-                return false;
+                return { success: false, message: '按钮不可用' };
             }
         }
 
         // 尝试点击按钮
         try {
             console.log(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击按钮`);
+
+            // 如果需要捕获提示信息，设置监听器
+            let capturedMessage = '';
+            let messageObserver = null;
+
+            if (captureMessage) {
+                // 创建 MutationObserver 监听页面新增的提示元素
+                messageObserver = new MutationObserver((mutations) => {
+                    for (const mutation of mutations) {
+                        for (const node of mutation.addedNodes) {
+                            if (node.nodeType === 1) { // Element node
+                                // 检查是否是提示元素（常见的提示组件）
+                                const element = node;
+                                const classList = element.classList ? Array.from(element.classList).join(' ') : '';
+                                const className = element.className || '';
+
+                                // 匹配常见的提示类名
+                                if (
+                                    classList.includes('toast') ||
+                                    classList.includes('message') ||
+                                    classList.includes('notification') ||
+                                    classList.includes('ant-message') ||
+                                    classList.includes('el-message') ||
+                                    classList.includes('van-toast') ||
+                                    classList.includes('semi-toast') ||
+                                    classList.includes('weui-toast') ||
+                                    className.includes('toast') ||
+                                    className.includes('message')
+                                ) {
+                                    // 优先查找具体的文本容器（更精确）
+                                    let text = '';
+
+                                    // Semi Design toast
+                                    const semiText = element.querySelector('.semi-toast-content-text');
+                                    if (semiText) {
+                                        text = semiText.textContent || semiText.innerText || '';
+                                    }
+
+                                    // Ant Design message
+                                    if (!text) {
+                                        const antText = element.querySelector('.ant-message-custom-content');
+                                        if (antText) {
+                                            text = antText.textContent || antText.innerText || '';
+                                        }
+                                    }
+
+                                    // Element UI message
+                                    if (!text) {
+                                        const elText = element.querySelector('.el-message__content');
+                                        if (elText) {
+                                            text = elText.textContent || elText.innerText || '';
+                                        }
+                                    }
+
+                                    // 回退：使用整个元素的文本
+                                    if (!text) {
+                                        text = element.textContent || element.innerText || '';
+                                    }
+
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息:', capturedMessage);
+                                    }
+                                }
+
+                                // 递归检查子元素（查找所有可能的 toast 容器）
+                                const toastElements = element.querySelectorAll('[class*="toast"], [class*="message"], [class*="notification"]');
+                                for (const toast of toastElements) {
+                                    // 优先查找具体的文本容器
+                                    let text = '';
+
+                                    const semiText = toast.querySelector('.semi-toast-content-text');
+                                    if (semiText) {
+                                        text = semiText.textContent || semiText.innerText || '';
+                                    } else {
+                                        text = toast.textContent || toast.innerText || '';
+                                    }
+
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息（子元素）:', capturedMessage);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // 开始监听整个 body 的变化
+                messageObserver.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+
+            // 点击按钮
             if (typeof element.click === 'function') {
                 element.click();
             } else {
                 // 如果 click 方法不可用，使用事件
                 element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             }
+
             console.log('[clickWithRetry] ✅ 点击成功');
-            return true;
+
+            // 如果需要捕获提示信息，等待提示出现
+            if (captureMessage) {
+                console.log('[clickWithRetry] ⏳ 等待提示信息出现（3秒）...');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+
+                // 停止监听
+                if (messageObserver) {
+                    messageObserver.disconnect();
+                }
+
+                // 如果没有通过 MutationObserver 捕获到，尝试直接查找现有的提示元素
+                if (!capturedMessage) {
+                    const possibleSelectors = [
+                        '.semi-toast-content-text',  // Semi Design 优先
+                        '.ant-message-custom-content',  // Ant Design
+                        '.el-message__content',  // Element UI
+                        '[class*="toast"]',
+                        '[class*="message"]',
+                        '[class*="notification"]',
+                        '.ant-message',
+                        '.el-message',
+                        '.van-toast',
+                        '.semi-toast',
+                        '.weui-toast'
+                    ];
+
+                    for (const selector of possibleSelectors) {
+                        try {
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of elements) {
+                                // 检查元素是否可见
+                                if (el.offsetParent !== null) {
+                                    const text = el.textContent || el.innerText || '';
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息（现有元素）:', capturedMessage);
+                                        break;
+                                    }
+                                }
+                            }
+                            if (capturedMessage) break;
+                        } catch (e) {
+                            // 忽略选择器错误
+                        }
+                    }
+                }
+
+                return {
+                    success: true,
+                    message: capturedMessage || '发布操作已执行，但未捕获到平台提示信息。如发布失败，请登录对应平台查看具体原因'
+                };
+            }
+
+            return { success: true, message: '点击成功' };
         } catch (e) {
             console.error(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击失败:`, e.message);
             if (i < maxRetries - 1) {
@@ -467,7 +618,7 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300) {
     }
 
     console.error('[clickWithRetry] ❌ 所有点击尝试均失败');
-    return false;
+    return { success: false, message: '所有点击尝试均失败' };
 };
 
 // 发送成功消息并关闭窗口

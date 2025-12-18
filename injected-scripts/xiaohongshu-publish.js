@@ -2,9 +2,9 @@ let introFilled = false; // 标记 intro 是否已填写
 let fillFormRunning = false; // 标记 fillFormData 是否正在执行
 let publishRunning = false; // 标记发布是否正在执行，防止重复点击
 
-// 防重复标志：确保数据只处理一次
+// 防重复标志：记录已处理的视频 ID
 let isProcessing = false;
-let hasProcessed = false;
+let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
 
 /**
  * 小红书创作者平台发布脚本
@@ -117,23 +117,34 @@ let hasProcessed = false;
             console.warn('[小红书发布] ⚠️ 正在处理中，忽略重复消息');
             return;
           }
-          if (hasProcessed) {
-            console.warn('[小红书发布] ⚠️ 已经处理过，忽略重复消息');
+
+          // 解析数据获取视频 ID
+          const messageData = JSON.parse(message.data);
+          const videoId = messageData?.video?.dyPlatform?.id;
+
+          if (!videoId) {
+            console.error('[小红书发布] ❌ 视频 ID 不存在，无法处理');
+            return;
+          }
+
+          // 检查是否已处理过这个视频
+          if (processedVideoIds.has(videoId)) {
+            console.warn('[小红书发布] ⚠️ 视频已处理过，忽略重复消息. Video ID:', videoId);
             return;
           }
 
           // 标记为正在处理
           isProcessing = true;
+          console.log('[小红书发布] 📝 开始处理视频 ID:', videoId);
 
           // 更新全局变量
           if (message.data) {
             window.__AUTH_DATA__ = {
               ...window.__AUTH_DATA__,
-              message: JSON.parse(message.data),
+              message: messageData,
               receivedAt: Date.now()
             };
             console.log('[小红书发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-            const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
 
             // 💾 保存数据到 localStorage（用于授权跳转后恢复）
@@ -169,9 +180,12 @@ let hasProcessed = false;
             // 窗口会在 publishApi 完成后自动关闭
           }
 
-          // 重置处理标志（无论成功或失败）
+          // 标记视频已处理（成功或失败都记录）
+          processedVideoIds.add(videoId);
+
+          // 重置处理标志
           isProcessing = false;
-          console.log('[小红书发布] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+          console.log('[小红书发布] 处理完成，已处理视频数:', processedVideoIds.size);
         }
       });
 
@@ -269,31 +283,47 @@ async function publishApi(dataObj) {
     await delay(800);
 
     // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
-    const isDevEnvironment = window.browserAPI && !window.browserAPI.isProduction;
+    // 默认策略：无法确定环境时，执行点击（安全优先）
+    let isDevEnvironment = false;
+
+    if (window.browserAPI) {
+      isDevEnvironment = window.browserAPI.isProduction === false;
+      console.log('[小红书发布] 环境检测:', {
+        hasBrowserAPI: true,
+        isProduction: window.browserAPI.isProduction,
+        isDevEnvironment: isDevEnvironment
+      });
+    } else {
+      console.warn('[小红书发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
+    }
 
     if (isDevEnvironment) {
-      console.log('[小红书发布] 🔧 检测到开发环境（未打包），跳过实际点击发布按钮');
-      console.log('[小红书发布] ⚠️ 如需真实发布，请使用打包后的生产版本');
-      console.log('[小红书发布] isProduction:', window.browserAPI?.isProduction);
+      console.log('[小红书发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
+      console.log('[小红书发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
 
       // 等待一段时间模拟发布流程
       await delay(2000);
 
       console.log('[小红书发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
     } else {
-      // 点击发布按钮（仅生产环境）
-      console.log('[小红书发布] 🖱️ 准备点击发布按钮（生产环境 - 已打包）...');
-      console.log('[小红书发布] isProduction:', window.browserAPI?.isProduction);
+      // 生产环境：必须点击发布按钮
+      console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
 
-      const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
+      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
-      if (!clickSuccess) {
-        console.error('[小红书发布] ❌ 所有点击尝试均失败');
+      if (!clickResult.success) {
+        console.error('[小红书发布] ❌ 所有点击尝试均失败:', clickResult.message);
         publishRunning = false;
-        throw new Error('发布按钮点击失败');
+        throw new Error('发布按钮点击失败: ' + clickResult.message);
       }
 
       console.log('[小红书发布] ✅ 发布按钮已点击');
+      console.log('[小红书发布] 📨 平台提示:', clickResult.message);
+
+      // 开发环境弹窗显示平台提示信息
+      if (window.browserAPI && window.browserAPI.isProduction === false) {
+        alert(`小红书发布结果：\n\n${clickResult.message}`);
+      }
 
       // 等待页面稳定后发送统计接口
       await delay(2000);
@@ -486,6 +516,10 @@ async function fillFormData(dataObj) {
     // 发布
     await publishApi(dataObj);
 
+  } catch (error) {
+    console.error('[小红书发布] fillFormData 错误:', error);
+    // 填写表单失败也要关闭窗口，不阻塞下一个任务
+    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;
