@@ -125,6 +125,22 @@ let hasProcessed = false;
             const messageData = JSON.parse(message.data);
             console.log("🚀 ~  ~ messageData: ", messageData);
 
+            // 💾 保存数据到 localStorage（用于授权跳转后恢复）
+            /* try {
+              localStorage.setItem('XHS_PUBLISH_DATA', message.data);
+              console.log('[小红书发布] 💾 数据已保存到 localStorage');
+            } catch (e) {
+              console.error('[小红书发布] ❌ 保存数据失败:', e);
+            }
+
+            // 🔖 保存当前发布页URL（用于授权跳转后返回）
+            try {
+              localStorage.setItem('XHS_PUBLISH_URL', window.location.href);
+              console.log('[小红书发布] 🔖 已保存发布页URL:', window.location.href);
+            } catch (e) {
+              console.error('[小红书发布] ❌ 保存发布页URL失败:', e);
+            } */
+
             // 更新横幅显示
             const infoDisplay = document.getElementById('auth-info-display');
             console.log('[小红书发布] 查找横幅元素 #auth-info-display:', infoDisplay);
@@ -167,6 +183,49 @@ let hasProcessed = false;
   console.log('  - sendMessage(msg) : 发送自定义消息');
   console.log('  - getAuthData()    : 获取发布数据');
   console.log('═══════════════════════════════════════');
+
+  // ===========================
+  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // ===========================
+  /* setTimeout(async () => {
+    try {
+      const savedData = localStorage.getItem('XHS_PUBLISH_DATA');
+      if (savedData && !isProcessing && !hasProcessed) {
+        console.log('[小红书发布] 🔄 检测到保存的发布数据，准备恢复...');
+        const messageData = JSON.parse(savedData);
+        console.log('[小红书发布] 📦 恢复的数据:', messageData);
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: messageData,
+          recoveredAt: Date.now()
+        };
+
+        // 执行上传流程
+        await uploadVideo(messageData);
+        try {
+          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+        } catch (e) {
+          console.log('[小红书发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[小红书发布] 📤 恢复数据后准备发送数据到接口...');
+        console.log('[小红书发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        // 重置处理标志
+        isProcessing = false;
+      } else {
+        console.log('[小红书发布] ℹ️ 没有需要恢复的数据');
+      }
+    } catch (error) {
+      console.error('[小红书发布] ❌ 恢复数据失败:', error);
+      isProcessing = false;
+    }
+  }, 2000); // 延迟2秒，等待页面完全加载 */
 
 })();
 
@@ -220,6 +279,14 @@ async function publishApi(dataObj) {
     // 标记已完成
     hasProcessed = true;
     publishRunning = false;
+
+    // 🗑️ 清除 localStorage 中的数据（发布成功后）
+    /* try {
+      localStorage.removeItem('XHS_PUBLISH_DATA');
+      console.log('[小红书发布] 🗑️ 已清除 localStorage 数据');
+    } catch (e) {
+      console.error('[小红书发布] ❌ 清除数据失败:', e);
+    } */
 
     // 发送成功消息（小红书会自动跳转到成功页，由 publish-success.js 关闭窗口）
     sendMessageToParent('发布成功，刷新数据');
