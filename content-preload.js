@@ -106,7 +106,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
 
   // 视频下载 API（通过主进程绕过跨域限制）
-  downloadVideo: (url) => ipcRenderer.invoke('download-video', url)
+  downloadVideo: (url) => ipcRenderer.invoke('download-video', url),
+
+  // 清除指定域名的 Cookies（用于退出登录）
+  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain)
 });
 
 // 在页面加载时注入通信代码

@@ -171,6 +171,15 @@ const HOME_URL = 'http://localhost:5173/';
 - Manual flush available via `window.electronAPI.flushSession()`
 - Session cookies converted to persistent (1 year expiration) on window close
 
+### Data Storage Paths
+| 版本 | 数据存储位置 |
+|------|-------------|
+| 开发环境 | `%APPDATA%\运营助手` |
+| 安装版 | `%APPDATA%\运营助手` |
+| 便携版 | `%LOCALAPPDATA%\运营助手-Portable` |
+
+便携版使用固定路径，无论 exe 放在哪里数据都不会丢失。
+
 ## Important Patterns
 
 **URL Pattern Matching** (script-manager.js:161-173)
