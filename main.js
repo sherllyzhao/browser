@@ -22,7 +22,25 @@ const isPortable = isProduction && !isInstalled;
 if (isProduction) {
   if (isPortable) {
     // 便携版：数据存储在应用程序目录下的 UserData 文件夹
-    const portableDataPath = path.join(path.dirname(process.execPath), 'UserData');
+    // 重要：electron-builder 的 portable 构建会将 exe 解压到临时目录
+    // 因此不能使用 process.execPath，应该使用以下优先级：
+    // 1. PORTABLE_EXECUTABLE_DIR 环境变量（electron-builder 提供）
+    // 2. 当前工作目录（用户双击 exe 时的目录）
+    // 3. exe 文件的实际路径（通过 app.getPath('exe') 获取）
+
+    let portableBaseDir;
+
+    if (process.env.PORTABLE_EXECUTABLE_DIR) {
+      // electron-builder portable 构建会设置这个环境变量
+      portableBaseDir = process.env.PORTABLE_EXECUTABLE_DIR;
+      console.log('[Portable Mode] 使用 PORTABLE_EXECUTABLE_DIR:', portableBaseDir);
+    } else {
+      // 回退方案：使用 exe 文件实际路径
+      portableBaseDir = path.dirname(app.getPath('exe'));
+      console.log('[Portable Mode] 使用 app.getPath("exe"):', portableBaseDir);
+    }
+
+    const portableDataPath = path.join(portableBaseDir, 'UserData');
 
     // 确保目录存在
     if (!fs.existsSync(portableDataPath)) {
@@ -37,6 +55,8 @@ if (isProduction) {
     app.setPath('userData', portableDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
     console.log('[Portable Mode] 数据将存储在:', portableDataPath);
+    console.log('[Portable Mode] process.execPath:', process.execPath);
+    console.log('[Portable Mode] process.cwd():', process.cwd());
   } else {
     // 安装版：使用系统默认路径
     console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));

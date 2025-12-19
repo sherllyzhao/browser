@@ -168,8 +168,6 @@ let hasProcessed = false;
                 if (!videoAlreadyUploaded) {
                   // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
                   try {
-                    const wujieApp = await waitForElement("wujie-app", 5000);
-
                     if (wujieApp && wujieApp.shadowRoot) {
                       // 在Shadow DOM中查找上传按钮
                       const uploadButtonSelectors = [
@@ -218,9 +216,7 @@ let hasProcessed = false;
                     // Searching for upload input in Shadow DOM...`);
 
                     try {
-                      // 首先检查wujie-app的Shadow DOM
-                      const wujieApp = await waitForElement("wujie-app", 5000);
-
+                      // 复用外层的 wujieApp 变量
                       if (!wujieApp.shadowRoot) {
                         // alert('wujie-app has no shadow root, trying to access iframe directly');
                         // 如果没有Shadow DOM，尝试直接查找iframe
@@ -511,10 +507,6 @@ async function publishApi(dataObj) {
       sendMessageToParent('发布成功，刷新数据');
       hasProcessed = true;
     }
-
-    // 先发送统计接口
-    const publishId = dataObj.video.dyPlatform.id;
-    await sendStatistics(publishId, '视频号发布');
 
     // 标记已完成
     publishRunning = false;

@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(findstr:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"=== Checking $file ===\")",
+      "Bash(node --check:*)",
+      "Bash(done)",
+      "Bash(node:*)",
+      "Bash(npm run build:portable:*)"
     ],
     "deny": [],
     "ask": []
