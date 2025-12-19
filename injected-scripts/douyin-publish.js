@@ -31,12 +31,23 @@ let hasProcessed = false;
   console.log('🕐 注入时间:', new Date().toLocaleString());
   console.log('═══════════════════════════════════════');
 
-  // 检查 common.js 是否已加载
-  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
-    console.error('[抖音发布] ❌ common.js 未加载！脚本可能无法正常工作');
-  } else {
-    console.log('[抖音发布] ✅ common.js 已加载，工具函数可用');
-  }
+  // 检查 common.js 是否已加载（延迟检查，给 common.js 时间执行）
+  setTimeout(() => {
+    if (!window.__COMMON_JS_LOADED__) {
+      console.error('[抖音发布] ❌ common.js 未加载！');
+    } else if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined' || typeof uploadVideo === 'undefined') {
+      console.error('[抖音发布] ❌ common.js 加载不完整！缺少必需函数');
+      console.error('[抖音发布] waitForElement:', typeof waitForElement);
+      console.error('[抖音发布] retryOperation:', typeof retryOperation);
+      console.error('[抖音发布] uploadVideo:', typeof uploadVideo);
+      console.error('[抖音发布] sendStatistics:', typeof sendStatistics);
+      console.error('[抖音发布] clickWithRetry:', typeof clickWithRetry);
+      console.error('[抖音发布] closeWindowWithMessage:', typeof closeWindowWithMessage);
+      console.error('[抖音发布] delay:', typeof delay);
+    } else {
+      console.log('[抖音发布] ✅ common.js 已完整加载，所有工具函数可用');
+    }
+  }, 100); // 延迟 100ms 检查
 
   // ===========================
   // 1. 从 URL 获取发布数据
@@ -268,21 +279,52 @@ async function publishApi(dataObj) {
     // 等待按钮事件绑定完成
     await delay(800);
 
-    // 点击发布按钮
-    console.log('[抖音发布] 🖱️ 准备点击发布按钮...');
-    const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
+    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
+    // 默认策略：无法确定环境时，执行点击（安全优先）
+    let isDevEnvironment = false;
 
-    if (!clickSuccess) {
-      console.error('[抖音发布] ❌ 所有点击尝试均失败');
-      publishRunning = false;
-      throw new Error('发布按钮点击失败');
+    if (window.browserAPI) {
+      isDevEnvironment = window.browserAPI.isProduction === false;
+      console.log('[抖音发布] 环境检测:', {
+        hasBrowserAPI: true,
+        isProduction: window.browserAPI.isProduction,
+        isDevEnvironment: isDevEnvironment
+      });
+    } else {
+      console.warn('[抖音发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
-    // 点击成功后立即发送消息（页面可能跳转）
-    console.log('[抖音发布] ✅ 发布按钮已点击');
+    if (isDevEnvironment) {
+      console.log('[抖音发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
+      console.log('[抖音发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
 
-    // 等待页面稳定后发送统计接口
-    await delay(2000);
+      // 显示提示给开发者
+      alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成，封面检测已通过\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
+
+      console.log('[抖音发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
+    } else {
+      // 生产环境：必须点击发布按钮
+      console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
+
+      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+
+      if (!clickResult.success) {
+        console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
+        publishRunning = false;
+        throw new Error('发布按钮点击失败: ' + clickResult.message);
+      }
+
+      console.log('[抖音发布] ✅ 发布按钮已点击');
+      console.log('[抖音发布] 📨 平台提示:', clickResult.message);
+
+      // 开发环境弹窗显示平台提示信息
+      if (window.browserAPI && window.browserAPI.isProduction === false) {
+        alert(`抖音发布结果：\n\n${clickResult.message}`);
+      }
+
+      // 等待页面稳定后发送统计接口
+      await delay(2000);
+    }
 
     // 标记已完成
     hasProcessed = true;
@@ -606,26 +648,77 @@ async function fillFormData(dataObj) {
     // 检查是否通过检测 - 持续等待直到检测完成
     try {
       console.log('[检测结果] 等待检测元素出现...');
-      // 设置较长的超时时间（5分钟），持续等待检测完成
-      const checkElement = await waitForElement('.detectItemTitle-X5pTL9', 300000);
 
-      console.log('[检测结果] ✅ 检测元素已出现');
-      console.log('[检测结果] 检测元素内容:', checkElement.textContent);
+      // 持续检查文本内容，直到变为"封面检测通过"或超时
+      const startTime = Date.now();
+      const timeout = 120000; // 2分钟超时
+      const checkInterval = 2000; // 每2秒检查一次
+      let checkPassed = false; // 标记检测是否通过
 
-      if (checkElement.textContent.includes('作品未见异常')) {
-        console.log('[检测结果] ✅ 检测通过，准备发布');
-      } else {
-        console.log('[检测结果] ⚠️ 检测未通过，不执行发布');
-        console.log('[检测结果] 内容:', checkElement.textContent);
+      while (true) {
+        // 每次循环都重新查找元素，避免引用旧的DOM
+        let checkElement = null;
+        try {
+          checkElement = await waitForElement('.cover-check .title-owSXGj', 5000);
+        } catch (e) {
+          console.log('[检测结果] ⚠️ 未找到检测元素，可能正在刷新页面...');
+
+          // 检查是否超时
+          if (Date.now() - startTime > timeout) {
+            console.log('[检测结果] ❌ 等待检测元素超时（2分钟），取消发布');
+            break;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, checkInterval));
+          continue;
+        }
+
+        const currentText = checkElement.textContent || '';
+        console.log('[检测结果] 当前内容:', currentText);
+
+        if (currentText.includes('封面检测通过')) {
+          console.log('[检测结果] ✅ 检测通过，准备发布');
+          checkPassed = true;
+          // 发布
+          await publishApi(dataObj);
+          break; // 发布后退出循环
+        }
+
+        // 检查是否超时
+        if (Date.now() - startTime > timeout) {
+          console.log('[检测结果] ❌ 等待检测通过超时（2分钟）');
+          console.log('[检测结果] 最终内容:', currentText);
+          break; // 超时退出循环，但不抛出错误
+        }
+
+        // 等待后再次检查
+        console.log('[检测结果] ⏳ 检测未通过，2秒后重新检查...');
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
       }
-      // 发布
-      await publishApi(dataObj);
+
+      // 如果检测未通过，仍然尝试发布
+      if (!checkPassed) {
+        console.log('[检测结果] ⚠️ 检测未通过或超时，但仍尝试发布');
+        await publishApi(dataObj);
+      }
     } catch (error) {
-      console.log('[检测结果] ❌ 等待检测元素超时（5分钟）:', error.message);
-      // 超时不执行发布，避免发布失败
-      throw new Error('检测超时，取消发布');
+      console.log('[检测结果] ❌ 检测失败:', error.message);
+      // 即使失败也尝试发布
+      console.log('[检测结果] ⚠️ 检测异常，但仍尝试发布');
+      try {
+        await publishApi(dataObj);
+      } catch (publishError) {
+        console.error('[检测结果] ❌ 发布也失败:', publishError.message);
+        // 发送失败消息并关闭窗口
+        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+      }
     }
 
+  } catch (error) {
+    // 捕获填写表单过程中的任何错误（封面检测之前的错误）
+    console.error('[抖音发布] fillFormData 错误:', error);
+    // 填写表单失败也要关闭窗口，不阻塞下一个任务
+    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;

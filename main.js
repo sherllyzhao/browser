@@ -1,5 +1,6 @@
 const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const ScriptManager = require('./script-manager');
 
 let mainWindow;
@@ -8,6 +9,60 @@ let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
+
+// 检测是否为便携版（通过检查是否在标准安装目录）
+// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
+const execPathLower = process.execPath.toLowerCase();
+const isInstalled = execPathLower.includes('program files') ||
+                    execPathLower.includes('programdata') ||
+                    execPathLower.includes('\\windows\\');
+const isPortable = isProduction && !isInstalled;
+
+// 设置用户数据路径
+if (isProduction) {
+  if (isPortable) {
+    // 便携版：数据存储在应用程序目录下的 UserData 文件夹
+    // 重要：electron-builder 的 portable 构建会将 exe 解压到临时目录
+    // 因此不能使用 process.execPath，应该使用以下优先级：
+    // 1. PORTABLE_EXECUTABLE_DIR 环境变量（electron-builder 提供）
+    // 2. 当前工作目录（用户双击 exe 时的目录）
+    // 3. exe 文件的实际路径（通过 app.getPath('exe') 获取）
+
+    let portableBaseDir;
+
+    if (process.env.PORTABLE_EXECUTABLE_DIR) {
+      // electron-builder portable 构建会设置这个环境变量
+      portableBaseDir = process.env.PORTABLE_EXECUTABLE_DIR;
+      console.log('[Portable Mode] 使用 PORTABLE_EXECUTABLE_DIR:', portableBaseDir);
+    } else {
+      // 回退方案：使用 exe 文件实际路径
+      portableBaseDir = path.dirname(app.getPath('exe'));
+      console.log('[Portable Mode] 使用 app.getPath("exe"):', portableBaseDir);
+    }
+
+    const portableDataPath = path.join(portableBaseDir, 'UserData');
+
+    // 确保目录存在
+    if (!fs.existsSync(portableDataPath)) {
+      try {
+        fs.mkdirSync(portableDataPath, { recursive: true });
+        console.log('[Portable Mode] 已创建 UserData 目录:', portableDataPath);
+      } catch (err) {
+        console.error('[Portable Mode] 创建目录失败:', err);
+      }
+    }
+
+    app.setPath('userData', portableDataPath);
+    console.log('[Portable Mode] ✅ 便携版模式启用');
+    console.log('[Portable Mode] 数据将存储在:', portableDataPath);
+    console.log('[Portable Mode] process.execPath:', process.execPath);
+    console.log('[Portable Mode] process.cwd():', process.cwd());
+  } else {
+    // 安装版：使用系统默认路径
+    console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
+  }
+}
+
 const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
@@ -31,6 +86,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    title: '运营助手',
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
@@ -67,13 +123,14 @@ function createWindow() {
       e.preventDefault();
       isQuitting = true;
 
-      console.log('Window closing, saving session data...');
+      console.log('========================================');
+      console.log('[Window Close] 窗口关闭，正在保存 Session 数据...');
 
       if (browserView) {
         try {
           const ses = browserView.webContents.session;
           const cookies = await ses.cookies.get({});
-          console.log(`Saving ${cookies.length} cookies before close`);
+          console.log(`[Window Close] 当前共有 ${cookies.length} 个 cookies`);
 
           // 将所有会话 Cookie 转换为持久化 Cookie（设置 1 年过期时间）
           const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
@@ -99,12 +156,16 @@ function createWindow() {
             }
           }
 
-          console.log(`Converted ${convertedCount} session cookies to persistent cookies`);
+          console.log(`[Window Close] ✅ 转换了 ${convertedCount} 个会话 Cookie 为持久化 Cookie`);
 
           await ses.flushStorageData();
-          console.log('Session data saved successfully');
+          console.log('[Window Close] ✅ Session 数据已写入磁盘');
+          if (isPortable) {
+            console.log(`[Window Close] 💾 便携版数据已保存到: ${app.getPath('userData')}`);
+          }
+          console.log('========================================');
         } catch (err) {
-          console.error('Error saving session data:', err);
+          console.error('[Window Close] ❌ 保存 Session 数据失败:', err);
         }
       }
 
@@ -118,8 +179,15 @@ function createWindow() {
   const persistentSession = session.fromPartition('persist:browserview', { cache: true });
 
   // 打印 session 存储路径
-  console.log('Session storage path:', app.getPath('userData'));
-  console.log('Session partition:', persistentSession.getStoragePath());
+  console.log('========================================');
+  console.log('[Session] Session 配置信息:');
+  console.log('[Session] userData 路径:', app.getPath('userData'));
+  console.log('[Session] Session 存储路径:', persistentSession.getStoragePath());
+  console.log('[Session] 是否便携版:', isPortable);
+  if (isPortable) {
+    console.log('[Session] 💾 便携版模式 - 数据将保存到应用程序目录');
+  }
+  console.log('========================================');
 
   // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
@@ -152,10 +220,15 @@ function createWindow() {
   // 等待 BrowserView 完全附加到窗口后再加载 URL
   // 使用 process.nextTick 确保 BrowserView 已经完全准备好
   process.nextTick(() => {
+    console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] 准备加载首页: ${HOME_URL}`);
+    console.log(`[BrowserView] HOME_URL 完整值: "${HOME_URL}"`);
+    console.log(`[BrowserView] isProduction: ${isProduction}`);
+    console.log('===================');
+
     browserView.webContents.loadURL(HOME_URL)
       .then(() => {
-        console.log('[BrowserView] ✅ 首页开始加载');
+        console.log('[BrowserView] ✅ 首页 loadURL 调用成功');
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 首页加载失败:', err);
@@ -176,7 +249,12 @@ function createWindow() {
       return;
     }
 
+    // 获取窗口 ID 用于调试
+    const windowId = webContents.id;
+    const isNewWindow = !childWindows.some(win => win?.webContents?.id === windowId) && browserView?.webContents?.id !== windowId;
+
     console.log('==================================================');
+    console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
 
     // 注入对应的自定义脚本
@@ -187,8 +265,8 @@ function createWindow() {
       if (webContents.isDestroyed()) {
         return;
       }
-      console.log('[Script Injection] Script found! Length:', script.length);
-      console.log('[Script Injection] Preview:', script.substring(0, 100) + '...');
+      console.log('[Script Injection] Script found! Total length:', script.length);
+      console.log('[Script Injection] Preview:', script.substring(0, 150) + '...');
       console.log('✅ [Script Injection] Executing...');
       try {
         const result = await webContents.executeJavaScript(script);
@@ -214,6 +292,7 @@ function createWindow() {
       return;
     }
     const currentURL = browserView.webContents.getURL();
+    console.log(`[Navigation] 页面加载完成 → ${currentURL}`);
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
@@ -223,18 +302,21 @@ function createWindow() {
 
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
+    console.log(`[Navigation] 导航开始 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面导航完成
   browserView.webContents.on('did-navigate', (event, url) => {
+    console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
   });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
   browserView.webContents.on('did-navigate-in-page', async (event, url) => {
+    console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
@@ -316,12 +398,154 @@ function updateBrowserViewBounds(scriptPanelOpen = false) {
   browserView.setBounds({ x: 0, y: toolbarHeight, width: viewWidth, height: height - toolbarHeight });
 }
 
-app.whenReady().then(() => {
+// 启动时检查并清理损坏的数据
+async function validateAndCleanupUserData() {
+  const fs = require('fs').promises;
+  const fsSync = require('fs');
+  const userDataPath = app.getPath('userData');
+  const sessionPath = path.join(userDataPath, 'Partitions', 'persist_browserview');
+  const firstRunMarker = path.join(userDataPath, '.first_run_completed');
+
+  console.log('[Startup] 检查用户数据完整性...');
+  console.log('[Startup] 用户数据路径:', userDataPath);
+
+  // 检查是否是首次运行（仅开发环境）
+  if (!isProduction && !fsSync.existsSync(firstRunMarker)) {
+    console.log('[Startup] 🆕 检测到首次运行（开发环境），清除旧的用户数据...');
+
+    try {
+      // 删除整个 Session 目录
+      if (fsSync.existsSync(sessionPath)) {
+        fsSync.rmSync(sessionPath, { recursive: true, force: true });
+        console.log('[Startup] ✅ 已清除旧的 Session 数据');
+      }
+
+      // 创建首次运行标记
+      await fs.writeFile(firstRunMarker, new Date().toISOString());
+      console.log('[Startup] ✅ 已创建首次运行标记');
+
+      return true;
+    } catch (err) {
+      console.error('[Startup] ⚠️ 清除数据失败:', err);
+    }
+  }
+
+  // 💡 开发提示：如需重新清除所有数据，请删除文件：
+  // Windows: %APPDATA%\运营助手\.first_run_completed
+  // 或直接删除整个目录：%APPDATA%\运营助手
+  console.log('[Startup] 💡 如需清除所有数据，请删除:', firstRunMarker);
+
+  try {
+    // 检查 Session 目录是否存在
+    try {
+      await fs.access(sessionPath);
+    } catch (err) {
+      console.log('[Startup] ✅ Session 目录不存在（首次运行）');
+      return true;
+    }
+
+    // 检查 Cookies 文件
+    const cookiesFile = path.join(sessionPath, 'Cookies');
+    const cookiesJournalFile = path.join(sessionPath, 'Cookies-journal');
+
+    try {
+      await fs.access(cookiesFile);
+      const stats = await fs.stat(cookiesFile);
+
+      // 检查文件大小是否异常（小于 100 字节可能损坏）
+      if (stats.size < 100) {
+        console.log('[Startup] ⚠️ Cookies 文件大小异常:', stats.size, 'bytes');
+        throw new Error('Cookies file corrupted');
+      }
+
+      // 检查是否存在 journal 文件（表示上次未正常关闭）
+      try {
+        await fs.access(cookiesJournalFile);
+        console.log('[Startup] ⚠️ 检测到 Cookies-journal 文件，上次可能未正常关闭');
+        // 删除 journal 文件，让 SQLite 自动修复
+        await fs.unlink(cookiesJournalFile);
+        console.log('[Startup] ✅ 已删除 Cookies-journal 文件');
+      } catch (err) {
+        // journal 文件不存在是正常的
+      }
+
+      console.log('[Startup] ✅ 用户数据检查通过');
+      return true;
+    } catch (err) {
+      console.error('[Startup] ❌ 检测到数据损坏:', err.message);
+
+      // 备份损坏的数据
+      const backupPath = path.join(userDataPath, `Backup_${Date.now()}`);
+      try {
+        const fsSync = require('fs');
+        fsSync.cpSync(sessionPath, backupPath, { recursive: true });
+        console.log('[Startup] 📦 已备份损坏数据到:', backupPath);
+      } catch (backupErr) {
+        console.error('[Startup] ⚠️ 备份失败:', backupErr.message);
+      }
+
+      // 删除损坏的数据
+      const fsSync = require('fs');
+      fsSync.rmSync(sessionPath, { recursive: true, force: true });
+      console.log('[Startup] 🔧 已清理损坏数据，将重新初始化');
+
+      return true;
+    }
+  } catch (err) {
+    console.error('[Startup] 数据检查失败:', err);
+    return false;
+  }
+}
+
+app.whenReady().then(async () => {
+  // 设置日志文件（便携版和生产环境）
+  if (isProduction) {
+    const logPath = path.join(app.getPath('userData'), 'app.log');
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+    // 保存原始 console 方法
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+
+    // 重定向 console 输出到文件和控制台
+    console.log = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
+      originalLog.apply(console, args);
+    };
+
+    console.error = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
+      originalError.apply(console, args);
+    };
+
+    console.warn = function(...args) {
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
+      originalWarn.apply(console, args);
+    };
+
+    console.log('=================================');
+    console.log('📝 日志文件已启用');
+    console.log('📂 日志路径:', logPath);
+    console.log('=================================');
+  }
+
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
+  console.log(`app.isPackaged: ${app.isPackaged}`);
+  console.log(`isProduction: ${isProduction}`);
+  console.log(`isPortable: ${isPortable}`);
   console.log(`环境: ${isProduction ? '生产环境' : '开发环境'}`);
   console.log(`首页URL: ${HOME_URL}`);
+  console.log(`execPath: ${process.execPath}`);
+  console.log(`userData路径: ${app.getPath('userData')}`);
   console.log('=================================');
+
+  // 启动时验证数据完整性
+  await validateAndCleanupUserData();
 
   // 生产环境立即移除菜单（必须在创建窗口之前）
   if (isProduction) {
@@ -615,10 +839,14 @@ app.whenReady().then(() => {
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const ses = browserView.webContents.session;
+        const cookies = await ses.cookies.get({});
         await ses.flushStorageData();
-        console.log('Auto-saved session data');
+        console.log(`[Auto-Save] ✅ Session 数据已保存 - ${cookies.length} 个 cookies`);
+        if (isPortable) {
+          console.log(`[Auto-Save] 便携版数据路径: ${app.getPath('userData')}`);
+        }
       } catch (err) {
-        console.error('Auto-save error:', err);
+        console.error('[Auto-Save] ❌ 保存失败:', err);
       }
     }
   }, 30000);

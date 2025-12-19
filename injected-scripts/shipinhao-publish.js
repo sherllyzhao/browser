@@ -168,8 +168,6 @@ let hasProcessed = false;
                 if (!videoAlreadyUploaded) {
                   // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
                   try {
-                    const wujieApp = await waitForElement("wujie-app", 5000);
-
                     if (wujieApp && wujieApp.shadowRoot) {
                       // 在Shadow DOM中查找上传按钮
                       const uploadButtonSelectors = [
@@ -218,9 +216,7 @@ let hasProcessed = false;
                     // Searching for upload input in Shadow DOM...`);
 
                     try {
-                      // 首先检查wujie-app的Shadow DOM
-                      const wujieApp = await waitForElement("wujie-app", 5000);
-
+                      // 复用外层的 wujieApp 变量
                       if (!wujieApp.shadowRoot) {
                         // alert('wujie-app has no shadow root, trying to access iframe directly');
                         // 如果没有Shadow DOM，尝试直接查找iframe
@@ -448,41 +444,57 @@ async function publishApi(dataObj) {
     const publishId = dataObj.video.dyPlatform.id;
     await sendStatistics(publishId, '视频号发布');
 
-    // 点击发布按钮（视频号的按钮需要特殊处理）
-    console.log('[视频号发布] 🖱️ 准备点击发布按钮...');
-    let clickSuccess = false;
-    for (let i = 0; i < 3; i++) {
-      try {
-        if (typeof publishBtn.click === 'function') {
-          publishBtn.click();
-          clickSuccess = true;
-          await delay(500);
+    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
+    // 默认策略：无法确定环境时，执行点击（安全优先）
+    let isDevEnvironment = false;
 
-          // 检查按钮是否被禁用
-          if (!publishBtn.classList.contains("weui-desktop-btn_disabled")) {
-            // 尝试模拟鼠标事件
-            const mouseDownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-            const mouseUpEvent = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-            const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
-            publishBtn.dispatchEvent(mouseDownEvent);
-            publishBtn.dispatchEvent(mouseUpEvent);
-            publishBtn.dispatchEvent(clickEvent);
-            await delay(300);
-          } else {
-            console.log('[视频号发布] ✅ 按钮已禁用，点击生效');
-            break;
-          }
-        }
-      } catch (clickError) {
-        console.log('Click attempt ' + (i + 1) + ' failed: ' + clickError.message);
-      }
+    if (window.browserAPI) {
+      isDevEnvironment = window.browserAPI.isProduction === false;
+      console.log('[视频号发布] 环境检测:', {
+        hasBrowserAPI: true,
+        isProduction: window.browserAPI.isProduction,
+        isDevEnvironment: isDevEnvironment
+      });
+    } else {
+      console.warn('[视频号发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
-    if (!clickSuccess) {
-      console.log('[视频号发布] ❌ 点击发布按钮失败');
+    if (isDevEnvironment) {
+      console.log('[视频号发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
+      console.log('[视频号发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
+
+      // 显示提示给开发者
+      alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成，视频已上传\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
+
+      console.log('[视频号发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
+
+      sendMessageToParent('发布成功，刷新数据');
+      hasProcessed = true;
+
+      // 开发环境手动关闭窗口（因为不会跳转到成功页）
+      await delay(1000);
+      publishRunning = false;
+      await closeWindowWithMessage('', 0);
     } else {
-      // 点击成功后立即发送消息
+      // 生产环境：必须点击发布按钮
+      console.log('[视频号发布] ✅ 生产环境确认，准备点击发布按钮...');
+
+      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+
+      if (!clickResult.success) {
+        console.log('[视频号发布] ❌ 点击发布按钮失败:', clickResult.message);
+        publishRunning = false;
+        throw new Error('发布按钮点击失败: ' + clickResult.message);
+      }
+
+      // 点击成功
       console.log('[视频号发布] ✅ 发布按钮已点击');
+      console.log('[视频号发布] 📨 平台提示:', clickResult.message);
+
+      // 开发环境弹窗显示平台提示信息
+      if (window.browserAPI && window.browserAPI.isProduction === false) {
+        alert(`视频号发布结果：\n\n${clickResult.message}`);
+      }
 
       // 🗑️ 清除 localStorage 中的数据（发布成功后）
       try {
@@ -496,12 +508,11 @@ async function publishApi(dataObj) {
       hasProcessed = true;
     }
 
-    // 点击后等待一会，然后关闭窗口
-    await delay(3000);
-
-    // 关闭窗口
+    // 标记已完成
     publishRunning = false;
-    await closeWindowWithMessage('', 0); // 消息已发送，只关闭窗口
+
+    // 不关闭窗口，等待视频号自动跳转到成功页（由 publish-success.js 关闭窗口）
+    console.log('[视频号发布] ✅ 发布流程完成，等待跳转到成功页...');
 
   } catch (error) {
     console.log('[视频号发布] publishApi 错误:', error);
@@ -739,6 +750,10 @@ async function fillFormData(dataObj) {
     // 发布
     await publishApi(dataObj);
 
+  } catch (error) {
+    console.error('[视频号发布] fillFormData 错误:', error);
+    // 填写表单失败也要关闭窗口，不阻塞下一个任务
+    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;

@@ -259,20 +259,52 @@ async function publishApi(dataObj) {
     // 等待按钮事件绑定完成
     await delay(800);
 
-    // 点击发布按钮
-    console.log('[百家号发布] 🖱️ 准备点击发布按钮...');
-    const clickSuccess = await clickWithRetry(publishBtn, 3, 500);
+    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
+    // 默认策略：无法确定环境时，执行点击（安全优先）
+    let isDevEnvironment = false;
 
-    if (!clickSuccess) {
-      console.error('[百家号发布] ❌ 所有点击尝试均失败');
-      publishRunning = false;
-      throw new Error('发布按钮点击失败');
+    if (window.browserAPI) {
+      isDevEnvironment = window.browserAPI.isProduction === false;
+      console.log('[百家号发布] 环境检测:', {
+        hasBrowserAPI: true,
+        isProduction: window.browserAPI.isProduction,
+        isDevEnvironment: isDevEnvironment
+      });
+    } else {
+      console.warn('[百家号发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
-    console.log('[百家号发布] ✅ 发布按钮已点击');
+    if (isDevEnvironment) {
+      console.log('[百家号发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
+      console.log('[百家号发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
 
-    // 等待页面稳定后发送统计接口
-    await delay(2000);
+      // 显示提示给开发者
+      alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
+
+      console.log('[百家号发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
+    } else {
+      // 生产环境：必须点击发布按钮
+      console.log('[百家号发布] ✅ 生产环境确认，准备点击发布按钮...');
+
+      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+
+      if (!clickResult.success) {
+        console.error('[百家号发布] ❌ 所有点击尝试均失败:', clickResult.message);
+        publishRunning = false;
+        throw new Error('发布按钮点击失败: ' + clickResult.message);
+      }
+
+      console.log('[百家号发布] ✅ 发布按钮已点击');
+      console.log('[百家号发布] 📨 平台提示:', clickResult.message);
+
+      // 开发环境弹窗显示平台提示信息
+      if (window.browserAPI && window.browserAPI.isProduction === false) {
+        alert(`百家号发布结果：\n\n${clickResult.message}`);
+      }
+
+      // 等待页面稳定后发送统计接口
+      await delay(2000);
+    }
 
     // 发送统计接口
     const publishId = dataObj.video.dyPlatform.id;
@@ -544,22 +576,36 @@ async function fillFormData(dataObj) {
                               // 清理本地数据
                               localStorage.removeItem('articleContentPostData');
 
-                              // 点击发布按钮（只点击一次）
+                              // 点击发布按钮（使用重试逻辑）
                               if (publishBtnEle && publishBtnEle.offsetParent !== null) {
-                                console.log('[百家号发布] 点击发布按钮');
-                                publishBtnEle.click();
+                                console.log('[百家号发布] 点击发布按钮（立即发布）');
+                                const publishClickResult = await clickWithRetry(publishBtnEle, 3, 500, true);
+                                if (!publishClickResult.success) {
+                                  console.error('[百家号发布] 发布按钮点击失败:', publishClickResult.message);
+                                } else {
+                                  console.log('[百家号发布] 📨 平台提示:', publishClickResult.message);
+                                }
                               } else {
                                 console.log('[百家号发布] 发布按钮不存在或不可见');
                               }
 
                               setTimeout(async () => {
-                                // 点击确认按钮（只点击一次）
+                                // 点击确认按钮（使用重试逻辑）
                                 try {
                                   const confirmBtnEleTwo = document.querySelectorAll(".cheetah-modal-confirm-btns .cheetah-btn-primary");
                                   const finalBtn = confirmBtnEleTwo[confirmBtnEleTwo.length - 1];
                                   if (finalBtn && finalBtn.offsetParent !== null) {
                                     console.log('[百家号发布] 点击确认按钮');
-                                    finalBtn.click();
+                                    const confirmClickResult = await clickWithRetry(finalBtn, 3, 500, true);
+                                    if (!confirmClickResult.success) {
+                                      console.error('[百家号发布] 确认按钮点击失败:', confirmClickResult.message);
+                                    } else {
+                                      console.log('[百家号发布] 📨 平台提示:', confirmClickResult.message);
+                                      // 开发环境弹窗显示平台提示信息
+                                      if (window.browserAPI && window.browserAPI.isProduction === false) {
+                                        alert(`百家号发布结果：\n\n${confirmClickResult.message}`);
+                                      }
+                                    }
                                   } else {
                                     console.log('[百家号发布] 确认按钮不存在或不可见');
                                   }
@@ -596,6 +642,11 @@ async function fillFormData(dataObj) {
       // alert('Automation process completed');
     }, 10000);
 
+  } catch (error) {
+    // 捕获填写表单过程中的任何错误
+    console.error('[百家号发布] fillFormData 错误:', error);
+    // 填写表单失败也要关闭窗口，不阻塞下一个任务
+    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;

@@ -1,14 +1,23 @@
 // ===========================
-// 防止脚本重复注入
+// common.js - 公共工具库
 // ===========================
-if (typeof waitForElement !== 'undefined') {
-    console.log('[common.js] ⚠️ common.js 已经加载过，跳过重复注入');
+// 防止重复加载（检查关键函数是否已存在）
+
+if (typeof window.uploadVideo === 'function' &&
+    typeof window.waitForElement === 'function' &&
+    typeof window.setNativeValue === 'function') {
+    console.log('[common.js] ⚠️ common.js 已加载，跳过重复定义');
+    console.log('[common.js] 当前窗口:', window.location.href);
 } else {
 
-console.log('[common.js] ✅ common.js 正在加载...');
+console.log('[common.js] ✅ common.js 开始加载...');
+console.log('[common.js] 当前窗口:', window.location.href);
+
+// 标记为已加载
+window.__COMMON_JS_LOADED__ = true;
 
 // 等待元素出现的通用函数
-function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = document) {
+window.waitForElement = function(selector, timeout = 30000, checkInterval = 200, ele = document) {
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
         let timeoutId;
@@ -47,10 +56,10 @@ function waitForElement(selector, timeout = 30000, checkInterval = 200, ele = do
 
         check();
     });
-}
+};
 
 // 重试机制
-async function retryOperation(operation, maxRetries = 3, delay = 1000) {
+window.retryOperation = async function(operation, maxRetries = 3, delay = 1000) {
     // alert(`Starting operation with ${maxRetries} maximum retries`);
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -78,10 +87,10 @@ async function retryOperation(operation, maxRetries = 3, delay = 1000) {
             await new Promise(resolve => setTimeout(resolve, waitTime));
         }
     }
-}
+};
 
 // 发送消息到父窗口
-function sendMessageToParent(message) {
+window.sendMessageToParent = function(message) {
     console.log('发送消息到父窗口:', message);
 
     // 方式 2: 使用 browserAPI (运营助手浏览器)
@@ -98,10 +107,10 @@ function sendMessageToParent(message) {
     }
 
     return false;
-}
+};
 
 // 安全地上传文件到input元素
-async function uploadFileToInput(inputElement, file) {
+window.uploadFileToInput = async function(inputElement, file) {
     if (!inputElement || !file) {
         //alert('Upload failed: Invalid input element or file');
         return false;
@@ -131,10 +140,10 @@ async function uploadFileToInput(inputElement, file) {
         //alert('File upload failed: ' + error.message);
         return false;
     }
-}
+};
 
 // 通用文件下载函数（绕过跨域限制）
-async function downloadFile(url, defaultType = 'application/octet-stream') {
+window.downloadFile = async function(url, defaultType = 'application/octet-stream') {
     if (!url) {
         throw new Error('Download URL is required');
     }
@@ -174,10 +183,10 @@ async function downloadFile(url, defaultType = 'application/octet-stream') {
     }
 
     return { blob, contentType };
-}
+};
 
 // 上传视频到input元素
-async function uploadVideo(dataObj, shadowRoot = undefined) {
+window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
     const pathImage = dataObj?.video?.video?.url;
     if (!pathImage) {
         //alert('No video URL found');
@@ -259,10 +268,10 @@ async function uploadVideo(dataObj, shadowRoot = undefined) {
 
     // 等待上传完成并填写表单
     await new Promise(resolve => setTimeout(resolve, 3000));
-}
+};
 
 /* 给react的input、checkbox、radio赋值 */
-const setNativeValue = (el, value) => {
+window.setNativeValue = function(el, value) {
     if (!el) return false;
 
     const previousValue = el.value;
@@ -313,17 +322,17 @@ const setNativeValue = (el, value) => {
 };
 
 // 等待Shadow DOM中的元素
-function waitForShadowElement(hostSelector, shadowSelector, timeout = 30000) {
-    return waitForElement(hostSelector, timeout).then(host => {
+window.waitForShadowElement = function(hostSelector, shadowSelector, timeout = 30000) {
+    return window.waitForElement(hostSelector, timeout).then(host => {
         if (!host.shadowRoot) {
             throw new Error(`Host element has no shadow root: ${hostSelector}`);
         }
-        return waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
+        return window.waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
     });
-}
+};
 
 // 深度搜索Shadow DOM中的元素（修复版 - 防止白屏）
-function deepShadowSearch(rootElement, selector, maxDepth = 3) {
+window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
     return new Promise((resolve, reject) => {
         let resolved = false; // 防止多次 resolve
 
@@ -392,14 +401,14 @@ function deepShadowSearch(rootElement, selector, maxDepth = 3) {
             }
         }, 100);
     });
-}
+};
 
 // ===========================
 // 公共发布方法
 // ===========================
 
 // 发送统计接口
-async function sendStatistics(publishId, platform = '') {
+window.sendStatistics = async function(publishId, platform = '') {
     const scanData = { data: JSON.stringify({ id: publishId }) };
     try {
         console.log(`[${platform || '发布'}] 📤 发送统计接口，ID: ${publishId}`);
@@ -414,13 +423,13 @@ async function sendStatistics(publishId, platform = '') {
         console.error(`[${platform || '发布'}] ❌ 统计接口请求失败:`, e);
         return { success: false, error: e };
     }
-}
+};
 
 // 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
-async function clickWithRetry(element, maxRetries = 3, delay = 300) {
+window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, captureMessage = false) {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
-        return false;
+        return { success: false, message: '元素不存在' };
     }
 
     for (let i = 0; i < maxRetries; i++) {
@@ -433,21 +442,172 @@ async function clickWithRetry(element, maxRetries = 3, delay = 300) {
                 continue;
             } else {
                 console.error('[clickWithRetry] ❌ 按钮始终不可用，所有重试失败');
-                return false;
+                return { success: false, message: '按钮不可用' };
             }
         }
 
         // 尝试点击按钮
         try {
             console.log(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击按钮`);
+
+            // 如果需要捕获提示信息，设置监听器
+            let capturedMessage = '';
+            let messageObserver = null;
+
+            if (captureMessage) {
+                // 创建 MutationObserver 监听页面新增的提示元素
+                messageObserver = new MutationObserver((mutations) => {
+                    for (const mutation of mutations) {
+                        for (const node of mutation.addedNodes) {
+                            if (node.nodeType === 1) { // Element node
+                                // 检查是否是提示元素（常见的提示组件）
+                                const element = node;
+                                const classList = element.classList ? Array.from(element.classList).join(' ') : '';
+                                const className = element.className || '';
+
+                                // 匹配常见的提示类名
+                                if (
+                                    classList.includes('toast') ||
+                                    classList.includes('message') ||
+                                    classList.includes('notification') ||
+                                    classList.includes('ant-message') ||
+                                    classList.includes('el-message') ||
+                                    classList.includes('van-toast') ||
+                                    classList.includes('semi-toast') ||
+                                    classList.includes('weui-toast') ||
+                                    className.includes('toast') ||
+                                    className.includes('message')
+                                ) {
+                                    // 优先查找具体的文本容器（更精确）
+                                    let text = '';
+
+                                    // Semi Design toast
+                                    const semiText = element.querySelector('.semi-toast-content-text');
+                                    if (semiText) {
+                                        text = semiText.textContent || semiText.innerText || '';
+                                    }
+
+                                    // Ant Design message
+                                    if (!text) {
+                                        const antText = element.querySelector('.ant-message-custom-content');
+                                        if (antText) {
+                                            text = antText.textContent || antText.innerText || '';
+                                        }
+                                    }
+
+                                    // Element UI message
+                                    if (!text) {
+                                        const elText = element.querySelector('.el-message__content');
+                                        if (elText) {
+                                            text = elText.textContent || elText.innerText || '';
+                                        }
+                                    }
+
+                                    // 回退：使用整个元素的文本
+                                    if (!text) {
+                                        text = element.textContent || element.innerText || '';
+                                    }
+
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息:', capturedMessage);
+                                    }
+                                }
+
+                                // 递归检查子元素（查找所有可能的 toast 容器）
+                                const toastElements = element.querySelectorAll('[class*="toast"], [class*="message"], [class*="notification"]');
+                                for (const toast of toastElements) {
+                                    // 优先查找具体的文本容器
+                                    let text = '';
+
+                                    const semiText = toast.querySelector('.semi-toast-content-text');
+                                    if (semiText) {
+                                        text = semiText.textContent || semiText.innerText || '';
+                                    } else {
+                                        text = toast.textContent || toast.innerText || '';
+                                    }
+
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息（子元素）:', capturedMessage);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // 开始监听整个 body 的变化
+                messageObserver.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+
+            // 点击按钮
             if (typeof element.click === 'function') {
                 element.click();
             } else {
                 // 如果 click 方法不可用，使用事件
                 element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             }
+
             console.log('[clickWithRetry] ✅ 点击成功');
-            return true;
+
+            // 如果需要捕获提示信息，等待提示出现
+            if (captureMessage) {
+                console.log('[clickWithRetry] ⏳ 等待提示信息出现（3秒）...');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+
+                // 停止监听
+                if (messageObserver) {
+                    messageObserver.disconnect();
+                }
+
+                // 如果没有通过 MutationObserver 捕获到，尝试直接查找现有的提示元素
+                if (!capturedMessage) {
+                    const possibleSelectors = [
+                        '.semi-toast-content-text',  // Semi Design 优先
+                        '.ant-message-custom-content',  // Ant Design
+                        '.el-message__content',  // Element UI
+                        '[class*="toast"]',
+                        '[class*="message"]',
+                        '[class*="notification"]',
+                        '.ant-message',
+                        '.el-message',
+                        '.van-toast',
+                        '.semi-toast',
+                        '.weui-toast'
+                    ];
+
+                    for (const selector of possibleSelectors) {
+                        try {
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of elements) {
+                                // 检查元素是否可见
+                                if (el.offsetParent !== null) {
+                                    const text = el.textContent || el.innerText || '';
+                                    if (text.trim()) {
+                                        capturedMessage = text.trim();
+                                        console.log('[clickWithRetry] 📨 捕获到提示信息（现有元素）:', capturedMessage);
+                                        break;
+                                    }
+                                }
+                            }
+                            if (capturedMessage) break;
+                        } catch (e) {
+                            // 忽略选择器错误
+                        }
+                    }
+                }
+
+                return {
+                    success: true,
+                    message: capturedMessage || '发布操作已执行，但未捕获到平台提示信息。如发布失败，请登录对应平台查看具体原因'
+                };
+            }
+
+            return { success: true, message: '点击成功' };
         } catch (e) {
             console.error(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击失败:`, e.message);
             if (i < maxRetries - 1) {
@@ -458,13 +618,13 @@ async function clickWithRetry(element, maxRetries = 3, delay = 300) {
     }
 
     console.error('[clickWithRetry] ❌ 所有点击尝试均失败');
-    return false;
-}
+    return { success: false, message: '所有点击尝试均失败' };
+};
 
 // 发送成功消息并关闭窗口
-async function closeWindowWithMessage(message = '发布成功，刷新数据', delay = 1000) {
+window.closeWindowWithMessage = async function(message = '发布成功，刷新数据', delay = 1000) {
     console.log(`[closeWindow] 发送消息: ${message}`);
-    sendMessageToParent(message);
+    window.sendMessageToParent(message);
 
     if (delay > 0) {
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -479,11 +639,29 @@ async function closeWindowWithMessage(message = '发布成功，刷新数据', d
         console.error('[closeWindow] ❌ 关闭窗口失败:', e);
         return false;
     }
-}
+};
 
 // 延迟执行（Promise 包装的 setTimeout）
-function delay(ms) {
+window.delay = function(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
+};
 
-} // 结束 common.js 防重复注入检查
+console.log('[common.js] ✅ common.js 加载完成');
+console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
+
+} // 结束 if-else 块，所有函数在 else 块内定义
+
+// 定义全局别名，确保向后兼容
+if (typeof waitForElement === 'undefined') window.waitForElement && (waitForElement = window.waitForElement);
+if (typeof retryOperation === 'undefined') window.retryOperation && (retryOperation = window.retryOperation);
+if (typeof sendMessageToParent === 'undefined') window.sendMessageToParent && (sendMessageToParent = window.sendMessageToParent);
+if (typeof uploadFileToInput === 'undefined') window.uploadFileToInput && (uploadFileToInput = window.uploadFileToInput);
+if (typeof downloadFile === 'undefined') window.downloadFile && (downloadFile = window.downloadFile);
+if (typeof uploadVideo === 'undefined') window.uploadVideo && (uploadVideo = window.uploadVideo);
+if (typeof setNativeValue === 'undefined') window.setNativeValue && (setNativeValue = window.setNativeValue);
+if (typeof waitForShadowElement === 'undefined') window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);
+if (typeof deepShadowSearch === 'undefined') window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
+if (typeof sendStatistics === 'undefined') window.sendStatistics && (sendStatistics = window.sendStatistics);
+if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
+if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
+if (typeof delay === 'undefined') window.delay && (delay = window.delay);
