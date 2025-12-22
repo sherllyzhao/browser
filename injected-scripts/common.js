@@ -455,6 +455,7 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
             let messageObserver = null;
 
             if (captureMessage) {
+                console.log("🚀 ~ clickWithRetry ~ captureMessage: ", captureMessage);
                 // 创建 MutationObserver 监听页面新增的提示元素
                 messageObserver = new MutationObserver((mutations) => {
                     for (const mutation of mutations) {
