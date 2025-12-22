@@ -23,6 +23,16 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
     console.log('[小红书发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
+
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('小红书发布')) {
+      return;
+    }
+  }
+
   window.__XHS_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');

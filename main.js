@@ -228,7 +228,7 @@ function createWindow() {
   });
 
   // 脚本注入函数（提取为公共函数，可复用）
-  const injectScriptForUrl = async (webContents, url) => {
+  const injectScriptForUrl = async (webContents, url, retryCount = 0) => {
     // 检查 webContents 是否已销毁
     if (!webContents || webContents.isDestroyed()) {
       return;
@@ -241,6 +241,83 @@ function createWindow() {
     console.log('==================================================');
     console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
+
+    // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
+    // 如果异常，立即隐藏页面内容，防止用户看到乱码
+    const pageCheckScript = `
+      (function() {
+        if (!document.body) return { ready: false, reason: 'no body' };
+
+        const bodyText = document.body.innerText || '';
+        const cssPatterns = [
+          'text-decoration:none',
+          'background-color:transparent',
+          'cursor:pointer',
+          'border-radius:',
+          'display:block',
+          'position:absolute',
+          ':hover{',
+          '@media '
+        ];
+
+        let cssMatchCount = 0;
+        for (const pattern of cssPatterns) {
+          if (bodyText.includes(pattern)) cssMatchCount++;
+        }
+
+        if (cssMatchCount >= 3) {
+          // 立即隐藏页面内容，防止用户看到异常代码
+          document.body.style.visibility = 'hidden';
+          document.body.style.opacity = '0';
+
+          // 添加遮罩 + loading动画
+          if (!document.getElementById('__page_loading_mask__')) {
+            const mask = document.createElement('div');
+            mask.id = '__page_loading_mask__';
+            mask.innerHTML = '<style>@keyframes __loading_spin__{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><div style="width:40px;height:40px;border:3px solid #f3f3f3;border-top:3px solid #3498db;border-radius:50%;animation:__loading_spin__ 1s linear infinite;"></div>';
+            mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
+            document.documentElement.appendChild(mask);
+          }
+
+          return { ready: false, reason: 'css-as-text', matchCount: cssMatchCount };
+        }
+
+        return { ready: true };
+      })()
+    `;
+
+    try {
+      // 先检查页面状态
+      const pageState = await webContents.executeJavaScript(pageCheckScript);
+
+      if (!pageState.ready) {
+        console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+        // 最多重试2次，每次间隔1.5秒，然后刷新
+        if (retryCount < 2) {
+          console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
+          setTimeout(() => {
+            injectScriptForUrl(webContents, url, retryCount + 1);
+          }, 1500);
+          return;
+        } else {
+          console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
+          webContents.reload();
+          return;
+        }
+      }
+    } catch (checkErr) {
+      // 检查脚本执行失败，可能页面还没准备好
+      if (!checkErr.message.includes('destroyed')) {
+        console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
+        if (retryCount < 2) {
+          setTimeout(() => {
+            injectScriptForUrl(webContents, url, retryCount + 1);
+          }, 1000);
+          return;
+        }
+      }
+    }
 
     // 注入对应的自定义脚本
     const script = await scriptManager.getScript(url);
@@ -305,6 +382,57 @@ function createWindow() {
     console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
+  });
+
+  // 页面异常检测脚本（在 dom-ready 时尽早执行）
+  const earlyPageCheckScript = `
+    (function() {
+      // 延迟一小段时间等待内容渲染
+      setTimeout(() => {
+        if (!document.body) return;
+
+        const bodyText = document.body.innerText || '';
+        const cssPatterns = [
+          'text-decoration:none',
+          'background-color:transparent',
+          'cursor:pointer',
+          'border-radius:',
+          'display:block',
+          'position:absolute',
+          ':hover{',
+          '@media '
+        ];
+
+        let cssMatchCount = 0;
+        for (const pattern of cssPatterns) {
+          if (bodyText.includes(pattern)) cssMatchCount++;
+        }
+
+        if (cssMatchCount >= 3) {
+          console.error('[Early Check] 检测到页面渲染异常，立即隐藏页面');
+          // 立即隐藏页面
+          document.body.style.visibility = 'hidden';
+          document.body.style.opacity = '0';
+
+          // 添加遮罩 + loading动画
+          if (!document.getElementById('__page_loading_mask__')) {
+            const mask = document.createElement('div');
+            mask.id = '__page_loading_mask__';
+            mask.innerHTML = '<style>@keyframes __loading_spin__{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><div style="width:40px;height:40px;border:3px solid #f3f3f3;border-top:3px solid #3498db;border-radius:50%;animation:__loading_spin__ 1s linear infinite;"></div>';
+            mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
+            document.documentElement.appendChild(mask);
+          }
+        }
+      }, 50);
+    })()
+  `;
+
+  // 在 dom-ready 时尽早检测页面状态（比 did-finish-load 更早）
+  browserView.webContents.on('dom-ready', () => {
+    console.log('[Navigation] DOM Ready，执行早期页面检测...');
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+    }
   });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
@@ -375,6 +503,14 @@ function createWindow() {
     if (!isProduction) {
       newWindow.webContents.openDevTools();
     }
+
+    // 新窗口也添加早期页面检测（dom-ready 时执行）
+    newWindow.webContents.on('dom-ready', () => {
+      console.log('[New Window] DOM Ready，执行早期页面检测...');
+      if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+        newWindow.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+      }
+    });
 
     // 为新窗口添加脚本注入
     newWindow.webContents.on('did-finish-load', async () => {

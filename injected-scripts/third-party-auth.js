@@ -10,6 +10,15 @@
 (function() {
   'use strict';
 
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('第三方授权')) {
+      return;
+    }
+  }
+
   console.log('[第三方授权] 脚本已加载');
   console.log('[第三方授权] 当前 URL:', window.location.href);
 

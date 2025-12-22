@@ -15,6 +15,16 @@
     console.log('[抖音授权] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
+
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('抖音授权')) {
+      return;
+    }
+  }
+
   window.__DOUYIN_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');

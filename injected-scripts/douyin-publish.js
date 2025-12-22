@@ -23,6 +23,16 @@ let hasProcessed = false;
     console.log('[抖音发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
+
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('抖音发布')) {
+      return;
+    }
+  }
+
   window.__DOUYIN_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');
@@ -360,6 +370,81 @@ async function fillFormData(dataObj) {
 
   fillFormRunning = true;
 
+  // 设置封面
+  try {
+    console.log('[封面设置] 开始设置封面...');
+
+    // 尝试多种选择器策略
+    let coverInput = null;
+    const selectors = [
+      '.recommendCover-vWWsHB:nth-child(1)',
+      '.recommendCover-vWWsHB:first-child',
+      '.recommendCover-vWWsHB'
+    ];
+
+    for (const selector of selectors) {
+      try {
+        coverInput = await waitForElement(selector, 3000);
+        if (coverInput) {
+          console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
+      }
+    }
+
+    if (!coverInput) {
+      throw new Error('未找到任何封面元素');
+    }
+
+    console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
+
+    // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
+    const rect = coverInput.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+
+    const mouseEventOptions = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      button: 0
+    };
+
+    // 完整的鼠标事件序列
+    coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+    console.log('[封面设置] ✅ 已触发完整点击事件序列');
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // 尝试查找并确认弹窗（如果没有弹窗也没关系）
+    try {
+      const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+      const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+      confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+      console.log('[封面设置] ✅ 已确认弹窗');
+    } catch (dialogError) {
+      console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
+    }
+  } catch (error) {
+    console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
+  }
+
   try {
     const titleAndIntro = dataObj.video.video.sendlog;
     // alert(JSON.stringify(titleAndIntro));
@@ -570,81 +655,6 @@ async function fillFormData(dataObj) {
     // 等待表单填写完成
     await new Promise(resolve => setTimeout(resolve, 15000));
 
-    // 设置封面
-    try {
-      console.log('[封面设置] 开始设置封面...');
-
-      // 尝试多种选择器策略
-      let coverInput = null;
-      const selectors = [
-        '.recommendCover-vWWsHB:nth-child(1)',
-        '.recommendCover-vWWsHB:first-child',
-        '.recommendCover-vWWsHB'
-      ];
-
-      for (const selector of selectors) {
-        try {
-          coverInput = await waitForElement(selector, 3000);
-          if (coverInput) {
-            console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-            break;
-          }
-        } catch (e) {
-          console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
-        }
-      }
-
-      if (!coverInput) {
-        throw new Error('未找到任何封面元素');
-      }
-
-      console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
-
-      // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
-      const rect = coverInput.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
-
-      const mouseEventOptions = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: x,
-        clientY: y,
-        screenX: x,
-        screenY: y,
-        button: 0
-      };
-
-      // 完整的鼠标事件序列
-      coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
-
-      console.log('[封面设置] ✅ 已触发完整点击事件序列');
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // 尝试查找并确认弹窗（如果没有弹窗也没关系）
-      try {
-        const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
-        const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
-        confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
-        console.log('[封面设置] ✅ 已确认弹窗');
-      } catch (dialogError) {
-        console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
-      }
-    } catch (error) {
-      console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
-    }
-
     // 检查是否通过检测 - 持续等待直到检测完成
     try {
       console.log('[检测结果] 等待检测元素出现...');
@@ -684,6 +694,76 @@ async function fillFormData(dataObj) {
           break; // 发布后退出循环
         }
 
+        // 只要不是"封面检测通过"，就尝试设置封面
+        console.log('[检测结果] ⚠️ 封面检测未通过，尝试设置封面...');
+
+        // 设置封面
+        try {
+          let coverInput = null;
+          const selectors = [
+            '.recommendCover-vWWsHB:nth-child(1)',
+            '.recommendCover-vWWsHB:first-child',
+            '.recommendCover-vWWsHB'
+          ];
+
+          for (const selector of selectors) {
+            try {
+              coverInput = await waitForElement(selector, 3000);
+              if (coverInput) {
+                console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+                break;
+              }
+            } catch (e) {
+              console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
+            }
+          }
+
+          if (coverInput) {
+            // 模拟完整的鼠标点击事件序列
+            const rect = coverInput.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+
+            const mouseEventOptions = {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX: x,
+              clientY: y,
+              screenX: x,
+              screenY: y,
+              button: 0
+            };
+
+            coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+            console.log('[封面设置] ✅ 已触发封面点击');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // 尝试确认弹窗
+            try {
+              const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+              const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+              confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+              console.log('[封面设置] ✅ 已确认弹窗');
+            } catch (dialogError) {
+              console.log('[封面设置] ⚠️ 未找到确认弹窗:', dialogError.message);
+            }
+
+            // 等待封面设置完成后继续检测
+            console.log('[封面设置] ⏳ 等待封面设置生效...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+        } catch (coverError) {
+          console.log('[封面设置] ❌ 设置封面失败:', coverError.message);
+        }
+
         // 检查是否超时
         if (Date.now() - startTime > timeout) {
           console.log('[检测结果] ❌ 等待检测通过超时（2分钟）');
@@ -692,7 +772,7 @@ async function fillFormData(dataObj) {
         }
 
         // 等待后再次检查
-        console.log('[检测结果] ⏳ 检测未通过，2秒后重新检查...');
+        console.log('[检测结果] ⏳ 2秒后重新检查...');
         await new Promise(resolve => setTimeout(resolve, checkInterval));
       }
 

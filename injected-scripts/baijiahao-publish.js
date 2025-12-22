@@ -23,6 +23,16 @@ let hasProcessed = false;
     console.log('[百家号发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
+
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('百家号发布')) {
+      return;
+    }
+  }
+
   window.__BJH_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');
