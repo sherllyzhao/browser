@@ -179,6 +179,65 @@ function createWindow() {
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
 
+  // 监听下载事件
+  persistentSession.on('will-download', (event, item, webContents) => {
+    const url = item.getURL();
+    const filename = item.getFilename();
+    console.log('[Download] 开始下载:', url);
+    console.log('[Download] 文件名:', filename);
+
+    // 让用户选择保存位置（使用默认文件名）
+    const savePath = dialog.showSaveDialogSync(mainWindow, {
+      title: '保存文件',
+      defaultPath: filename,
+      filters: [
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+
+    if (savePath) {
+      item.setSavePath(savePath);
+      console.log('[Download] 保存到:', savePath);
+
+      item.on('updated', (event, state) => {
+        if (state === 'progressing') {
+          if (!item.isPaused()) {
+            const received = item.getReceivedBytes();
+            const total = item.getTotalBytes();
+            const percent = total > 0 ? Math.round(received / total * 100) : 0;
+            console.log(`[Download] 进度: ${percent}% (${received}/${total})`);
+          }
+        }
+      });
+
+      item.once('done', (event, state) => {
+        if (state === 'completed') {
+          console.log('[Download] ✅ 下载完成:', savePath);
+          dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: '下载完成',
+            message: '文件下载成功',
+            detail: `保存位置: ${savePath}`,
+            buttons: ['确定']
+          });
+        } else {
+          console.log('[Download] ❌ 下载失败:', state);
+          dialog.showMessageBox(mainWindow, {
+            type: 'error',
+            title: '下载失败',
+            message: '文件下载失败',
+            detail: `状态: ${state}`,
+            buttons: ['确定']
+          });
+        }
+      });
+    } else {
+      // 用户取消了保存
+      console.log('[Download] 用户取消保存');
+      item.cancel();
+    }
+  });
+
   // 创建 BrowserView 用于显示网页内容
   browserView = new BrowserView({
     webPreferences: {
@@ -456,6 +515,31 @@ function createWindow() {
     if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
       console.log('[Window Open] ❌ Blocked non-http protocol:', url);
       return { action: 'deny' };
+    }
+
+    // 检测下载 URL（包含 /download 或 /api/bucket/download 等）
+    if (url && (url.includes('/api/bucket/download') || url.includes('/download?') || url.includes('/download/'))) {
+      console.log('[Window Open] 📥 检测到下载链接:', url);
+
+      // 尝试从 URL 参数中提取实际的文件 URL
+      let actualUrl = url;
+      try {
+        const urlObj = new URL(url);
+        const fileUrl = urlObj.searchParams.get('url');
+        if (fileUrl) {
+          actualUrl = fileUrl;
+          console.log('[Window Open] 📥 提取到实际文件 URL:', actualUrl);
+        }
+      } catch (e) {
+        console.log('[Window Open] ⚠️ URL 解析失败，使用原始 URL');
+      }
+
+      // 异步触发下载，不阻塞
+      setImmediate(() => {
+        browserView.webContents.downloadURL(actualUrl);
+      });
+
+      return { action: 'deny' }; // 阻止打开新窗口
     }
 
     console.log('[Window Open] ✅ Opening new window for:', url);
@@ -1116,23 +1200,43 @@ ipcMain.on('content-to-home', (event, message) => {
   console.log('[IPC] 收到 content-to-home 消息:', message);
   console.log('[IPC] HOME_URL:', HOME_URL);
 
-  // 向 BrowserView 中的首页发送消息
-  if (browserView) {
+  const messageStr = JSON.stringify(message);
+
+  // 向 BrowserView 发送消息（无论当前是否为首页，让页面自行判断）
+  if (browserView && !browserView.webContents.isDestroyed()) {
     browserView.webContents.executeJavaScript(`
       (function() {
         const homeUrl = '${HOME_URL}';
         const currentUrl = window.location.href;
         const isHome = currentUrl.startsWith(homeUrl);
-        console.log('[Main] HOME_URL:', homeUrl);
-        console.log('[Main] currentUrl:', currentUrl);
-        console.log('[Main] isHome:', isHome);
+        console.log('[Main→BrowserView] HOME_URL:', homeUrl);
+        console.log('[Main→BrowserView] currentUrl:', currentUrl);
+        console.log('[Main→BrowserView] isHome:', isHome);
         if (isHome) {
-          console.log('[Main] 向首页发送消息:', ${JSON.stringify(message)});
-          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${JSON.stringify(message)} }, '*');
+          console.log('[Main→BrowserView] ✅ 向首页发送消息:', ${messageStr});
+          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
         }
       })();
     `).catch(err => console.error('[Main] Failed to send message to home (BrowserView):', err));
   }
+
+  // 同时向所有子窗口广播，让首页自行接收
+  childWindows.forEach((childWindow, index) => {
+    if (childWindow && !childWindow.isDestroyed()) {
+      childWindow.webContents.executeJavaScript(`
+        (function() {
+          const homeUrl = '${HOME_URL}';
+          const currentUrl = window.location.href;
+          const isHome = currentUrl.startsWith(homeUrl);
+          console.log('[Main→ChildWindow${index}] currentUrl:', currentUrl, 'isHome:', isHome);
+          if (isHome) {
+            console.log('[Main→ChildWindow${index}] ✅ 向首页发送消息:', ${messageStr});
+            window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+          }
+        })();
+      `).catch(err => console.error(`[Main] Failed to send message to child window ${index}:`, err));
+    }
+  });
 });
 
 // 从首页发送消息到其他页面
@@ -1591,6 +1695,27 @@ ipcMain.handle('download-video', async (event, url) => {
     return await downloadWithRedirect(url);
   } catch (err) {
     console.error('[Video Download] 异常:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 文件下载功能（从内容页面触发） ==========
+ipcMain.handle('trigger-download', async (event, url) => {
+  console.log('[Trigger Download] 收到下载请求:', url);
+
+  if (!url) {
+    return { success: false, error: 'No URL provided' };
+  }
+
+  try {
+    // 触发下载
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.downloadURL(url);
+      return { success: true };
+    }
+    return { success: false, error: 'BrowserView not available' };
+  } catch (err) {
+    console.error('[Trigger Download] 错误:', err);
     return { success: false, error: err.message };
   }
 });

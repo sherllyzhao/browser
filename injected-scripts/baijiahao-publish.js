@@ -253,6 +253,8 @@ async function publishApi(dataObj) {
     return;
   }
 
+  const publishId = dataObj.video.dyPlatform.id;
+
   try {
     // 标记发布正在进行
     publishRunning = true;
@@ -292,6 +294,8 @@ async function publishApi(dataObj) {
       alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
 
       console.log('[百家号发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
+      // 开发环境视为成功
+      await sendStatistics(publishId, '百家号发布');
     } else {
       // 生产环境：必须点击发布按钮
       console.log('[百家号发布] ✅ 生产环境确认，准备点击发布按钮...');
@@ -300,6 +304,8 @@ async function publishApi(dataObj) {
 
       if (!clickResult.success) {
         console.error('[百家号发布] ❌ 所有点击尝试均失败:', clickResult.message);
+        // 发送失败统计
+        await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '百家号发布');
         publishRunning = false;
         throw new Error('发布按钮点击失败: ' + clickResult.message);
       }
@@ -312,27 +318,34 @@ async function publishApi(dataObj) {
         alert(`百家号发布结果：\n\n${clickResult.message}`);
       }
 
-      // 等待页面稳定后发送统计接口
+      // 等待页面稳定
       await delay(2000);
-    }
 
-    // 发送统计接口
-    const publishId = dataObj.video.dyPlatform.id;
-    await sendStatistics(publishId, '百家号发布');
+      // 根据平台提示判断发布结果（只有明确包含"发布成功"才算成功，其他都算失败）
+      const isPublishSuccess = (clickResult.message || '').includes('发布成功');
+
+      if (isPublishSuccess) {
+        console.log('[百家号发布] ✅ 发布成功');
+        // 发送成功统计
+        await sendStatistics(publishId, '百家号发布');
+      } else {
+        console.log('[百家号发布] ❌ 检测到发布失败:', clickResult.message);
+        // 发送失败统计
+        await sendStatisticsError(publishId, clickResult.message || '未知错误', '百家号发布');
+        // 标记已完成
+        hasProcessed = true;
+        publishRunning = false;
+        // 发送失败消息并关闭窗口
+        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+        return;
+      }
+    }
 
     // 标记已完成
     hasProcessed = true;
     publishRunning = false;
 
-    // 🗑️ 清除 localStorage 中的数据（发布成功后）
-    /* try {
-      localStorage.removeItem('BJH_PUBLISH_DATA');
-      console.log('[百家号发布] 🗑️ 已清除 localStorage 数据');
-    } catch (e) {
-      console.error('[百家号发布] ❌ 清除数据失败:', e);
-    } */
-
-    // 等待页面稳定后发送统计接口
+    // 等待页面稳定
     await delay(2000);
 
     // 发送成功消息并关闭窗口
@@ -340,6 +353,8 @@ async function publishApi(dataObj) {
 
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
+    // 发送失败统计
+    await sendStatisticsError(publishId, error.message || '发布过程出错', '百家号发布');
     publishRunning = false;
     // 即使出错也尝试关闭窗口
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
@@ -569,19 +584,9 @@ async function fillFormData(dataObj) {
                                 }, 2000);
                               }
                             } else {
-                              // 立即发布 - 先发送统计接口再点击发布按钮
+                              // 立即发布
                               const publishBtnEle = document.querySelector(".op-list-wrap-news .cheetah-btn-primary");
-
-                              // 先发送统计接口
-                              const scanData = {data: JSON.stringify({id: dataObj.video.dyPlatform.id})};
-                              try {
-                                await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
-                                  method: "POST",
-                                  headers: {"Content-Type": "application/json"},
-                                  body: JSON.stringify(scanData),
-                                });
-                              } catch (e) {
-                              }
+                              const publishId = dataObj.video.dyPlatform.id;
 
                               // 清理本地数据
                               localStorage.removeItem('articleContentPostData');
@@ -592,21 +597,26 @@ async function fillFormData(dataObj) {
                                 const publishClickResult = await clickWithRetry(publishBtnEle, 3, 500, true);
                                 if (!publishClickResult.success) {
                                   console.error('[百家号发布] 发布按钮点击失败:', publishClickResult.message);
+                                  // 发送失败统计
+                                  await sendStatisticsError(publishId, publishClickResult.message || '发布按钮点击失败', '百家号发布');
                                 } else {
                                   console.log('[百家号发布] 📨 平台提示:', publishClickResult.message);
                                 }
                               } else {
                                 console.log('[百家号发布] 发布按钮不存在或不可见');
+                                // 发送失败统计
+                                await sendStatisticsError(publishId, '发布按钮不存在或不可见', '百家号发布');
                               }
 
                               setTimeout(async () => {
                                 // 点击确认按钮（使用重试逻辑）
+                                let confirmClickResult = { success: false, message: '' };
                                 try {
                                   const confirmBtnEleTwo = document.querySelectorAll(".cheetah-modal-confirm-btns .cheetah-btn-primary");
                                   const finalBtn = confirmBtnEleTwo[confirmBtnEleTwo.length - 1];
                                   if (finalBtn && finalBtn.offsetParent !== null) {
                                     console.log('[百家号发布] 点击确认按钮');
-                                    const confirmClickResult = await clickWithRetry(finalBtn, 3, 500, true);
+                                    confirmClickResult = await clickWithRetry(finalBtn, 3, 500, true);
                                     if (!confirmClickResult.success) {
                                       console.error('[百家号发布] 确认按钮点击失败:', confirmClickResult.message);
                                     } else {
@@ -623,8 +633,23 @@ async function fillFormData(dataObj) {
                                   console.log('[百家号发布] 确认按钮点击失败:', e.message);
                                 }
 
-                                // 发送成功消息并关闭窗口
-                                sendMessageToParent('发布成功，刷新数据');
+                                // 根据平台提示判断发布结果（只有明确包含"发布成功"才算成功，其他都算失败）
+                                const isPublishSuccess = (confirmClickResult.message || '').includes('发布成功');
+
+                                if (isPublishSuccess) {
+                                  console.log('[百家号发布] ✅ 发布成功');
+                                  // 发送成功统计
+                                  await sendStatistics(publishId, '百家号发布');
+                                  // 发送成功消息
+                                  sendMessageToParent('发布成功，刷新数据');
+                                } else {
+                                  console.log('[百家号发布] ❌ 检测到发布失败:', confirmClickResult.message);
+                                  // 发送失败统计
+                                  await sendStatisticsError(publishId, confirmClickResult.message || '未知错误', '百家号发布');
+                                  // 发送失败消息
+                                  sendMessageToParent('发布失败，刷新数据');
+                                }
+
                                 setTimeout(() => {
                                   try {
                                     window.browserAPI.closeCurrentWindow();

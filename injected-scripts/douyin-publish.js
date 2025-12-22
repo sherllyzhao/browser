@@ -266,15 +266,13 @@ async function publishApi(dataObj) {
     return;
   }
 
+  const publishId = dataObj.video.dyPlatform.id;
+
   try {
     // 标记发布正在进行
     publishRunning = true;
 
-    // 发送统计接口
-    const publishId = dataObj.video.dyPlatform.id;
-    await sendStatistics(publishId, '抖音发布');
-
-    // 等待页面稳定后发送统计接口
+    // 等待页面稳定
     await delay(2000);
 
     // 等待发布按钮可用
@@ -304,55 +302,61 @@ async function publishApi(dataObj) {
       console.warn('[抖音发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
-    if (isDevEnvironment) {
-      console.log('[抖音发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
-      console.log('[抖音发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
+    // 生产环境：必须点击发布按钮
+    console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
 
-      // 显示提示给开发者
-      alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成，封面检测已通过\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
+    const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
-      console.log('[抖音发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
-    } else {
-      // 生产环境：必须点击发布按钮
-      console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
-
-      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
-
-      if (!clickResult.success) {
-        console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
-        publishRunning = false;
-        throw new Error('发布按钮点击失败: ' + clickResult.message);
-      }
-
-      console.log('[抖音发布] ✅ 发布按钮已点击');
-      console.log('[抖音发布] 📨 平台提示:', clickResult.message);
-
-      // 开发环境弹窗显示平台提示信息
-      if (window.browserAPI && window.browserAPI.isProduction === false) {
-        alert(`抖音发布结果：\n\n${clickResult.message}`);
-      }
-
-      // 等待页面稳定后发送统计接口
-      await delay(2000);
+    if (!clickResult.success) {
+      console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
+      // 发送失败统计
+      await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '抖音发布');
+      publishRunning = false;
+      throw new Error('发布按钮点击失败: ' + clickResult.message);
     }
 
-    // 标记已完成
-    hasProcessed = true;
-    publishRunning = false;
+    console.log('[抖音发布] ✅ 发布按钮已点击');
+    console.log('[抖音发布] 📨 平台提示:', clickResult.message);
 
-    // 🗑️ 清除 localStorage 中的数据（发布成功后）
-    /* try {
-      localStorage.removeItem('DOUYIN_PUBLISH_DATA');
-      console.log('[抖音发布] 🗑️ 已清除 localStorage 数据');
-    } catch (e) {
-      console.error('[抖音发布] ❌ 清除数据失败:', e);
-    } */
+    // 开发环境弹窗显示平台提示信息
+    if (window.browserAPI && window.browserAPI.isProduction === false) {
+      alert(`抖音发布结果：\n\n${clickResult.message}`);
+    }
 
-    // 发送成功消息并关闭窗口
-    await closeWindowWithMessage('发布成功，刷新数据', 1000);
+    // 等待页面稳定
+    await delay(2000);
 
+    // 根据平台提示判断发布结果（只有明确包含"发布成功"才算成功，其他都算失败）
+    const isPublishSuccess = (clickResult.message || '').includes('发布成功');
+
+    if (isPublishSuccess) {
+      console.log('[抖音发布] ✅ 发布成功');
+      // 保存 publishId 到 localStorage，供 publish-success.js 使用
+      try {
+        localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
+        console.log('[抖音发布] 💾 已保存 publishId 到 localStorage:', publishId);
+      } catch (e) {
+        console.error('[抖音发布] ❌ 保存 publishId 失败:', e);
+      }
+      // 标记已完成
+      hasProcessed = true;
+      publishRunning = false;
+      // 不关闭窗口，等待抖音自动跳转到成功页（由 publish-success.js 处理统计和关闭）
+      console.log('[抖音发布] ✅ 等待跳转到管理页，由 publish-success.js 处理...');
+    } else {
+      console.log('[抖音发布] ❌ 检测到发布失败:', clickResult.message);
+      // 发送失败统计
+      await sendStatisticsError(publishId, clickResult.message || '未知错误', '抖音发布');
+      // 标记已完成
+      hasProcessed = true;
+      publishRunning = false;
+      // 发送失败消息并关闭窗口
+      await closeWindowWithMessage('发布失败，刷新数据', 1000);
+    }
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
+    // 发送失败统计
+    await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
     publishRunning = false;
     // 即使出错也尝试关闭窗口
     await closeWindowWithMessage('发布失败，刷新数据', 1000);

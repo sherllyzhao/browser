@@ -1,7 +1,39 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // 检测是否为生产环境（打包后运行）
-const isProduction = process.resourcesPath && process.resourcesPath.includes('app.asar');
+// 使用多种方式判断，确保准确
+const isProduction = (() => {
+  // 方法1：检查 process.defaultApp（开发环境为 true）
+  if (process.defaultApp) {
+    return false;
+  }
+
+  // 方法2：检查执行路径是否包含 electron（开发环境特征）
+  const execPath = process.execPath.toLowerCase();
+  if (execPath.includes('electron')) {
+    return false;
+  }
+
+  // 方法3：检查 resourcesPath 是否包含 app.asar
+  if (process.resourcesPath && process.resourcesPath.includes('app.asar')) {
+    return true;
+  }
+
+  // 方法4：检查 resourcesPath 是否在 node_modules 中（开发环境特征）
+  if (process.resourcesPath && process.resourcesPath.includes('node_modules')) {
+    return false;
+  }
+
+  // 默认认为是生产环境（安全起见）
+  return true;
+})();
+
+console.log('[content-preload] 环境检测:', {
+  isProduction,
+  defaultApp: process.defaultApp,
+  execPath: process.execPath,
+  resourcesPath: process.resourcesPath
+});
 
 // 消息回调存储（单例模式 - 只保留最新的回调）
 const messageCallbacks = {
@@ -107,6 +139,9 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 视频下载 API（通过主进程绕过跨域限制）
   downloadVideo: (url) => ipcRenderer.invoke('download-video', url),
+
+  // 触发文件下载（会弹出保存对话框）
+  triggerDownload: (url) => ipcRenderer.invoke('trigger-download', url),
 
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain)

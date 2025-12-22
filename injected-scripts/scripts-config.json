@@ -2,6 +2,7 @@
   "scripts": {
     "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
     "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
+    "https://creator.douyin.com/creator-micro/content/manage?enter_from=publish": ["common.js", "publish-success.js"],
     "https://creator.xiaohongshu.com/new/home": ["common.js", "xiaohongshu-creator.js"],
     "https://channels.weixin.qq.com/platform/": ["common.js", "shipinhao-creator.js"],
     "https://channels.weixin.qq.com/platform/account": ["common.js", "shipinhao-creator.js"],
