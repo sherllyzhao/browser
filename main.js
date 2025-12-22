@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const ScriptManager = require('./script-manager');
@@ -9,6 +9,7 @@ let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
+let tray = null; // 托盘图标对象
 
 // 检测是否为便携版（通过检查是否在标准安装目录）
 // 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
@@ -21,32 +22,15 @@ const isPortable = isProduction && !isInstalled;
 // 设置用户数据路径
 if (isProduction) {
   if (isPortable) {
-    // 便携版：数据存储在应用程序目录下的 UserData 文件夹
-    // 重要：electron-builder 的 portable 构建会将 exe 解压到临时目录
-    // 因此不能使用 process.execPath，应该使用以下优先级：
-    // 1. PORTABLE_EXECUTABLE_DIR 环境变量（electron-builder 提供）
-    // 2. 当前工作目录（用户双击 exe 时的目录）
-    // 3. exe 文件的实际路径（通过 app.getPath('exe') 获取）
-
-    let portableBaseDir;
-
-    if (process.env.PORTABLE_EXECUTABLE_DIR) {
-      // electron-builder portable 构建会设置这个环境变量
-      portableBaseDir = process.env.PORTABLE_EXECUTABLE_DIR;
-      console.log('[Portable Mode] 使用 PORTABLE_EXECUTABLE_DIR:', portableBaseDir);
-    } else {
-      // 回退方案：使用 exe 文件实际路径
-      portableBaseDir = path.dirname(app.getPath('exe'));
-      console.log('[Portable Mode] 使用 app.getPath("exe"):', portableBaseDir);
-    }
-
-    const portableDataPath = path.join(portableBaseDir, 'UserData');
+    // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
+    // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
+    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '运营助手-Portable');
 
     // 确保目录存在
     if (!fs.existsSync(portableDataPath)) {
       try {
         fs.mkdirSync(portableDataPath, { recursive: true });
-        console.log('[Portable Mode] 已创建 UserData 目录:', portableDataPath);
+        console.log('[Portable Mode] 已创建数据目录:', portableDataPath);
       } catch (err) {
         console.error('[Portable Mode] 创建目录失败:', err);
       }
@@ -54,9 +38,7 @@ if (isProduction) {
 
     app.setPath('userData', portableDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
-    console.log('[Portable Mode] 数据将存储在:', portableDataPath);
-    console.log('[Portable Mode] process.execPath:', process.execPath);
-    console.log('[Portable Mode] process.cwd():', process.cwd());
+    console.log('[Portable Mode] 数据存储在固定位置:', portableDataPath);
   } else {
     // 安装版：使用系统默认路径
     console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
@@ -82,6 +64,9 @@ function cleanupDestroyedWindows() {
 }
 
 function createWindow() {
+  // 使用 nativeImage 创建图标（支持高 DPI）
+  const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+
   // 创建主窗口
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -90,7 +75,7 @@ function createWindow() {
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
-    icon: path.join(__dirname, 'icon.ico'), // 应用图标
+    icon: appIcon, // 使用 nativeImage 加载的图标
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -300,6 +285,14 @@ function createWindow() {
     await injectScriptForUrl(browserView.webContents, currentURL);
   };
 
+  // 拦截导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
+  browserView.webContents.on('will-navigate', (event, url) => {
+    if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+      console.log('[Navigation] ❌ Blocked non-http protocol:', url);
+      event.preventDefault();
+    }
+  });
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
@@ -329,7 +322,15 @@ function createWindow() {
 
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
   browserView.webContents.setWindowOpenHandler(({ url }) => {
-    console.log('[Window Open] Opening new window for:', url);
+    console.log('[Window Open] Request to open:', url);
+
+    // 过滤自定义协议（如 bitbrowser://），阻止系统弹出"需要使用新应用"对话框
+    if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+      console.log('[Window Open] ❌ Blocked non-http protocol:', url);
+      return { action: 'deny' };
+    }
+
+    console.log('[Window Open] ✅ Opening new window for:', url);
 
     // 使用 allow 模式，保持 window.opener 引用
     return {
@@ -497,7 +498,33 @@ async function validateAndCleanupUserData() {
   }
 }
 
+// createTray 创建托盘图标
+function createTray() {
+  const icon = path.join(__dirname, 'icon.ico')
+  tray = new Tray(icon)
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示窗口',
+      click: () => win.show()
+    },
+    {
+      label: '退出',
+      click: () => app.quit()
+    }
+  ])
+
+  tray.setToolTip('应用名称')
+  tray.setContextMenu(contextMenu)
+}
+
 app.whenReady().then(async () => {
+  // 设置 Windows 任务栏应用程序用户模型 ID（确保任务栏图标正确显示）
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.zhcloud.browser');
+    console.log('[App] 已设置 AppUserModelId: com.zhcloud.browser');
+  }
+
   // 设置日志文件（便携版和生产环境）
   if (isProduction) {
     const logPath = path.join(app.getPath('userData'), 'app.log');
@@ -563,6 +590,7 @@ app.whenReady().then(async () => {
   scriptManager = new ScriptManager(scriptsBaseDir);
 
   createWindow();
+  createTray();
 
   // 注册全局快捷键后门打开 DevTools (Ctrl+Shift+F12)
   globalShortcut.register('CommandOrControl+Shift+F12', () => {
@@ -637,6 +665,7 @@ app.whenReady().then(async () => {
 
       // 直接使用简化的prompt对话框
       const { BrowserWindow } = require('electron');
+      const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
 
       const inputWindow = new BrowserWindow({
         width: 500,
@@ -645,6 +674,7 @@ app.whenReady().then(async () => {
         modal: true,
         show: false,
         autoHideMenuBar: true,
+        icon: appIcon, // 使用 nativeImage 加载的图标
         webPreferences: {
           nodeIntegration: true,  // 启用nodeIntegration以便使用ipcRenderer
           contextIsolation: false  // 关闭上下文隔离
@@ -1029,9 +1059,12 @@ ipcMain.handle('open-new-window', async (event, url) => {
   }
 
   try {
+    const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
+      icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: {
         preload: path.join(__dirname, 'content-preload.js'),
         contextIsolation: true,
@@ -1266,6 +1299,52 @@ ipcMain.handle('get-session-path', async () => {
     return { success: true, path: storagePath };
   }
   return { success: false };
+});
+
+// ========== 清除指定域名的 Cookies ==========
+ipcMain.handle('clear-domain-cookies', async (event, domain) => {
+  console.log('[Clear Cookies] ========== API 调用 ==========');
+  console.log('[Clear Cookies] 请求清除域名:', domain);
+
+  if (!domain) {
+    return { success: false, error: '域名不能为空' };
+  }
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const ses = browserView.webContents.session;
+      const cookies = await ses.cookies.get({});
+      console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+
+      let deletedCount = 0;
+      for (const cookie of cookies) {
+        // 匹配域名（包括子域名）
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+
+        if (shouldDelete) {
+          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
+          try {
+            await ses.cookies.remove(cookieUrl, cookie.name);
+            deletedCount++;
+            console.log(`[Clear Cookies] ✓ 删除: ${cookie.name} @ ${cookie.domain}`);
+          } catch (err) {
+            console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+          }
+        }
+      }
+
+      console.log(`[Clear Cookies] ========== 清除完成 ==========`);
+      console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+      return { success: true, deletedCount };
+    } catch (err) {
+      console.error('[Clear Cookies] 清除失败:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { success: false, error: 'BrowserView 不可用' };
 });
 
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========
