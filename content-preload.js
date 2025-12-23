@@ -103,6 +103,57 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 从首页发送消息到其他页面
   sendToOtherPage: (message) => {
     console.log('[BrowserAPI] 发送消息到其他页面:', message);
+    // 判断message的类型，如果是"publish-data"，解析一下message的data字段，然后存到全局存储
+    if (message.type === 'publish-data') {
+      const {data} = message;
+      if (data) {
+        // 存储发布数据到全局持久化存储，供发布脚本使用
+        ipcRenderer.invoke('global-storage-set', 'publish_data', data);
+        console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
+        const dataObj = JSON.parse(data);
+        //  判断dataObj是否是数组
+        if (Array.isArray(dataObj)) {
+          console.log("🚀 ~ sendToOtherPage ~ dataObj: ", dataObj);
+          //  遍历数组，取第一个元素出来
+          for (let i = 0; i < dataObj.length; i++) {
+            const element = dataObj[i];
+            console.log("🚀 ~ sendToOtherPage ~ element: ", element);
+            const urlMap = {
+              'dy': 'https://creator.douyin.com/creator-micro/content/upload',
+              'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
+              'sph': 'https://channels.weixin.qq.com/platform/post/create',
+              'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+            }
+            const platformMap = {
+              1: 'dy',
+              6: 'xhs',
+              7: 'sph',
+              4: 'bjh'
+            }
+            const platform = platformMap[element.account_info.media.id];
+            const url = urlMap[platform];
+            console.log("🚀 ~ sendToOtherPage ~ platform:", platform, "url:", url);
+
+            // 先把该平台的发布数据存到全局存储（新窗口可以直接读取）
+            ipcRenderer.invoke('global-storage-set', `publish_data_${platform}`, element);
+            console.log(`[BrowserAPI] ✅ 已存储 publish_data_${platform} 到全局存储`);
+
+            // 打开新窗口
+            ipcRenderer.invoke('open-new-window', url);
+
+            // 延迟后向所有窗口广播消息（使用 home-to-content 而不是 content-to-home）
+            setTimeout(() => {
+              ipcRenderer.send('home-to-content', {
+                type: 'publish-data',
+                platform: platform,
+                data: element
+              });
+              console.log(`[BrowserAPI] 📤 已广播 publish-data 消息到所有窗口, platform: ${platform}`);
+            }, 3000);
+          }
+        }
+      }
+    }
     ipcRenderer.send('home-to-content', message);
   },
 
@@ -122,6 +173,15 @@ contextBridge.exposeInMainWorld('browserAPI', {
   onMessageFromMain: (callback) => {
     messageCallbacks.fromMain = callback;
     console.log('[BrowserAPI] onMessageFromMain 监听器已注册/更新');
+  },
+
+  // 监听 Cookies 清除事件（首页使用，用于清空授权列表）
+  onCookiesCleared: (callback) => {
+    ipcRenderer.on('cookies-cleared', (event, data) => {
+      console.log('[BrowserAPI] 收到 cookies-cleared 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onCookiesCleared 监听器已注册');
   },
 
   // 清除所有监听器（用于组件卸载）
@@ -144,7 +204,22 @@ contextBridge.exposeInMainWorld('browserAPI', {
   triggerDownload: (url) => ipcRenderer.invoke('trigger-download', url),
 
   // 清除指定域名的 Cookies（用于退出登录）
-  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain)
+  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+
+  // 检查 Session 状态（用于检测登录状态是否被清除）
+  checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),
+
+  // ========== 全局数据存储 API（用于跨页面数据传递） ==========
+  // 存储数据（如 company_id）
+  setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),
+  // 获取数据
+  getGlobalData: (key) => ipcRenderer.invoke('global-storage-get', key).then(r => r.value),
+  // 删除数据
+  removeGlobalData: (key) => ipcRenderer.invoke('global-storage-remove', key),
+  // 获取所有数据
+  getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
+  // 清空所有数据
+  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear')
 });
 
 // 在页面加载时注入通信代码和协议拦截

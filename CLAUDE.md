@@ -104,6 +104,81 @@ window.browserAPI.onMessageFromMain((message) => { ... });
 
 **Implementation Note**: Communication uses IPC between processes, then `postMessage` for final delivery to page context. Homepage is identified by exact URL match: `http://localhost:5173/`.
 
+### 4. Cookies 清除事件监听
+```javascript
+// 监听 Cookies 清除事件（通过 Ctrl+Alt+C 快捷键触发）
+window.browserAPI.onCookiesCleared((data) => {
+  if (data.type === 'all') {
+    // 清除了所有 Cookies
+    console.log('所有登录状态已清除');
+  } else if (data.type === 'domain') {
+    // 清除了指定域名的 Cookies
+    console.log(`域名 ${data.domain} 的 ${data.count} 个 cookies 已清除`);
+  }
+});
+```
+
+### 5. Session 状态检查
+```javascript
+// 主动检查 Session 状态（用于检测用户手动删除 UserData 文件夹的情况）
+const status = await window.browserAPI.checkSessionStatus();
+// 返回值示例:
+// {
+//   hasSession: true,
+//   cookieCount: 100,
+//   platforms: {
+//     douyin: { count: 17, loggedIn: false },      // count 是 cookie 数量，loggedIn 是是否有有效登录凭证
+//     xiaohongshu: { count: 5, loggedIn: true },
+//     weixin: { count: 3, loggedIn: false },
+//     baijiahao: { count: 2, loggedIn: true }
+//   }
+// }
+
+// 使用场景：页面加载时检查登录状态
+// 注意：要用 loggedIn 判断，不要用 count（cookie 数量不代表登录状态）
+if (!status.platforms.douyin.loggedIn) {
+  // 抖音未登录或登录已过期，清空授权列表
+}
+```
+
+**各平台登录凭证 Cookie 名称**（用于判断 `loggedIn` 状态）:
+
+| 平台 | 关键 Cookie 名称 |
+|------|-----------------|
+| 抖音 | `sessionid`, `sessionid_ss`, `passport_csrf_token`, `sid_guard`, `uid_tt`, `uid_tt_ss` |
+| 小红书 | `web_session`, `websectiga`, `sec_poison_id` |
+| 微信公众号 | `wxuin`, `pass_ticket` |
+| 百家号 | `BDUSS`, `STOKEN` |
+
+> 只要存在上述任一 Cookie，对应平台的 `loggedIn` 就为 `true`。
+
+### 6. 全局数据持久化存储
+```javascript
+// 存储数据（如 company_id），数据会持久化保存到文件，应用重启后仍然保留
+await window.browserAPI.setGlobalData('company_id', '12345');
+
+// 获取数据
+const companyId = await window.browserAPI.getGlobalData('company_id');
+
+// 删除单个数据
+await window.browserAPI.removeGlobalData('company_id');
+
+// 获取所有数据
+const allData = await window.browserAPI.getAllGlobalData();
+// 返回: { company_id: '12345', other_key: 'value', ... }
+
+// 清空所有数据
+await window.browserAPI.clearGlobalData();
+```
+
+**存储位置**:
+| 版本 | 文件路径 |
+|------|---------|
+| 开发环境/安装版 | `%APPDATA%\运营助手\global-storage.json` |
+| 便携版 | `%LOCALAPPDATA%\运营助手-Portable\global-storage.json` |
+
+**使用场景**: 登录页存储 `company_id`，授权脚本中获取使用。
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory
@@ -197,3 +272,53 @@ const HOME_URL = 'http://localhost:5173/';
 - Converts session cookies to persistent
 - Flushes storage data before shutdown
 - 200ms delay ensures disk write completion
+
+## Known Issues & Solutions
+
+### bitbrowser:// 协议系统弹窗问题
+
+**问题描述**: 某些第三方平台（如抖音）的授权页面会尝试调用 `bitbrowser://` 协议，导致 Windows 弹出 "需要使用新应用以打开此 bitbrowser 链接" 对话框。
+
+**已实施的拦截措施**:
+1. `protocol.registerSchemesAsPrivileged()` - 在 app.whenReady() 之前注册协议方案
+2. `protocol.registerStringProtocol('bitbrowser', ...)` - 注册协议拦截器
+3. `session.webRequest.onBeforeRequest()` - Session 级别拦截
+4. `will-navigate` / `will-frame-navigate` 事件拦截
+5. `setWindowOpenHandler` 拦截新窗口
+6. `app.on('web-contents-created')` 全局拦截
+7. 前端 JavaScript 拦截（content-preload.js 和 common.js）
+
+**不要使用的方案**:
+```javascript
+// ❌ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
+// 这会导致以下错误：
+// Error launching app
+// Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc
+// Cannot find module 'D:\浏览器\运营助手\bitbrowser\cc'
+```
+
+原因：当 Windows 尝试打开 `bitbrowser://cc` 时，会将 URL 路径作为命令行参数传递给已注册的应用，Electron 会错误地将 `bitbrowser\cc` 解析为应用程序路径。
+
+### Session 状态检测
+
+**场景**: 用户手动删除 UserData 文件夹后，需要清空授权列表。
+
+**解决方案**:
+1. 通过快捷键 Ctrl+Alt+C 清除 Cookies 时，会发送 `cookies-cleared` 事件
+2. 使用 `window.browserAPI.checkSessionStatus()` 主动检查 Cookie 状态
+
+```javascript
+// 监听 Cookies 清除事件（快捷键触发）
+window.browserAPI.onCookiesCleared((data) => {
+  if (data.type === 'all') {
+    // 清空所有授权列表
+  } else if (data.type === 'domain') {
+    // 刷新指定域名的授权状态
+    console.log(`域名 ${data.domain} 的 ${data.count} 个 cookies 已清除`);
+  }
+});
+
+// 主动检查 Session 状态（用于检测手动删除文件夹的情况）
+const status = await window.browserAPI.checkSessionStatus();
+// status = { hasSession: true, cookieCount: 100, platforms: { douyin: 10, xiaohongshu: 5, ... } }
+```

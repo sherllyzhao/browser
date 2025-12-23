@@ -13,7 +13,7 @@ let hasProcessed = false;
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-(function() {
+(async function () {
   'use strict';
 
   // ===========================
@@ -64,7 +64,7 @@ let hasProcessed = false;
   // ===========================
 
   const urlParams = new URLSearchParams(window.location.search);
-  const companyId = urlParams.get('company_id');
+  const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
   console.log('[抖音发布] URL 参数:', {
@@ -127,7 +127,7 @@ let hasProcessed = false;
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'auth-data') {
+        if (message.type === 'publish-data') {
           console.log('[抖音发布] ✅ 收到发布数据:', message.data);
 
           // 防重复检查
@@ -171,9 +171,9 @@ let hasProcessed = false;
             } */
 
             await uploadVideo(messageData);
-            try{
+            try {
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-            }catch (e){
+            } catch (e) {
               console.log('[抖音发布] ❌ 填写表单数据失败:', e);
             }
 

@@ -11,6 +11,39 @@ let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
 
+// 全局数据持久化存储（存储到文件，应用重启后仍然保留）
+let globalStorage = {};
+const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
+
+// 加载持久化数据
+function loadGlobalStorage() {
+  try {
+    const storagePath = getGlobalStoragePath();
+    if (fs.existsSync(storagePath)) {
+      const data = fs.readFileSync(storagePath, 'utf8');
+      globalStorage = JSON.parse(data);
+      console.log('[Global Storage] ✅ 已从文件加载数据:', storagePath);
+      console.log('[Global Storage] 数据内容:', globalStorage);
+    } else {
+      console.log('[Global Storage] 文件不存在，使用空存储');
+    }
+  } catch (err) {
+    console.error('[Global Storage] ❌ 加载数据失败:', err);
+    globalStorage = {};
+  }
+}
+
+// 保存持久化数据
+function saveGlobalStorage() {
+  try {
+    const storagePath = getGlobalStoragePath();
+    fs.writeFileSync(storagePath, JSON.stringify(globalStorage, null, 2), 'utf8');
+    console.log('[Global Storage] ✅ 数据已保存到文件:', storagePath);
+  } catch (err) {
+    console.error('[Global Storage] ❌ 保存数据失败:', err);
+  }
+}
+
 // 检测是否为便携版（通过检查是否在标准安装目录）
 // 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
 const execPathLower = process.execPath.toLowerCase();
@@ -48,6 +81,21 @@ if (isProduction) {
 const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
+
+// 所有可能的首页地址（用于消息路由判断）
+const HOME_URLS = [
+  'http://localhost:5173/',
+  'https://dev.china9.cn/aigc_browser/',
+  'http://172.16.6.17:8080/',
+  'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
+  'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+];
+
+// 判断 URL 是否为首页
+function isHomeUrl(url) {
+  return HOME_URLS.some(homeUrl => url.startsWith(homeUrl));
+}
+
 const childWindows = []; // 跟踪所有打开的子窗口
 
 // 在 app.whenReady() 之前注册自定义协议方案，使其可以被拦截
@@ -829,10 +877,14 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
-  // 注册为 bitbrowser 协议的默认处理程序（阻止系统弹窗）
+  // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
+  // 这会导致错误: "Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc"
+  // 原因: Windows 会将 bitbrowser://cc 的路径部分作为命令行参数传递给应用
+
+  // 移除之前错误注册的协议处理程序（清理注册表）
   if (process.platform === 'win32') {
-    app.setAsDefaultProtocolClient('bitbrowser');
-    console.log('[Protocol] ✅ 已注册为 bitbrowser:// 协议的默认处理程序');
+    app.removeAsDefaultProtocolClient('bitbrowser');
+    console.log('[Protocol] 已移除 bitbrowser:// 协议注册');
   }
 
   // 注册自定义协议拦截器，阻止 bitbrowser:// 等协议触发系统对话框
@@ -925,6 +977,9 @@ app.whenReady().then(async () => {
   // 启动时验证数据完整性
   await validateAndCleanupUserData();
 
+  // 加载全局持久化数据（如 company_id）
+  loadGlobalStorage();
+
   // 生产环境立即移除菜单（必须在创建窗口之前）
   if (isProduction) {
     Menu.setApplicationMenu(null);
@@ -999,6 +1054,10 @@ app.whenReady().then(async () => {
         console.log(`[Clear Cookies] 清除后有 ${cookiesAfter.length} 个 cookies`);
         console.log('[Clear Cookies] ✅ 已清除所有登录状态');
 
+        // 通知首页清空授权列表
+        browserView.webContents.send('cookies-cleared', { type: 'all' });
+        console.log('[Clear Cookies] 📤 已通知首页清空授权列表');
+
         await dialog.showMessageBox(mainWindow, {
           type: 'info',
           title: '清除成功',
@@ -1067,6 +1126,10 @@ app.whenReady().then(async () => {
 
           console.log(`[Clear Cookies] ========== 清除完成 ==========`);
           console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+          // 通知首页刷新指定域名的授权状态
+          browserView.webContents.send('cookies-cleared', { type: 'domain', domain: domain, count: deletedCount });
+          console.log('[Clear Cookies] 📤 已通知首页刷新授权状态');
 
           await dialog.showMessageBox(mainWindow, {
             type: 'info',
@@ -1253,6 +1316,74 @@ app.on('window-all-closed', function () {
 
 // IPC 处理程序
 
+// 检查 Session 状态（用于检测登录状态是否被清除）
+ipcMain.handle('check-session-status', async () => {
+  try {
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      return { hasSession: false, cookieCount: 0, reason: 'browserView不可用' };
+    }
+
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+
+    // 检查特定平台的登录凭证 cookies（不只是数量，而是关键的登录 cookie）
+    const douyinCookies = cookies.filter(c => c.domain.includes('douyin.com'));
+    const xiaohongshuCookies = cookies.filter(c => c.domain.includes('xiaohongshu.com'));
+    const weixinCookies = cookies.filter(c => c.domain.includes('weixin.qq.com'));
+    const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
+
+    // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
+    const douyinLoggedIn = douyinCookies.some(c =>
+      c.name === 'sessionid' ||
+      c.name === 'sessionid_ss' ||
+      c.name === 'passport_csrf_token' ||
+      c.name === 'sid_guard' ||
+      c.name === 'uid_tt' ||
+      c.name === 'uid_tt_ss'
+    );
+
+    const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
+      c.name === 'web_session' ||
+      c.name === 'websectiga' ||
+      c.name === 'sec_poison_id'
+    );
+
+    const weixinLoggedIn = weixinCookies.some(c =>
+      c.name === 'wxuin' ||
+      c.name === 'pass_ticket'
+    );
+
+    const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
+      c.name === 'BDUSS' ||
+      c.name === 'STOKEN'
+    );
+
+    const platformStatus = {
+      douyin: { count: douyinCookies.length, loggedIn: douyinLoggedIn },
+      xiaohongshu: { count: xiaohongshuCookies.length, loggedIn: xiaohongshuLoggedIn },
+      weixin: { count: weixinCookies.length, loggedIn: weixinLoggedIn },
+      baijiahao: { count: baijiahaoCookies.length, loggedIn: baijiahaoLoggedIn }
+    };
+
+    console.log('[Session Check] Cookie 统计:', {
+      total: cookies.length,
+      douyin: `${douyinCookies.length} cookies, loggedIn: ${douyinLoggedIn}`,
+      xiaohongshu: `${xiaohongshuCookies.length} cookies, loggedIn: ${xiaohongshuLoggedIn}`,
+      weixin: `${weixinCookies.length} cookies, loggedIn: ${weixinLoggedIn}`,
+      baijiahao: `${baijiahaoCookies.length} cookies, loggedIn: ${baijiahaoLoggedIn}`
+    });
+
+    return {
+      hasSession: cookies.length > 0,
+      cookieCount: cookies.length,
+      platforms: platformStatus
+    };
+  } catch (err) {
+    console.error('[Session Check] 检查失败:', err);
+    return { hasSession: false, cookieCount: 0, error: err.message };
+  }
+});
+
 // 导航到指定 URL
 ipcMain.handle('navigate-to', async (event, url) => {
   if (browserView) {
@@ -1329,7 +1460,7 @@ ipcMain.handle('execute-script-now', async (event, script) => {
 // 从内容页面发送消息到首页
 ipcMain.on('content-to-home', (event, message) => {
   console.log('[IPC] 收到 content-to-home 消息:', message);
-  console.log('[IPC] HOME_URL:', HOME_URL);
+  console.log('[IPC] HOME_URLS:', HOME_URLS);
 
   const messageStr = JSON.stringify(message);
 
@@ -1337,10 +1468,10 @@ ipcMain.on('content-to-home', (event, message) => {
   if (browserView && !browserView.webContents.isDestroyed()) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const homeUrl = '${HOME_URL}';
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
         const currentUrl = window.location.href;
-        const isHome = currentUrl.startsWith(homeUrl);
-        console.log('[Main→BrowserView] HOME_URL:', homeUrl);
+        const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+        console.log('[Main→BrowserView] HOME_URLS:', homeUrls);
         console.log('[Main→BrowserView] currentUrl:', currentUrl);
         console.log('[Main→BrowserView] isHome:', isHome);
         if (isHome) {
@@ -1356,9 +1487,9 @@ ipcMain.on('content-to-home', (event, message) => {
     if (childWindow && !childWindow.isDestroyed()) {
       childWindow.webContents.executeJavaScript(`
         (function() {
-          const homeUrl = '${HOME_URL}';
+          const homeUrls = ${JSON.stringify(HOME_URLS)};
           const currentUrl = window.location.href;
-          const isHome = currentUrl.startsWith(homeUrl);
+          const isHome = homeUrls.some(url => currentUrl.startsWith(url));
           console.log('[Main→ChildWindow${index}] currentUrl:', currentUrl, 'isHome:', isHome);
           if (isHome) {
             console.log('[Main→ChildWindow${index}] ✅ 向首页发送消息:', ${messageStr});
@@ -1716,6 +1847,45 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
   }
 
   return { success: false, error: 'BrowserView 不可用' };
+});
+
+// ========== 全局数据存储（用于跨页面数据传递） ==========
+
+// 存储数据
+ipcMain.handle('global-storage-set', async (event, key, value) => {
+  console.log('[Global Storage] 存储数据:', key, '=', value);
+  globalStorage[key] = value;
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
+});
+
+// 获取数据
+ipcMain.handle('global-storage-get', async (event, key) => {
+  const value = globalStorage[key];
+  console.log('[Global Storage] 获取数据:', key, '=', value);
+  return { success: true, value };
+});
+
+// 删除数据
+ipcMain.handle('global-storage-remove', async (event, key) => {
+  console.log('[Global Storage] 删除数据:', key);
+  delete globalStorage[key];
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
+});
+
+// 获取所有数据
+ipcMain.handle('global-storage-get-all', async () => {
+  console.log('[Global Storage] 获取所有数据:', globalStorage);
+  return { success: true, data: { ...globalStorage } };
+});
+
+// 清空所有数据
+ipcMain.handle('global-storage-clear', async () => {
+  console.log('[Global Storage] 清空所有数据');
+  globalStorage = {};
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
 });
 
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========

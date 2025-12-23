@@ -13,7 +13,7 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-(function() {
+(async function () {
   'use strict';
 
   // ===========================
@@ -64,7 +64,7 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
   // ===========================
 
   const urlParams = new URLSearchParams(window.location.search);
-  const companyId = urlParams.get('company_id');
+  const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
   console.log('[小红书发布] URL 参数:', {
@@ -119,7 +119,7 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'auth-data') {
+        if (message.type === 'publish-data') {
           console.log('[小红书发布] ✅ 收到发布数据:', message.data);
 
           // 防重复检查
@@ -178,9 +178,9 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
             console.log('[小红书发布] 查找横幅元素 #auth-info-display:', infoDisplay);
 
             await uploadVideo(messageData);
-            try{
+            try {
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-            }catch (e){
+            } catch (e) {
               console.log('[小红书发布] ❌ 填写表单数据失败:', e);
             }
 

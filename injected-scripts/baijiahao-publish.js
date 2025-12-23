@@ -13,7 +13,7 @@ let hasProcessed = false;
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-(function() {
+(async function () {
   'use strict';
 
   // ===========================
@@ -53,7 +53,7 @@ let hasProcessed = false;
   // ===========================
 
   const urlParams = new URLSearchParams(window.location.search);
-  const companyId = urlParams.get('company_id');
+  const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
   console.log('[百家号发布] URL 参数:', {
@@ -116,7 +116,7 @@ let hasProcessed = false;
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'auth-data') {
+        if (message.type === 'publish-data') {
           console.log('[百家号发布] ✅ 收到发布数据:', message.data);
 
           // 防重复检查
@@ -159,9 +159,9 @@ let hasProcessed = false;
               console.error('[百家号发布] ❌ 保存发布页URL失败:', e);
             } */
 
-            try{
+            try {
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-            }catch (e){
+            } catch (e) {
               console.log('[百家号发布] ❌ 填写表单数据失败:', e);
             }
 
@@ -198,7 +198,58 @@ let hasProcessed = false;
   console.log('═══════════════════════════════════════');
 
   // ===========================
-  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // 7. 从全局存储读取发布数据（备用方案，不依赖消息）
+  // ===========================
+  setTimeout(async () => {
+    // 如果已经在处理或已处理完成，跳过
+    if (isProcessing || hasProcessed) {
+      console.log('[百家号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+      return;
+    }
+
+    try {
+      const publishData = await window.browserAPI.getGlobalData('publish_data_bjh');
+      console.log('[百家号发布] 📦 从全局存储读取 publish_data_bjh:', publishData);
+
+      if (publishData && !isProcessing && !hasProcessed) {
+        console.log('[百家号发布] ✅ 从全局存储获取到发布数据，开始处理...');
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: publishData,
+          source: 'globalStorage',
+          receivedAt: Date.now()
+        };
+
+        try {
+          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+        } catch (e) {
+          console.log('[百家号发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[百家号发布] 📤 准备发送数据到接口...');
+        console.log('[百家号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData('publish_data_bjh');
+        console.log('[百家号发布] 🗑️ 已清除 publish_data_bjh');
+
+        isProcessing = false;
+      } else {
+        console.log('[百家号发布] ℹ️ 全局存储中没有 publish_data_bjh 数据');
+      }
+    } catch (error) {
+      console.error('[百家号发布] ❌ 从全局存储读取数据失败:', error);
+      isProcessing = false;
+    }
+  }, 5000); // 延迟 5 秒，给消息监听一些时间先处理
+
+  // ===========================
+  // 8. 检查是否有保存的发布数据（授权跳转恢复）
   // ===========================
   /* setTimeout(async () => {
     try {
