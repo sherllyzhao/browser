@@ -14,7 +14,8 @@
     "https://creator.xiaohongshu.com/publish/success*": ["publish-success.js"],
     "https://channels.weixin.qq.com/platform/post/create*": ["common.js", "shipinhao-publish.js"],
     "https://channels.weixin.qq.com/platform/post/list*": ["publish-success.js"],
-    "https://baijiahao.baidu.com/builder/rc/edit*": ["common.js", "baijiahao-publish.js"]
+    "https://baijiahao.baidu.com/builder/rc/edit*": ["common.js", "baijiahao-publish.js"],
+    "https://baijiahao.baidu.com/builder/rc/clue*": ["common.js", "publish-success.js"]
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"

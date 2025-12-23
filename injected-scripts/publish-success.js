@@ -75,6 +75,7 @@
       localStorage.removeItem('DOUYIN_PUBLISH_DATA');
       localStorage.removeItem('XHS_PUBLISH_DATA');
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
+      localStorage.removeItem('BJH_PUBLISH_DATA');
       console.log('[发布成功] 🗑️ 已清除临时数据');
     } catch (e) {
       // 忽略清除失败
@@ -82,6 +83,14 @@
 
     // 延迟关闭窗口
     await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
+    const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+    if (isDev) {
+      console.log('[发布成功] 🔧 开发模式：跳过关闭窗口，可查看控制台');
+      console.log('[发布成功] ✅ 处理完成！');
+      return;
+    }
 
     // 关闭窗口
     if (window.browserAPI && window.browserAPI.closeCurrentWindow) {

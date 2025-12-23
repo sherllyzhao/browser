@@ -294,6 +294,15 @@ async function publishApi(dataObj) {
     // 等待按钮事件绑定完成
     await delay(800);
 
+    // 🔑 小红书成功后会直接跳转页面，必须在点击前保存数据
+    // 否则跳转后 publishApi 的后续代码不会执行
+    try {
+      localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
+      console.log('[小红书发布] 💾 已提前保存 publishId 到 localStorage:', publishId);
+    } catch (e) {
+      console.error('[小红书发布] ❌ 保存 publishId 失败:', e);
+    }
+
     // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
     // 默认策略：无法确定环境时，执行点击（安全优先）
     let isDevEnvironment = false;
@@ -317,6 +326,8 @@ async function publishApi(dataObj) {
 
     if (!clickResult.success) {
       console.error('[小红书发布] ❌ 所有点击尝试均失败:', clickResult.message);
+      // 清除提前保存的数据
+      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
       // 发送失败统计
       await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '小红书发布');
       publishRunning = false;
@@ -334,38 +345,68 @@ async function publishApi(dataObj) {
     // 等待页面稳定
     await delay(2000);
 
-    // 根据平台提示判断发布结果（只有明确包含"发布成功"才算成功，其他都算失败）
-    const isPublishSuccess = (clickResult.message || '').includes('发布成功');
-
-    if (isPublishSuccess) {
-      console.log('[小红书发布] ✅ 发布成功');
-      // 保存 publishId 到 localStorage，供 publish-success.js 使用
-      try {
-        localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
-        console.log('[小红书发布] 💾 已保存 publishId 到 localStorage:', publishId);
-      } catch (e) {
-        console.error('[小红书发布] ❌ 保存 publishId 失败:', e);
-      }
-    } else {
-      console.log('[小红书发布] ❌ 检测到发布失败:', clickResult.message);
-      // 发送失败统计
-      await sendStatisticsError(publishId, clickResult.message || '未知错误', '小红书发布');
-      // 标记已完成
-      hasProcessed = true;
-      publishRunning = false;
-      // 发送失败消息并关闭窗口
-      await closeWindowWithMessage('发布失败，刷新数据', 1000);
-      return;
-    }
+    // 点击成功后，不再判断 toast 消息（因为各平台提示词不统一，无法准确判断）
+    // 直接认为发布已提交，等待页面跳转到成功页
+    // 成功统计由 publish-success.js 在成功页发送
+    console.log('[小红书发布] ✅ 发布已提交，消息:', clickResult.message);
 
     // 标记已完成
     hasProcessed = true;
     publishRunning = false;
 
-    // 发送成功消息（小红书会自动跳转到成功页，由 publish-success.js 关闭窗口）
-    //sendMessageToParent('发布成功，刷新数据');
+    // 等待页面跳转到成功页，超时 30 秒
+    console.log('[小红书发布] ⏳ 等待跳转到成功页（30秒超时）...');
+    const currentUrl = window.location.href;
+    const startTime = Date.now();
+    const timeout = 30000; // 30秒
+    let lastToastMessage = ''; // 记录最后一次检测到的 toast 消息
+
+    while (Date.now() - startTime < timeout) {
+      await delay(2000); // 每 2 秒检查一次
+
+      // 检查 URL 是否变化
+      if (window.location.href !== currentUrl) {
+        console.log('[小红书发布] ✅ 检测到页面跳转，发布成功');
+        return; // 页面已跳转，由 publish-success.js 处理
+      }
+
+      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
+      if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+        console.log('[小红书发布] ✅ 数据已被成功页处理，跳过后续检测');
+        return;
+      }
+
+      // 检测是否出现 toast 提示，记录消息内容
+      try {
+        const toastEl = document.querySelector('.d-toast-description');
+        if (toastEl) {
+          const text = (toastEl.textContent || '').trim();
+          if (text) {
+            lastToastMessage = text;
+            console.log('[小红书发布] 📨 检测到提示:', text);
+          }
+        }
+      } catch (e) {
+        // 忽略检测错误
+      }
+    }
+
+    // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
+    if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+      console.log('[小红书发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
+      return;
+    }
+
+    // 真正的超时失败
+    console.log('[小红书发布] ❌ 等待超时（30秒），判定发布失败');
+    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '小红书发布');
+    await closeWindowWithMessage('发布失败，刷新数据', 1000);
+
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
+    // 清除提前保存的数据
+    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
     // 发送失败统计
     await sendStatisticsError(publishId, error.message || '发布过程出错', '小红书发布');
     publishRunning = false;

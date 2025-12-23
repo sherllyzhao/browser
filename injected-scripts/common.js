@@ -549,7 +549,8 @@ window.sendStatisticsError = async function(publishId, statusText, platform = ''
 };
 
 // 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
-window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, captureMessage = false) {
+// defaultMessage: 当没有捕获到平台提示时返回的默认消息（用于小红书等跳页面代表成功的平台）
+window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, captureMessage = false, defaultMessage = '发布成功') {
     if (!element) {
         console.error('[clickWithRetry] 元素不存在');
         return { success: false, message: '元素不存在' };
@@ -714,7 +715,7 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
                 if (!capturedMessage) {
                     const possibleSelectors = [
                         '.d-toast-description',  // 小红书 toast
-                        '.semi-toast-content-text',  // Semi Design 优先
+                        '.semi-toast-content-text',  // 抖音 toast
                         '.ant-message-custom-content',  // Ant Design
                         '.el-message__content',  // Element UI
                         '[class*="toast"]',
@@ -750,7 +751,7 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
 
                 return {
                     success: true,
-                    message: capturedMessage || '发布操作已执行，但未捕获到平台提示信息。如发布失败，请登录对应平台查看具体原因'
+                    message: capturedMessage || defaultMessage
                 };
             }
 
@@ -819,3 +820,75 @@ if (typeof sendStatisticsError === 'undefined') window.sendStatisticsError && (s
 if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof delay === 'undefined') window.delay && (delay = window.delay);
+
+// ===========================
+// 前端拦截自定义协议（如 bitbrowser://）
+// ===========================
+(function() {
+  // 阻止的协议列表
+  const blockedProtocols = ['bitbrowser:', 'mqqwpa:', 'weixin:', 'alipays:', 'tbopen:'];
+
+  // 检查 URL 是否是被阻止的协议
+  function isBlockedProtocol(url) {
+    if (!url || typeof url !== 'string') return false;
+    const lowerUrl = url.toLowerCase();
+    return blockedProtocols.some(protocol => lowerUrl.startsWith(protocol));
+  }
+
+  // 拦截链接点击
+  document.addEventListener('click', function(e) {
+    const target = e.target.closest('a');
+    if (target && target.href && isBlockedProtocol(target.href)) {
+      console.log('[ProtocolBlock] ❌ 阻止链接点击:', target.href);
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    }
+  }, true);
+
+  // 拦截 window.open
+  const originalWindowOpen = window.open;
+  window.open = function(url, ...args) {
+    if (isBlockedProtocol(url)) {
+      console.log('[ProtocolBlock] ❌ 阻止 window.open:', url);
+      return null;
+    }
+    return originalWindowOpen.call(window, url, ...args);
+  };
+
+  // 拦截 location.assign
+  const originalAssign = window.location.assign;
+  if (originalAssign) {
+    window.location.assign = function(url) {
+      if (isBlockedProtocol(url)) {
+        console.log('[ProtocolBlock] ❌ 阻止 location.assign:', url);
+        return;
+      }
+      return originalAssign.call(window.location, url);
+    };
+  }
+
+  // 拦截 location.replace
+  const originalReplace = window.location.replace;
+  if (originalReplace) {
+    window.location.replace = function(url) {
+      if (isBlockedProtocol(url)) {
+        console.log('[ProtocolBlock] ❌ 阻止 location.replace:', url);
+        return;
+      }
+      return originalReplace.call(window.location, url);
+    };
+  }
+
+  // 拦截 location.href 设置（通过 defineProperty）
+  try {
+    const locationDescriptor = Object.getOwnPropertyDescriptor(window, 'location');
+    if (locationDescriptor && locationDescriptor.set) {
+      // 无法直接覆盖 location，尝试通过 MutationObserver 监控 iframe
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+
+  console.log('[ProtocolBlock] ✅ 前端协议拦截已启用');
+})();

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const ScriptManager = require('./script-manager');
@@ -49,6 +49,12 @@ const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const childWindows = []; // 跟踪所有打开的子窗口
+
+// 在 app.whenReady() 之前注册自定义协议方案，使其可以被拦截
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'bitbrowser', privileges: { standard: false, secure: false, bypassCSP: false, allowServiceWorkers: false, supportFetchAPI: false, corsEnabled: false } }
+]);
+console.log('[Protocol] 已注册 bitbrowser 协议方案');
 
 // 优化：限制最大子窗口数量，防止内存泄漏
 const MAX_CHILD_WINDOWS = 5;
@@ -162,6 +168,20 @@ function createWindow() {
 
   // 获取或创建持久化 session
   const persistentSession = session.fromPartition('persist:browserview', { cache: true });
+
+  // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
+  // 使用 <all_urls> 拦截所有请求
+  persistentSession.webRequest.onBeforeRequest((details, callback) => {
+    const url = details.url;
+    // 检测非标准协议
+    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+      console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
+      callback({ cancel: true });
+      return;
+    }
+    callback({});
+  });
+  console.log('[Session] ✅ 已添加 webRequest 协议拦截器');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -429,6 +449,15 @@ function createWindow() {
     }
   });
 
+  // 拦截 iframe 导航请求，阻止自定义协议
+  browserView.webContents.on('will-frame-navigate', (event) => {
+    const url = event.url;
+    if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+      console.log('[Frame Navigation] ❌ Blocked non-http protocol:', url);
+      event.preventDefault();
+    }
+  });
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
@@ -567,6 +596,67 @@ function createWindow() {
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
+
+    // 拦截子窗口的导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
+    newWindow.webContents.on('will-navigate', (event, url) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 拦截子窗口 iframe 导航请求，阻止自定义协议
+    newWindow.webContents.on('will-frame-navigate', (event) => {
+      const url = event.url;
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Frame] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 拦截子窗口重定向请求，阻止自定义协议
+    newWindow.webContents.on('will-redirect', (event, url) => {
+      console.log('[New Window Redirect] 检测到重定向:', url);
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Redirect] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 监听子窗口导航开始（用于调试）
+    newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
+      console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
+      if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+        console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
+      }
+    });
+
+    // 拦截子窗口打开新窗口的请求，阻止自定义协议
+    newWindow.webContents.setWindowOpenHandler(({ url }) => {
+      console.log('[New Window Open] Request to open:', url);
+
+      // 过滤自定义协议（如 bitbrowser://）
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Open] ❌ Blocked non-http protocol:', url);
+        return { action: 'deny' };
+      }
+
+      console.log('[New Window Open] ✅ Allowing:', url);
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1200,
+          height: 800,
+          webPreferences: {
+            preload: path.join(__dirname, 'content-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+            session: browserView.webContents.session
+          }
+        }
+      };
+    });
 
     // 忽略页面的 beforeunload 事件，允许直接关闭窗口
     newWindow.webContents.on('will-prevent-unload', (event) => {
@@ -739,6 +829,47 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  // 注册为 bitbrowser 协议的默认处理程序（阻止系统弹窗）
+  if (process.platform === 'win32') {
+    app.setAsDefaultProtocolClient('bitbrowser');
+    console.log('[Protocol] ✅ 已注册为 bitbrowser:// 协议的默认处理程序');
+  }
+
+  // 注册自定义协议拦截器，阻止 bitbrowser:// 等协议触发系统对话框
+  protocol.registerStringProtocol('bitbrowser', (request, callback) => {
+    console.log('[Protocol] ❌ Blocked bitbrowser:// protocol request:', request.url);
+    callback(''); // 返回空内容
+  });
+  console.log('[Protocol] ✅ 已注册 bitbrowser:// 协议拦截器');
+
+  // 全局拦截所有 webContents 的协议导航
+  app.on('web-contents-created', (event, webContents) => {
+    // 为每个 webContents 添加协议拦截
+    webContents.on('will-navigate', (event, url) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {
+        console.log('[Global] ❌ Blocked non-http navigation:', url);
+        event.preventDefault();
+      }
+    });
+
+    webContents.on('will-frame-navigate', (event) => {
+      const url = event.url;
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {
+        console.log('[Global Frame] ❌ Blocked non-http navigation:', url);
+        event.preventDefault();
+      }
+    });
+
+    webContents.setWindowOpenHandler(({ url }) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[Global WindowOpen] ❌ Blocked non-http:', url);
+        return { action: 'deny' };
+      }
+      return { action: 'allow' };
+    });
+  });
+  console.log('[App] ✅ 已添加全局 webContents 协议拦截');
+
   // 设置 Windows 任务栏应用程序用户模型 ID（确保任务栏图标正确显示）
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.zhcloud.browser');

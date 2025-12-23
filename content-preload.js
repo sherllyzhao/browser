@@ -147,7 +147,74 @@ contextBridge.exposeInMainWorld('browserAPI', {
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain)
 });
 
-// 在页面加载时注入通信代码
+// 在页面加载时注入通信代码和协议拦截
 window.addEventListener('DOMContentLoaded', () => {
   console.log('BrowserAPI ready:', window.location.href);
+
+  // 注入协议拦截代码到页面上下文
+  const script = document.createElement('script');
+  script.textContent = `
+    (function() {
+      // 阻止的协议列表
+      const blockedProtocols = ['bitbrowser:', 'mqqwpa:', 'weixin:', 'alipays:', 'tbopen:'];
+
+      function isBlockedProtocol(url) {
+        if (!url || typeof url !== 'string') return false;
+        const lowerUrl = url.toLowerCase();
+        return blockedProtocols.some(function(protocol) { return lowerUrl.startsWith(protocol); });
+      }
+
+      // 拦截链接点击
+      document.addEventListener('click', function(e) {
+        var target = e.target;
+        while (target && target !== document) {
+          if (target.tagName === 'A' && target.href && isBlockedProtocol(target.href)) {
+            console.log('[ProtocolBlock] 阻止链接点击:', target.href);
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+
+      // 拦截 window.open
+      var originalOpen = window.open;
+      window.open = function(url) {
+        if (isBlockedProtocol(url)) {
+          console.log('[ProtocolBlock] 阻止 window.open:', url);
+          return null;
+        }
+        return originalOpen.apply(window, arguments);
+      };
+
+      // 拦截 location.assign
+      var originalAssign = window.location.assign;
+      if (originalAssign) {
+        window.location.assign = function(url) {
+          if (isBlockedProtocol(url)) {
+            console.log('[ProtocolBlock] 阻止 location.assign:', url);
+            return;
+          }
+          return originalAssign.call(window.location, url);
+        };
+      }
+
+      // 拦截 location.replace
+      var originalReplace = window.location.replace;
+      if (originalReplace) {
+        window.location.replace = function(url) {
+          if (isBlockedProtocol(url)) {
+            console.log('[ProtocolBlock] 阻止 location.replace:', url);
+            return;
+          }
+          return originalReplace.call(window.location, url);
+        };
+      }
+
+      console.log('[ProtocolBlock] 前端协议拦截已启用');
+    })();
+  `;
+  document.documentElement.appendChild(script);
+  script.remove(); // 注入后立即移除 script 标签
 });
