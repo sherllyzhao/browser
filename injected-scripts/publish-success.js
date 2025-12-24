@@ -31,24 +31,82 @@
   setTimeout(async () => {
     console.log('[发布成功] 🎉 检测到发布成功页，开始处理...');
 
-    // 读取保存的发布数据
-    let publishData = null;
+    // 获取当前窗口 ID（用于读取窗口专属数据，避免多窗口冲突）
+    let windowId = null;
     try {
-      const savedData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
-      if (savedData) {
-        publishData = JSON.parse(savedData);
-        console.log('[发布成功] 📦 读取到发布数据:', publishData);
+      windowId = await window.browserAPI.getWindowId();
+      console.log('[发布成功] 当前窗口 ID:', windowId);
+    } catch (e) {
+      console.error('[发布成功] ❌ 获取窗口 ID 失败:', e);
+    }
+
+    // 读取保存的发布数据（优先使用窗口专属 key，兼容旧的通用 key）
+    let publishData = null;
+    let usedKey = null;
+    try {
+      // 优先尝试窗口专属 key
+      if (windowId) {
+        const windowSpecificKey = `PUBLISH_SUCCESS_DATA_${windowId}`;
+        console.log('[发布成功] 🔍 尝试读取窗口专属 key:', windowSpecificKey);
+        const savedData = localStorage.getItem(windowSpecificKey);
+        console.log('[发布成功] 🔍 窗口专属数据:', savedData);
+        if (savedData) {
+          publishData = JSON.parse(savedData);
+          usedKey = windowSpecificKey;
+          console.log('[发布成功] 📦 读取到窗口专属数据:', publishData);
+        }
+      }
+
+      // 如果没有窗口专属数据，尝试通用 key（兼容旧版本）
+      if (!publishData) {
+        console.log('[发布成功] 🔍 尝试读取通用 key: PUBLISH_SUCCESS_DATA');
+        const savedData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
+        console.log('[发布成功] 🔍 通用数据:', savedData);
+        if (savedData) {
+          publishData = JSON.parse(savedData);
+          usedKey = 'PUBLISH_SUCCESS_DATA';
+          console.log('[发布成功] 📦 读取到通用数据:', publishData);
+        }
+      }
+
+      // 打印所有 PUBLISH_SUCCESS_DATA 相关的 key（调试用）
+      console.log('[发布成功] 🔍 localStorage 中所有 PUBLISH_SUCCESS_DATA 相关的 key:');
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.includes('PUBLISH_SUCCESS_DATA')) {
+          console.log(`  - ${key}: ${localStorage.getItem(key)}`);
+        }
       }
     } catch (e) {
       console.error('[发布成功] ❌ 读取数据失败:', e);
     }
 
+    console.log('[发布成功] 📋 最终使用的 key:', usedKey);
+    console.log('[发布成功] 📋 最终 publishId:', publishData?.publishId);
+
     // 发送统计接口
     if (publishData && publishData.publishId) {
       try {
+        const mainInfo = await window.browserAPI.getMainUrl();
+
+        // 开发环境（localhost）跳过接口调用
         console.log('[发布成功] 📤 发送成功统计...');
         const scanData = { data: JSON.stringify({ id: publishData.publishId }) };
-        const response = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
+        const urlMap = {
+          'localhost': 'https://apidev.china9.cn/api/mediaauth/tjlog',
+          'china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
+          'www.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
+          'dev.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
+          'www.dev.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
+          'jzt_dev_1.china9.cn': 'https://jzt_dev_1.china9.cn/api/geo/tjlog',
+          'zhjzt.china9.cn': 'https://zhjzt.china9.cn/api/geo/tjlog',
+          '172.16.6.17:8080': 'https://jzt_dev_1.china9.cn/api/geo/tjlog',
+        }
+        let url = 'https://apidev.china9.cn/api/mediaauth/tjlog';
+        if (mainInfo.success && urlMap[mainInfo.host]) {
+          url = urlMap[mainInfo.host];
+        }
+        const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(scanData),
@@ -71,7 +129,16 @@
 
     // 清除临时数据
     try {
-      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      // 清除使用过的 key
+      if (usedKey) {
+        localStorage.removeItem(usedKey);
+        console.log('[发布成功] 🗑️ 已清除:', usedKey);
+      }
+      // 也清除窗口专属 key（如果有 windowId）
+      if (windowId) {
+        localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+      }
+      // 清除其他平台数据
       localStorage.removeItem('DOUYIN_PUBLISH_DATA');
       localStorage.removeItem('XHS_PUBLISH_DATA');
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');

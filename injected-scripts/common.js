@@ -293,6 +293,7 @@ window.downloadFile = async function(url, defaultType = 'application/octet-strea
 // 上传视频到input元素
 window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
     const pathImage = dataObj?.video?.video?.url;
+    console.log("🚀 ~ uploadVideo ~ pathImage: ", pathImage);
     if (!pathImage) {
         //alert('No video URL found');
         return;
@@ -512,12 +513,42 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
 // 公共发布方法
 // ===========================
 
+// 根据主窗口域名获取统计接口 URL
+async function getStatisticsUrl(isError = false) {
+    const endpoint = isError ? 'tjlogerror' : 'tjlog';
+    const urlMap = {
+        'localhost': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'www.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'dev.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'www.dev.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+        'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
+        '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+    };
+
+    let url = `https://apidev.china9.cn/api/mediaauth/${endpoint}`; // 默认值
+    try {
+        if (window.browserAPI && window.browserAPI.getMainUrl) {
+            const mainInfo = await window.browserAPI.getMainUrl();
+            if (mainInfo.success && urlMap[mainInfo.host]) {
+                url = urlMap[mainInfo.host];
+            }
+        }
+    } catch (e) {
+        console.warn('[统计接口] 获取主窗口 URL 失败，使用默认地址:', e);
+    }
+    return url;
+}
+
 // 发送统计接口（发布成功时调用）
 window.sendStatistics = async function(publishId, platform = '') {
     const scanData = { data: JSON.stringify({ id: publishId }) };
     try {
         console.log(`[${platform || '发布'}] 📤 发送成功统计接口，ID: ${publishId}`);
-        const response = await fetch("https://apidev.china9.cn/api/mediaauth/tjlog", {
+        const url = await getStatisticsUrl(false);
+        console.log(`[${platform || '发布'}] 统计接口地址: ${url}`);
+        const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(scanData),
@@ -535,7 +566,9 @@ window.sendStatisticsError = async function(publishId, statusText, platform = ''
     const scanData = { data: JSON.stringify({ id: publishId, status_text: statusText }) };
     try {
         console.log(`[${platform || '发布'}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
-        const response = await fetch("https://apidev.china9.cn/api/mediaauth/tjlogerror", {
+        const url = await getStatisticsUrl(true);
+        console.log(`[${platform || '发布'}] 统计接口地址: ${url}`);
+        const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(scanData),

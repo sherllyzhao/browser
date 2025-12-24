@@ -1046,6 +1046,12 @@ app.whenReady().then(async () => {
         const cookiesBefore = await ses.cookies.get({});
         console.log(`[Clear Cookies] 清除前有 ${cookiesBefore.length} 个 cookies`);
 
+        // 先导航到空白页，避免页面正在使用存储数据导致冲突卡死
+        console.log('[Clear Cookies] 先导航到空白页...');
+        await browserView.webContents.loadURL('about:blank');
+        // 等待一小段时间确保页面完全卸载
+        await new Promise(resolve => setTimeout(resolve, 100));
+
         await ses.clearStorageData({
           storages: ['cookies', 'localstorage', 'sessionstorage']
         });
@@ -1054,15 +1060,15 @@ app.whenReady().then(async () => {
         console.log(`[Clear Cookies] 清除后有 ${cookiesAfter.length} 个 cookies`);
         console.log('[Clear Cookies] ✅ 已清除所有登录状态');
 
-        // 通知首页清空授权列表
-        browserView.webContents.send('cookies-cleared', { type: 'all' });
-        console.log('[Clear Cookies] 📤 已通知首页清空授权列表');
+        // 清除完成后导航回首页
+        console.log('[Clear Cookies] 导航回首页...');
+        browserView.webContents.loadURL(HOME_URL);
 
         await dialog.showMessageBox(mainWindow, {
           type: 'info',
           title: '清除成功',
           message: '已清除所有网站的登录状态',
-          detail: `删除了 ${cookiesBefore.length} 个 cookies`,
+          detail: `删除了 ${cookiesBefore.length} 个 cookies\n\n页面将自动刷新`,
           buttons: ['确定']
         });
       }
@@ -1603,6 +1609,17 @@ ipcMain.handle('open-new-window', async (event, url) => {
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
+
+      // 通知首页：新窗口页面加载完成
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        browserView.webContents.send('window-loaded', {
+          url: currentURL,
+          windowId: newWindow.id,
+          timestamp: Date.now()
+        });
+        console.log('[New Window API] 已通知首页窗口加载完成');
+      }
+
       await scriptManager.getScript(currentURL).then(async (script) => {
         if (script) {
           console.log('[New Window API] Injecting script...');
@@ -1631,7 +1648,7 @@ ipcMain.handle('open-new-window', async (event, url) => {
     });
 
     newWindow.loadURL(url);
-    return { success: true };
+    return { success: true, windowId: newWindow.id };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1709,6 +1726,44 @@ ipcMain.handle('close-current-window', async (event) => {
     return { success: false, error: 'No window to close' };
   } catch (err) {
     console.error('[Window Manager] ❌ 关闭窗口失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// 获取当前窗口的 ID（用于新窗口识别自己）
+ipcMain.handle('get-window-id', async (event) => {
+  try {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow) {
+      return { success: true, windowId: senderWindow.id };
+    }
+    // 可能是 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      return { success: true, windowId: 'main', isMainView: true };
+    }
+    return { success: false, error: 'Cannot determine window' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 获取主窗口（BrowserView）的 URL（用于获取首页域名）
+ipcMain.handle('get-main-url', async () => {
+  try {
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      const url = browserView.webContents.getURL();
+      // 解析出域名
+      const urlObj = new URL(url);
+      return {
+        success: true,
+        url: url,
+        origin: urlObj.origin,  // 如 https://dev.china9.cn
+        host: urlObj.host,      // 如 dev.china9.cn
+        protocol: urlObj.protocol // 如 https:
+      };
+    }
+    return { success: false, error: 'BrowserView 不可用' };
+  } catch (err) {
     return { success: false, error: err.message };
   }
 });

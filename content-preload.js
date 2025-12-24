@@ -42,6 +42,32 @@ const messageCallbacks = {
   fromMain: null
 };
 
+// 防重复发布标志
+let isPublishing = false;
+
+// 待发送的消息队列（按 windowId 存储，等窗口加载完成后发送）
+const pendingMessages = new Map();
+
+// 监听窗口加载完成事件（在这里发送消息，替代 setTimeout 延时）
+ipcRenderer.on('window-loaded', (event, data) => {
+  console.log('[BrowserAPI] 🔔 收到 window-loaded 事件:', data);
+  const { windowId, url } = data;
+
+  // 检查是否有待发送的消息
+  if (pendingMessages.has(windowId)) {
+    const messageData = pendingMessages.get(windowId);
+    pendingMessages.delete(windowId);
+
+    // 发送消息到目标窗口
+    setTimeout(() => {
+      ipcRenderer.send('home-to-content', messageData);
+      console.log(`[BrowserAPI] 📤 窗口加载完成，已发送消息, windowId: ${windowId}, url: ${url}`);
+    }, 6000)
+  } else {
+    console.log(`[BrowserAPI] ℹ️ windowId: ${windowId} 没有待发送的消息`);
+  }
+});
+
 // 全局消息监听器（只注册一次）
 window.addEventListener('message', (event) => {
   // 只处理字符串类型的 type（过滤掉抖音等第三方消息）
@@ -103,57 +129,95 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 从首页发送消息到其他页面
   sendToOtherPage: (message) => {
     console.log('[BrowserAPI] 发送消息到其他页面:', message);
-    // 判断message的类型，如果是"publish-data"，解析一下message的data字段，然后存到全局存储
-    if (message.type === 'publish-data') {
-      const {data} = message;
-      if (data) {
-        // 存储发布数据到全局持久化存储，供发布脚本使用
-        ipcRenderer.invoke('global-storage-set', 'publish_data', data);
-        console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
-        const dataObj = JSON.parse(data);
-        //  判断dataObj是否是数组
-        if (Array.isArray(dataObj)) {
-          console.log("🚀 ~ sendToOtherPage ~ dataObj: ", dataObj);
-          //  遍历数组，取第一个元素出来
-          for (let i = 0; i < dataObj.length; i++) {
-            const element = dataObj[i];
-            console.log("🚀 ~ sendToOtherPage ~ element: ", element);
-            const urlMap = {
-              'dy': 'https://creator.douyin.com/creator-micro/content/upload',
-              'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
-              'sph': 'https://channels.weixin.qq.com/platform/post/create',
-              'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+
+    // 处理发布数据
+    if (message.type === 'publish-data' && message.data) {
+      const dataObj = JSON.parse(message.data);
+      console.log("🚀 ~ sendToOtherPage ~ dataObj: ", dataObj);
+
+      // 统一转换为数组处理（兼容单个对象和数组）
+      const dataArray = Array.isArray(dataObj) ? dataObj : [dataObj];
+
+      console.log('[BrowserAPI] 🔍 数据类型:', Array.isArray(dataObj) ? '数组' : '对象');
+      console.log('[BrowserAPI] 🔍 dataArray 长度:', dataArray.length);
+
+      // 存储完整发布数据到全局存储
+      ipcRenderer.invoke('global-storage-set', 'publish_data', message.data);
+      console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
+      console.log(`[BrowserAPI] 📋 共有 ${dataArray.length} 篇文章待发布`);
+
+      const urlMap = {
+        'dy': 'https://creator.douyin.com/creator-micro/content/upload',
+        'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
+        'sph': 'https://channels.weixin.qq.com/platform/post/create',
+        'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+      };
+      const platformMap = { 1: 'dy', 6: 'xhs', 7: 'sph', 4: 'bjh' };
+
+      // 使用立即执行的异步函数 + for...of 确保顺序执行
+      (async () => {
+        for (let index = 0; index < dataArray.length; index++) {
+          const element = dataArray[index];
+          const platform = platformMap[element.account_info.media.id];
+          const url = urlMap[platform];
+          console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
+
+          // 打开新窗口，获取窗口 ID
+          const result = await ipcRenderer.invoke('open-new-window', url);
+          if (!result.success) {
+            console.error(`❌ [${index + 1}] 打开窗口失败: ${result.error}`);
+            continue; // 继续下一个，不要 return
+          }
+
+          const windowId = result.windowId;
+          console.log(`✅ [${index + 1}] 窗口创建成功, windowId: ${windowId}`);
+
+          // 用窗口 ID 作为 key 存储数据，避免多窗口冲突
+          const publishData = {
+            element,
+            platform,
+            windowId,
+            video: {
+              formData: element.formData || { title: element.title, send_set: 1 },
+              video: {
+                cover: element.image,
+                title: element.title,
+                intro: element.intro,
+                content: element.content,
+                url: element.url,
+                sendlog: element.sendlog || {
+                  title: element.title,
+                  intro: element.intro,
+                }
+              },
+              dyPlatform: element.dyPlatform ||{ id: element.id }
             }
-            const platformMap = {
-              1: 'dy',
-              6: 'xhs',
-              7: 'sph',
-              4: 'bjh'
-            }
-            const platform = platformMap[element.account_info.media.id];
-            const url = urlMap[platform];
-            console.log("🚀 ~ sendToOtherPage ~ platform:", platform, "url:", url);
+          };
+          await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
+          console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
 
-            // 先把该平台的发布数据存到全局存储（新窗口可以直接读取）
-            ipcRenderer.invoke('global-storage-set', `publish_data_${platform}`, element);
-            console.log(`[BrowserAPI] ✅ 已存储 publish_data_${platform} 到全局存储`);
+          // 存储待发送的消息，等窗口加载完成事件触发后发送（替代 setTimeout 延时）
+          pendingMessages.set(windowId, {
+            type: 'publish-data',
+            platform: platform,
+            windowId: windowId,
+            data: publishData
+          });
+          console.log(`[BrowserAPI] 📋 已存储待发送消息, windowId: ${windowId}, 等待窗口加载完成...`);
 
-            // 打开新窗口
-            ipcRenderer.invoke('open-new-window', url);
-
-            // 延迟后向所有窗口广播消息（使用 home-to-content 而不是 content-to-home）
-            setTimeout(() => {
-              ipcRenderer.send('home-to-content', {
-                type: 'publish-data',
-                platform: platform,
-                data: element
-              });
-              console.log(`[BrowserAPI] 📤 已广播 publish-data 消息到所有窗口, platform: ${platform}`);
-            }, 3000);
+          // 每个窗口之间稍微延迟，避免同时创建太多
+          if (index < dataArray.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
         }
-      }
+        console.log(`[BrowserAPI] ✅ 所有 ${dataArray.length} 个窗口已创建完成`);
+      })();
+
+      // publish-data 类型的消息已经在循环中处理，不需要再次发送
+      return;
     }
+
+    // 其他类型的消息正常发送
     ipcRenderer.send('home-to-content', message);
   },
 
@@ -184,6 +248,15 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onCookiesCleared 监听器已注册');
   },
 
+  // 监听新窗口加载完成事件（首页使用，用于知道新窗口何时准备好）
+  onWindowLoaded: (callback) => {
+    ipcRenderer.on('window-loaded', (event, data) => {
+      console.log('[BrowserAPI] 收到 window-loaded 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onWindowLoaded 监听器已注册');
+  },
+
   // 清除所有监听器（用于组件卸载）
   clearMessageListeners: () => {
     messageCallbacks.fromHome = null;
@@ -196,6 +269,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   openNewWindow: (url) => ipcRenderer.invoke('open-new-window', url),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
+
+  // 获取当前窗口 ID（用于新窗口识别自己，读取对应的发布数据）
+  getWindowId: () => ipcRenderer.invoke('get-window-id').then(r => r.success ? r.windowId : null),
+
+  // 获取主窗口（BrowserView/首页）的 URL 信息（用于动态获取 API 域名）
+  getMainUrl: () => ipcRenderer.invoke('get-main-url'),
 
   // 视频下载 API（通过主进程绕过跨域限制）
   downloadVideo: (url) => ipcRenderer.invoke('download-video', url),

@@ -118,7 +118,75 @@ window.browserAPI.onCookiesCleared((data) => {
 });
 ```
 
-### 5. Session 状态检查
+### 5. 新窗口打开与加载监听
+```javascript
+// 首页注册监听器，当新窗口页面加载完成时触发
+window.browserAPI.onWindowLoaded((data) => {
+  console.log('新窗口加载完成:', data.url);
+  console.log('窗口ID:', data.windowId);
+  console.log('时间戳:', data.timestamp);
+});
+
+// 打开新窗口，获取窗口 ID
+const result = await window.browserAPI.openNewWindow('https://example.com');
+if (result.success) {
+  console.log('窗口创建成功, windowId:', result.windowId);
+  // 然后等待 onWindowLoaded 回调被触发
+} else {
+  console.error('窗口创建失败:', result.error);
+}
+```
+
+**返回值说明**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | boolean | 窗口是否创建成功 |
+| windowId | number | 窗口 ID（成功时返回） |
+| error | string | 错误信息（失败时返回） |
+
+**onWindowLoaded 回调参数**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| url | string | 加载完成的页面 URL |
+| windowId | number | 窗口 ID |
+| timestamp | number | 加载完成的时间戳 |
+
+### 6. 获取窗口 ID 和主窗口 URL
+```javascript
+// 获取当前窗口的 ID（用于新窗口识别自己，读取对应的发布数据）
+const windowId = await window.browserAPI.getWindowId();
+console.log('我的窗口 ID:', windowId);
+// 返回: number（窗口ID）或 'main'（主窗口BrowserView）或 null（失败）
+
+// 获取主窗口（BrowserView/首页）的 URL 信息（用于动态获取 API 域名）
+const mainInfo = await window.browserAPI.getMainUrl();
+console.log(mainInfo);
+// 返回值示例:
+// {
+//   success: true,
+//   url: "https://dev.china9.cn/aigc_browser/#/xxx",
+//   origin: "https://dev.china9.cn",     // 协议+域名，用于构建 API 地址
+//   host: "dev.china9.cn",               // 仅域名
+//   protocol: "https:"                   // 仅协议
+// }
+
+// 使用场景：动态构建 API 地址
+if (mainInfo.success) {
+  const apiUrl = `${mainInfo.origin}/api/mediaauth/tjlog`;
+  await fetch(apiUrl, { method: 'POST', ... });
+}
+```
+
+**getMainUrl 返回值**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | boolean | 是否成功 |
+| url | string | 完整 URL |
+| origin | string | 协议+域名（如 `https://dev.china9.cn`） |
+| host | string | 仅域名（如 `dev.china9.cn`） |
+| protocol | string | 仅协议（如 `https:`） |
+
+### 7. Session 状态检查
 ```javascript
 // 主动检查 Session 状态（用于检测用户手动删除 UserData 文件夹的情况）
 const status = await window.browserAPI.checkSessionStatus();
@@ -152,7 +220,7 @@ if (!status.platforms.douyin.loggedIn) {
 
 > 只要存在上述任一 Cookie，对应平台的 `loggedIn` 就为 `true`。
 
-### 6. 全局数据持久化存储
+### 8. 全局数据持久化存储
 ```javascript
 // 存储数据（如 company_id），数据会持久化保存到文件，应用重启后仍然保留
 await window.browserAPI.setGlobalData('company_id', '12345');

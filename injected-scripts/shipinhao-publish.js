@@ -117,8 +117,19 @@ let hasProcessed = false;
           console.log('═══════════════════════════════════════');
 
           // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-          if (message.type === 'publish-data') {
+          if (message.type === 'publish-data' || message.type === 'auth-data') {
             console.log('[视频号发布] ✅ 收到发布数据:', message.data);
+
+            // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
+            if (message.windowId) {
+              const myWindowId = await window.browserAPI.getWindowId();
+              console.log('[视频号发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+              if (myWindowId !== message.windowId) {
+                console.log('[视频号发布] ⏭️ 消息不是发给我的，跳过');
+                return;
+              }
+              console.log('[视频号发布] ✅ windowId 匹配，处理消息');
+            }
 
             // 防重复检查
             if (isProcessing) {
@@ -135,13 +146,14 @@ let hasProcessed = false;
 
             // 更新全局变量
             if (message.data) {
+              // 兼容处理：message.data 可能是字符串或对象
+              const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
               window.__AUTH_DATA__ = {
                 ...window.__AUTH_DATA__,
-                message: JSON.parse(message.data),
+                message: messageData,
                 receivedAt: Date.now()
               };
               console.log('[视频号发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-              const messageData = JSON.parse(message.data);
               console.log("🚀 ~  ~ messageData: ", messageData);
 
               // 💾 保存数据到 localStorage（用于授权跳转后恢复）
@@ -159,10 +171,6 @@ let hasProcessed = false;
               } catch (e) {
                 console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
               }
-
-              // 更新横幅显示
-              const infoDisplay = document.getElementById('auth-info-display');
-              console.log('[视频号发布] 查找横幅元素 #auth-info-display:', infoDisplay);
 
               // 等待wujie-app元素
               const wujieApp = await waitForElement("wujie-app", 15000);

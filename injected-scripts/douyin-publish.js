@@ -127,10 +127,23 @@ let hasProcessed = false;
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'publish-data') {
+        if (message.type === 'publish-data' || message.type === 'auth-data') {
           console.log('[抖音发布] ✅ 收到发布数据:', message.data);
+          console.log('[抖音发布] ✅✅✅ 进入处理逻辑 ✅✅✅');
+
+          // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
+          if (message.windowId) {
+            const myWindowId = await window.browserAPI.getWindowId();
+            console.log('[抖音发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+            if (myWindowId !== message.windowId) {
+              console.log('[抖音发布] ⏭️ 消息不是发给我的，跳过');
+              return;
+            }
+            console.log('[抖音发布] ✅ windowId 匹配，处理消息');
+          }
 
           // 防重复检查
+          console.log('[抖音发布] 🔍 检查防重复标志: isProcessing=', isProcessing, ', hasProcessed=', hasProcessed);
           if (isProcessing) {
             console.warn('[抖音发布] ⚠️ 正在处理中，忽略重复消息');
             return;
@@ -142,17 +155,21 @@ let hasProcessed = false;
 
           // 标记为正在处理
           isProcessing = true;
+          console.log('[抖音发布] 🔄 已标记为正在处理');
 
           // 更新全局变量
+          console.log('[抖音发布] 🔍 检查 message.data:', !!message.data);
           if (message.data) {
+            // 兼容处理：message.data 可能是字符串或对象
+            const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            console.log("🚀 ~  ~ messageData: ", messageData);
+
             window.__AUTH_DATA__ = {
               ...window.__AUTH_DATA__,
-              message: JSON.parse(message.data),
+              message: messageData,
               receivedAt: Date.now()
             };
             console.log('[抖音发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-            const messageData = JSON.parse(message.data);
-            console.log("🚀 ~  ~ messageData: ", messageData);
 
             // 💾 保存数据到 localStorage（用于授权跳转后恢复）
             /* try {
@@ -268,6 +285,15 @@ async function publishApi(dataObj) {
 
   const publishId = dataObj.video.dyPlatform.id;
 
+  // 获取窗口 ID（用于多窗口并发发布时区分数据）
+  let windowId = null;
+  try {
+    windowId = await window.browserAPI.getWindowId();
+    console.log('[抖音发布] 当前窗口 ID:', windowId);
+  } catch (e) {
+    console.error('[抖音发布] ❌ 获取窗口 ID 失败:', e);
+  }
+
   try {
     // 标记发布正在进行
     publishRunning = true;
@@ -289,9 +315,11 @@ async function publishApi(dataObj) {
 
     // 🔑 抖音成功后会直接跳转页面，必须在点击前保存数据
     // 否则跳转后 publishApi 的后续代码不会执行
+    // 使用窗口 ID 作为 key，避免多窗口并发时数据覆盖
     try {
-      localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
-      console.log('[抖音发布] 💾 已提前保存 publishId 到 localStorage:', publishId);
+      const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
+      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+      console.log('[抖音发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
     } catch (e) {
       console.error('[抖音发布] ❌ 保存 publishId 失败:', e);
     }
@@ -318,7 +346,10 @@ async function publishApi(dataObj) {
 
     if (!clickResult.success) {
       console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
-      // 清除提前保存的数据
+      // 清除提前保存的数据（使用窗口专属 key 和通用 key，确保兼容性）
+      if (windowId) {
+        localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+      }
       localStorage.removeItem('PUBLISH_SUCCESS_DATA');
       // 发送失败统计
       await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '抖音发布');
@@ -362,8 +393,11 @@ async function publishApi(dataObj) {
         return; // 页面已跳转，由 publish-success.js 处理
       }
 
-      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
-      if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除（检查窗口专属 key 和通用 key）
+      const windowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : null;
+      const hasWindowData = windowKey ? localStorage.getItem(windowKey) : false;
+      const hasGenericData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
+      if (!hasWindowData && !hasGenericData) {
         console.log('[抖音发布] ✅ 数据已被成功页处理，跳过后续检测');
         return;
       }
@@ -383,21 +417,31 @@ async function publishApi(dataObj) {
       }
     }
 
-    // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
-    if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+    // 超时未跳转 - 再次检查是否已被 publish-success.js 处理（检查窗口专属 key 和通用 key）
+    const finalWindowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : null;
+    const finalHasWindowData = finalWindowKey ? localStorage.getItem(finalWindowKey) : false;
+    const finalHasGenericData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
+    if (!finalHasWindowData && !finalHasGenericData) {
       console.log('[抖音发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
       return;
     }
 
     // 真正的超时失败
     console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败');
+    // 清除数据（窗口专属 key 和通用 key）
+    if (windowId) {
+      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    }
     localStorage.removeItem('PUBLISH_SUCCESS_DATA');
     await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '抖音发布');
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
-    // 清除提前保存的数据
+    // 清除提前保存的数据（窗口专属 key 和通用 key）
+    if (windowId) {
+      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    }
     localStorage.removeItem('PUBLISH_SUCCESS_DATA');
     // 发送失败统计
     await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
