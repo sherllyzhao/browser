@@ -637,8 +637,10 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
                                     classList.includes('van-toast') ||
                                     classList.includes('semi-toast') ||
                                     classList.includes('weui-toast') ||
+                                    classList.includes('cheetah-message') ||  // 百家号
                                     className.includes('toast') ||
-                                    className.includes('message')
+                                    className.includes('message') ||
+                                    className.includes('cheetah-message')  // 百家号
                                 ) {
                                     // 优先查找具体的文本容器（更精确）
                                     let text = '';
@@ -662,6 +664,15 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
                                         const elText = element.querySelector('.el-message__content');
                                         if (elText) {
                                             text = elText.textContent || elText.innerText || '';
+                                        }
+                                    }
+
+                                    // 百家号 Cheetah UI message（注意：第一个span是图标，第二个span是文本）
+                                    if (!text) {
+                                        const cheetahText = element.querySelector('.cheetah-message-error span:last-child') ||
+                                                           element.querySelector('.cheetah-message-custom-content span:last-child');
+                                        if (cheetahText) {
+                                            text = cheetahText.textContent || cheetahText.innerText || '';
                                         }
                                     }
 
@@ -747,6 +758,8 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
                 // 如果没有通过 MutationObserver 捕获到，尝试直接查找现有的提示元素
                 if (!capturedMessage) {
                     const possibleSelectors = [
+                        '.cheetah-message-custom-content.cheetah-message-error span:last-child',  // 百家号错误提示（优先，第一个span是图标）
+                        '.cheetah-message-custom-content span:last-child',  // 百家号普通提示
                         '.d-toast-description',  // 小红书 toast
                         '.semi-toast-content-text',  // 抖音 toast
                         '.ant-message-custom-content',  // Ant Design

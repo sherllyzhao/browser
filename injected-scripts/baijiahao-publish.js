@@ -375,9 +375,10 @@
     await delay(2000);
 
     // 百家号特定：检测失败提示元素
+    // 注意：百家号的错误提示结构是 <span>图标</span><span>错误文本</span>，需要用 :last-child 选择文本
     let failureMessage = null;
     try {
-      const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span');
+      const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
       if (errorSpan) {
         const text = (errorSpan.textContent || '').trim();
         if (text) {
@@ -440,7 +441,7 @@
 
       // 检测是否出现错误提示，记录消息内容
       try {
-        const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span');
+        const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
         if (errorSpan) {
           const text = (errorSpan.textContent || '').trim();
           if (text) {
@@ -820,7 +821,7 @@
                                 // 检测失败提示元素
                                 let failureMessage = null;
                                 try {
-                                  const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span');
+                                  const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
                                   if (errorSpan) {
                                     const text = (errorSpan.textContent || '').trim();
                                     if (text) {
@@ -875,7 +876,7 @@
 
                                   // 检测是否出现错误提示
                                   try {
-                                    const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span');
+                                    const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
                                     if (errorSpan) {
                                       const text = (errorSpan.textContent || '').trim();
                                       if (text) {
