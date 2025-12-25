@@ -370,7 +370,7 @@ function createWindow() {
     console.log('[Script Injection] Checking URL:', url);
 
     // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
-    // 如果异常，立即隐藏页面内容，防止用户看到乱码
+    // 如果异常，保持隐藏状态；如果正常，移除预防性隐藏样式
     const pageCheckScript = `
       (function() {
         if (!document.body) return { ready: false, reason: 'no body' };
@@ -393,11 +393,7 @@ function createWindow() {
         }
 
         if (cssMatchCount >= 3) {
-          // 立即隐藏页面内容，防止用户看到异常代码
-          document.body.style.visibility = 'hidden';
-          document.body.style.opacity = '0';
-
-          // 添加遮罩 + loading动画
+          // 页面异常，保持隐藏状态，添加遮罩 + loading动画
           if (!document.getElementById('__page_loading_mask__')) {
             const mask = document.createElement('div');
             mask.id = '__page_loading_mask__';
@@ -407,6 +403,14 @@ function createWindow() {
           }
 
           return { ready: false, reason: 'css-as-text', matchCount: cssMatchCount };
+        }
+
+        // 页面正常，移除预防性隐藏样式
+        const preHideStyle = document.getElementById('__pre_hide_style__');
+        if (preHideStyle) preHideStyle.remove();
+        if (document.body) {
+          document.body.style.visibility = '';
+          document.body.style.opacity = '';
         }
 
         return { ready: true };
@@ -506,11 +510,29 @@ function createWindow() {
     }
   });
 
+  // 预防性隐藏脚本 - 在导航开始时立即隐藏页面，防止用户看到异常内容
+  const preHideScript = `
+    (function() {
+      // 立即注入隐藏样式（比 DOM 操作更早生效）
+      if (!document.getElementById('__pre_hide_style__')) {
+        const style = document.createElement('style');
+        style.id = '__pre_hide_style__';
+        style.textContent = 'body { visibility: hidden !important; opacity: 0 !important; }';
+        document.head ? document.head.appendChild(style) : document.documentElement.appendChild(style);
+      }
+    })()
+  `;
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
+
+    // 在导航开始时注入预防性隐藏脚本
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.executeJavaScript(preHideScript).catch(() => {});
+    }
   });
 
   // 监听页面导航完成
@@ -545,12 +567,8 @@ function createWindow() {
         }
 
         if (cssMatchCount >= 3) {
-          console.error('[Early Check] 检测到页面渲染异常，立即隐藏页面');
-          // 立即隐藏页面
-          document.body.style.visibility = 'hidden';
-          document.body.style.opacity = '0';
-
-          // 添加遮罩 + loading动画
+          console.error('[Early Check] 检测到页面渲染异常，准备刷新页面');
+          // 保持隐藏状态，添加 loading 遮罩
           if (!document.getElementById('__page_loading_mask__')) {
             const mask = document.createElement('div');
             mask.id = '__page_loading_mask__';
@@ -558,8 +576,20 @@ function createWindow() {
             mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
             document.documentElement.appendChild(mask);
           }
+          // 1.5秒后刷新页面
+          setTimeout(() => window.location.reload(), 1500);
+        } else {
+          // 页面正常，移除预防性隐藏样式，显示页面
+          console.log('[Early Check] 页面渲染正常，显示页面');
+          const preHideStyle = document.getElementById('__pre_hide_style__');
+          if (preHideStyle) preHideStyle.remove();
+          // 确保 body 可见
+          if (document.body) {
+            document.body.style.visibility = '';
+            document.body.style.opacity = '';
+          }
         }
-      }, 50);
+      }, 100); // 增加延迟到100ms，确保内容渲染完成
     })()
   `;
 
@@ -671,11 +701,15 @@ function createWindow() {
       }
     });
 
-    // 监听子窗口导航开始（用于调试）
+    // 监听子窗口导航开始（用于调试和预防性隐藏）
     newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
       console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
       if (url && url.toLowerCase().startsWith('bitbrowser:')) {
         console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
+      }
+      // 在导航开始时注入预防性隐藏脚本
+      if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+        newWindow.webContents.executeJavaScript(preHideScript).catch(() => {});
       }
     });
 
