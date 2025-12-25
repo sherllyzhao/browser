@@ -687,15 +687,28 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
                                 }
 
                                 // 递归检查子元素（查找所有可能的 toast 容器）
-                                const toastElements = element.querySelectorAll('[class*="toast"], [class*="message"], [class*="notification"]');
+                                const toastElements = element.querySelectorAll('[class*="toast"], [class*="message"], [class*="notification"], [class*="cheetah-message"]');
                                 for (const toast of toastElements) {
                                     // 优先查找具体的文本容器
                                     let text = '';
 
-                                    const semiText = toast.querySelector('.semi-toast-content-text');
-                                    if (semiText) {
-                                        text = semiText.textContent || semiText.innerText || '';
-                                    } else {
+                                    // 百家号 Cheetah UI（优先检查，因为结构特殊）
+                                    const cheetahText = toast.querySelector('.cheetah-message-error span:last-child') ||
+                                                       toast.querySelector('.cheetah-message-custom-content span:last-child');
+                                    if (cheetahText) {
+                                        text = cheetahText.textContent || cheetahText.innerText || '';
+                                    }
+
+                                    // Semi Design toast
+                                    if (!text) {
+                                        const semiText = toast.querySelector('.semi-toast-content-text');
+                                        if (semiText) {
+                                            text = semiText.textContent || semiText.innerText || '';
+                                        }
+                                    }
+
+                                    // 回退：使用整个元素的文本
+                                    if (!text) {
                                         text = toast.textContent || toast.innerText || '';
                                     }
 

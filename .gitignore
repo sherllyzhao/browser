@@ -6,3 +6,6 @@ dist/
 .idea/
 .history
 .claude
+/installer.nsh
+/nul
+/{
