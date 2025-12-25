@@ -123,6 +123,60 @@ devtoolsBtn.addEventListener('click', async () => {
   await window.electronAPI.openDevTools();
 });
 
+// 测试 Loading 效果按钮
+const testLoadingBtn = document.getElementById('testLoadingBtn');
+if (testLoadingBtn) {
+  testLoadingBtn.addEventListener('click', async () => {
+    // 模拟页面异常的脚本
+    const testScript = `
+      (function() {
+        // 手动触发遮罩显示
+        if (typeof window.hidePageAndShowMask === 'function') {
+          window.hidePageAndShowMask();
+          console.log('[测试] ✅ 已显示 Loading 遮罩');
+
+          // 3秒后移除遮罩，恢复页面
+          setTimeout(() => {
+            const mask = document.getElementById('__page_loading_mask__');
+            if (mask) mask.remove();
+            document.body.style.visibility = '';
+            document.body.style.opacity = '';
+            console.log('[测试] ✅ 已恢复页面');
+          }, 3000);
+        } else {
+          // 如果 common.js 未加载，手动创建遮罩
+          document.body.style.visibility = 'hidden';
+          document.body.style.opacity = '0';
+
+          const mask = document.createElement('div');
+          mask.id = '__page_loading_mask__';
+          mask.innerHTML = '<style>@keyframes __loading_spin__{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><div style="width:40px;height:40px;border:3px solid #f3f3f3;border-top:3px solid #3498db;border-radius:50%;animation:__loading_spin__ 1s linear infinite;"></div>';
+          mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
+          document.documentElement.appendChild(mask);
+
+          console.log('[测试] ✅ 已显示 Loading 遮罩（手动创建）');
+
+          // 3秒后恢复
+          setTimeout(() => {
+            const maskEl = document.getElementById('__page_loading_mask__');
+            if (maskEl) maskEl.remove();
+            document.body.style.visibility = '';
+            document.body.style.opacity = '';
+            console.log('[测试] ✅ 已恢复页面');
+          }, 3000);
+        }
+      })()
+    `;
+
+    try {
+      await window.electronAPI.executeScriptNow(testScript);
+      console.log('[测试] 已执行测试脚本');
+    } catch (err) {
+      console.error('[测试] 执行失败:', err);
+    }
+  });
+}
+
 // 新窗口模式切换
 newWindowModeBtn.addEventListener('click', async () => {
   const result = await window.electronAPI.toggleNewWindowMode();

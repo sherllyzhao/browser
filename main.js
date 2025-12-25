@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const ScriptManager = require('./script-manager');
@@ -10,6 +10,39 @@ let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
+
+// 全局数据持久化存储（存储到文件，应用重启后仍然保留）
+let globalStorage = {};
+const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
+
+// 加载持久化数据
+function loadGlobalStorage() {
+  try {
+    const storagePath = getGlobalStoragePath();
+    if (fs.existsSync(storagePath)) {
+      const data = fs.readFileSync(storagePath, 'utf8');
+      globalStorage = JSON.parse(data);
+      console.log('[Global Storage] ✅ 已从文件加载数据:', storagePath);
+      console.log('[Global Storage] 数据内容:', globalStorage);
+    } else {
+      console.log('[Global Storage] 文件不存在，使用空存储');
+    }
+  } catch (err) {
+    console.error('[Global Storage] ❌ 加载数据失败:', err);
+    globalStorage = {};
+  }
+}
+
+// 保存持久化数据
+function saveGlobalStorage() {
+  try {
+    const storagePath = getGlobalStoragePath();
+    fs.writeFileSync(storagePath, JSON.stringify(globalStorage, null, 2), 'utf8');
+    console.log('[Global Storage] ✅ 数据已保存到文件:', storagePath);
+  } catch (err) {
+    console.error('[Global Storage] ❌ 保存数据失败:', err);
+  }
+}
 
 // 检测是否为便携版（通过检查是否在标准安装目录）
 // 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
@@ -48,7 +81,28 @@ if (isProduction) {
 const HOME_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
+
+// 所有可能的首页地址（用于消息路由判断）
+const HOME_URLS = [
+  'http://localhost:5173/',
+  'https://dev.china9.cn/aigc_browser/',
+  'http://172.16.6.17:8080/',
+  'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
+  'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+];
+
+// 判断 URL 是否为首页
+function isHomeUrl(url) {
+  return HOME_URLS.some(homeUrl => url.startsWith(homeUrl));
+}
+
 const childWindows = []; // 跟踪所有打开的子窗口
+
+// 在 app.whenReady() 之前注册自定义协议方案，使其可以被拦截
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'bitbrowser', privileges: { standard: false, secure: false, bypassCSP: false, allowServiceWorkers: false, supportFetchAPI: false, corsEnabled: false } }
+]);
+console.log('[Protocol] 已注册 bitbrowser 协议方案');
 
 // 优化：限制最大子窗口数量，防止内存泄漏
 const MAX_CHILD_WINDOWS = 5;
@@ -163,6 +217,20 @@ function createWindow() {
   // 获取或创建持久化 session
   const persistentSession = session.fromPartition('persist:browserview', { cache: true });
 
+  // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
+  // 使用 <all_urls> 拦截所有请求
+  persistentSession.webRequest.onBeforeRequest((details, callback) => {
+    const url = details.url;
+    // 检测非标准协议
+    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+      console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
+      callback({ cancel: true });
+      return;
+    }
+    callback({});
+  });
+  console.log('[Session] ✅ 已添加 webRequest 协议拦截器');
+
   // 打印 session 存储路径
   console.log('========================================');
   console.log('[Session] Session 配置信息:');
@@ -178,6 +246,65 @@ function createWindow() {
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
+
+  // 监听下载事件
+  persistentSession.on('will-download', (event, item, webContents) => {
+    const url = item.getURL();
+    const filename = item.getFilename();
+    console.log('[Download] 开始下载:', url);
+    console.log('[Download] 文件名:', filename);
+
+    // 让用户选择保存位置（使用默认文件名）
+    const savePath = dialog.showSaveDialogSync(mainWindow, {
+      title: '保存文件',
+      defaultPath: filename,
+      filters: [
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    });
+
+    if (savePath) {
+      item.setSavePath(savePath);
+      console.log('[Download] 保存到:', savePath);
+
+      item.on('updated', (event, state) => {
+        if (state === 'progressing') {
+          if (!item.isPaused()) {
+            const received = item.getReceivedBytes();
+            const total = item.getTotalBytes();
+            const percent = total > 0 ? Math.round(received / total * 100) : 0;
+            console.log(`[Download] 进度: ${percent}% (${received}/${total})`);
+          }
+        }
+      });
+
+      item.once('done', (event, state) => {
+        if (state === 'completed') {
+          console.log('[Download] ✅ 下载完成:', savePath);
+          dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: '下载完成',
+            message: '文件下载成功',
+            detail: `保存位置: ${savePath}`,
+            buttons: ['确定']
+          });
+        } else {
+          console.log('[Download] ❌ 下载失败:', state);
+          dialog.showMessageBox(mainWindow, {
+            type: 'error',
+            title: '下载失败',
+            message: '文件下载失败',
+            detail: `状态: ${state}`,
+            buttons: ['确定']
+          });
+        }
+      });
+    } else {
+      // 用户取消了保存
+      console.log('[Download] 用户取消保存');
+      item.cancel();
+    }
+  });
 
   // 创建 BrowserView 用于显示网页内容
   browserView = new BrowserView({
@@ -228,7 +355,7 @@ function createWindow() {
   });
 
   // 脚本注入函数（提取为公共函数，可复用）
-  const injectScriptForUrl = async (webContents, url) => {
+  const injectScriptForUrl = async (webContents, url, retryCount = 0) => {
     // 检查 webContents 是否已销毁
     if (!webContents || webContents.isDestroyed()) {
       return;
@@ -241,6 +368,83 @@ function createWindow() {
     console.log('==================================================');
     console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
+
+    // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
+    // 如果异常，立即隐藏页面内容，防止用户看到乱码
+    const pageCheckScript = `
+      (function() {
+        if (!document.body) return { ready: false, reason: 'no body' };
+
+        const bodyText = document.body.innerText || '';
+        const cssPatterns = [
+          'text-decoration:none',
+          'background-color:transparent',
+          'cursor:pointer',
+          'border-radius:',
+          'display:block',
+          'position:absolute',
+          ':hover{',
+          '@media '
+        ];
+
+        let cssMatchCount = 0;
+        for (const pattern of cssPatterns) {
+          if (bodyText.includes(pattern)) cssMatchCount++;
+        }
+
+        if (cssMatchCount >= 3) {
+          // 立即隐藏页面内容，防止用户看到异常代码
+          document.body.style.visibility = 'hidden';
+          document.body.style.opacity = '0';
+
+          // 添加遮罩 + loading动画
+          if (!document.getElementById('__page_loading_mask__')) {
+            const mask = document.createElement('div');
+            mask.id = '__page_loading_mask__';
+            mask.innerHTML = '<style>@keyframes __loading_spin__{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><div style="width:40px;height:40px;border:3px solid #f3f3f3;border-top:3px solid #3498db;border-radius:50%;animation:__loading_spin__ 1s linear infinite;"></div>';
+            mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
+            document.documentElement.appendChild(mask);
+          }
+
+          return { ready: false, reason: 'css-as-text', matchCount: cssMatchCount };
+        }
+
+        return { ready: true };
+      })()
+    `;
+
+    try {
+      // 先检查页面状态
+      const pageState = await webContents.executeJavaScript(pageCheckScript);
+
+      if (!pageState.ready) {
+        console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+        // 最多重试2次，每次间隔1.5秒，然后刷新
+        if (retryCount < 2) {
+          console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
+          setTimeout(() => {
+            injectScriptForUrl(webContents, url, retryCount + 1);
+          }, 1500);
+          return;
+        } else {
+          console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
+          webContents.reload();
+          return;
+        }
+      }
+    } catch (checkErr) {
+      // 检查脚本执行失败，可能页面还没准备好
+      if (!checkErr.message.includes('destroyed')) {
+        console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
+        if (retryCount < 2) {
+          setTimeout(() => {
+            injectScriptForUrl(webContents, url, retryCount + 1);
+          }, 1000);
+          return;
+        }
+      }
+    }
 
     // 注入对应的自定义脚本
     const script = await scriptManager.getScript(url);
@@ -293,6 +497,15 @@ function createWindow() {
     }
   });
 
+  // 拦截 iframe 导航请求，阻止自定义协议
+  browserView.webContents.on('will-frame-navigate', (event) => {
+    const url = event.url;
+    if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+      console.log('[Frame Navigation] ❌ Blocked non-http protocol:', url);
+      event.preventDefault();
+    }
+  });
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
@@ -305,6 +518,57 @@ function createWindow() {
     console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
+  });
+
+  // 页面异常检测脚本（在 dom-ready 时尽早执行）
+  const earlyPageCheckScript = `
+    (function() {
+      // 延迟一小段时间等待内容渲染
+      setTimeout(() => {
+        if (!document.body) return;
+
+        const bodyText = document.body.innerText || '';
+        const cssPatterns = [
+          'text-decoration:none',
+          'background-color:transparent',
+          'cursor:pointer',
+          'border-radius:',
+          'display:block',
+          'position:absolute',
+          ':hover{',
+          '@media '
+        ];
+
+        let cssMatchCount = 0;
+        for (const pattern of cssPatterns) {
+          if (bodyText.includes(pattern)) cssMatchCount++;
+        }
+
+        if (cssMatchCount >= 3) {
+          console.error('[Early Check] 检测到页面渲染异常，立即隐藏页面');
+          // 立即隐藏页面
+          document.body.style.visibility = 'hidden';
+          document.body.style.opacity = '0';
+
+          // 添加遮罩 + loading动画
+          if (!document.getElementById('__page_loading_mask__')) {
+            const mask = document.createElement('div');
+            mask.id = '__page_loading_mask__';
+            mask.innerHTML = '<style>@keyframes __loading_spin__{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><div style="width:40px;height:40px;border:3px solid #f3f3f3;border-top:3px solid #3498db;border-radius:50%;animation:__loading_spin__ 1s linear infinite;"></div>';
+            mask.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;';
+            document.documentElement.appendChild(mask);
+          }
+        }
+      }, 50);
+    })()
+  `;
+
+  // 在 dom-ready 时尽早检测页面状态（比 did-finish-load 更早）
+  browserView.webContents.on('dom-ready', () => {
+    console.log('[Navigation] DOM Ready，执行早期页面检测...');
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+    }
   });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
@@ -328,6 +592,31 @@ function createWindow() {
     if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
       console.log('[Window Open] ❌ Blocked non-http protocol:', url);
       return { action: 'deny' };
+    }
+
+    // 检测下载 URL（包含 /download 或 /api/bucket/download 等）
+    if (url && (url.includes('/api/bucket/download') || url.includes('/download?') || url.includes('/download/'))) {
+      console.log('[Window Open] 📥 检测到下载链接:', url);
+
+      // 尝试从 URL 参数中提取实际的文件 URL
+      let actualUrl = url;
+      try {
+        const urlObj = new URL(url);
+        const fileUrl = urlObj.searchParams.get('url');
+        if (fileUrl) {
+          actualUrl = fileUrl;
+          console.log('[Window Open] 📥 提取到实际文件 URL:', actualUrl);
+        }
+      } catch (e) {
+        console.log('[Window Open] ⚠️ URL 解析失败，使用原始 URL');
+      }
+
+      // 异步触发下载，不阻塞
+      setImmediate(() => {
+        browserView.webContents.downloadURL(actualUrl);
+      });
+
+      return { action: 'deny' }; // 阻止打开新窗口
     }
 
     console.log('[Window Open] ✅ Opening new window for:', url);
@@ -356,6 +645,67 @@ function createWindow() {
     // 添加到子窗口列表
     childWindows.push(newWindow);
 
+    // 拦截子窗口的导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
+    newWindow.webContents.on('will-navigate', (event, url) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 拦截子窗口 iframe 导航请求，阻止自定义协议
+    newWindow.webContents.on('will-frame-navigate', (event) => {
+      const url = event.url;
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Frame] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 拦截子窗口重定向请求，阻止自定义协议
+    newWindow.webContents.on('will-redirect', (event, url) => {
+      console.log('[New Window Redirect] 检测到重定向:', url);
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Redirect] ❌ Blocked non-http protocol:', url);
+        event.preventDefault();
+      }
+    });
+
+    // 监听子窗口导航开始（用于调试）
+    newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
+      console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
+      if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+        console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
+      }
+    });
+
+    // 拦截子窗口打开新窗口的请求，阻止自定义协议
+    newWindow.webContents.setWindowOpenHandler(({ url }) => {
+      console.log('[New Window Open] Request to open:', url);
+
+      // 过滤自定义协议（如 bitbrowser://）
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[New Window Open] ❌ Blocked non-http protocol:', url);
+        return { action: 'deny' };
+      }
+
+      console.log('[New Window Open] ✅ Allowing:', url);
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1200,
+          height: 800,
+          webPreferences: {
+            preload: path.join(__dirname, 'content-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+            session: browserView.webContents.session
+          }
+        }
+      };
+    });
+
     // 忽略页面的 beforeunload 事件，允许直接关闭窗口
     newWindow.webContents.on('will-prevent-unload', (event) => {
       console.log('[Window Manager] 忽略页面的 beforeunload 事件，强制关闭窗口');
@@ -375,6 +725,14 @@ function createWindow() {
     if (!isProduction) {
       newWindow.webContents.openDevTools();
     }
+
+    // 新窗口也添加早期页面检测（dom-ready 时执行）
+    newWindow.webContents.on('dom-ready', () => {
+      console.log('[New Window] DOM Ready，执行早期页面检测...');
+      if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+        newWindow.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+      }
+    });
 
     // 为新窗口添加脚本注入
     newWindow.webContents.on('did-finish-load', async () => {
@@ -519,6 +877,51 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
+  // 这会导致错误: "Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc"
+  // 原因: Windows 会将 bitbrowser://cc 的路径部分作为命令行参数传递给应用
+
+  // 移除之前错误注册的协议处理程序（清理注册表）
+  if (process.platform === 'win32') {
+    app.removeAsDefaultProtocolClient('bitbrowser');
+    console.log('[Protocol] 已移除 bitbrowser:// 协议注册');
+  }
+
+  // 注册自定义协议拦截器，阻止 bitbrowser:// 等协议触发系统对话框
+  protocol.registerStringProtocol('bitbrowser', (request, callback) => {
+    console.log('[Protocol] ❌ Blocked bitbrowser:// protocol request:', request.url);
+    callback(''); // 返回空内容
+  });
+  console.log('[Protocol] ✅ 已注册 bitbrowser:// 协议拦截器');
+
+  // 全局拦截所有 webContents 的协议导航
+  app.on('web-contents-created', (event, webContents) => {
+    // 为每个 webContents 添加协议拦截
+    webContents.on('will-navigate', (event, url) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {
+        console.log('[Global] ❌ Blocked non-http navigation:', url);
+        event.preventDefault();
+      }
+    });
+
+    webContents.on('will-frame-navigate', (event) => {
+      const url = event.url;
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {
+        console.log('[Global Frame] ❌ Blocked non-http navigation:', url);
+        event.preventDefault();
+      }
+    });
+
+    webContents.setWindowOpenHandler(({ url }) => {
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
+        console.log('[Global WindowOpen] ❌ Blocked non-http:', url);
+        return { action: 'deny' };
+      }
+      return { action: 'allow' };
+    });
+  });
+  console.log('[App] ✅ 已添加全局 webContents 协议拦截');
+
   // 设置 Windows 任务栏应用程序用户模型 ID（确保任务栏图标正确显示）
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.zhcloud.browser');
@@ -573,6 +976,9 @@ app.whenReady().then(async () => {
 
   // 启动时验证数据完整性
   await validateAndCleanupUserData();
+
+  // 加载全局持久化数据（如 company_id）
+  loadGlobalStorage();
 
   // 生产环境立即移除菜单（必须在创建窗口之前）
   if (isProduction) {
@@ -640,6 +1046,12 @@ app.whenReady().then(async () => {
         const cookiesBefore = await ses.cookies.get({});
         console.log(`[Clear Cookies] 清除前有 ${cookiesBefore.length} 个 cookies`);
 
+        // 先导航到空白页，避免页面正在使用存储数据导致冲突卡死
+        console.log('[Clear Cookies] 先导航到空白页...');
+        await browserView.webContents.loadURL('about:blank');
+        // 等待一小段时间确保页面完全卸载
+        await new Promise(resolve => setTimeout(resolve, 100));
+
         await ses.clearStorageData({
           storages: ['cookies', 'localstorage', 'sessionstorage']
         });
@@ -648,11 +1060,15 @@ app.whenReady().then(async () => {
         console.log(`[Clear Cookies] 清除后有 ${cookiesAfter.length} 个 cookies`);
         console.log('[Clear Cookies] ✅ 已清除所有登录状态');
 
+        // 清除完成后导航回首页
+        console.log('[Clear Cookies] 导航回首页...');
+        browserView.webContents.loadURL(HOME_URL);
+
         await dialog.showMessageBox(mainWindow, {
           type: 'info',
           title: '清除成功',
           message: '已清除所有网站的登录状态',
-          detail: `删除了 ${cookiesBefore.length} 个 cookies`,
+          detail: `删除了 ${cookiesBefore.length} 个 cookies\n\n页面将自动刷新`,
           buttons: ['确定']
         });
       }
@@ -716,6 +1132,10 @@ app.whenReady().then(async () => {
 
           console.log(`[Clear Cookies] ========== 清除完成 ==========`);
           console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+          // 通知首页刷新指定域名的授权状态
+          browserView.webContents.send('cookies-cleared', { type: 'domain', domain: domain, count: deletedCount });
+          console.log('[Clear Cookies] 📤 已通知首页刷新授权状态');
 
           await dialog.showMessageBox(mainWindow, {
             type: 'info',
@@ -902,6 +1322,74 @@ app.on('window-all-closed', function () {
 
 // IPC 处理程序
 
+// 检查 Session 状态（用于检测登录状态是否被清除）
+ipcMain.handle('check-session-status', async () => {
+  try {
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      return { hasSession: false, cookieCount: 0, reason: 'browserView不可用' };
+    }
+
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+
+    // 检查特定平台的登录凭证 cookies（不只是数量，而是关键的登录 cookie）
+    const douyinCookies = cookies.filter(c => c.domain.includes('douyin.com'));
+    const xiaohongshuCookies = cookies.filter(c => c.domain.includes('xiaohongshu.com'));
+    const weixinCookies = cookies.filter(c => c.domain.includes('weixin.qq.com'));
+    const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
+
+    // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
+    const douyinLoggedIn = douyinCookies.some(c =>
+      c.name === 'sessionid' ||
+      c.name === 'sessionid_ss' ||
+      c.name === 'passport_csrf_token' ||
+      c.name === 'sid_guard' ||
+      c.name === 'uid_tt' ||
+      c.name === 'uid_tt_ss'
+    );
+
+    const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
+      c.name === 'web_session' ||
+      c.name === 'websectiga' ||
+      c.name === 'sec_poison_id'
+    );
+
+    const weixinLoggedIn = weixinCookies.some(c =>
+      c.name === 'wxuin' ||
+      c.name === 'pass_ticket'
+    );
+
+    const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
+      c.name === 'BDUSS' ||
+      c.name === 'STOKEN'
+    );
+
+    const platformStatus = {
+      douyin: { count: douyinCookies.length, loggedIn: douyinLoggedIn },
+      xiaohongshu: { count: xiaohongshuCookies.length, loggedIn: xiaohongshuLoggedIn },
+      weixin: { count: weixinCookies.length, loggedIn: weixinLoggedIn },
+      baijiahao: { count: baijiahaoCookies.length, loggedIn: baijiahaoLoggedIn }
+    };
+
+    console.log('[Session Check] Cookie 统计:', {
+      total: cookies.length,
+      douyin: `${douyinCookies.length} cookies, loggedIn: ${douyinLoggedIn}`,
+      xiaohongshu: `${xiaohongshuCookies.length} cookies, loggedIn: ${xiaohongshuLoggedIn}`,
+      weixin: `${weixinCookies.length} cookies, loggedIn: ${weixinLoggedIn}`,
+      baijiahao: `${baijiahaoCookies.length} cookies, loggedIn: ${baijiahaoLoggedIn}`
+    });
+
+    return {
+      hasSession: cookies.length > 0,
+      cookieCount: cookies.length,
+      platforms: platformStatus
+    };
+  } catch (err) {
+    console.error('[Session Check] 检查失败:', err);
+    return { hasSession: false, cookieCount: 0, error: err.message };
+  }
+});
+
 // 导航到指定 URL
 ipcMain.handle('navigate-to', async (event, url) => {
   if (browserView) {
@@ -978,25 +1466,45 @@ ipcMain.handle('execute-script-now', async (event, script) => {
 // 从内容页面发送消息到首页
 ipcMain.on('content-to-home', (event, message) => {
   console.log('[IPC] 收到 content-to-home 消息:', message);
-  console.log('[IPC] HOME_URL:', HOME_URL);
+  console.log('[IPC] HOME_URLS:', HOME_URLS);
 
-  // 向 BrowserView 中的首页发送消息
-  if (browserView) {
+  const messageStr = JSON.stringify(message);
+
+  // 向 BrowserView 发送消息（无论当前是否为首页，让页面自行判断）
+  if (browserView && !browserView.webContents.isDestroyed()) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const homeUrl = '${HOME_URL}';
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
         const currentUrl = window.location.href;
-        const isHome = currentUrl.startsWith(homeUrl);
-        console.log('[Main] HOME_URL:', homeUrl);
-        console.log('[Main] currentUrl:', currentUrl);
-        console.log('[Main] isHome:', isHome);
+        const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+        console.log('[Main→BrowserView] HOME_URLS:', homeUrls);
+        console.log('[Main→BrowserView] currentUrl:', currentUrl);
+        console.log('[Main→BrowserView] isHome:', isHome);
         if (isHome) {
-          console.log('[Main] 向首页发送消息:', ${JSON.stringify(message)});
-          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${JSON.stringify(message)} }, '*');
+          console.log('[Main→BrowserView] ✅ 向首页发送消息:', ${messageStr});
+          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
         }
       })();
     `).catch(err => console.error('[Main] Failed to send message to home (BrowserView):', err));
   }
+
+  // 同时向所有子窗口广播，让首页自行接收
+  childWindows.forEach((childWindow, index) => {
+    if (childWindow && !childWindow.isDestroyed()) {
+      childWindow.webContents.executeJavaScript(`
+        (function() {
+          const homeUrls = ${JSON.stringify(HOME_URLS)};
+          const currentUrl = window.location.href;
+          const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+          console.log('[Main→ChildWindow${index}] currentUrl:', currentUrl, 'isHome:', isHome);
+          if (isHome) {
+            console.log('[Main→ChildWindow${index}] ✅ 向首页发送消息:', ${messageStr});
+            window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+          }
+        })();
+      `).catch(err => console.error(`[Main] Failed to send message to child window ${index}:`, err));
+    }
+  });
 });
 
 // 从首页发送消息到其他页面
@@ -1101,6 +1609,17 @@ ipcMain.handle('open-new-window', async (event, url) => {
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
+
+      // 通知首页：新窗口页面加载完成
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        browserView.webContents.send('window-loaded', {
+          url: currentURL,
+          windowId: newWindow.id,
+          timestamp: Date.now()
+        });
+        console.log('[New Window API] 已通知首页窗口加载完成');
+      }
+
       await scriptManager.getScript(currentURL).then(async (script) => {
         if (script) {
           console.log('[New Window API] Injecting script...');
@@ -1129,7 +1648,7 @@ ipcMain.handle('open-new-window', async (event, url) => {
     });
 
     newWindow.loadURL(url);
-    return { success: true };
+    return { success: true, windowId: newWindow.id };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1207,6 +1726,44 @@ ipcMain.handle('close-current-window', async (event) => {
     return { success: false, error: 'No window to close' };
   } catch (err) {
     console.error('[Window Manager] ❌ 关闭窗口失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// 获取当前窗口的 ID（用于新窗口识别自己）
+ipcMain.handle('get-window-id', async (event) => {
+  try {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow) {
+      return { success: true, windowId: senderWindow.id };
+    }
+    // 可能是 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      return { success: true, windowId: 'main', isMainView: true };
+    }
+    return { success: false, error: 'Cannot determine window' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 获取主窗口（BrowserView）的 URL（用于获取首页域名）
+ipcMain.handle('get-main-url', async () => {
+  try {
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      const url = browserView.webContents.getURL();
+      // 解析出域名
+      const urlObj = new URL(url);
+      return {
+        success: true,
+        url: url,
+        origin: urlObj.origin,  // 如 https://dev.china9.cn
+        host: urlObj.host,      // 如 dev.china9.cn
+        protocol: urlObj.protocol // 如 https:
+      };
+    }
+    return { success: false, error: 'BrowserView 不可用' };
+  } catch (err) {
     return { success: false, error: err.message };
   }
 });
@@ -1347,6 +1904,45 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
   return { success: false, error: 'BrowserView 不可用' };
 });
 
+// ========== 全局数据存储（用于跨页面数据传递） ==========
+
+// 存储数据
+ipcMain.handle('global-storage-set', async (event, key, value) => {
+  console.log('[Global Storage] 存储数据:', key, '=', value);
+  globalStorage[key] = value;
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
+});
+
+// 获取数据
+ipcMain.handle('global-storage-get', async (event, key) => {
+  const value = globalStorage[key];
+  console.log('[Global Storage] 获取数据:', key, '=', value);
+  return { success: true, value };
+});
+
+// 删除数据
+ipcMain.handle('global-storage-remove', async (event, key) => {
+  console.log('[Global Storage] 删除数据:', key);
+  delete globalStorage[key];
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
+});
+
+// 获取所有数据
+ipcMain.handle('global-storage-get-all', async () => {
+  console.log('[Global Storage] 获取所有数据:', globalStorage);
+  return { success: true, data: { ...globalStorage } };
+});
+
+// 清空所有数据
+ipcMain.handle('global-storage-clear', async () => {
+  console.log('[Global Storage] 清空所有数据');
+  globalStorage = {};
+  saveGlobalStorage(); // 持久化保存
+  return { success: true };
+});
+
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========
 // 优化：添加文件大小限制，防止内存溢出
 const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB 限制
@@ -1455,6 +2051,27 @@ ipcMain.handle('download-video', async (event, url) => {
     return await downloadWithRedirect(url);
   } catch (err) {
     console.error('[Video Download] 异常:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 文件下载功能（从内容页面触发） ==========
+ipcMain.handle('trigger-download', async (event, url) => {
+  console.log('[Trigger Download] 收到下载请求:', url);
+
+  if (!url) {
+    return { success: false, error: 'No URL provided' };
+  }
+
+  try {
+    // 触发下载
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.downloadURL(url);
+      return { success: true };
+    }
+    return { success: false, error: 'BrowserView not available' };
+  } catch (err) {
+    console.error('[Trigger Download] 错误:', err);
     return { success: false, error: err.message };
   }
 });

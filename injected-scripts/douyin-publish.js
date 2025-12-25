@@ -13,7 +13,7 @@ let hasProcessed = false;
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-(function() {
+(async function () {
   'use strict';
 
   // ===========================
@@ -23,6 +23,16 @@ let hasProcessed = false;
     console.log('[抖音发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
+
+  // ===========================
+  // 页面状态检查 - 防止异常渲染
+  // ===========================
+  if (typeof window.checkPageStateAndReload === 'function') {
+    if (!window.checkPageStateAndReload('抖音发布')) {
+      return;
+    }
+  }
+
   window.__DOUYIN_SCRIPT_LOADED__ = true;
 
   console.log('═══════════════════════════════════════');
@@ -54,7 +64,7 @@ let hasProcessed = false;
   // ===========================
 
   const urlParams = new URLSearchParams(window.location.search);
-  const companyId = urlParams.get('company_id');
+  const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
   console.log('[抖音发布] URL 参数:', {
@@ -117,10 +127,23 @@ let hasProcessed = false;
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'auth-data') {
+        if (message.type === 'publish-data' || message.type === 'auth-data') {
           console.log('[抖音发布] ✅ 收到发布数据:', message.data);
+          console.log('[抖音发布] ✅✅✅ 进入处理逻辑 ✅✅✅');
+
+          // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
+          if (message.windowId) {
+            const myWindowId = await window.browserAPI.getWindowId();
+            console.log('[抖音发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+            if (myWindowId !== message.windowId) {
+              console.log('[抖音发布] ⏭️ 消息不是发给我的，跳过');
+              return;
+            }
+            console.log('[抖音发布] ✅ windowId 匹配，处理消息');
+          }
 
           // 防重复检查
+          console.log('[抖音发布] 🔍 检查防重复标志: isProcessing=', isProcessing, ', hasProcessed=', hasProcessed);
           if (isProcessing) {
             console.warn('[抖音发布] ⚠️ 正在处理中，忽略重复消息');
             return;
@@ -132,17 +155,21 @@ let hasProcessed = false;
 
           // 标记为正在处理
           isProcessing = true;
+          console.log('[抖音发布] 🔄 已标记为正在处理');
 
           // 更新全局变量
+          console.log('[抖音发布] 🔍 检查 message.data:', !!message.data);
           if (message.data) {
+            // 兼容处理：message.data 可能是字符串或对象
+            const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            console.log("🚀 ~  ~ messageData: ", messageData);
+
             window.__AUTH_DATA__ = {
               ...window.__AUTH_DATA__,
-              message: JSON.parse(message.data),
+              message: messageData,
               receivedAt: Date.now()
             };
             console.log('[抖音发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-            const messageData = JSON.parse(message.data);
-            console.log("🚀 ~  ~ messageData: ", messageData);
 
             // 💾 保存数据到 localStorage（用于授权跳转后恢复）
             /* try {
@@ -161,9 +188,9 @@ let hasProcessed = false;
             } */
 
             await uploadVideo(messageData);
-            try{
+            try {
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-            }catch (e){
+            } catch (e) {
               console.log('[抖音发布] ❌ 填写表单数据失败:', e);
             }
 
@@ -256,15 +283,22 @@ async function publishApi(dataObj) {
     return;
   }
 
+  const publishId = dataObj.video.dyPlatform.id;
+
+  // 获取窗口 ID（用于多窗口并发发布时区分数据）
+  let windowId = null;
+  try {
+    windowId = await window.browserAPI.getWindowId();
+    console.log('[抖音发布] 当前窗口 ID:', windowId);
+  } catch (e) {
+    console.error('[抖音发布] ❌ 获取窗口 ID 失败:', e);
+  }
+
   try {
     // 标记发布正在进行
     publishRunning = true;
 
-    // 发送统计接口
-    const publishId = dataObj.video.dyPlatform.id;
-    await sendStatistics(publishId, '抖音发布');
-
-    // 等待页面稳定后发送统计接口
+    // 等待页面稳定
     await delay(2000);
 
     // 等待发布按钮可用
@@ -278,6 +312,17 @@ async function publishApi(dataObj) {
 
     // 等待按钮事件绑定完成
     await delay(800);
+
+    // 🔑 抖音成功后会直接跳转页面，必须在点击前保存数据
+    // 否则跳转后 publishApi 的后续代码不会执行
+    // 使用窗口 ID 作为 key，避免多窗口并发时数据覆盖
+    try {
+      const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
+      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+      console.log('[抖音发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
+    } catch (e) {
+      console.error('[抖音发布] ❌ 保存 publishId 失败:', e);
+    }
 
     // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
     // 默认策略：无法确定环境时，执行点击（安全优先）
@@ -294,55 +339,113 @@ async function publishApi(dataObj) {
       console.warn('[抖音发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
-    if (isDevEnvironment) {
-      console.log('[抖音发布] 🔧 检测到开发环境（npm start），跳过实际点击发布按钮');
-      console.log('[抖音发布] ⚠️ 如需真实发布，请使用打包后的 exe 版本');
+    // 生产环境：必须点击发布按钮
+    console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
 
-      // 显示提示给开发者
-      alert('✅ 开发环境：已完成所有发布前操作\n\n表单已填写完成，封面检测已通过\n生产环境下会在此处自动点击发布按钮\n\n即将通知父页面刷新并关闭窗口');
+    const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
-      console.log('[抖音发布] ✅ 开发环境模拟发布完成（未实际点击发布按钮）');
-    } else {
-      // 生产环境：必须点击发布按钮
-      console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
-
-      const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
-
-      if (!clickResult.success) {
-        console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
-        publishRunning = false;
-        throw new Error('发布按钮点击失败: ' + clickResult.message);
+    if (!clickResult.success) {
+      console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
+      // 清除提前保存的数据（使用窗口专属 key 和通用 key，确保兼容性）
+      if (windowId) {
+        localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
       }
-
-      console.log('[抖音发布] ✅ 发布按钮已点击');
-      console.log('[抖音发布] 📨 平台提示:', clickResult.message);
-
-      // 开发环境弹窗显示平台提示信息
-      if (window.browserAPI && window.browserAPI.isProduction === false) {
-        alert(`抖音发布结果：\n\n${clickResult.message}`);
-      }
-
-      // 等待页面稳定后发送统计接口
-      await delay(2000);
+      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      // 发送失败统计
+      await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '抖音发布');
+      publishRunning = false;
+      throw new Error('发布按钮点击失败: ' + clickResult.message);
     }
+
+    console.log('[抖音发布] ✅ 发布按钮已点击');
+    console.log('[抖音发布] 📨 平台提示:', clickResult.message);
+
+    // 开发环境弹窗显示平台提示信息
+    if (window.browserAPI && window.browserAPI.isProduction === false) {
+      alert(`抖音发布结果：\n\n${clickResult.message}`);
+    }
+
+    // 等待页面稳定
+    await delay(2000);
+
+    // 点击成功后，不再判断 toast 消息（因为各平台提示词不统一，无法准确判断）
+    // 直接认为发布已提交，等待页面跳转到成功页
+    // 成功统计由 publish-success.js 在成功页发送
+    console.log('[抖音发布] ✅ 发布已提交，消息:', clickResult.message);
 
     // 标记已完成
     hasProcessed = true;
     publishRunning = false;
 
-    // 🗑️ 清除 localStorage 中的数据（发布成功后）
-    /* try {
-      localStorage.removeItem('DOUYIN_PUBLISH_DATA');
-      console.log('[抖音发布] 🗑️ 已清除 localStorage 数据');
-    } catch (e) {
-      console.error('[抖音发布] ❌ 清除数据失败:', e);
-    } */
+    // 等待页面跳转到成功页，超时 30 秒
+    console.log('[抖音发布] ⏳ 等待跳转到成功页（30秒超时）...');
+    const currentUrl = window.location.href;
+    const startTime = Date.now();
+    const timeout = 30000; // 30秒
+    // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
+    let lastToastMessage = clickResult.message || '';
 
-    // 发送成功消息并关闭窗口
-    await closeWindowWithMessage('发布成功，刷新数据', 1000);
+    while (Date.now() - startTime < timeout) {
+      await delay(2000); // 每 2 秒检查一次
+
+      // 检查 URL 是否变化
+      if (window.location.href !== currentUrl) {
+        console.log('[抖音发布] ✅ 检测到页面跳转，发布成功');
+        return; // 页面已跳转，由 publish-success.js 处理
+      }
+
+      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除（检查窗口专属 key 和通用 key）
+      const windowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : null;
+      const hasWindowData = windowKey ? localStorage.getItem(windowKey) : false;
+      const hasGenericData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
+      if (!hasWindowData && !hasGenericData) {
+        console.log('[抖音发布] ✅ 数据已被成功页处理，跳过后续检测');
+        return;
+      }
+
+      // 检测是否出现 toast 提示，记录消息内容
+      try {
+        const toastEl = document.querySelector('.semi-toast-content-text');
+        if (toastEl) {
+          const text = (toastEl.textContent || '').trim();
+          if (text) {
+            lastToastMessage = text;
+            console.log('[抖音发布] 📨 检测到提示:', text);
+          }
+        }
+      } catch (e) {
+        // 忽略检测错误
+      }
+    }
+
+    // 超时未跳转 - 再次检查是否已被 publish-success.js 处理（检查窗口专属 key 和通用 key）
+    const finalWindowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : null;
+    const finalHasWindowData = finalWindowKey ? localStorage.getItem(finalWindowKey) : false;
+    const finalHasGenericData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
+    if (!finalHasWindowData && !finalHasGenericData) {
+      console.log('[抖音发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
+      return;
+    }
+
+    // 真正的超时失败
+    console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败');
+    // 清除数据（窗口专属 key 和通用 key）
+    if (windowId) {
+      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    }
+    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '抖音发布');
+    await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
+    // 清除提前保存的数据（窗口专属 key 和通用 key）
+    if (windowId) {
+      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    }
+    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    // 发送失败统计
+    await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
     publishRunning = false;
     // 即使出错也尝试关闭窗口
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
@@ -359,6 +462,81 @@ async function fillFormData(dataObj) {
   }
 
   fillFormRunning = true;
+
+  // 设置封面
+  try {
+    console.log('[封面设置] 开始设置封面...');
+
+    // 尝试多种选择器策略
+    let coverInput = null;
+    const selectors = [
+      '.recommendCover-vWWsHB:nth-child(1)',
+      '.recommendCover-vWWsHB:first-child',
+      '.recommendCover-vWWsHB'
+    ];
+
+    for (const selector of selectors) {
+      try {
+        coverInput = await waitForElement(selector, 3000);
+        if (coverInput) {
+          console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
+      }
+    }
+
+    if (!coverInput) {
+      throw new Error('未找到任何封面元素');
+    }
+
+    console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
+
+    // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
+    const rect = coverInput.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+
+    const mouseEventOptions = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      button: 0
+    };
+
+    // 完整的鼠标事件序列
+    coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+    console.log('[封面设置] ✅ 已触发完整点击事件序列');
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // 尝试查找并确认弹窗（如果没有弹窗也没关系）
+    try {
+      const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+      const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+      confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+      console.log('[封面设置] ✅ 已确认弹窗');
+    } catch (dialogError) {
+      console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
+    }
+  } catch (error) {
+    console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
+  }
 
   try {
     const titleAndIntro = dataObj.video.video.sendlog;
@@ -570,81 +748,6 @@ async function fillFormData(dataObj) {
     // 等待表单填写完成
     await new Promise(resolve => setTimeout(resolve, 15000));
 
-    // 设置封面
-    try {
-      console.log('[封面设置] 开始设置封面...');
-
-      // 尝试多种选择器策略
-      let coverInput = null;
-      const selectors = [
-        '.recommendCover-vWWsHB:nth-child(1)',
-        '.recommendCover-vWWsHB:first-child',
-        '.recommendCover-vWWsHB'
-      ];
-
-      for (const selector of selectors) {
-        try {
-          coverInput = await waitForElement(selector, 3000);
-          if (coverInput) {
-            console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-            break;
-          }
-        } catch (e) {
-          console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
-        }
-      }
-
-      if (!coverInput) {
-        throw new Error('未找到任何封面元素');
-      }
-
-      console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
-
-      // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
-      const rect = coverInput.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
-
-      const mouseEventOptions = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: x,
-        clientY: y,
-        screenX: x,
-        screenY: y,
-        button: 0
-      };
-
-      // 完整的鼠标事件序列
-      coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
-
-      console.log('[封面设置] ✅ 已触发完整点击事件序列');
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // 尝试查找并确认弹窗（如果没有弹窗也没关系）
-      try {
-        const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
-        const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
-        confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
-        console.log('[封面设置] ✅ 已确认弹窗');
-      } catch (dialogError) {
-        console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
-      }
-    } catch (error) {
-      console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
-    }
-
     // 检查是否通过检测 - 持续等待直到检测完成
     try {
       console.log('[检测结果] 等待检测元素出现...');
@@ -684,6 +787,76 @@ async function fillFormData(dataObj) {
           break; // 发布后退出循环
         }
 
+        // 只要不是"封面检测通过"，就尝试设置封面
+        console.log('[检测结果] ⚠️ 封面检测未通过，尝试设置封面...');
+
+        // 设置封面
+        try {
+          let coverInput = null;
+          const selectors = [
+            '.recommendCover-vWWsHB:nth-child(1)',
+            '.recommendCover-vWWsHB:first-child',
+            '.recommendCover-vWWsHB'
+          ];
+
+          for (const selector of selectors) {
+            try {
+              coverInput = await waitForElement(selector, 3000);
+              if (coverInput) {
+                console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+                break;
+              }
+            } catch (e) {
+              console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
+            }
+          }
+
+          if (coverInput) {
+            // 模拟完整的鼠标点击事件序列
+            const rect = coverInput.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+
+            const mouseEventOptions = {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX: x,
+              clientY: y,
+              screenX: x,
+              screenY: y,
+              button: 0
+            };
+
+            coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+            console.log('[封面设置] ✅ 已触发封面点击');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // 尝试确认弹窗
+            try {
+              const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+              const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+              confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+              console.log('[封面设置] ✅ 已确认弹窗');
+            } catch (dialogError) {
+              console.log('[封面设置] ⚠️ 未找到确认弹窗:', dialogError.message);
+            }
+
+            // 等待封面设置完成后继续检测
+            console.log('[封面设置] ⏳ 等待封面设置生效...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+        } catch (coverError) {
+          console.log('[封面设置] ❌ 设置封面失败:', coverError.message);
+        }
+
         // 检查是否超时
         if (Date.now() - startTime > timeout) {
           console.log('[检测结果] ❌ 等待检测通过超时（2分钟）');
@@ -692,7 +865,7 @@ async function fillFormData(dataObj) {
         }
 
         // 等待后再次检查
-        console.log('[检测结果] ⏳ 检测未通过，2秒后重新检查...');
+        console.log('[检测结果] ⏳ 2秒后重新检查...');
         await new Promise(resolve => setTimeout(resolve, checkInterval));
       }
 

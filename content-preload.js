@@ -1,7 +1,39 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // 检测是否为生产环境（打包后运行）
-const isProduction = process.resourcesPath && process.resourcesPath.includes('app.asar');
+// 使用多种方式判断，确保准确
+const isProduction = (() => {
+  // 方法1：检查 process.defaultApp（开发环境为 true）
+  if (process.defaultApp) {
+    return false;
+  }
+
+  // 方法2：检查执行路径是否包含 electron（开发环境特征）
+  const execPath = process.execPath.toLowerCase();
+  if (execPath.includes('electron')) {
+    return false;
+  }
+
+  // 方法3：检查 resourcesPath 是否包含 app.asar
+  if (process.resourcesPath && process.resourcesPath.includes('app.asar')) {
+    return true;
+  }
+
+  // 方法4：检查 resourcesPath 是否在 node_modules 中（开发环境特征）
+  if (process.resourcesPath && process.resourcesPath.includes('node_modules')) {
+    return false;
+  }
+
+  // 默认认为是生产环境（安全起见）
+  return true;
+})();
+
+console.log('[content-preload] 环境检测:', {
+  isProduction,
+  defaultApp: process.defaultApp,
+  execPath: process.execPath,
+  resourcesPath: process.resourcesPath
+});
 
 // 消息回调存储（单例模式 - 只保留最新的回调）
 const messageCallbacks = {
@@ -9,6 +41,32 @@ const messageCallbacks = {
   fromOtherPage: null,
   fromMain: null
 };
+
+// 防重复发布标志
+let isPublishing = false;
+
+// 待发送的消息队列（按 windowId 存储，等窗口加载完成后发送）
+const pendingMessages = new Map();
+
+// 监听窗口加载完成事件（在这里发送消息，替代 setTimeout 延时）
+ipcRenderer.on('window-loaded', (event, data) => {
+  console.log('[BrowserAPI] 🔔 收到 window-loaded 事件:', data);
+  const { windowId, url } = data;
+
+  // 检查是否有待发送的消息
+  if (pendingMessages.has(windowId)) {
+    const messageData = pendingMessages.get(windowId);
+    pendingMessages.delete(windowId);
+
+    // 发送消息到目标窗口
+    setTimeout(() => {
+      ipcRenderer.send('home-to-content', messageData);
+      console.log(`[BrowserAPI] 📤 窗口加载完成，已发送消息, windowId: ${windowId}, url: ${url}`);
+    }, 6000)
+  } else {
+    console.log(`[BrowserAPI] ℹ️ windowId: ${windowId} 没有待发送的消息`);
+  }
+});
 
 // 全局消息监听器（只注册一次）
 window.addEventListener('message', (event) => {
@@ -71,6 +129,95 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 从首页发送消息到其他页面
   sendToOtherPage: (message) => {
     console.log('[BrowserAPI] 发送消息到其他页面:', message);
+
+    // 处理发布数据
+    if (message.type === 'publish-data' && message.data) {
+      const dataObj = JSON.parse(message.data);
+      console.log("🚀 ~ sendToOtherPage ~ dataObj: ", dataObj);
+
+      // 统一转换为数组处理（兼容单个对象和数组）
+      const dataArray = Array.isArray(dataObj) ? dataObj : [dataObj];
+
+      console.log('[BrowserAPI] 🔍 数据类型:', Array.isArray(dataObj) ? '数组' : '对象');
+      console.log('[BrowserAPI] 🔍 dataArray 长度:', dataArray.length);
+
+      // 存储完整发布数据到全局存储
+      ipcRenderer.invoke('global-storage-set', 'publish_data', message.data);
+      console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
+      console.log(`[BrowserAPI] 📋 共有 ${dataArray.length} 篇文章待发布`);
+
+      const urlMap = {
+        'dy': 'https://creator.douyin.com/creator-micro/content/upload',
+        'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
+        'sph': 'https://channels.weixin.qq.com/platform/post/create',
+        'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+      };
+      const platformMap = { 1: 'dy', 6: 'xhs', 7: 'sph', 4: 'bjh' };
+
+      // 使用立即执行的异步函数 + for...of 确保顺序执行
+      (async () => {
+        for (let index = 0; index < dataArray.length; index++) {
+          const element = dataArray[index];
+          const platform = platformMap[element.account_info.media.id];
+          const url = urlMap[platform];
+          console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
+
+          // 打开新窗口，获取窗口 ID
+          const result = await ipcRenderer.invoke('open-new-window', url);
+          if (!result.success) {
+            console.error(`❌ [${index + 1}] 打开窗口失败: ${result.error}`);
+            continue; // 继续下一个，不要 return
+          }
+
+          const windowId = result.windowId;
+          console.log(`✅ [${index + 1}] 窗口创建成功, windowId: ${windowId}`);
+
+          // 用窗口 ID 作为 key 存储数据，避免多窗口冲突
+          const publishData = {
+            element,
+            platform,
+            windowId,
+            video: {
+              formData: element.formData || { title: element.title, send_set: 1 },
+              video: {
+                cover: element.image,
+                title: element.title,
+                intro: element.intro,
+                content: element.content,
+                url: element.url,
+                sendlog: element.sendlog || {
+                  title: element.title,
+                  intro: element.intro,
+                }
+              },
+              dyPlatform: element.dyPlatform ||{ id: element.id }
+            }
+          };
+          await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
+          console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
+
+          // 存储待发送的消息，等窗口加载完成事件触发后发送（替代 setTimeout 延时）
+          pendingMessages.set(windowId, {
+            type: 'publish-data',
+            platform: platform,
+            windowId: windowId,
+            data: publishData
+          });
+          console.log(`[BrowserAPI] 📋 已存储待发送消息, windowId: ${windowId}, 等待窗口加载完成...`);
+
+          // 每个窗口之间稍微延迟，避免同时创建太多
+          if (index < dataArray.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+        console.log(`[BrowserAPI] ✅ 所有 ${dataArray.length} 个窗口已创建完成`);
+      })();
+
+      // publish-data 类型的消息已经在循环中处理，不需要再次发送
+      return;
+    }
+
+    // 其他类型的消息正常发送
     ipcRenderer.send('home-to-content', message);
   },
 
@@ -92,6 +239,24 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onMessageFromMain 监听器已注册/更新');
   },
 
+  // 监听 Cookies 清除事件（首页使用，用于清空授权列表）
+  onCookiesCleared: (callback) => {
+    ipcRenderer.on('cookies-cleared', (event, data) => {
+      console.log('[BrowserAPI] 收到 cookies-cleared 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onCookiesCleared 监听器已注册');
+  },
+
+  // 监听新窗口加载完成事件（首页使用，用于知道新窗口何时准备好）
+  onWindowLoaded: (callback) => {
+    ipcRenderer.on('window-loaded', (event, data) => {
+      console.log('[BrowserAPI] 收到 window-loaded 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onWindowLoaded 监听器已注册');
+  },
+
   // 清除所有监听器（用于组件卸载）
   clearMessageListeners: () => {
     messageCallbacks.fromHome = null;
@@ -105,14 +270,105 @@ contextBridge.exposeInMainWorld('browserAPI', {
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
 
+  // 获取当前窗口 ID（用于新窗口识别自己，读取对应的发布数据）
+  getWindowId: () => ipcRenderer.invoke('get-window-id').then(r => r.success ? r.windowId : null),
+
+  // 获取主窗口（BrowserView/首页）的 URL 信息（用于动态获取 API 域名）
+  getMainUrl: () => ipcRenderer.invoke('get-main-url'),
+
   // 视频下载 API（通过主进程绕过跨域限制）
   downloadVideo: (url) => ipcRenderer.invoke('download-video', url),
 
+  // 触发文件下载（会弹出保存对话框）
+  triggerDownload: (url) => ipcRenderer.invoke('trigger-download', url),
+
   // 清除指定域名的 Cookies（用于退出登录）
-  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain)
+  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+
+  // 检查 Session 状态（用于检测登录状态是否被清除）
+  checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),
+
+  // ========== 全局数据存储 API（用于跨页面数据传递） ==========
+  // 存储数据（如 company_id）
+  setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),
+  // 获取数据
+  getGlobalData: (key) => ipcRenderer.invoke('global-storage-get', key).then(r => r.value),
+  // 删除数据
+  removeGlobalData: (key) => ipcRenderer.invoke('global-storage-remove', key),
+  // 获取所有数据
+  getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
+  // 清空所有数据
+  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear')
 });
 
-// 在页面加载时注入通信代码
+// 在页面加载时注入通信代码和协议拦截
 window.addEventListener('DOMContentLoaded', () => {
   console.log('BrowserAPI ready:', window.location.href);
+
+  // 注入协议拦截代码到页面上下文
+  const script = document.createElement('script');
+  script.textContent = `
+    (function() {
+      // 阻止的协议列表
+      const blockedProtocols = ['bitbrowser:', 'mqqwpa:', 'weixin:', 'alipays:', 'tbopen:'];
+
+      function isBlockedProtocol(url) {
+        if (!url || typeof url !== 'string') return false;
+        const lowerUrl = url.toLowerCase();
+        return blockedProtocols.some(function(protocol) { return lowerUrl.startsWith(protocol); });
+      }
+
+      // 拦截链接点击
+      document.addEventListener('click', function(e) {
+        var target = e.target;
+        while (target && target !== document) {
+          if (target.tagName === 'A' && target.href && isBlockedProtocol(target.href)) {
+            console.log('[ProtocolBlock] 阻止链接点击:', target.href);
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+
+      // 拦截 window.open
+      var originalOpen = window.open;
+      window.open = function(url) {
+        if (isBlockedProtocol(url)) {
+          console.log('[ProtocolBlock] 阻止 window.open:', url);
+          return null;
+        }
+        return originalOpen.apply(window, arguments);
+      };
+
+      // 拦截 location.assign
+      var originalAssign = window.location.assign;
+      if (originalAssign) {
+        window.location.assign = function(url) {
+          if (isBlockedProtocol(url)) {
+            console.log('[ProtocolBlock] 阻止 location.assign:', url);
+            return;
+          }
+          return originalAssign.call(window.location, url);
+        };
+      }
+
+      // 拦截 location.replace
+      var originalReplace = window.location.replace;
+      if (originalReplace) {
+        window.location.replace = function(url) {
+          if (isBlockedProtocol(url)) {
+            console.log('[ProtocolBlock] 阻止 location.replace:', url);
+            return;
+          }
+          return originalReplace.call(window.location, url);
+        };
+      }
+
+      console.log('[ProtocolBlock] 前端协议拦截已启用');
+    })();
+  `;
+  document.documentElement.appendChild(script);
+  script.remove(); // 注入后立即移除 script 标签
 });
