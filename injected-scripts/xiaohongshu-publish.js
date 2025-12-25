@@ -384,7 +384,8 @@ async function publishApi(dataObj) {
     const currentUrl = window.location.href;
     const startTime = Date.now();
     const timeout = 30000; // 30秒
-    let lastToastMessage = ''; // 记录最后一次检测到的 toast 消息
+    // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
+    let lastToastMessage = clickResult.message || '';
 
     while (Date.now() - startTime < timeout) {
       await delay(2000); // 每 2 秒检查一次

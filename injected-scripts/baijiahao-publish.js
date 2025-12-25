@@ -420,7 +420,8 @@
     const currentUrl = window.location.href;
     const startTime = Date.now();
     const timeout = 30000; // 30秒
-    let lastErrorMessage = ''; // 记录最后一次检测到的错误消息
+    // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
+    let lastErrorMessage = clickResult.message || '';
 
     while (Date.now() - startTime < timeout) {
       await delay(2000); // 每 2 秒检查一次
@@ -854,7 +855,8 @@
                                 const currentUrl = window.location.href;
                                 const startTime = Date.now();
                                 const timeout = 60000;
-                                let lastErrorMessage = '';
+                                // 🔑 用 confirmClickResult.message 作为初始值，避免超时时丢失已捕获的提示
+                                let lastErrorMessage = confirmClickResult.message || '';
 
                                 while (Date.now() - startTime < timeout) {
                                   await delay(2000);
