@@ -96,119 +96,76 @@
     let isProcessing = false;
     let hasProcessed = false;
 
-    // 防重复检查
-    if (isProcessing) {
-        console.warn('[小红书授权] ⚠️ 正在处理中，忽略重复消息');
-        return;
-    }
-    if (hasProcessed) {
-        console.warn('[小红书授权] ⚠️ 已经处理过，忽略重复消息');
-        return;
-    }
+    if (!window.browserAPI) {
+        console.error('[小红书授权] ❌ browserAPI 不可用！');
+    } else {
+        window.browserAPI.onMessageFromHome(async (message) => {
+            try {
+                console.log('[小红书授权] 🎉 收到消息:', message);
 
-    // 标记为正在处理
-    isProcessing = true;
+                if (message.type === 'auth-data') {
+                    if (message.windowId) {
+                        const myWindowId = await window.browserAPI.getWindowId();
+                        if (myWindowId !== message.windowId) return;
+                    }
 
-    // 更新全局变量
-    if (message.data) {
-        window.__AUTH_DATA__ = {
-            ...window.__AUTH_DATA__,
-            message: JSON.parse(message.data),
-            receivedAt: Date.now()
-        };
-        console.log('[小红书授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
-        const messageData = JSON.parse(message.data);
-        console.log("🚀 ~  ~ messageData: ", messageData);
+                    if (isProcessing || hasProcessed) return;
+                    isProcessing = true;
 
-        // 等待页面元素加载完成
-        await waitForElement('.account-name', 15000);
+                    const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
 
-        // 检查昵称元素是否有内容
-        const titleEle = document.querySelector('.account-name');
-        if (!titleEle || !titleEle.innerText) {
-            // alert('Account name element not ready, waiting...');
-            await new Promise(resolve => setTimeout(resolve, 2000));
-        }
+                    await waitForElement('.account-name', 15000);
+                    const titleEle = document.querySelector('.account-name');
+                    if (!titleEle || !titleEle.innerText) {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
 
-        // 收集用户信息
-        const accountNameEle = await waitForElement('.account-name', 5000);
-        const avatarEle = await waitForElement('.avatar img', 5000);
-        const followerCountEle = await waitForElement('.static.description-text >div:nth-of-type(2) .numerical', 5000);
-        const favoritingCountEle = await waitForElement('.static.description-text >div:nth-of-type(1) .numerical', 5000);
-        const totalFavoritedEle = await waitForElement('.static.description-text >div:nth-of-type(3) .numerical', 5000);
-        const uidEle = await waitForElement('.others.description-text > div:nth-of-type(1)', 5000);
+                    const accountNameEle = await waitForElement('.account-name', 5000);
+                    const avatarEle = await waitForElement('.avatar img', 5000);
+                    const followerCountEle = await waitForElement('.static.description-text >div:nth-of-type(2) .numerical', 5000);
+                    const favoritingCountEle = await waitForElement('.static.description-text >div:nth-of-type(1) .numerical', 5000);
+                    const totalFavoritedEle = await waitForElement('.static.description-text >div:nth-of-type(3) .numerical', 5000);
+                    const uidEle = await waitForElement('.others.description-text > div:nth-of-type(1)', 5000);
 
-        const scanData = {
-            data: JSON.stringify({
-                nickname: accountNameEle.innerText,
-                avatar: avatarEle.getAttribute('src'),
-                follower_count: followerCountEle.innerText,
-                video: 0,
-                uid: uidEle.innerText.replace('小红书账号: ', ''),
-                favoriting_count: favoritingCountEle.innerText,
-                total_favorited: totalFavoritedEle.innerText,
-                company_id: await window.browserAPI.getGlobalData('company_id')
-            })
-        };
+                    const scanData = {
+                        data: JSON.stringify({
+                            nickname: accountNameEle.innerText,
+                            avatar: avatarEle.getAttribute('src'),
+                            follower_count: followerCountEle.innerText,
+                            video: 0,
+                            uid: uidEle.innerText.replace('小红书账号: ', ''),
+                            favoriting_count: favoritingCountEle.innerText,
+                            total_favorited: totalFavoritedEle.innerText,
+                            company_id: await window.browserAPI.getGlobalData('company_id'),
+                            auth_type: messageData.auth_type
+                        })
+                    };
 
-        console.log('[小红书授权] 📤 准备发送数据到接口...');
-        // 发送数据到服务器
-        const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/xhsinfo', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(scanData)
+                    const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/xhsinfo', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(scanData)
+                    });
+
+                    if (!apiResponse.ok) throw new Error(`API failed: ${apiResponse.status}`);
+
+                    const apiResult = await apiResponse.json();
+                    if (apiResult && apiResult.code === 200) {
+                        hasProcessed = true;
+                        sendMessageToParent('授权成功，刷新数据');
+                        setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                    } else {
+                        throw new Error(apiResult.msg || 'Failed');
+                    }
+                    isProcessing = false;
+                }
+            } catch (error) {
+                console.error('[小红书授权] ❌ 出错:', error);
+                isProcessing = false;
+            }
         });
-
-        // 检查响应状态
-        if (!apiResponse.ok) {
-            throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-        }
-
-        const apiResult = await apiResponse.json();
-        console.log('[小红书授权] 📥 接口响应:', apiResult);
-
-        if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-            console.log('[小红书授权] ✅ 数据发送成功');
-
-            // 标记已完成（防止重复发送）
-            hasProcessed = true;
-
-            // API 成功后通知父页面刷新
-            sendMessageToParent('授权成功，刷新数据');
-
-            // 统计接口成功后关闭弹窗
-            setTimeout(() => {
-                window.browserAPI.closeCurrentWindow();
-            }, 1000);
-
-            // 检查是否有保存的发布页URL（从发布页跳转过来的）
-            /* const savedPublishUrl = localStorage.getItem('XHS_PUBLISH_URL');
-
-            if (savedPublishUrl) {
-              console.log('[小红书授权] 🔄 检测到发布页URL，准备跳转:', savedPublishUrl);
-              // 清除发布页URL标记（避免重复跳转）
-              localStorage.removeItem('XHS_PUBLISH_URL');
-              // 跳转回发布页（由发布页脚本的数据恢复功能接管）
-              setTimeout(() => {
-                window.location.href = savedPublishUrl;
-              }, 1000);
-            } else {
-              console.log('[小红书授权] ℹ️ 没有发布页URL，关闭窗口');
-              // 统计接口成功后关闭弹窗
-              setTimeout(() => {
-                window.browserAPI.closeCurrentWindow();
-              }, 1000);
-            } */
-        } else {
-            throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-        }
+        console.log('[小红书授权] ✅ 消息监听器注册成功');
     }
-
-    // 重置处理标志（无论成功或失败）
-    isProcessing = false;
-    console.log('[小红书授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
 
     // ===========================
     // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）

@@ -96,115 +96,148 @@
   let isProcessing = false;
   let hasProcessed = false;
 
-  console.log('[抖音授权] ✅ 收到授权数据:', message.data);
-
-  // 防重复检查
-  if (isProcessing) {
-    console.warn('[抖音授权] ⚠️ 正在处理中，忽略重复消息');
-    return;
-  }
-
-  if (hasProcessed) {
-    console.warn('[抖音授权] ⚠️ 已经处理过，忽略重复消息');
-    return;
-  }
-
-  // 标记为正在处理
-  isProcessing = true;
-
-  console.log('[抖音授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
-
-  // 获取用户信息（带重试机制）
-  const user = await retryOperation(async () => {
-    const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
-      method: 'get'
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const apiData = await response.json();
-    const {user} = apiData;
-
-    if (!user || !('nickname' in user) || !('follower_count' in user) || !('following_count' in user) || !('aweme_count' in user) || !('avatar_thumb' in user) || !('url_list' in user.avatar_thumb) || !user.avatar_thumb.url_list[0]) {
-      throw new Error('Incomplete user data received');
-    }
-
-    return user;
-  }, 3, 2000);
-
-  const scanData = {
-    data: JSON.stringify({
-      nickname: user.nickname,
-      avatar: user.avatar_thumb.url_list[0],
-      follow: user.following_count,
-      follower_count: user.follower_count,
-      video: user.aweme_count,
-      uid: user.uid,
-      favoriting_count: user.favoriting_count,
-      total_favorited: user.total_favorited,
-      company_id: await window.browserAPI.getGlobalData('company_id')
-    })
-  };
-
-  console.log('[抖音授权] 📤 准备发送数据到接口...');
-  // 发送数据到服务器
-  const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(scanData)
-  });
-
-  // 检查响应状态
-  if (!apiResponse.ok) {
-    throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
-  }
-
-  const apiResult = await apiResponse.json();
-  console.log('[抖音授权] 📥 接口响应:', apiResult);
-
-  if (apiResult && 'code' in apiResult && apiResult.code === 200) {
-    console.log('[抖音授权] ✅ 数据发送成功');
-
-    // 标记已完成（防止重复发送）
-    hasProcessed = true;
-
-    // API 成功后通知父页面刷新
-    sendMessageToParent('授权成功，刷新数据');
-
-    // 统计接口成功后关闭弹窗
-    setTimeout(() => {
-      window.browserAPI.closeCurrentWindow();
-    }, 1000);
-
-    /* // 检查是否有保存的发布页URL（从发布页跳转过来的）
-    const savedPublishUrl = localStorage.getItem('DOUYIN_PUBLISH_URL');
-
-    if (savedPublishUrl) {
-      console.log('[抖音授权] 🔄 检测到发布页URL，准备跳转:', savedPublishUrl);
-      // 清除发布页URL标记（避免重复跳转）
-      localStorage.removeItem('DOUYIN_PUBLISH_URL');
-      // 跳转回发布页（由发布页脚本的数据恢复功能接管）
-      setTimeout(() => {
-        window.location.href = savedPublishUrl;
-      }, 1000);
-    } else {
-      console.log('[抖音授权] ℹ️ 没有发布页URL，关闭窗口');
-      // 统计接口成功后关闭弹窗
-      setTimeout(() => {
-        window.browserAPI.closeCurrentWindow();
-      }, 1000);
-    } */
+  if (!window.browserAPI) {
+    console.error('[抖音授权] ❌ browserAPI 不可用！');
   } else {
-    throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
-  }
+    console.log('[抖音授权] ✅ browserAPI 可用');
 
-  // 重置处理标志（无论成功或失败）
-  isProcessing = false;
-  console.log('[抖音授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+    if (!window.browserAPI.onMessageFromHome) {
+      console.error('[抖音授权] ❌ browserAPI.onMessageFromHome 不可用！');
+    } else {
+      console.log('[抖音授权] ✅ browserAPI.onMessageFromHome 可用，正在注册...');
+
+      window.browserAPI.onMessageFromHome(async (message) => {
+        try {
+          console.log('═══════════════════════════════════════');
+          console.log('[抖音授权] 🎉 收到来自父窗口的消息!');
+          console.log('[抖音授权] 消息类型:', typeof message);
+          console.log('[抖音授权] 消息内容:', message);
+          console.log('[抖音授权] 消息.type:', message?.type);
+          console.log('[抖音授权] 消息.data:', message?.data);
+          console.log('═══════════════════════════════════════');
+
+          // 接收完整的授权数据
+          if (message.type === 'publish-data' || message.type === 'auth-data') {
+            console.log('[抖音授权] ✅ 收到授权数据:', message.data);
+
+            // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
+            if (message.windowId) {
+              const myWindowId = await window.browserAPI.getWindowId();
+              console.log('[抖音授权] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+              if (myWindowId !== message.windowId) {
+                console.log('[抖音授权] ⏭️ 消息不是发给我的，跳过');
+                return;
+              }
+              console.log('[抖音授权] ✅ windowId 匹配，处理消息');
+            }
+
+            // 防重复检查
+            if (isProcessing) {
+              console.warn('[抖音授权] ⚠️ 正在处理中，忽略重复消息');
+              return;
+            }
+            if (hasProcessed) {
+              console.warn('[抖音授权] ⚠️ 已经处理过，忽略重复消息');
+              return;
+            }
+
+            // 标记为正在处理
+            isProcessing = true;
+
+            // 更新全局变量
+            if (message.data) {
+              const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+              window.__AUTH_DATA__ = {
+                ...window.__AUTH_DATA__,
+                message: messageData,
+                receivedAt: Date.now()
+              };
+              console.log('[抖音授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
+
+              // 获取用户信息（带重试机制）
+              const user = await retryOperation(async () => {
+                const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
+                  method: 'get'
+                });
+
+                if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const apiData = await response.json();
+                const {user} = apiData;
+
+                if (!user || !('nickname' in user) || !('follower_count' in user) || !('following_count' in user) || !('aweme_count' in user) || !('avatar_thumb' in user) || !('url_list' in user.avatar_thumb) || !user.avatar_thumb.url_list[0]) {
+                  throw new Error('Incomplete user data received');
+                }
+
+                return user;
+              }, 3, 2000);
+
+              const scanData = {
+                data: JSON.stringify({
+                  nickname: user.nickname,
+                  avatar: user.avatar_thumb.url_list[0],
+                  follow: user.following_count,
+                  follower_count: user.follower_count,
+                  video: user.aweme_count,
+                  uid: user.uid,
+                  favoriting_count: user.favoriting_count,
+                  total_favorited: user.total_favorited,
+                  company_id: await window.browserAPI.getGlobalData('company_id'),
+                  auth_type: messageData.auth_type
+                })
+              };
+
+              console.log('[抖音授权] 📤 准备发送数据到接口...');
+              // 发送数据到服务器
+              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(scanData)
+              });
+
+              // 检查响应状态
+              if (!apiResponse.ok) {
+                throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
+              }
+
+              const apiResult = await apiResponse.json();
+              console.log('[抖音授权] 📥 接口响应:', apiResult);
+
+              if (apiResult && 'code' in apiResult && apiResult.code === 200) {
+                console.log('[抖音授权] ✅ 数据发送成功');
+
+                // 标记已完成（防止重复发送）
+                hasProcessed = true;
+
+                // API 成功后通知父页面刷新
+                sendMessageToParent('授权成功，刷新数据');
+
+                // 统计接口成功后关闭弹窗
+                setTimeout(() => {
+                  window.browserAPI.closeCurrentWindow();
+                }, 1000);
+              } else {
+                throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
+              }
+            }
+
+            // 重置处理标志（无论成功或失败）
+            isProcessing = false;
+            console.log('[抖音授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+          }
+        } catch (error) {
+          console.error('[抖音授权] ❌ 消息处理出错:', error);
+          isProcessing = false;
+        }
+      });
+
+      console.log('[抖音授权] ✅ 消息监听器注册成功');
+    }
+  }
 
   // ===========================
   // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）

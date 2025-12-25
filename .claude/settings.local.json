@@ -11,7 +11,8 @@
       "Bash(npm run build:portable:*)",
       "Bash(identify:*)",
       "Bash(magick identify:*)",
-      "Bash(xxd:*)"
+      "Bash(xxd:*)",
+      "Bash(del \"D:\\浏览器\\运营助手\\login.html\")"
     ],
     "deny": [],
     "ask": []

@@ -96,20 +96,12 @@
   let isProcessing = false;
   let hasProcessed = false;
 
-  // 防重复检查
-  if (isProcessing) {
-    console.warn('[百家号授权] ⚠️ 正在处理中，忽略重复消息');
-    return;
-  }
-  if (hasProcessed) {
-    console.warn('[百家号授权] ⚠️ 已经处理过，忽略重复消息');
-    return;
-  }
+  // 自动执行授权流程
+  try {
+    // 标记为正在处理
+    isProcessing = true;
 
-  // 标记为正在处理
-  isProcessing = true;
-
-  // 获取用户信息
+    // 获取用户信息
   const response = await fetch('https://baijiahao.baidu.com/builder/app/appinfo', {
     method: 'get'
   });
@@ -191,10 +183,10 @@
   } else {
     throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
   }
-
-  // 重置处理标志（无论成功或失败）
-  isProcessing = false;
-  console.log('[百家号授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+  } catch (error) {
+    console.error('[百家号授权] ❌ 授权流程出错:', error);
+    isProcessing = false;
+  }
 
   // ===========================
   // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）

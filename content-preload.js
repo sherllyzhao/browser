@@ -63,9 +63,8 @@ ipcRenderer.on('window-loaded', (event, data) => {
       ipcRenderer.send('home-to-content', messageData);
       console.log(`[BrowserAPI] 📤 窗口加载完成，已发送消息, windowId: ${windowId}, url: ${url}`);
     }, 6000)
-  } else {
-    console.log(`[BrowserAPI] ℹ️ windowId: ${windowId} 没有待发送的消息`);
   }
+  // 没有待发送消息时不再输出日志，减少干扰
 });
 
 // 全局消息监听器（只注册一次）
