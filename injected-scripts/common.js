@@ -514,10 +514,10 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
 // ===========================
 
 // 根据主窗口域名获取统计接口 URL
-async function getStatisticsUrl(isError = false) {
+window.getStatisticsUrl = async function(isError = false) {
     const endpoint = isError ? 'tjlogerror' : 'tjlog';
     const urlMap = {
-        'localhost': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+        'localhost:5173': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
         'china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
         'www.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
         'dev.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
@@ -525,6 +525,7 @@ async function getStatisticsUrl(isError = false) {
         'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
         'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
         '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+        'localhost:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
     };
 
     let url = `https://apidev.china9.cn/api/mediaauth/${endpoint}`; // 默认值
@@ -876,6 +877,7 @@ if (typeof waitForShadowElement === 'undefined') window.waitForShadowElement && 
 if (typeof deepShadowSearch === 'undefined') window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
 if (typeof sendStatistics === 'undefined') window.sendStatistics && (sendStatistics = window.sendStatistics);
 if (typeof sendStatisticsError === 'undefined') window.sendStatisticsError && (sendStatisticsError = window.sendStatisticsError);
+if (typeof getStatisticsUrl === 'undefined') window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof delay === 'undefined') window.delay && (delay = window.delay);

@@ -11,9 +11,9 @@
     "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "kuaishou-creator.js"],
     "https://creator.douyin.com/creator-micro/content/upload*": ["common.js", "douyin-publish.js"],
     "https://creator.xiaohongshu.com/publish/publish*": ["common.js", "xiaohongshu-publish.js"],
-    "https://creator.xiaohongshu.com/publish/success*": ["publish-success.js"],
+    "https://creator.xiaohongshu.com/publish/success*": ["common.js", "publish-success.js"],
     "https://channels.weixin.qq.com/platform/post/create*": ["common.js", "shipinhao-publish.js"],
-    "https://channels.weixin.qq.com/platform/post/list*": ["publish-success.js"],
+    "https://channels.weixin.qq.com/platform/post/list*": ["common.js", "publish-success.js"],
     "https://baijiahao.baidu.com/builder/rc/edit*": ["common.js", "baijiahao-publish.js"],
     "https://baijiahao.baidu.com/builder/rc/clue*": ["common.js", "publish-success.js"]
   },

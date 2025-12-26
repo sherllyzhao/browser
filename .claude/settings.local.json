@@ -12,7 +12,10 @@
       "Bash(identify:*)",
       "Bash(magick identify:*)",
       "Bash(xxd:*)",
-      "Bash(del \"D:\\浏览器\\运营助手\\login.html\")"
+      "Bash(del \"D:\\浏览器\\运营助手\\login.html\")",
+      "Bash(cmd /c \"mkdir \"\"D:\\浏览器\\运营助手\\assets\"\" 2>nul & copy \"\"E:\\项目\\资海云\\视频剪辑\\ai-media-edit\\src\\assets\\images\\login\\bg.png\"\" \"\"D:\\浏览器\\运营助手\\assets\\login-bg.png\"\"\")",
+      "Bash(powershell -Command \"if (!(Test-Path ''D:\\浏览器\\运营助手\\assets'')) { New-Item -ItemType Directory -Path ''D:\\浏览器\\运营助手\\assets'' -Force }; Copy-Item ''E:\\项目\\资海云\\视频剪辑\\ai-media-edit\\src\\assets\\images\\login\\bg.png'' -Destination ''D:\\浏览器\\运营助手\\assets\\login-bg.png'' -Force\")",
+      "Bash(xcopy:*)"
     ],
     "deny": [],
     "ask": []

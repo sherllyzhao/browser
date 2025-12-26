@@ -78,9 +78,13 @@ if (isProduction) {
   }
 }
 
-const HOME_URL = isProduction
-  ? 'https://dev.china9.cn/aigc_browser/'
-  : 'http://localhost:5173/';
+// 登录页地址（本地 HTML 文件）
+const LOGIN_URL = 'file:///' + __dirname.replace(/\\/g, '/') + '/login.html';
+
+// 首页地址（开发和生产环境都使用登录页）
+const HOME_URL = LOGIN_URL;
+
+console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
@@ -88,7 +92,8 @@ const HOME_URLS = [
   'https://dev.china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
-  'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+  'https://zhjzt.china9.cn/jzt_all/#/geo/index',
+  LOGIN_URL  // 登录页也作为首页处理
 ];
 
 // 判断 URL 是否为首页

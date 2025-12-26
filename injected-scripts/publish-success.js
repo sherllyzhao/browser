@@ -92,20 +92,7 @@
         // 开发环境（localhost）跳过接口调用
         console.log('[发布成功] 📤 发送成功统计...');
         const scanData = { data: JSON.stringify({ id: publishData.publishId }) };
-        const urlMap = {
-          'localhost': 'https://apidev.china9.cn/api/mediaauth/tjlog',
-          'china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
-          'www.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
-          'dev.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
-          'www.dev.china9.cn': 'https://apidev.china9.cn/api/mediaauth/tjlog',
-          'jzt_dev_1.china9.cn': 'https://jzt_dev_1.china9.cn/api/geo/tjlog',
-          'zhjzt.china9.cn': 'https://zhjzt.china9.cn/api/geo/tjlog',
-          '172.16.6.17:8080': 'https://jzt_dev_1.china9.cn/api/geo/tjlog',
-        }
-        let url = 'https://apidev.china9.cn/api/mediaauth/tjlog';
-        if (mainInfo.success && urlMap[mainInfo.host]) {
-          url = urlMap[mainInfo.host];
-        }
+        let url = await getStatisticsUrl();
         const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
