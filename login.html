@@ -420,7 +420,7 @@
     // 跳转目标地址（根据环境自动选择）
     const TARGET_URLS = {
       aigc: isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/',
-      geo: isDev ? 'http://localhost:8080/' : 'https://dev.china9.cn/jzt_all/#/geo/index'
+      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://dev.china9.cn/jzt_all/#/geo/index'
     };
 
     console.log('[Login] 环境:', isDev ? '开发' : '生产', 'TARGET_URLS:', TARGET_URLS);
@@ -498,24 +498,42 @@
 
     // 获取用户信息
     async function getUserInfoApi(token) {
-      const response = await fetch(`https://dev.china9.cn/api/user/info`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          type: 'pc',
-          enterpriseSide: 'pc'
-        })
-      });
+        const response = await fetch(`https://dev.china9.cn/api/user/info`, {
+          method: 'POST',
+          headers: {
+            'token': token,
+            'access_token': token
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            type: 'pc',
+            enterpriseSide: 'pc'
+          })
+        });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-      const result = await response.json();
-      return result.data;
+        const result = await response.json();
+        return result.data;
+    }
+
+    // 获取建站通站点信息
+    async function getSiteInfoApi(company_unique_id) {
+        // 是否是开发环境
+      const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+      const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+        const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
+          method: 'GET'
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        return result.data;
     }
 
     // ========== Tab 切换 ==========
@@ -612,24 +630,111 @@
           console.log('[Login] 已存储 token 到全局存储');
         }
 
-        // 设置 Cookie（对于同域跳转有效）
-        const expiresDate = new Date(loginData.expires_in * 1000);
-        setCookie('token', loginData.token, { path: '/', expires: expiresDate });
-        setCookie('access_token', loginData.token, { path: '/', expires: expiresDate });
-        if (loginData.gcc) {
-          setCookie('gcc', loginData.gcc, { path: '/', expires: expiresDate });
+        // 🔑 使用 Electron session API 设置跨域 Cookie
+        const expirationDate = loginData.expires_in; // 已经是秒级时间戳
+        console.log('[Login] expirationDate:', expirationDate, '对应时间:', new Date(expirationDate * 1000).toLocaleString());
+
+        // 根据目标 URL 决定 Cookie 的 domain
+        const targetUrl = activeTab === 'geo' ? TARGET_URLS.geo : TARGET_URLS.aigc;
+        console.log('[Login] 目标 URL:', targetUrl);
+        console.log('[Login] isDev:', isDev, 'browserAPI.isProduction:', window.browserAPI?.isProduction);
+
+        // 同时为 localhost 和 china9.cn 都设置 Cookie，确保两种环境都能工作
+        if (window.browserAPI && window.browserAPI.setCookie) {
+          try {
+            // 1. 为 localhost:5173 设置 Cookie（开发环境）
+            // 注意：localhost 不能设置 domain 参数，否则会失败
+            console.log('[Login] 开始设置 localhost Cookie...');
+            const localResult1 = await window.browserAPI.setCookie({
+              url: 'http://localhost:5173/',
+              name: 'token',
+              value: loginData.token,
+              path: '/',
+              expirationDate: expirationDate,
+              secure: false,
+              sameSite: 'lax'
+            });
+            console.log('[Login] localhost token 结果:', localResult1);
+
+            const localResult2 = await window.browserAPI.setCookie({
+              url: 'http://localhost:5173/',
+              name: 'access_token',
+              value: loginData.token,
+              path: '/',
+              expirationDate: expirationDate,
+              secure: false,
+              sameSite: 'lax'
+            });
+            console.log('[Login] localhost access_token 结果:', localResult2);
+
+            if (loginData.gcc) {
+              await window.browserAPI.setCookie({
+                url: 'http://localhost:5173/',
+                name: 'gcc',
+                value: loginData.gcc,
+                path: '/',
+                expirationDate: expirationDate,
+                secure: false,
+                sameSite: 'lax'
+              });
+            }
+            console.log('[Login] ✅ 已设置 localhost:5173 Cookie');
+
+            // 2. 为 .china9.cn 设置 Cookie（生产环境）
+            console.log('[Login] 开始设置 china9.cn Cookie...');
+            await window.browserAPI.setCookie({
+              url: 'https://china9.cn',
+              name: 'token',
+              value: loginData.token,
+              domain: '.china9.cn',
+              path: '/',
+              expirationDate: expirationDate,
+              secure: true
+            });
+            await window.browserAPI.setCookie({
+              url: 'https://china9.cn',
+              name: 'access_token',
+              value: loginData.token,
+              domain: '.china9.cn',
+              path: '/',
+              expirationDate: expirationDate,
+              secure: true
+            });
+            if (loginData.gcc) {
+              await window.browserAPI.setCookie({
+                url: 'https://china9.cn',
+                name: 'gcc',
+                value: loginData.gcc,
+                domain: '.china9.cn',
+                path: '/',
+                expirationDate: expirationDate,
+                secure: true
+              });
+            }
+            console.log('[Login] ✅ 已设置 .china9.cn Cookie');
+
+          } catch (cookieErr) {
+            console.error('[Login] ⚠️ Cookie 设置失败:', cookieErr);
+          }
         }
 
-        // 获取用户信息并存储 company_id
+        // 获取用户信息并存储
         try {
           const userInfo = await getUserInfoApi(loginData.token);
           console.log('[Login] 用户信息:', userInfo);
 
-          if (userInfo && userInfo.company && userInfo.company.id) {
-            // 存储 company_id 到全局存储
-            if (window.browserAPI && window.browserAPI.setGlobalData) {
-              await window.browserAPI.setGlobalData('company_id', userInfo.company.id);
-              console.log('[Login] 已存储 company_id:', userInfo.company.id);
+          if (window.browserAPI && window.browserAPI.setGlobalData) {
+            // 存储完整用户信息供公共头部使用
+            await window.browserAPI.setGlobalData('user_info', userInfo);
+            console.log('[Login] 已存储用户信息:', userInfo);
+
+            // 兼容旧版：单独存储 company_id
+            if (userInfo.company?.unique_id) {
+              await window.browserAPI.setGlobalData('company_id', userInfo.company.unique_id);
+
+              //  获取建站通站点信息
+              const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
+              console.log('[Login] 站点信息:', siteInfo);
             }
           }
         } catch (userErr) {
@@ -641,17 +746,6 @@
 
         // 等待一小段时间确保 Cookie 写入
         await new Promise(resolve => setTimeout(resolve, 500));
-
-        // 根据选择的模式跳转（使用完整 URL）
-        let targetUrl;
-
-        if (activeTab === 'geo') {
-          // GEO 运营跳转到 GEO 首页
-          targetUrl = TARGET_URLS.geo;
-        } else {
-          // AIGC 运营跳转到主页
-          targetUrl = TARGET_URLS.aigc;
-        }
 
         console.log('[Login] 跳转到:', targetUrl);
 

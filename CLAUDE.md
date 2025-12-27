@@ -247,6 +247,38 @@ await window.browserAPI.clearGlobalData();
 
 **使用场景**: 登录页存储 `company_id`，授权脚本中获取使用。
 
+### 9. 跨域 Cookie 设置
+```javascript
+// 通过 Electron session API 设置跨域 Cookie（可设置任意域名）
+// 适用于登录后需要在 .china9.cn 所有子域名下共享 Cookie 的场景
+await window.browserAPI.setCookie({
+  name: 'token',           // Cookie 名称（必填）
+  value: 'your_token',     // Cookie 值（必填）
+  domain: '.china9.cn',    // 域名（带点表示父域名，所有子域名可用）
+  path: '/',               // 路径，默认 '/'
+  expirationDate: 1735689600, // 过期时间（秒级时间戳）
+  secure: true,            // 仅 HTTPS，默认 true
+  httpOnly: false,         // 是否 HttpOnly，默认 false
+  sameSite: 'no_restriction' // SameSite 策略，默认 'no_restriction'
+});
+
+// 也支持毫秒时间戳或 Date 对象
+await window.browserAPI.setCookie({
+  name: 'access_token',
+  value: 'your_token',
+  domain: '.china9.cn',
+  expires: Date.now() + 86400000  // 24小时后过期
+});
+```
+
+**使用场景**:
+- 登录页（file:// 协议）设置 Cookie 到 `.china9.cn` 域名
+- 跳转到任意 `.china9.cn` 子域名时 Cookie 自动生效
+
+**注意事项**:
+- `domain` 以点开头（如 `.china9.cn`）表示所有子域名可用
+- `expirationDate` 是秒级时间戳，`expires` 可以是毫秒时间戳
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

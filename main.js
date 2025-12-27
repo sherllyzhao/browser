@@ -336,23 +336,126 @@ function createWindow() {
 
   // 等待 BrowserView 完全附加到窗口后再加载 URL
   // 使用 process.nextTick 确保 BrowserView 已经完全准备好
-  process.nextTick(() => {
+  process.nextTick(async () => {
     console.log('=== 首页加载开始 ===');
-    console.log(`[BrowserView] 准备加载首页: ${HOME_URL}`);
-    console.log(`[BrowserView] HOME_URL 完整值: "${HOME_URL}"`);
     console.log(`[BrowserView] isProduction: ${isProduction}`);
+
+    // 检查是否有保存的登录 token
+    const savedToken = globalStorage.login_token;
+    const savedExpires = globalStorage.login_expires;
+    const now = Math.floor(Date.now() / 1000);
+
+    let startUrl = LOGIN_URL;
+
+    if (savedToken && savedExpires && savedExpires > now) {
+      // 有有效的 token，恢复 Cookie 并跳转到首页
+      console.log('[BrowserView] 发现有效的登录 token，正在恢复登录状态...');
+      console.log('[BrowserView] Token 过期时间:', new Date(savedExpires * 1000).toLocaleString());
+
+      try {
+        // 恢复 Cookie 到 session
+        const ses = persistentSession;
+
+        // 为 localhost 设置 Cookie
+        await ses.cookies.set({
+          url: 'http://localhost:5173/',
+          name: 'token',
+          value: savedToken,
+          path: '/',
+          expirationDate: savedExpires,
+          secure: false,
+          sameSite: 'lax'
+        });
+        await ses.cookies.set({
+          url: 'http://localhost:5173/',
+          name: 'access_token',
+          value: savedToken,
+          path: '/',
+          expirationDate: savedExpires,
+          secure: false,
+          sameSite: 'lax'
+        });
+
+        // 为 .china9.cn 设置 Cookie
+        await ses.cookies.set({
+          url: 'https://china9.cn',
+          name: 'token',
+          value: savedToken,
+          domain: '.china9.cn',
+          path: '/',
+          expirationDate: savedExpires,
+          secure: true
+        });
+        await ses.cookies.set({
+          url: 'https://china9.cn',
+          name: 'access_token',
+          value: savedToken,
+          domain: '.china9.cn',
+          path: '/',
+          expirationDate: savedExpires,
+          secure: true
+        });
+
+        // 恢复 gcc Cookie（如果有）
+        if (globalStorage.login_gcc) {
+          await ses.cookies.set({
+            url: 'http://localhost:5173/',
+            name: 'gcc',
+            value: globalStorage.login_gcc,
+            path: '/',
+            expirationDate: savedExpires,
+            secure: false,
+            sameSite: 'lax'
+          });
+          await ses.cookies.set({
+            url: 'https://china9.cn',
+            name: 'gcc',
+            value: globalStorage.login_gcc,
+            domain: '.china9.cn',
+            path: '/',
+            expirationDate: savedExpires,
+            secure: true
+          });
+        }
+
+        await ses.flushStorageData();
+        console.log('[BrowserView] ✅ 登录状态已恢复');
+
+        // 根据环境选择首页
+        startUrl = isProduction
+          ? 'https://dev.china9.cn/aigc_browser/'
+          : 'http://localhost:5173/';
+
+        console.log('[BrowserView] 将跳转到首页:', startUrl);
+      } catch (err) {
+        console.error('[BrowserView] ❌ 恢复登录状态失败:', err);
+        startUrl = LOGIN_URL;
+      }
+    } else {
+      console.log('[BrowserView] 没有有效的登录 token，显示登录页');
+      if (savedToken && savedExpires) {
+        console.log('[BrowserView] Token 已过期，过期时间:', new Date(savedExpires * 1000).toLocaleString());
+        // 清除过期的 token
+        delete globalStorage.login_token;
+        delete globalStorage.login_expires;
+        delete globalStorage.login_gcc;
+        saveGlobalStorage();
+      }
+    }
+
+    console.log(`[BrowserView] 准备加载: ${startUrl}`);
     console.log('===================');
 
-    browserView.webContents.loadURL(HOME_URL)
+    browserView.webContents.loadURL(startUrl)
       .then(() => {
-        console.log('[BrowserView] ✅ 首页 loadURL 调用成功');
+        console.log('[BrowserView] ✅ 页面 loadURL 调用成功');
       })
       .catch(err => {
-        console.error('[BrowserView] ❌ 首页加载失败:', err);
+        console.error('[BrowserView] ❌ 页面加载失败:', err);
         // 失败后3秒重试一次
         setTimeout(() => {
           console.log('[BrowserView] 🔄 3秒后重试加载...');
-          browserView.webContents.loadURL(HOME_URL).catch(e => {
+          browserView.webContents.loadURL(startUrl).catch(e => {
             console.error('[BrowserView] ❌ 重试失败:', e);
           });
         }, 3000);
@@ -455,6 +558,9 @@ function createWindow() {
       }
     }
 
+    // 注入公共头（已移至浏览器级别 index.html，不再每页注入）
+    // 保留此注释以便将来参考，公共头现在固定在 index.html 中，不会随页面切换而闪烁
+
     // 注入对应的自定义脚本
     const script = await scriptManager.getScript(url);
 
@@ -531,8 +637,7 @@ function createWindow() {
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.webContents.send('url-changed', url);
+    // 不在这里发送 url-changed，避免重复触发
 
     // 在导航开始时注入预防性隐藏脚本
     if (browserView && !browserView.webContents.isDestroyed()) {
@@ -790,10 +895,13 @@ function createWindow() {
 
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   const { width, height } = mainWindow.getContentBounds();
-  // 生产环境不需要工具栏空间，开发环境为工具栏留出 60px
+  // 公共头部高度 50px（始终显示）
+  // 开发环境额外为工具栏留出 60px
+  const headerHeight = 50;
   const toolbarHeight = isProduction ? 0 : 60;
+  const totalTopOffset = headerHeight + toolbarHeight;
   const viewWidth = scriptPanelOpen ? width - 400 : width;
-  browserView.setBounds({ x: 0, y: toolbarHeight, width: viewWidth, height: height - toolbarHeight });
+  browserView.setBounds({ x: 0, y: totalTopOffset, width: viewWidth, height: height - totalTopOffset });
 }
 
 // 启动时检查并清理损坏的数据
@@ -1450,6 +1558,13 @@ ipcMain.handle('open-devtools', async () => {
   }
 });
 
+// 打开主窗口（公共头部）的 DevTools
+ipcMain.handle('open-main-devtools', async () => {
+  if (mainWindow) {
+    mainWindow.webContents.openDevTools();
+  }
+});
+
 // 获取当前 URL
 ipcMain.handle('get-current-url', async () => {
   if (browserView) {
@@ -1476,6 +1591,140 @@ ipcMain.handle('go-back', async () => {
 ipcMain.handle('go-forward', async () => {
   if (browserView && browserView.webContents.canGoForward()) {
     browserView.webContents.goForward();
+  }
+});
+
+// 从内容页面触发后退（支持 BrowserView 和子窗口）
+ipcMain.handle('content-go-back', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      if (browserView.webContents.canGoBack()) {
+        browserView.webContents.goBack();
+        return { success: true };
+      }
+      return { success: false, error: 'Cannot go back' };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && senderWindow.webContents.canGoBack()) {
+      senderWindow.webContents.goBack();
+      return { success: true };
+    }
+
+    return { success: false, error: 'Cannot go back' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 从内容页面触发前进（支持 BrowserView 和子窗口）
+ipcMain.handle('content-go-forward', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      if (browserView.webContents.canGoForward()) {
+        browserView.webContents.goForward();
+        return { success: true };
+      }
+      return { success: false, error: 'Cannot go forward' };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && senderWindow.webContents.canGoForward()) {
+      senderWindow.webContents.goForward();
+      return { success: true };
+    }
+
+    return { success: false, error: 'Cannot go forward' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 从内容页面触发刷新（支持 BrowserView 和子窗口）
+ipcMain.handle('content-refresh', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      browserView.webContents.reload();
+      return { success: true };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      senderWindow.webContents.reload();
+      return { success: true };
+    }
+
+    return { success: false, error: 'Cannot refresh' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 检查是否能后退（支持 BrowserView 和子窗口）
+ipcMain.handle('content-can-go-back', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      return { canGoBack: browserView.webContents.canGoBack() };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      return { canGoBack: senderWindow.webContents.canGoBack() };
+    }
+
+    return { canGoBack: false };
+  } catch (err) {
+    return { canGoBack: false };
+  }
+});
+
+// 检查是否能前进（支持 BrowserView 和子窗口）
+ipcMain.handle('content-can-go-forward', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      return { canGoForward: browserView.webContents.canGoForward() };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      return { canGoForward: senderWindow.webContents.canGoForward() };
+    }
+
+    return { canGoForward: false };
+  } catch (err) {
+    return { canGoForward: false };
+  }
+});
+
+// 打开 DevTools（支持 BrowserView 和子窗口）
+ipcMain.handle('content-open-devtools', async (event) => {
+  try {
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      browserView.webContents.openDevTools();
+      return { success: true };
+    }
+
+    // 检查是否来自子窗口
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      senderWindow.webContents.openDevTools();
+      return { success: true };
+    }
+
+    return { success: false, error: 'Cannot open DevTools' };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 });
 
@@ -1597,6 +1846,188 @@ ipcMain.on('main-to-content', (event, message) => {
 ipcMain.on('script-panel-toggle', (event, isOpen) => {
   isScriptPanelOpen = isOpen;
   updateBrowserViewBounds(isOpen);
+});
+
+// ========== 站点选择弹窗（自定义样式，悬浮在所有内容之上） ==========
+let siteMenuWindow = null;
+
+ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
+  // 如果已有菜单窗口，先关闭
+  if (siteMenuWindow && !siteMenuWindow.isDestroyed()) {
+    siteMenuWindow.close();
+    siteMenuWindow = null;
+    return { selected: false };
+  }
+
+  return new Promise((resolve) => {
+    // 获取主窗口的内容区域位置（屏幕坐标）
+    const contentBounds = mainWindow.getContentBounds();
+    const menuWidth = 220;
+    const menuHeight = Math.min(sites.length * 48 + 16, 320);
+
+    // 计算菜单位置：右上角，header 下方
+    const menuX = contentBounds.x + contentBounds.width - menuWidth - 10;
+    const menuY = contentBounds.y + 55; // header 高度 50px + 5px 间距
+
+    console.log('[Site Menu] Creating menu window at:', menuX, menuY);
+    console.log('[Site Menu] Content bounds:', contentBounds);
+
+    siteMenuWindow = new BrowserWindow({
+      width: menuWidth,
+      height: menuHeight,
+      x: menuX,
+      y: menuY,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      skipTaskbar: true,
+      show: false, // 先不显示，等加载完成后再显示
+      parent: mainWindow,
+      modal: false,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    });
+
+    // 加载完成后显示并聚焦
+    siteMenuWindow.once('ready-to-show', () => {
+      if (siteMenuWindow && !siteMenuWindow.isDestroyed()) {
+        siteMenuWindow.show();
+        siteMenuWindow.focus();
+        console.log('[Site Menu] Window shown');
+      }
+    });
+
+    // 点击窗口外部时关闭
+    siteMenuWindow.on('blur', () => {
+      if (siteMenuWindow && !siteMenuWindow.isDestroyed()) {
+        siteMenuWindow.close();
+        siteMenuWindow = null;
+        resolve({ selected: false });
+      }
+    });
+
+    siteMenuWindow.on('closed', () => {
+      siteMenuWindow = null;
+    });
+
+    // 监听站点选择
+    ipcMain.once('site-selected', (e, siteId, siteName) => {
+      if (siteMenuWindow && !siteMenuWindow.isDestroyed()) {
+        siteMenuWindow.close();
+        siteMenuWindow = null;
+      }
+      resolve({ selected: true, siteId, siteName });
+    });
+
+    // 生成菜单 HTML
+    const sitesJson = JSON.stringify(sites);
+    const menuHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          html, body {
+            background: transparent !important;
+            overflow: hidden;
+          }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+          }
+          .menu {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            padding: 8px 0;
+            max-height: 304px;
+            overflow-y: auto;
+          }
+          .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.15s;
+          }
+          .menu-item:hover {
+            background: #F5F7FA;
+          }
+          .menu-item.active {
+            background: #ECF5FF;
+          }
+          .site-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            background: #E4E7ED;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: #909399;
+            margin-right: 12px;
+            flex-shrink: 0;
+          }
+          .menu-item.active .site-icon {
+            background: #409EFF;
+            color: #fff;
+          }
+          .site-name {
+            flex: 1;
+            font-size: 14px;
+            color: #303133;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .menu-item.active .site-name {
+            color: #409EFF;
+            font-weight: 500;
+          }
+          .check-icon {
+            width: 16px;
+            height: 16px;
+            margin-left: 8px;
+            opacity: 0;
+          }
+          .menu-item.active .check-icon {
+            opacity: 1;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="menu" id="menu"></div>
+        <script>
+          const { ipcRenderer } = require('electron');
+          const sites = ${sitesJson};
+          const currentSiteId = ${currentSiteId};
+
+          const menu = document.getElementById('menu');
+          sites.forEach(site => {
+            const item = document.createElement('div');
+            item.className = 'menu-item' + (site.id === currentSiteId ? ' active' : '');
+            item.innerHTML = \`
+              <div class="site-icon">\${site.shortName ? site.shortName.charAt(0) : site.name.charAt(0)}</div>
+              <span class="site-name">\${site.name}</span>
+              <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
+                <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
+              </svg>
+            \`;
+            item.onclick = () => {
+              ipcRenderer.send('site-selected', site.id, site.name);
+            };
+            menu.appendChild(item);
+          });
+        </script>
+      </body>
+      </html>
+    `;
+
+    siteMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(menuHtml)}`);
+  });
 });
 
 // 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
@@ -1895,6 +2326,71 @@ ipcMain.handle('get-session-path', async () => {
     return { success: true, path: storagePath };
   }
   return { success: false };
+});
+
+// ========== 设置 Cookie（跨域支持） ==========
+ipcMain.handle('set-cookie', async (event, cookieData) => {
+  console.log('[Set Cookie] ========== API 调用 ==========');
+  console.log('[Set Cookie] 请求设置 Cookie:', cookieData);
+
+  if (!cookieData || !cookieData.name || !cookieData.value) {
+    return { success: false, error: 'Cookie name 和 value 不能为空' };
+  }
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const ses = browserView.webContents.session;
+
+      // 构建 Cookie 对象 - URL 必须提供
+      if (!cookieData.url) {
+        return { success: false, error: 'Cookie url 不能为空' };
+      }
+
+      const cookie = {
+        url: cookieData.url,
+        name: cookieData.name,
+        value: cookieData.value,
+        path: cookieData.path || '/',
+        secure: cookieData.secure !== undefined ? cookieData.secure : false,
+        httpOnly: cookieData.httpOnly || false,
+        sameSite: cookieData.sameSite || 'no_restriction'
+      };
+
+      // 只有明确提供 domain 时才设置（localhost 不需要 domain）
+      if (cookieData.domain) {
+        cookie.domain = cookieData.domain;
+      }
+
+      // 设置过期时间
+      if (cookieData.expirationDate) {
+        cookie.expirationDate = cookieData.expirationDate;
+      } else if (cookieData.expires) {
+        // 支持 Date 对象或时间戳
+        cookie.expirationDate = typeof cookieData.expires === 'number'
+          ? Math.floor(cookieData.expires / 1000)  // 毫秒转秒
+          : Math.floor(new Date(cookieData.expires).getTime() / 1000);
+      }
+
+      console.log('[Set Cookie] 实际设置的 Cookie:', cookie);
+      await ses.cookies.set(cookie);
+      console.log('[Set Cookie] ✅ Cookie 设置成功');
+
+      // 强制刷新到磁盘，确保持久化
+      await ses.flushStorageData();
+      console.log('[Set Cookie] ✅ Session 数据已刷新到磁盘');
+
+      // 验证 Cookie 是否设置成功
+      const cookies = await ses.cookies.get({ name: cookieData.name });
+      console.log('[Set Cookie] 验证结果:', cookies);
+
+      return { success: true };
+    } catch (err) {
+      console.error('[Set Cookie] ❌ 设置失败:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { success: false, error: 'BrowserView 不可用' };
 });
 
 // ========== 清除指定域名的 Cookies ==========

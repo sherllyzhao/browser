@@ -268,6 +268,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   openNewWindow: (url) => ipcRenderer.invoke('open-new-window', url),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
+  goBack: () => ipcRenderer.invoke('content-go-back'),
+  goForward: () => ipcRenderer.invoke('content-go-forward'),
+  refresh: () => ipcRenderer.invoke('content-refresh'),
+  canGoBack: () => ipcRenderer.invoke('content-can-go-back'),
+  canGoForward: () => ipcRenderer.invoke('content-can-go-forward'),
+  openDevTools: () => ipcRenderer.invoke('content-open-devtools'),
 
   // 获取当前窗口 ID（用于新窗口识别自己，读取对应的发布数据）
   getWindowId: () => ipcRenderer.invoke('get-window-id').then(r => r.success ? r.windowId : null),
@@ -286,6 +292,11 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 检查 Session 状态（用于检测登录状态是否被清除）
   checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),
+
+  // 设置 Cookie（跨域支持，用于登录后设置 .china9.cn 等父域名的 Cookie）
+  // 参数: { name, value, domain, path, expires, secure, httpOnly, sameSite }
+  // 示例: setCookie({ name: 'token', value: 'xxx', domain: '.china9.cn', expires: Date.now() + 86400000 })
+  setCookie: (cookieData) => ipcRenderer.invoke('set-cookie', cookieData),
 
   // ========== 全局数据存储 API（用于跨页面数据传递） ==========
   // 存储数据（如 company_id）

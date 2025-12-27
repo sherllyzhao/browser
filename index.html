@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:;">
   <title>运营助手</title>
   <style>
     * {
@@ -17,7 +17,297 @@
       overflow: hidden;
     }
 
+    /* ========== 公共头部样式 ========== */
+    #__browser_common_header__ {
+      --header-height: clamp(44px, 3.5vw, 50px);
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: var(--header-height);
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 clamp(6px, 0.6vw, 12px);
+      z-index: 999999;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: clamp(12px, 1vw, 14px);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      overflow: visible;
+    }
+
+    #__browser_common_header__ .header-left {
+      display: flex;
+      align-items: center;
+      gap: clamp(12px, 1.4vw, 20px);
+      flex: 1;
+    }
+
+    #__browser_common_header__ .header-left .action-list {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    #__browser_common_header__ .header-left .action {
+      border-radius: clamp(4px, 0.4vw, 6px);
+      padding: clamp(4px, 0.4vw, 6px);
+      cursor: pointer;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    #__browser_common_header__ .header-left .action img {
+      transform: translateY(-300px);
+      filter: drop-shadow(0 300px #555555);
+    }
+
+    #__browser_common_header__ .header-left .action:hover {
+      background: #EEEEEE;
+    }
+
+    #__browser_common_header__ .header-left .action.disabled {
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    #__browser_common_header__ .header-left .action.disabled img {
+      filter: drop-shadow(0 300px #BBBBBB);
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    #__browser_common_header__ .header-left .system-tabs {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      height: 100%;
+    }
+
+    #__browser_common_header__ .header-left .system-tabs .tab-item {
+      height: var(--header-height);
+      padding: 0 clamp(6px, 0.7vw, 10px);
+      font-size: clamp(14px, 1.1vw, 16px);
+      color: #111111;
+      position: relative;
+      cursor: pointer;
+      line-height: var(--header-height);
+    }
+
+    #__browser_common_header__ .header-left .system-tabs .tab-item::after {
+      content: "";
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: clamp(2px, 0.2vw, 3px);
+      border-radius: 2px;
+      background: transparent;
+    }
+
+    #__browser_common_header__ .header-left .system-tabs .tab-item.active::after {
+      background: #555555;
+    }
+
+    #__browser_common_header__ .header-right {
+      display: flex;
+      align-items: center;
+      gap: clamp(8px, 0.8vw, 12px);
+      overflow: visible;
+    }
+
+    #__browser_common_header__ .header-right .site-manage {
+      width: clamp(140px, 14vw, 200px);
+      position: relative;
+      cursor: pointer;
+      overflow: visible;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .current-site {
+      height: clamp(30px, 2.5vw, 36px);
+      background: #F6F6F6;
+      border-radius: clamp(15px, 1.2vw, 18px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: clamp(4px, 0.4vw, 6px);
+      font-size: clamp(12px, 1vw, 14px);
+      font-weight: 500;
+      color: #555555;
+      position: relative;
+      padding: 0 clamp(4px, 0.4vw, 6px) 0 clamp(20px, 1.8vw, 27px);
+      overflow: hidden;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .current-site::before {
+      content: "";
+      position: absolute;
+      left: clamp(10px, 1vw, 14px);
+      top: 50%;
+      transform: translateY(-50%);
+      width: clamp(3px, 0.3vw, 4px);
+      height: clamp(3px, 0.3vw, 4px);
+      border-radius: 50%;
+      background: #186DF5;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .current-site-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .switch-site-btn {
+      width: clamp(16px, 1.4vw, 20px);
+      height: clamp(16px, 1.4vw, 20px);
+      background: #FFFFFF;
+      border-radius: clamp(8px, 0.7vw, 10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .switch-site-btn img {
+      width: clamp(10px, 1vw, 14px);
+      height: clamp(10px, 1vw, 14px);
+    }
+
+    #__browser_common_header__ .header-right .site-manage .current-site.active {
+      background: #E8E8E8;
+    }
+
+    #__browser_common_header__ .header-right .user-info {
+      display: flex;
+      align-items: center;
+      gap: clamp(0.375rem, 0.6vw, 0.5rem);
+      padding: clamp(0.25rem, 0.4vw, 0.375rem) clamp(0.5rem, 0.8vw, 0.75rem);
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-avatar {
+      flex-shrink: 0;
+      border: 2px solid #FFFFFF;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      border-radius: 50%;
+      width: clamp(26px, 2.2vw, 32px);
+      height: clamp(26px, 2.2vw, 32px);
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-avatar img {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-phone {
+      font-size: clamp(0.7rem, 0.8vw, 0.8125rem);
+      color: #374151;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown {
+      position: fixed;
+      top: 54px;
+      right: 9px;
+      width: 220px;
+      max-height: 300px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #E4E7ED;
+      border-radius: 6px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+      z-index: 9999999;
+      display: none;
+      padding-bottom: 12px;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown.show {
+      display: block;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+      border-bottom: 1px solid #F2F6FC;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item:last-child {
+      border-bottom: none;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item:hover {
+      background: #F5F7FA;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item.active {
+      background: #ECF5FF;
+      color: #409EFF;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item .site-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      background: #E4E7ED;
+      margin-right: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: #909399;
+      flex-shrink: 0;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item.active .site-icon {
+      background: #409EFF;
+      color: #fff;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item .site-name {
+      flex: 1;
+      font-size: 14px;
+      color: #303133;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item.active .site-name {
+      color: #409EFF;
+      font-weight: 500;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item .check-icon {
+      width: 16px;
+      height: 16px;
+      margin-left: 8px;
+      opacity: 0;
+    }
+
+    #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item.active .check-icon {
+      opacity: 1;
+    }
+
+    #__browser_common_header__ .header-right #logout {
+      width: 18px;
+      height: 18px;
+    }
+
     .toolbar {
+      position: fixed;
+      top: 50px; /* 位于公共头部下方 */
+      left: 0;
+      right: 0;
       height: 60px;
       background: #2c3e50;
       display: flex;
@@ -88,9 +378,9 @@
     .script-panel {
       position: fixed;
       right: -400px;
-      top: 60px;
+      top: 110px; /* 50px(头部) + 60px(工具栏) */
       width: 400px;
-      height: calc(100vh - 60px);
+      height: calc(100vh - 110px);
       background: #34495e;
       box-shadow: -2px 0 10px rgba(0,0,0,0.3);
       transition: right 0.3s ease;
@@ -154,7 +444,7 @@
     .toggle-script {
       position: fixed;
       right: 10px;
-      top: 10px;
+      top: 60px; /* 位于公共头部下方 */
       z-index: 1001;
       background: #e67e22;
       color: white;
@@ -245,6 +535,52 @@
   </style>
 </head>
 <body>
+  <!-- 公共头部 - 浏览器级别，不会随页面切换而闪烁 -->
+  <div id="__browser_common_header__">
+    <div class="header-left">
+      <div class="action-list">
+        <div class="action" id="headerBackBtn">
+          <img src="./assets/houtui.png" alt="后退">
+        </div>
+        <div class="action" id="headerNextBtn">
+          <img src="./assets/qianjin.png" alt="前进">
+        </div>
+        <div class="action" id="headerRefreshBtn">
+          <img src="./assets/shuaxin.png" alt="刷新">
+        </div>
+        <div class="action" id="headerDevBtn" title="开发者工具" style="font-size: 12px; line-height: 26px; color: #555;">
+          Dev
+        </div>
+      </div>
+      <div class="system-tabs">
+        <div class="tab-item" id="__tab_aigc__">AIGC</div>
+        <div class="tab-item" id="__tab_geo__">GEO</div>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="site-manage">
+        <div class="current-site" id="currentSite">
+          <span class="current-site-name" id="currentSiteName">资海科技集团</span>
+          <div class="switch-site-btn" id="switchSiteBtn">
+            <img src="./assets/qiehuan.png" alt="切换">
+          </div>
+        </div>
+        <div class="site-dropdown" id="siteDropdown">
+          <!-- 站点列表将由 JS 动态填充 -->
+        </div>
+      </div>
+
+      <div class="user-info" id="userInfo">
+        <div class="user-avatar" id="userAvatar">
+          <img src="./assets/avatar.png" alt="">
+        </div>
+        <div class="user-phone" id="userPhone">加载中...</div>
+        <img src="./assets/tuichu.png" alt="" id="logout">
+      </div>
+    </div>
+  </div>
+
   <div class="toolbar">
     <button class="btn btn-success" id="homeBtn" title="返回首页">🏠 首页</button>
     <button class="btn" id="backBtn" title="后退">◀</button>

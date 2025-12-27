@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   navigateTo: (url) => ipcRenderer.invoke('navigate-to', url),
   refreshPage: () => ipcRenderer.invoke('refresh-page'),
   openDevTools: () => ipcRenderer.invoke('open-devtools'),
+  openMainDevTools: () => ipcRenderer.invoke('open-main-devtools'),
   getCurrentUrl: () => ipcRenderer.invoke('get-current-url'),
   goHome: () => ipcRenderer.invoke('go-home'),
   goBack: () => ipcRenderer.invoke('go-back'),
@@ -75,8 +76,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 通知主进程脚本面板状态变化
   toggleScriptPanel: (isOpen) => ipcRenderer.send('script-panel-toggle', isOpen),
 
+  // 通知主进程站点下拉菜单状态变化
+  toggleSiteDropdown: (isOpen) => ipcRenderer.send('site-dropdown-toggle', isOpen),
+
+  // 显示站点选择原生菜单（悬浮在所有内容之上）
+  showSiteMenu: (sites, currentSiteId) => ipcRenderer.invoke('show-site-menu', sites, currentSiteId),
+
   // Cookie 调试功能
   getCookies: () => ipcRenderer.invoke('get-cookies'),
   flushSession: () => ipcRenderer.invoke('flush-session'),
-  getSessionPath: () => ipcRenderer.invoke('get-session-path')
+  getSessionPath: () => ipcRenderer.invoke('get-session-path'),
+
+  // 全局数据存储（用于站点切换等场景）
+  setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),
+  getGlobalData: (key) => ipcRenderer.invoke('global-storage-get', key).then(r => r.value),
+  removeGlobalData: (key) => ipcRenderer.invoke('global-storage-remove', key),
+  getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data)
 });
