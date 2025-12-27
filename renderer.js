@@ -674,7 +674,12 @@ async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const response = await fetch(`${apiBaseUrl}newapi/site/lst`, {
-    method: 'GET'
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': window.electronAPI.getGlobalData('token'),
+      'access_token': window.electronAPI.getGlobalData('token'),
+    }
   });
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`);

@@ -735,6 +735,7 @@
               //  获取建站通站点信息
               const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
               console.log('[Login] 站点信息:', siteInfo);
+              await window.browserAPI.setGlobalData('siteInfo', siteInfo);
             }
           }
         } catch (userErr) {
