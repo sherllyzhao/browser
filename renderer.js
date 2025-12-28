@@ -102,6 +102,33 @@ if (headerDevBtn) {
   };
 }
 
+// 退出登录按钮
+const logoutBtn = document.getElementById('logout');
+if (logoutBtn) {
+  logoutBtn.onclick = async function() {
+    if (confirm('确定要退出登录吗？')) {
+      // 清除用户信息
+      if (window.electronAPI && window.electronAPI.removeGlobalData) {
+        await window.electronAPI.removeGlobalData('user_info');
+        await window.electronAPI.removeGlobalData('login_token');
+        await window.electronAPI.removeGlobalData('login_expires');
+        await window.electronAPI.removeGlobalData('login_gcc');
+        await window.electronAPI.removeGlobalData('company_id');
+        await window.electronAPI.removeGlobalData('siteInfo');
+      }
+      console.log('[Logout] 已清除用户信息');
+
+      // 跳转到登录页
+      const loginUrl = isProduction
+        ? 'file://' + __dirname + '/login.html'
+        : 'login.html';
+
+      // 使用相对路径让主进程处理
+      await window.electronAPI.navigateToLogin();
+    }
+  };
+}
+
 // Tab 点击切换系统
 if (tabAigc) {
   tabAigc.onclick = function() {
@@ -617,6 +644,26 @@ async function loadUserInfo() {
   }
 
   try {
+    // 检查当前是否在登录页
+    const currentUrl = await window.electronAPI.getCurrentUrl();
+    const isLoginPage = currentUrl && currentUrl.includes('login.html');
+
+    // 如果在登录页，显示未登录状态
+    if (isLoginPage) {
+      var companyNameEl = document.getElementById('currentSiteName');
+      var userPhoneEl = document.getElementById('userPhone');
+      var userAvatarEl = document.getElementById('userAvatar');
+      if (companyNameEl) companyNameEl.textContent = '未登录';
+      if (userPhoneEl) userPhoneEl.textContent = '未登录';
+      // 重置头像为默认
+      if (userAvatarEl) {
+        var avatarImg = userAvatarEl.querySelector('img');
+        if (avatarImg) avatarImg.src = './assets/avatar.png';
+      }
+      console.log('[Common Header] 当前在登录页，显示未登录状态');
+      return;
+    }
+
     var userInfo = await window.electronAPI.getGlobalData('user_info');
     console.log('[Common Header] userInfo:', userInfo);
 
@@ -673,7 +720,10 @@ let siteListCache = [];
 async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
-  const response = await fetch(`${apiBaseUrl}newapi/site/lst`, {
+  const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
+  const companyId = await window.electronAPI.getGlobalData('company_id');
+  const siteId = siteInfo?.id;
+  const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -898,8 +948,15 @@ document.addEventListener('click', (e) => {
 
   // 监听 URL 变化事件
   if (window.electronAPI && window.electronAPI.onUrlChanged) {
-    window.electronAPI.onUrlChanged((newUrl) => {
+    window.electronAPI.onUrlChanged(async (newUrl) => {
       console.log('[URL Changed]', newUrl);
+
+      // URL 变化时重新加载用户信息（解决登录后跳转用户信息不更新的问题）
+      try {
+        await loadUserInfo();
+      } catch (err) {
+        console.error('[URL Changed] loadUserInfo 失败:', err);
+      }
 
       const newSystem = getCurrentSystem(newUrl);
 

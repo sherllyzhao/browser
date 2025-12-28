@@ -1544,6 +1544,16 @@ ipcMain.handle('navigate-to', async (event, url) => {
   }
 });
 
+// 导航到登录页
+ipcMain.handle('navigate-to-login', async () => {
+  if (browserView) {
+    const loginPath = path.join(__dirname, 'login.html');
+    const loginUrl = `file://${loginPath}`;
+    console.log('[Main] 导航到登录页:', loginUrl);
+    browserView.webContents.loadURL(loginUrl);
+  }
+});
+
 // 刷新页面
 ipcMain.handle('refresh-page', async () => {
   if (browserView) {
