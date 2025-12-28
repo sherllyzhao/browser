@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 事件监听
   onUrlChanged: (callback) => ipcRenderer.on('url-changed', (event, url) => callback(url)),
+  onToggleHeader: (callback) => ipcRenderer.on('toggle-header', (event, show) => callback(show)),
 
   // 消息通信
   sendToContent: (message) => ipcRenderer.send('main-to-content', message),

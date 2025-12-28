@@ -8,6 +8,35 @@ if (window.electronAPI && window.electronAPI.isProduction) {
   if (scriptPanel) scriptPanel.style.display = 'none';
 }
 
+// ========== 公共头部显示/隐藏 ==========
+const commonHeader = document.getElementById('__browser_common_header__');
+
+// 初始化时检查是否需要隐藏头部
+(async () => {
+  if (window.electronAPI && window.electronAPI.getCurrentUrl) {
+    try {
+      const currentUrl = await window.electronAPI.getCurrentUrl();
+      const isLoginPage = currentUrl && currentUrl.includes('login.html');
+      if (isLoginPage && commonHeader) {
+        commonHeader.style.display = 'none';
+        console.log('[Common Header] 初始化：登录页隐藏头部');
+      }
+    } catch (err) {
+      console.log('[Common Header] 初始化检查失败:', err);
+    }
+  }
+})();
+
+// 监听主进程发来的头部显示/隐藏事件
+if (window.electronAPI && window.electronAPI.onToggleHeader) {
+  window.electronAPI.onToggleHeader((show) => {
+    console.log('[Common Header] 收到显示/隐藏指令:', show);
+    if (commonHeader) {
+      commonHeader.style.display = show ? 'flex' : 'none';
+    }
+  });
+}
+
 // ========== 公共头部按钮 ==========
 const headerBackBtn = document.getElementById('headerBackBtn');
 const headerNextBtn = document.getElementById('headerNextBtn');
@@ -246,23 +275,15 @@ if (currentSite) {
 
     // 使用原生菜单，可以悬浮在 BrowserView 之上
     if (window.electronAPI && window.electronAPI.showSiteMenu) {
-      const result = await window.electronAPI.showSiteMenu(siteList, currentSiteId);
+      const result = await window.electronAPI.showSiteMenu(siteListCache, currentSiteId);
       console.log('[Site Dropdown] Menu result:', result);
 
       if (result && result.selected) {
-        // 用户选择了站点
-        currentSiteId = result.siteId;
-        if (currentSiteName) {
-          currentSiteName.textContent = result.siteName;
+        // 用户选择了站点，从缓存中找到完整的站点对象
+        const selectedSite = siteListCache.find(s => s.id === result.siteId);
+        if (selectedSite) {
+          await selectSite(selectedSite); // 调用 selectSite 触发接口和刷新
         }
-
-        // 存储当前选中的站点
-        if (window.electronAPI && window.electronAPI.setGlobalData) {
-          await window.electronAPI.setGlobalData('current_site_id', result.siteId);
-          await window.electronAPI.setGlobalData('current_site_name', result.siteName);
-        }
-
-        console.log('[Site Switch] 切换到站点:', result.siteName);
       }
     }
   });
@@ -647,13 +668,17 @@ async function loadUserInfo() {
     // 检查当前是否在登录页
     const currentUrl = await window.electronAPI.getCurrentUrl();
     const isLoginPage = currentUrl && currentUrl.includes('login.html');
+    const isGeoSystem = getCurrentSystem(currentUrl) === 'geo';
 
     // 如果在登录页，显示未登录状态
     if (isLoginPage) {
       var companyNameEl = document.getElementById('currentSiteName');
       var userPhoneEl = document.getElementById('userPhone');
       var userAvatarEl = document.getElementById('userAvatar');
-      if (companyNameEl) companyNameEl.textContent = '未登录';
+      if (companyNameEl) {
+        companyNameEl.textContent = '未登录';
+        companyNameEl.style.visibility = 'visible';
+      }
       if (userPhoneEl) userPhoneEl.textContent = '未登录';
       // 重置头像为默认
       if (userAvatarEl) {
@@ -668,13 +693,16 @@ async function loadUserInfo() {
     console.log('[Common Header] userInfo:', userInfo);
 
     if (userInfo) {
-      // 更新公司名称
-      var companyNameEl = document.getElementById('currentSiteName');
-      var currentSiteEl = document.getElementById('currentSite');
-      if (companyNameEl && userInfo.companyName) {
-        companyNameEl.textContent = userInfo.companyName;
-        if (currentSiteEl) {
-          currentSiteEl.title = userInfo.companyName;
+      // 更新公司名称（仅非 GEO 系统，GEO 系统显示站点名称）
+      if (!isGeoSystem) {
+        var companyNameEl = document.getElementById('currentSiteName');
+        var currentSiteEl = document.getElementById('currentSite');
+        if (companyNameEl && userInfo.companyName) {
+          companyNameEl.textContent = userInfo.companyName;
+          companyNameEl.style.visibility = 'visible';
+          if (currentSiteEl) {
+            currentSiteEl.title = userInfo.companyName;
+          }
         }
       }
 
@@ -696,10 +724,15 @@ async function loadUserInfo() {
         }
       }
     } else {
-      // 没有用户信息，显示默认值
-      var companyNameEl = document.getElementById('currentSiteName');
+      // 没有用户信息，显示默认值（仅非 GEO 系统）
+      if (!isGeoSystem) {
+        var companyNameEl = document.getElementById('currentSiteName');
+        if (companyNameEl) {
+          companyNameEl.textContent = '未登录';
+          companyNameEl.style.visibility = 'visible';
+        }
+      }
       var userPhoneEl = document.getElementById('userPhone');
-      if (companyNameEl) companyNameEl.textContent = '未登录';
       if (userPhoneEl) userPhoneEl.textContent = '未登录';
     }
   } catch (err) {
@@ -721,14 +754,19 @@ async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
-  const companyId = await window.electronAPI.getGlobalData('company_id');
-  const siteId = siteInfo?.id;
+  console.log("🚀 ~ getSiteListApi ~ siteInfo: ", siteInfo);
+  let companyId = await window.electronAPI.getGlobalData('company_id');
+  let siteId = siteInfo?.id;
+  if(isDev){
+    siteId = 255;
+    companyId = 2
+  }
   const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': window.electronAPI.getGlobalData('token'),
-      'access_token': window.electronAPI.getGlobalData('token'),
+      'token': await window.electronAPI.getGlobalData('login_token'),
+      'access_token': await window.electronAPI.getGlobalData('login_token'),
     }
   });
   if (!response.ok) {
@@ -747,11 +785,22 @@ function renderSiteDropdown(sites) {
     return;
   }
 
+  // 生成 HTML
+  siteDropdownEl.innerHTML = sites.map(site => `
+    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}">
+      <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
+      <span class="site-name">${site.web_name || ''}</span>
+      <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
+        <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
+      </svg>
+    </div>
+  `).join('');
+
   // 绑定站点点击事件
   siteDropdownEl.querySelectorAll('.site-item').forEach(item => {
     item.addEventListener('click', async () => {
-      const siteId = item.dataset.siteId;
-      const site = sites.find(s => String(s.id) === siteId);
+      const siteId = parseInt(item.dataset.siteId);
+      const site = sites.find(s => s.id === siteId);
       if (site) {
         await selectSite(site);
       }
@@ -759,28 +808,77 @@ function renderSiteDropdown(sites) {
   });
 }
 
-// 选择站点
-async function selectSite(site) {
-  currentSiteId = site.id;
-  if (currentSiteNameEl) {
-    currentSiteNameEl.textContent = site.name || '';
-  }
-  if (currentSiteEl) {
-    currentSiteEl.title = site.name || '';
-  }
-  // 更新下拉列表选中状态
-  siteDropdownEl.querySelectorAll('.site-item').forEach(item => {
-    item.classList.toggle('active', item.dataset.siteId === String(site.id));
+// 切换站点 API
+async function changeSiteApi(newSiteId, oldSiteId, companyId) {
+  const isDev = window.electronAPI && !window.electronAPI.isProduction;
+  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+  const token = await window.electronAPI.getGlobalData('login_token');
+
+  const response = await fetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': token,
+      'access_token': token,
+    }
   });
-  // 关闭下拉菜单
-  if (siteDropdownEl) {
-    siteDropdownEl.classList.remove('show');
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
   }
+
+  const result = await response.json();
+  console.log('[Site] 切换站点接口返回:', result);
+  return result;
+}
+
+// 选择站点
+async function selectSite(site, skipApiCall = false) {
+  const newName = site.web_name || '';
+  const oldSiteId = currentSiteId;
+  const isNewSite = currentSiteId !== site.id;
+
+  // 只在需要时更新 DOM，避免跳动
+  if (isNewSite) {
+    currentSiteId = site.id;
+  }
+
+  if (currentSiteNameEl) {
+    if (currentSiteNameEl.textContent !== newName) {
+      currentSiteNameEl.textContent = newName;
+    }
+    currentSiteNameEl.style.visibility = 'visible';
+  }
+
+  if (currentSiteEl && currentSiteEl.title !== newName) {
+    currentSiteEl.title = newName;
+  }
+
+  // 更新下拉列表选中状态
+  if (siteDropdownEl) {
+    siteDropdownEl.querySelectorAll('.site-item').forEach(item => {
+      item.classList.toggle('active', parseInt(item.dataset.siteId) === site.id);
+    });
+  }
+
   // 保存当前选择的站点
   if (window.electronAPI && window.electronAPI.setGlobalData) {
     await window.electronAPI.setGlobalData('current_site', site);
   }
   console.log('[Site] 已选择站点:', site);
+
+  // 如果是切换到新站点，调用接口并刷新页面
+  if (isNewSite && !skipApiCall && oldSiteId) {
+    try {
+      const companyId = await window.electronAPI.getGlobalData('company_id');
+      await changeSiteApi(site.id, oldSiteId, companyId);
+      console.log('[Site] 切换站点成功，刷新页面');
+      // 刷新 BrowserView 页面
+      await window.electronAPI.refreshPage();
+    } catch (err) {
+      console.error('[Site] 切换站点接口失败:', err);
+    }
+  }
 }
 
 // 加载站点列表（根据当前系统类型决定是否显示）
@@ -825,12 +923,12 @@ async function loadSiteList(url) {
     // 渲染下拉列表
     renderSiteDropdown(sites);
 
-    // 恢复之前选择的站点，或默认选择第一个
+    // 恢复之前选择的站点，或默认选择第一个（跳过接口调用）
     const savedSite = await window.electronAPI.getGlobalData('current_site');
     if (savedSite && sites.find(s => s.id === savedSite.id)) {
-      await selectSite(savedSite);
+      await selectSite(savedSite, true); // 恢复时跳过接口调用
     } else if (sites.length > 0) {
-      await selectSite(sites[0]);
+      await selectSite(sites[0], true); // 默认选择时跳过接口调用
     }
 
   } catch (err) {
@@ -864,6 +962,22 @@ document.addEventListener('click', (e) => {
 // 初始化
 (async () => {
   console.log('[初始化] 开始...');
+
+  // 立即从存储中恢复站点名称，避免显示跳动
+  try {
+    const savedSite = await window.electronAPI.getGlobalData('current_site');
+    if (savedSite && savedSite.web_name) {
+      const siteNameEl = document.getElementById('currentSiteName');
+      if (siteNameEl) {
+        siteNameEl.textContent = savedSite.web_name;
+        siteNameEl.style.visibility = 'visible';
+      }
+      currentSiteId = savedSite.id;
+      console.log('[初始化] 已恢复站点:', savedSite.web_name);
+    }
+  } catch (err) {
+    console.log('[初始化] 恢复站点失败:', err);
+  }
 
   // 先加载用户信息（放在最前面，避免被其他错误中断）
   try {

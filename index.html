@@ -213,23 +213,11 @@
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown {
-      position: fixed;
-      top: 54px;
-      right: 9px;
-      width: 220px;
-      max-height: 300px;
-      overflow-y: auto;
-      background: #fff;
-      border: 1px solid #E4E7ED;
-      border-radius: 6px;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
-      z-index: 9999999;
-      display: none;
-      padding-bottom: 12px;
+      display: none !important; /* 已改用原生菜单，隐藏 HTML 下拉菜单 */
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown.show {
-      display: block;
+      display: none !important;
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item {
@@ -561,7 +549,7 @@
     <div class="header-right">
       <div class="site-manage">
         <div class="current-site" id="currentSite">
-          <span class="current-site-name" id="currentSiteName">资海科技集团</span>
+          <span class="current-site-name" id="currentSiteName" style="visibility: hidden;"></span>
           <div class="switch-site-btn" id="switchSiteBtn">
             <img src="./assets/qiehuan.png" alt="切换">
           </div>

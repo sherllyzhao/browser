@@ -446,6 +446,10 @@ function createWindow() {
     console.log(`[BrowserView] 准备加载: ${startUrl}`);
     console.log('===================');
 
+    // 根据初始 URL 设置头部显示状态
+    isHeaderHidden = startUrl.includes('login.html');
+    updateBrowserViewBounds(isScriptPanelOpen);
+
     browserView.webContents.loadURL(startUrl)
       .then(() => {
         console.log('[BrowserView] ✅ 页面 loadURL 调用成功');
@@ -650,6 +654,8 @@ function createWindow() {
     console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
+    // 根据 URL 判断是否需要隐藏公共头部
+    updateHeaderVisibility(url);
   });
 
   // 页面异常检测脚本（在 dom-ready 时尽早执行）
@@ -716,6 +722,8 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
+    // 根据 URL 判断是否需要隐藏公共头部
+    updateHeaderVisibility(url);
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
     // 单页应用路由切换时也需要注入脚本
     await injectScriptForCurrentPage();
@@ -893,15 +901,33 @@ function createWindow() {
   });
 }
 
+// 是否隐藏公共头部（登录页时隐藏）
+let isHeaderHidden = false;
+
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   const { width, height } = mainWindow.getContentBounds();
-  // 公共头部高度 50px（始终显示）
+  // 公共头部高度 50px（登录页时隐藏）
   // 开发环境额外为工具栏留出 60px
-  const headerHeight = 50;
+  const headerHeight = isHeaderHidden ? 0 : 50;
   const toolbarHeight = isProduction ? 0 : 60;
   const totalTopOffset = headerHeight + toolbarHeight;
   const viewWidth = scriptPanelOpen ? width - 400 : width;
   browserView.setBounds({ x: 0, y: totalTopOffset, width: viewWidth, height: height - totalTopOffset });
+}
+
+// 根据 URL 判断是否需要隐藏公共头部
+function updateHeaderVisibility(url) {
+  const isLoginPage = url && url.includes('login.html');
+  const shouldHideHeader = isLoginPage;
+
+  if (isHeaderHidden !== shouldHideHeader) {
+    isHeaderHidden = shouldHideHeader;
+    // 通知渲染进程隐藏/显示头部
+    mainWindow.webContents.send('toggle-header', !isHeaderHidden);
+    // 更新 BrowserView 边界
+    updateBrowserViewBounds(isScriptPanelOpen);
+    console.log('[Header] 公共头部:', isHeaderHidden ? '隐藏' : '显示');
+  }
 }
 
 // 启动时检查并清理损坏的数据
@@ -1875,8 +1901,8 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
     const menuWidth = 220;
     const menuHeight = Math.min(sites.length * 48 + 16, 320);
 
-    // 计算菜单位置：右上角，header 下方
-    const menuX = contentBounds.x + contentBounds.width - menuWidth - 10;
+    // 计算菜单位置：对齐站点选择器，header 下方
+    const menuX = contentBounds.x + contentBounds.width - menuWidth - 160; // 往左移对齐站点选择器
     const menuY = contentBounds.y + 55; // header 高度 50px + 5px 间距
 
     console.log('[Site Menu] Creating menu window at:', menuX, menuY);
@@ -1891,6 +1917,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
       transparent: true,
       resizable: false,
       skipTaskbar: true,
+      alwaysOnTop: true, // 始终在最上层，避免被 BrowserView 挡住
       show: false, // 先不显示，等加载完成后再显示
       parent: mainWindow,
       modal: false,
@@ -2019,15 +2046,16 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
           sites.forEach(site => {
             const item = document.createElement('div');
             item.className = 'menu-item' + (site.id === currentSiteId ? ' active' : '');
+            const siteName = site.web_name || site.name || '';
             item.innerHTML = \`
-              <div class="site-icon">\${site.shortName ? site.shortName.charAt(0) : site.name.charAt(0)}</div>
-              <span class="site-name">\${site.name}</span>
+              <div class="site-icon">\${siteName.charAt(0)}</div>
+              <span class="site-name">\${siteName}</span>
               <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
                 <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
               </svg>
             \`;
             item.onclick = () => {
-              ipcRenderer.send('site-selected', site.id, site.name);
+              ipcRenderer.send('site-selected', site.id, siteName);
             };
             menu.appendChild(item);
           });
