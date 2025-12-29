@@ -19,7 +19,8 @@
       "Bash(npm install)",
       "Bash(ping:*)",
       "Bash(powershell -Command:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "mcp__puppeteer__puppeteer_screenshot"
     ],
     "deny": [],
     "ask": []

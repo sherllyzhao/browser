@@ -961,6 +961,19 @@
                             await delay(2000);
                           //  点击发布按钮
                             if(publishBtn){
+                              // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                              const publishId = dataObj.video?.dyPlatform?.id;
+                              if (publishId) {
+                                try {
+                                  localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                  console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+                                } catch (e) {
+                                  console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                }
+                              } else {
+                                console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
+                              }
+
                               const clickEvent = new MouseEvent('click', {
                                 view: window,
                                 bubbles: true,
