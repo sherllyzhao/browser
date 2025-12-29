@@ -506,29 +506,46 @@
     const checkInterval = 500; // 每500ms检查一次
 
     while (Date.now() - startTime < timeout) {
-      // 检查封面图片是否已显示
-      // 根据 DOM 结构：.bjh-image-box .image 元素存在且有 background-image 样式
-      const imageBox = document.querySelector('.bjh-image-box');
-      if (imageBox) {
-        const imageEle = imageBox.querySelector('.image');
-        if (imageEle) {
-          const style = window.getComputedStyle(imageEle);
+      // 方法1：检查"选择封面"文字是否消失（上传成功后会变成图片预览）
+      const selectCoverText = Array.from(document.querySelectorAll('div, span'))
+          .find(el => el.textContent.trim() === '选择封面' && el.children.length === 0);
+
+      // 如果"选择封面"文字不存在了，说明可能已上传成功
+      if (!selectCoverText) {
+        console.log('[百家号发布] ✅ "选择封面"文字已消失，封面可能已上传');
+        // 再等待一下确保渲染完成
+        await delay(500);
+        return true;
+      }
+
+      // 方法2：检查是否有封面预览图片（通过 background-image 或 img 标签）
+      // 查找封面区域内的图片元素
+      const coverArea = document.querySelector('[class*="cover"], [class*="image-box"], .bjh-image-box');
+      if (coverArea) {
+        // 检查 img 标签
+        const imgEle = coverArea.querySelector('img[src]:not([src=""])');
+        if (imgEle && imgEle.src && !imgEle.src.includes('data:') && imgEle.naturalWidth > 0) {
+          console.log('[百家号发布] ✅ 封面图片已加载(img标签):', imgEle.src.substring(0, 100) + '...');
+          return true;
+        }
+
+        // 检查 background-image
+        const allDivs = coverArea.querySelectorAll('div');
+        for (const div of allDivs) {
+          const style = window.getComputedStyle(div);
           const bgImage = style.backgroundImage;
-          // 检查 background-image 是否有效（不是 none 且不为空）
-          if (bgImage && bgImage !== 'none' && bgImage !== '') {
-            console.log('[百家号发布] ✅ 封面图片已加载:', bgImage.substring(0, 100) + '...');
+          if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
+            console.log('[百家号发布] ✅ 封面图片已加载(背景图):', bgImage.substring(0, 100) + '...');
             return true;
           }
         }
       }
 
-      // 备用检测：检查 .cover-list-one 下的图片
-      const coverList = document.querySelector('.cover-list-one .cheetah-ui-pro-base-image-scale-to-fill');
-      if (coverList) {
-        const style = window.getComputedStyle(coverList);
-        const bgImage = style.backgroundImage;
-        if (bgImage && bgImage !== 'none' && bgImage !== '') {
-          console.log('[百家号发布] ✅ 封面图片已加载(备用检测):', bgImage.substring(0, 100) + '...');
+      // 方法3：全局检查是否有新上传的图片预览
+      const previewImages = document.querySelectorAll('[class*="preview"] img, [class*="thumbnail"] img');
+      for (const img of previewImages) {
+        if (img.src && !img.src.includes('data:') && img.naturalWidth > 0) {
+          console.log('[百家号发布] ✅ 封面图片已加载(预览图):', img.src.substring(0, 100) + '...');
           return true;
         }
       }
@@ -756,27 +773,17 @@
               var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
 
               setTimeout(async () => {
-                const changeBtn = document.querySelector(".actions-wrap .action:nth-of-type(2)");
-                // alert(changeBtn)
-                if (changeBtn) {
-                  changeBtn.click();
-                } else {
-                  const hasCoverWrapEle = await waitForElement(".cover-list-one");
-                  if (hasCoverWrapEle) {
-                    const coverWrapEle = settingsWrapEle.querySelector(".cover-list-one");
-                    const coverImgEle = coverWrapEle.querySelector(".container");
-                    coverImgEle.click();
-                  }
-                }
-
                 // 选中本地上传（点击"选择封面"按钮）
                 setTimeout(async () => {
                   // 通过文字内容查找"选择封面"按钮
-                  const findElementByText = (text) => {
-                    const allElements = document.querySelectorAll('div, span');
+                  const findElementByText = (text, el = document, isIncludes = false) => {
+                    const allElements = el.querySelectorAll('div, span');
                     for (const el of allElements) {
+                      console.log("🚀 ~ findElementByText ~ el.textContent: ", el.textContent);
                       // 精确匹配文字内容
-                      if (el.textContent.trim() === text && el.children.length === 0) {
+                      const check = isIncludes ? el.textContent.trim().includes(text) : el.textContent.trim() === text;
+                      if (check && el.children.length === 0) {
+                        console.log("🚀 ~ findElementByText ~ el: ", el);
                         // 返回可点击的父级容器
                         return el.closest('[class*="content"]') || el.parentElement || el;
                       }
@@ -790,17 +797,48 @@
 
                   // 查找并点击"选择封面"按钮
                   const coverBtn = findElementByText('选择封面');
+                  console.log("🚀 ~  ~ coverBtn: ", coverBtn);
                   if (coverBtn) {
                     coverBtn.click();
                     console.log('[百家号发布] ✅ 已点击"选择封面"按钮');
                   } else {
-                    // 备用方案：使用原来的选择器
-                    console.log('[百家号发布] ⚠️ 未找到"选择封面"文字，尝试备用选择器');
-                    const localTabWrapEle = document.querySelector(".cheetah-tabs-nav-list");
-                    if (localTabWrapEle) {
-                      const fallbackTab = localTabWrapEle.querySelector('div[data-node-key="choose-remote"] > div');
-                      if (fallbackTab) fallbackTab.click();
+                    //检查是否已经有图片
+                    const coverWrapperEle = document.querySelector("[class*='-coverWrapper']");
+                    const coverEle = document.querySelector("[class*='-coverWrapper'] img");
+                    if(coverEle){
+                      if(coverEle.getAttribute('src')){
+                        const changeBtnEles = coverWrapperEle.querySelectorAll('button');
+                        let changeBtnEle = null;
+                        if(changeBtnEles.length){
+                          for (const btn of changeBtnEles) {
+                            if (btn.textContent.trim().includes('更换')) {
+                              changeBtnEle = btn;
+                            }
+                          }
+                        }
+                        changeBtnEle && changeBtnEle.click();
+                      }
                     }
+                  }
+                  await delay(1000); // 等待渲染完成
+
+                  // 封面上传弹窗弹出后选中还有本地上传的tab
+                  const uploadTabs = document.querySelectorAll('.cheetah-tabs-tab-btn');
+                  console.log("🚀 ~  ~ uploadTabs: ", uploadTabs);
+                  let uploadFromLocalTab = null;
+                  if (uploadTabs.length) {
+                    for (const tab of uploadTabs) {
+                      if (tab.textContent.trim().includes('本地')) {
+                        uploadFromLocalTab = tab;
+                      }
+                    }
+                  }
+                  await delay(1000); // 等待渲染完成
+                  console.log("🚀 ~  ~ uploadFromLocalTab: ", uploadFromLocalTab);
+                  if (uploadFromLocalTab) {
+                    uploadFromLocalTab.click();
+                  } else {
+                    console.log('找不到本地上传tab');
                   }
 
                     setTimeout(async () => {
@@ -832,18 +870,25 @@
                               }
 
                               // 2. 再检查图片元素是否出现
-                              const imageEle = document.querySelector(".cheetah-ui-pro-base-image");
+                              const imageEle = document.querySelector("[class*='-imglist'] [class*='-selectedItem']");
+                              console.log("🚀 ~ waitForImageOrError ~ imageEle: ", imageEle);
                               if (imageEle) {
-                                // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
-                                // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                console.log('[百家号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
-                                await delay(500);
-                                const confirmError = getLatestError();
-                                if (confirmError) {
-                                  console.log('[百家号发布] ⚠️ 确认期间检测到错误:', confirmError);
-                                  return { type: 'error', message: confirmError };
+                                const imgEle = imageEle.querySelector('img');
+                                if(imgEle && imgEle.getAttribute('src')){
+                                  // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
+                                  // 因为 MutationObserver 是异步的，错误信息可能还在路上
+                                  console.log('[百家号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
+                                  await delay(500);
+                                  const confirmError = getLatestError();
+                                  if (confirmError) {
+                                    console.log('[百家号发布] ⚠️ 确认期间检测到错误:', confirmError);
+                                    return { type: 'error', message: confirmError };
+                                  }
+                                  return { type: 'success', element: imageEle };
                                 }
-                                return { type: 'success', element: imageEle };
+
+                                // 等待下一次检查
+                                await delay(checkInterval);
                               }
 
                               // 等待下一次检查
@@ -876,275 +921,59 @@
 
                           if (result.type === 'success') {
                             console.log('[百家号发布] ✅ 图片上传成功');
-                            /* const confirmUploadBtnEle = document.querySelector(".cheetah-modal-footer button.cheetah-btn-primary");
-                            confirmUploadBtnEle.click(); */
-                            let hasEditBtn = null;
-                            try {
-                              hasEditBtn = await waitForElement("#imageModalEditBtn", 5000);
-                            } catch (e) {
-                              console.log('[百家号发布] ⚠️ 未找到编辑按钮 #imageModalEditBtn:', e.message);
-                            }
-                            console.log("🚀 ~  ~ hasEditBtn: ", hasEditBtn);
-                            if (hasEditBtn) {
-                              hasEditBtn.click();
 
-                              // 🔴 修复时序问题：必须等待编辑完成后再检测封面
-                              // 使用 await 确保顺序执行，而不是并行的 setTimeout
-                              await (async () => {
-                                // 步骤1：等待编辑器打开，找到完成按钮
-                                let editImgBtnEle = null;
-                                try {
-                                  await delay(2000); // 等待编辑器动画
-                                  editImgBtnEle = await waitForElement(".bjh-pic-editor ._7Ojif", 5000);
-                                } catch (e) {
-                                  console.log('[百家号发布] ⚠️ 未找到编辑完成按钮:', e.message);
+                            await delay(2000); // 等待渲染完成
+                            const submitCoverBtns = document.querySelectorAll('.cheetah-btn-primary');
+                            console.log("🚀 ~ tryUploadImage ~ submitCoverBtns: ", submitCoverBtns);
+                            let submitCoverBtn = null;
+                            let publishBtn = null;
+                            // 点击确定按钮
+                            if (submitCoverBtns.length) {
+                              for (const btn of submitCoverBtns) {
+                                if (btn.textContent.trim().includes('确定')) {
+                                  submitCoverBtn = btn;
+                                }else if(btn.textContent.trim().includes('发布')){
+                                  publishBtn = btn;
                                 }
-                                console.log("🚀 ~  ~ editImgBtnEle: ", editImgBtnEle);
-
-                                // 步骤2：点击编辑完成按钮
-                                if (editImgBtnEle) {
-                                  // 使用模拟真实鼠标事件，确保点击生效
-                                  const clickEvent = new MouseEvent('click', {
-                                    view: window,
-                                    bubbles: true,
-                                    cancelable: true
-                                  });
-                                  editImgBtnEle.dispatchEvent(clickEvent);
-                                  console.log('[百家号发布] ✅ 已点击编辑完成按钮（模拟鼠标事件）');
-                                  // 等待编辑器关闭和图片保存
-                                  await delay(2000);
-                                } else {
-                                  console.log('[百家号发布] ⚠️ 编辑完成按钮不存在，尝试继续...');
-                                }
-
-                                // 步骤3：等待封面图片上传完成并显示
-                                console.log('[百家号发布] ⏳ 等待封面图片显示...');
-                                try {
-                                  await waitForCoverImage(60000); // 最多等待60秒
-                                  console.log('[百家号发布] ✅ 封面图片已显示，准备发布');
-                                } catch (e) {
-                                  console.error('[百家号发布] ❌ 等待封面图片超时:', e.message);
-                                  // 封面超时，上报错误并关闭窗口
-                                  stopErrorListener();
-                                  const publishId = dataObj.video?.dyPlatform?.id;
-                                  if (publishId) {
-                                    await sendStatisticsError(publishId, '封面上传超时，请检查图片是否有效', '百家号发布');
-                                  }
-                                  await closeWindowWithMessage('封面上传超时，刷新数据', 1000);
-                                  return;
-                                }
-
-                                // 立即发布还是定时发布
-                                const publishTime = dataObj.video.formData.send_set || 1;
-                                const hasScheduledBtnEle = await waitForElement(".editor-component-operator-wrapper.editor-component-operator .op-list-right > div:nth-last-of-type(2) button");
-                                if (+publishTime === 2) {
-                                  //  定时发布
-                                  if (hasScheduledBtnEle) {
-                                    const scheduledBtnEle = document.querySelector(".editor-component-operator-wrapper.editor-component-operator .op-list-right > div:nth-last-of-type(2) button");
-                                    scheduledBtnEle.click();
-                                    setTimeout(() => {
-                                      if (!dataObj.video.dyPlatform.send_time) return;
-                                      const timestamp = new Date(dataObj.video.dyPlatform.send_time).getTime();
-
-                                      //    获取月和日
-                                      const month = new Date(timestamp).getMonth() + 1;
-                                      const day = ("" + new Date(timestamp).getDate()).padStart(2, "0");
-                                      const dateSelectorEle = document.querySelector(".timepublish-wrap-select > .select-wrap:first-of-type .cheetah-select-selection-item");
-                                      getOptions(dateSelectorEle, month + "" + day);
-
-                                      setTimeout(() => {
-                                        //    获取时
-                                        const hour = new Date(timestamp).getHours();
-                                        const hourSelectorEle = document.querySelector(".timepublish-wrap-select > .select-wrap:nth-of-type(2) .cheetah-select-selection-item");
-                                        getOptions(hourSelectorEle, hour + "");
-
-                                        setTimeout(() => {
-                                          //    获取分
-                                          const minute = new Date(timestamp).getMinutes();
-                                          const minuteSelectorEle = document.querySelector(".timepublish-wrap-select > .select-wrap:nth-of-type(3) .cheetah-select-selection-item");
-                                          getOptions(minuteSelectorEle, minute + "");
-
-                                          setTimeout(async () => {
-                                            await publishApi(dataObj)
-                                          }, 800);
-                                        }, 2000);
-                                      }, 2000);
-                                    }, 2000);
-                                  }
-                                } else {
-                                  // 立即发布
-                                  const publishBtnEle = document.querySelector(".op-list-wrap-news .cheetah-btn-primary");
-                                  const publishId = dataObj.video.dyPlatform.id;
-
-                                  // 清理本地数据
-                                  localStorage.removeItem('articleContentPostData');
-
-                                  // 🔑 百家号成功后会直接跳转页面，必须在点击前保存数据
-                                  try {
-                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                    console.log('[百家号发布] 💾 已提前保存 publishId 到 localStorage:', publishId);
-                                  } catch (e) {
-                                    console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
-                                  }
-
-                                  // 点击发布按钮（使用重试逻辑）
-                                  if (publishBtnEle && publishBtnEle.offsetParent !== null) {
-                                    console.log('[百家号发布] 点击发布按钮（立即发布）');
-                                    const publishClickResult = await clickWithRetry(publishBtnEle, 3, 500, true);
-                                    if (!publishClickResult.success) {
-                                      console.error('[百家号发布] 发布按钮点击失败:', publishClickResult.message);
-                                      localStorage.removeItem(getPublishSuccessKey());
-                                      await sendStatisticsError(publishId, publishClickResult.message || '发布按钮点击失败', '百家号发布');
-                                      await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                      return;
-                                    } else {
-                                      console.log('[百家号发布] 📨 平台提示:', publishClickResult.message);
-                                    }
-                                  } else {
-                                    console.log('[百家号发布] 发布按钮不存在或不可见');
-                                    localStorage.removeItem(getPublishSuccessKey());
-                                    await sendStatisticsError(publishId, '发布按钮不存在或不可见', '百家号发布');
-                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                    return;
-                                  }
-
-                                  // 等待确认弹窗出现并点击
-                                  await delay(1500);
-
-                                  // 点击确认按钮（使用 waitForElement 等待弹窗出现）
-                                  let confirmClickResult = { success: false, message: '' };
-                                  try {
-                                    // 先等待确认弹窗出现
-                                    let finalBtn = null;
-                                    try {
-                                      await waitForElement(".cheetah-modal-confirm-btns .cheetah-btn-primary", 5000, 300);
-                                      const confirmBtnEleTwo = document.querySelectorAll(".cheetah-modal-confirm-btns .cheetah-btn-primary");
-                                      finalBtn = confirmBtnEleTwo[confirmBtnEleTwo.length - 1];
-                                    } catch (e) {
-                                      console.log('[百家号发布] ⚠️ 等待确认弹窗超时，可能已经直接发布成功');
-                                    }
-                                    // 检查按钮是否存在且可见（使用更宽松的检查）
-                                    const isVisible = finalBtn && (finalBtn.offsetParent !== null || getComputedStyle(finalBtn).display !== 'none');
-                                    if (isVisible) {
-                                      console.log('[百家号发布] 点击确认按钮');
-                                      confirmClickResult = await clickWithRetry(finalBtn, 3, 500, true);
-                                      if (!confirmClickResult.success) {
-                                        console.error('[百家号发布] 确认按钮点击失败:', confirmClickResult.message);
-                                      } else {
-                                        console.log('[百家号发布] 📨 平台提示:', confirmClickResult.message);
-                                        if (window.browserAPI && window.browserAPI.isProduction === false) {
-                                          alert(`百家号发布结果：\n\n${confirmClickResult.message}`);
-                                        }
-                                      }
-                                    } else {
-                                      console.log('[百家号发布] 确认按钮不存在或不可见');
-                                    }
-                                  } catch (e) {
-                                    console.log('[百家号发布] 确认按钮点击失败:', e.message);
-                                  }
-
-                                  // 等待页面稳定
-                                  await delay(2000);
-
-                                  // 检测失败提示元素
-                                  let failureMessage = null;
-                                  try {
-                                    const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
-                                    if (errorSpan) {
-                                      const text = (errorSpan.textContent || '').trim();
-                                      if (text) {
-                                        failureMessage = text;
-                                        console.log('[百家号发布] ⚠️ 检测到错误提示:', failureMessage);
-                                      }
-                                    }
-                                  } catch (e) {
-                                    console.log('[百家号发布] ✅ 未检测到失败提示');
-                                  }
-
-                                  // 如果检测到失败提示
-                                  if (failureMessage) {
-                                    console.log('[百家号发布] ❌ 发布失败:', failureMessage);
-                                    localStorage.removeItem(getPublishSuccessKey());
-                                    await sendStatisticsError(publishId, failureMessage, '百家号发布');
-                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                    return;
-                                  }
-
-                                  // 没有失败提示，认为发布已提交
-                                  console.log('[百家号发布] ✅ 发布已提交');
-
-                                  // 注意：不在这里删除窗口专属的 PUBLISH_SUCCESS_DATA
-                                  // 让 publish-success.js 在成功页删除它
-                                  // 超时时通过检查它是否还存在来判断是否真的失败
-
-                                  console.log('[百家号发布] 📤 准备发送成功消息到父页面...');
-                                  console.log('[百家号发布] sendMessageToParent 函数存在:', typeof sendMessageToParent);
-                                  console.log('[百家号发布] window.sendMessageToParent 函数存在:', typeof window.sendMessageToParent);
-                                  try {
-                                    const sendResult = sendMessageToParent('发布成功，刷新数据');
-                                    console.log('[百家号发布] 📤 sendMessageToParent 返回:', sendResult);
-                                  } catch (e) {
-                                    console.error('[百家号发布] ❌ sendMessageToParent 调用出错:', e);
-                                  }
-
-                                  // 等待页面跳转到成功页，超时 60 秒
-                                  console.log('[百家号发布] ⏳ 等待跳转到成功页（60秒超时）...');
-                                  const currentUrl = window.location.href;
-                                  const startTime = Date.now();
-                                  const timeout = 60000;
-                                  // 🔑 用 confirmClickResult.message 作为初始值，避免超时时丢失已捕获的提示
-                                  let lastErrorMessage = confirmClickResult.message || '';
-
-                                  while (Date.now() - startTime < timeout) {
-                                    await delay(2000);
-
-                                    // 检查 URL 是否变化（跳转到成功页）
-                                    if (window.location.href !== currentUrl) {
-                                      console.log('[百家号发布] ✅ 检测到页面跳转，发布成功');
-                                      return;
-                                    }
-
-                                    // 检查窗口专属的 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
-                                    if (!localStorage.getItem(getPublishSuccessKey())) {
-                                      console.log('[百家号发布] ✅ 数据已被成功页处理，跳过后续检测');
-                                      return;
-                                    }
-
-                                    // 检测是否出现错误提示
-                                    try {
-                                      const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
-                                      if (errorSpan) {
-                                        const text = (errorSpan.textContent || '').trim();
-                                        if (text) {
-                                          lastErrorMessage = text;
-                                          console.log('[百家号发布] 📨 检测到错误提示:', text);
-                                        }
-                                      }
-                                    } catch (e) {
-                                      // 忽略检测错误
-                                    }
-                                  }
-
-                                  // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
-                                  if (!localStorage.getItem(getPublishSuccessKey())) {
-                                    console.log('[百家号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
-                                    return;
-                                  }
-
-                                  // 真正的超时失败
-                                  console.log('[百家号发布] ❌ 等待超时（30秒），判定发布失败');
-                                  localStorage.removeItem(getPublishSuccessKey());
-                                  await sendStatisticsError(publishId, lastErrorMessage || '发布超时，未跳转到成功页', '百家号发布');
-                                  await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                }
-                              })();
+                              }
+                              console.log("🚀 ~ tryUploadImage ~ submitCoverBtn: ", submitCoverBtn);
+                              console.log("🚀 ~ tryUploadImage ~ publishBtn: ", publishBtn);
+                              // 使用模拟真实鼠标事件，确保点击生效
+                              const clickEvent = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true
+                              });
+                              submitCoverBtn.dispatchEvent(clickEvent);
+                              console.log('[百家号发布] ✅ 已点击确定（模拟鼠标事件）');
+                              // 等待编辑器关闭和图片保存
+                              await delay(2000);
                             } else {
-                              // hasEditBtn 为 null，找不到编辑按钮
-                              console.error('[百家号发布] ❌ 找不到编辑按钮 #imageModalEditBtn，上报失败');
+                              console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                               stopErrorListener();
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
-                                await sendStatisticsError(publishId, '找不到图片编辑按钮', '百家号发布');
+                                await sendStatisticsError(publishId, '找不到提交图片按钮', '百家号发布');
+                              }
+                              await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                              return;
+                            }
+                            await delay(2000);
+                          //  点击发布按钮
+                            if(publishBtn){
+                              const clickEvent = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true
+                              });
+                              publishBtn.dispatchEvent(clickEvent);
+                              console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+                            }else{
+                              console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
+                              stopErrorListener();
+                              const publishId = dataObj.video?.dyPlatform?.id;
+                              if (publishId) {
+                                await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
                               }
                               await closeWindowWithMessage('发布失败，刷新数据', 1000);
                               return;
