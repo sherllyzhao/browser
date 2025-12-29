@@ -842,27 +842,45 @@
                             console.log("🚀 ~  ~ hasEditBtn: ", hasEditBtn);
                             if (hasEditBtn) {
                               hasEditBtn.click();
-                              setTimeout(async () => {
+
+                              // 🔴 修复时序问题：必须等待编辑完成后再检测封面
+                              // 使用 await 确保顺序执行，而不是并行的 setTimeout
+                              await (async () => {
+                                // 步骤1：等待编辑器打开，找到完成按钮
                                 let editImgBtnEle = null;
                                 try {
+                                  await delay(2000); // 等待编辑器动画
                                   editImgBtnEle = await waitForElement(".bjh-pic-editor ._7Ojif", 5000);
                                 } catch (e) {
                                   console.log('[百家号发布] ⚠️ 未找到编辑完成按钮:', e.message);
                                 }
                                 console.log("🚀 ~  ~ editImgBtnEle: ", editImgBtnEle);
-                                editImgBtnEle && editImgBtnEle.click();
 
-                              }, 2000);
+                                // 步骤2：点击编辑完成按钮
+                                if (editImgBtnEle) {
+                                  editImgBtnEle.click();
+                                  console.log('[百家号发布] ✅ 已点击编辑完成按钮');
+                                  // 等待编辑器关闭和图片保存
+                                  await delay(2000);
+                                } else {
+                                  console.log('[百家号发布] ⚠️ 编辑完成按钮不存在，尝试继续...');
+                                }
 
-                              setTimeout(async () => {
-                                // 等待封面图片上传完成并显示
+                                // 步骤3：等待封面图片上传完成并显示
                                 console.log('[百家号发布] ⏳ 等待封面图片显示...');
                                 try {
                                   await waitForCoverImage(60000); // 最多等待60秒
                                   console.log('[百家号发布] ✅ 封面图片已显示，准备发布');
                                 } catch (e) {
                                   console.error('[百家号发布] ❌ 等待封面图片超时:', e.message);
-                                  // 封面超时也继续尝试发布，让平台返回具体错误
+                                  // 封面超时，上报错误并关闭窗口
+                                  stopErrorListener();
+                                  const publishId = dataObj.video?.dyPlatform?.id;
+                                  if (publishId) {
+                                    await sendStatisticsError(publishId, '封面上传超时，请检查图片是否有效', '百家号发布');
+                                  }
+                                  await closeWindowWithMessage('封面上传超时，刷新数据', 1000);
+                                  return;
                                 }
 
                                 // 立即发布还是定时发布
@@ -1051,7 +1069,7 @@
                                   await sendStatisticsError(publishId, lastErrorMessage || '发布超时，未跳转到成功页', '百家号发布');
                                   await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                 }
-                              }, 1000);
+                              })();
                             } else {
                               // hasEditBtn 为 null，找不到编辑按钮
                               console.error('[百家号发布] ❌ 找不到编辑按钮 #imageModalEditBtn，上报失败');

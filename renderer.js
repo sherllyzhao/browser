@@ -51,7 +51,7 @@ const AIGC_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const GEO_URL = isProduction
-  ? 'https://dev.china9.cn/jzt_all/#/geo/index'
+  ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
 
 // 判断当前系统类型
@@ -134,28 +134,44 @@ if (headerDevBtn) {
 // 退出登录按钮
 const logoutBtn = document.getElementById('logout');
 if (logoutBtn) {
-  logoutBtn.onclick = async function() {
+  // 使用 addEventListener 并阻止冒泡
+  logoutBtn.addEventListener('click', async function(e) {
+    e.stopPropagation();
+    e.preventDefault();
+
+    console.log('[Logout] 退出按钮被点击');
+
     if (confirm('确定要退出登录吗？')) {
-      // 清除用户信息
-      if (window.electronAPI && window.electronAPI.removeGlobalData) {
-        await window.electronAPI.removeGlobalData('user_info');
-        await window.electronAPI.removeGlobalData('login_token');
-        await window.electronAPI.removeGlobalData('login_expires');
-        await window.electronAPI.removeGlobalData('login_gcc');
-        await window.electronAPI.removeGlobalData('company_id');
-        await window.electronAPI.removeGlobalData('siteInfo');
+      console.log('[Logout] 用户确认退出');
+
+      try {
+        // 清除用户信息
+        if (window.electronAPI && window.electronAPI.removeGlobalData) {
+          console.log('[Logout] 开始清除用户数据...');
+          await window.electronAPI.removeGlobalData('user_info');
+          await window.electronAPI.removeGlobalData('login_token');
+          await window.electronAPI.removeGlobalData('login_expires');
+          await window.electronAPI.removeGlobalData('login_gcc');
+          await window.electronAPI.removeGlobalData('company_id');
+          await window.electronAPI.removeGlobalData('siteInfo');
+          await window.electronAPI.removeGlobalData('current_site');
+          await window.electronAPI.removeGlobalData('current_site_id');
+          await window.electronAPI.removeGlobalData('current_site_name');
+          console.log('[Logout] ✅ 已清除用户信息');
+        }
+
+        // 跳转到登录页
+        console.log('[Logout] 正在跳转到登录页...');
+        await window.electronAPI.navigateToLogin();
+        console.log('[Logout] ✅ 跳转成功');
+      } catch (err) {
+        console.error('[Logout] ❌ 退出登录失败:', err);
+        alert('退出登录失败，请重试');
       }
-      console.log('[Logout] 已清除用户信息');
-
-      // 跳转到登录页
-      const loginUrl = isProduction
-        ? 'file://' + __dirname + '/login.html'
-        : 'login.html';
-
-      // 使用相对路径让主进程处理
-      await window.electronAPI.navigateToLogin();
+    } else {
+      console.log('[Logout] 用户取消退出');
     }
-  };
+  });
 }
 
 // Tab 点击切换系统
@@ -755,7 +771,7 @@ async function getSiteListApi() {
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
   console.log("🚀 ~ getSiteListApi ~ siteInfo: ", siteInfo);
-  let companyId = await window.electronAPI.getGlobalData('company_id');
+  let companyId = siteInfo.company_id;
   let siteId = siteInfo?.id;
   if(isDev){
     siteId = 255;
@@ -870,11 +886,34 @@ async function selectSite(site, skipApiCall = false) {
   // 如果是切换到新站点，调用接口并刷新页面
   if (isNewSite && !skipApiCall && oldSiteId) {
     try {
-      const companyId = await window.electronAPI.getGlobalData('company_id');
+      const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
+      let companyId = siteInfo.company_id;
+      const isDev = window.electronAPI && !window.electronAPI.isProduction;
+      if(isDev){
+        companyId = 2
+      }
       await changeSiteApi(site.id, oldSiteId, companyId);
-      console.log('[Site] 切换站点成功，刷新页面');
+      console.log('[Site] 切换站点成功');
+
+      // 更新 Cookie 中的 site_id
+      const cookieDomain = '.china9.cn';
+      const cookieUrl = 'https://zhjzt.china9.cn';
+      await window.electronAPI.setCookie({
+        url: cookieUrl,
+        name: 'site_id',
+        value: String(site.id),
+        domain: cookieDomain,
+        path: '/',
+        secure: true,
+        httpOnly: false
+      });
+      console.log('[Site] ✅ 已更新 Cookie site_id:', site.id);
+
       // 刷新 BrowserView 页面
-      await window.electronAPI.refreshPage();
+      console.log('[Site] 刷新页面...');
+      setTimeout(async () => {
+        await window.electronAPI.refreshPage();
+      }, 2000)
     } catch (err) {
       console.error('[Site] 切换站点接口失败:', err);
     }

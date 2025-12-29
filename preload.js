@@ -84,8 +84,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 显示站点选择原生菜单（悬浮在所有内容之上）
   showSiteMenu: (sites, currentSiteId) => ipcRenderer.invoke('show-site-menu', sites, currentSiteId),
 
-  // Cookie 调试功能
+  // Cookie 功能
   getCookies: () => ipcRenderer.invoke('get-cookies'),
+  setCookie: (cookieDetails) => ipcRenderer.invoke('set-cookie', cookieDetails),
   flushSession: () => ipcRenderer.invoke('flush-session'),
   getSessionPath: () => ipcRenderer.invoke('get-session-path'),
 

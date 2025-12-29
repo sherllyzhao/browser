@@ -168,7 +168,7 @@
     }
 
     .form-item {
-      margin-bottom: clamp(0.75rem, 0.9vw, 0.875rem);
+      margin-bottom: clamp(0.8rem, 1.4vw, 1.6rem);
       position: relative;
     }
 
@@ -250,29 +250,6 @@
       cursor: not-allowed;
       transform: none;
       box-shadow: none;
-    }
-
-    /* 底部箭头 */
-    .bottom-arrow {
-      position: absolute;
-      bottom: 30px;
-      left: 50%;
-      transform: translateX(-50%);
-      color: #ccc;
-      font-size: 16px;
-      animation: bounce 2s infinite;
-    }
-
-    @keyframes bounce {
-      0%, 20%, 50%, 80%, 100% {
-        transform: translateX(-50%) translateY(0);
-      }
-      40% {
-        transform: translateX(-50%) translateY(-6px);
-      }
-      60% {
-        transform: translateX(-50%) translateY(-3px);
-      }
     }
 
     /* 装饰元素 */
@@ -406,9 +383,6 @@
     </form>
   </div>
 
-  <!-- 底部箭头 -->
-  <div class="bottom-arrow">▼</div>
-
   <script>
     // ========== 配置 ==========
     // API 基础地址（会根据环境自动获取）
@@ -420,7 +394,7 @@
     // 跳转目标地址（根据环境自动选择）
     const TARGET_URLS = {
       aigc: isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/',
-      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://dev.china9.cn/jzt_all/#/geo/index'
+      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
     };
 
     console.log('[Login] 环境:', isDev ? '开发' : '生产', 'TARGET_URLS:', TARGET_URLS);

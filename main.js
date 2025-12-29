@@ -1171,6 +1171,14 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
 
+  // 注册全局快捷键：只打开公共头部（主窗口）的 DevTools (Ctrl+Shift+F11)
+  globalShortcut.register('CommandOrControl+Shift+F11', () => {
+    console.log('[DevTools] 公共头部 DevTools 快捷键触发');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
   // 注册全局快捷键后门打开 DevTools (Ctrl+Shift+F12)
   globalShortcut.register('CommandOrControl+Shift+F12', () => {
     console.log('[DevTools] 后门快捷键触发');
@@ -1573,10 +1581,8 @@ ipcMain.handle('navigate-to', async (event, url) => {
 // 导航到登录页
 ipcMain.handle('navigate-to-login', async () => {
   if (browserView) {
-    const loginPath = path.join(__dirname, 'login.html');
-    const loginUrl = `file://${loginPath}`;
-    console.log('[Main] 导航到登录页:', loginUrl);
-    browserView.webContents.loadURL(loginUrl);
+    console.log('[Main] 导航到登录页:', LOGIN_URL);
+    browserView.webContents.loadURL(LOGIN_URL);
   }
 });
 
