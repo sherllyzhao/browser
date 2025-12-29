@@ -1,12 +1,10 @@
-// 生产环境隐藏工具栏和脚本按钮
-if (window.electronAPI && window.electronAPI.isProduction) {
-  const toolbar = document.querySelector('.toolbar');
-  const toggleScript = document.getElementById('toggleScript');
-  const scriptPanel = document.getElementById('scriptPanel');
-  if (toolbar) toolbar.style.display = 'none';
-  if (toggleScript) toggleScript.style.display = 'none';
-  if (scriptPanel) scriptPanel.style.display = 'none';
-}
+// 隐藏开发工具栏和脚本按钮（统一使用公共头部）
+const toolbar = document.querySelector('.toolbar');
+const toggleScript = document.getElementById('toggleScript');
+const scriptPanel = document.getElementById('scriptPanel');
+if (toolbar) toolbar.style.display = 'none';
+if (toggleScript) toggleScript.style.display = 'none';
+if (scriptPanel) scriptPanel.style.display = 'none';
 
 // ========== 公共头部显示/隐藏 ==========
 const commonHeader = document.getElementById('__browser_common_header__');
@@ -282,30 +280,8 @@ function toggleSiteDropdown() {
   }
 }
 
-// 点击整个区域显示原生菜单
-if (currentSite) {
-  console.log('[Site Dropdown] Adding click listener to currentSite');
-  currentSite.addEventListener('click', async (e) => {
-    console.log('[Site Dropdown] currentSite clicked! Using native menu');
-    e.stopPropagation();
-
-    // 使用原生菜单，可以悬浮在 BrowserView 之上
-    if (window.electronAPI && window.electronAPI.showSiteMenu) {
-      const result = await window.electronAPI.showSiteMenu(siteListCache, currentSiteId);
-      console.log('[Site Dropdown] Menu result:', result);
-
-      if (result && result.selected) {
-        // 用户选择了站点，从缓存中找到完整的站点对象
-        const selectedSite = siteListCache.find(s => s.id === result.siteId);
-        if (selectedSite) {
-          await selectSite(selectedSite); // 调用 selectSite 触发接口和刷新
-        }
-      }
-    }
-  });
-} else {
-  console.log('[Site Dropdown] currentSite NOT FOUND!');
-}
+// 注意：站点下拉菜单点击事件在后面的 1004 行处理（使用 siteDropdownEl）
+// 这里不再重复绑定，避免两个处理器冲突
 
 // 点击外部关闭下拉菜单
 document.addEventListener('click', (e) => {
@@ -353,7 +329,7 @@ const devtoolsBtn = document.getElementById('devtoolsBtn');
 const currentUrlDisplay = document.getElementById('currentUrl');
 
 const toggleScriptBtn = document.getElementById('toggleScript');
-const scriptPanel = document.getElementById('scriptPanel');
+// scriptPanel 已在文件开头定义，不再重复声明
 const scriptUrlDisplay = document.getElementById('scriptUrl');
 const scriptEditor = document.getElementById('scriptEditor');
 const saveScriptBtn = document.getElementById('saveScriptBtn');
@@ -562,116 +538,132 @@ window.electronAPI.onUrlChanged(async (url) => {
 });
 
 // 脚本注入面板
-toggleScriptBtn.addEventListener('click', () => {
-  console.log('按钮被点击了');
+if (toggleScriptBtn) {
+  toggleScriptBtn.addEventListener('click', () => {
+    console.log('按钮被点击了');
 
-  // 检查面板当前状态
-  const currentRight = window.getComputedStyle(scriptPanel).right;
-  console.log('当前right值:', currentRight);
+    // 检查面板当前状态
+    const currentRight = window.getComputedStyle(scriptPanel).right;
+    console.log('当前right值:', currentRight);
 
-  // 判断面板是否打开
-  const isOpen = currentRight === '0px';
-  const willOpen = !isOpen;
+    // 判断面板是否打开
+    const isOpen = currentRight === '0px';
+    const willOpen = !isOpen;
 
-  // 切换面板显示/隐藏
-  if (willOpen) {
-    scriptPanel.style.right = '0px';
-    console.log('显示面板');
-  } else {
-    scriptPanel.style.right = '-400px';
-    console.log('隐藏面板');
-  }
+    // 切换面板显示/隐藏
+    if (willOpen) {
+      scriptPanel.style.right = '0px';
+      console.log('显示面板');
+    } else {
+      scriptPanel.style.right = '-400px';
+      console.log('隐藏面板');
+    }
 
-  // 通知主进程调整 BrowserView 大小
-  window.electronAPI.toggleScriptPanel(willOpen);
+    // 通知主进程调整 BrowserView 大小
+    window.electronAPI.toggleScriptPanel(willOpen);
 
-  // 延迟检查更新后的样式
-  setTimeout(() => {
-    console.log('更新后right值:', window.getComputedStyle(scriptPanel).right);
-    console.log('面板位置:', scriptPanel.getBoundingClientRect());
-  }, 100);
-});
+    // 延迟检查更新后的样式
+    setTimeout(() => {
+      console.log('更新后right值:', window.getComputedStyle(scriptPanel).right);
+      console.log('面板位置:', scriptPanel.getBoundingClientRect());
+    }, 100);
+  });
+}
 
-saveScriptBtn.addEventListener('click', async () => {
-  const script = scriptEditor.value;
-  const result = await window.electronAPI.setInjectScript(currentUrl, script);
-
-  if (result.success) {
-    alert('脚本已保存到本地文件！下次访问此页面时会自动注入。');
-    await loadScriptList(); // 刷新脚本列表
-  } else {
-    alert('保存失败！');
-  }
-});
-
-executeNowBtn.addEventListener('click', async () => {
-  const script = scriptEditor.value;
-  if (!script.trim()) {
-    alert('请输入脚本代码！');
-    return;
-  }
-
-  const result = await window.electronAPI.executeScriptNow(script);
-
-  if (result.success) {
-    alert('脚本执行成功！');
-  } else {
-    alert('脚本执行失败：' + (result.error || '未知错误'));
-  }
-});
-
-clearScriptBtn.addEventListener('click', async () => {
-  if (confirm('确定要清除此页面的注入脚本吗？')) {
-    scriptEditor.value = '';
-    await window.electronAPI.setInjectScript(currentUrl, '');
-    await loadScriptList(); // 刷新脚本列表
-    alert('脚本已清除！');
-  }
-});
-
-// 脚本管理按钮
-importBtn.addEventListener('click', async () => {
-  const result = await window.electronAPI.importScripts();
-
-  if (result.canceled) return;
-
-  if (result.success) {
-    alert(`成功导入 ${result.count} 个脚本！`);
-    await loadScriptList();
-  } else {
-    alert('导入失败：' + (result.error || '未知错误'));
-  }
-});
-
-exportBtn.addEventListener('click', async () => {
-  const result = await window.electronAPI.exportScripts();
-
-  if (result.canceled) return;
-
-  if (result.success) {
-    alert(`成功导出 ${result.count} 个脚本！`);
-  } else {
-    alert('导出失败：' + (result.error || '未知错误'));
-  }
-});
-
-openFolderBtn.addEventListener('click', async () => {
-  await window.electronAPI.openScriptsFolder();
-});
-
-clearAllBtn.addEventListener('click', async () => {
-  if (confirm('确定要清空所有已保存的脚本吗？此操作不可恢复！')) {
-    const result = await window.electronAPI.clearAllScripts();
+if (saveScriptBtn) {
+  saveScriptBtn.addEventListener('click', async () => {
+    const script = scriptEditor.value;
+    const result = await window.electronAPI.setInjectScript(currentUrl, script);
 
     if (result.success) {
-      scriptEditor.value = '';
-      await loadScriptList();
-      alert('所有脚本已清空！');
+      alert('脚本已保存到本地文件！下次访问此页面时会自动注入。');
+      await loadScriptList(); // 刷新脚本列表
     } else {
-      alert('清空失败：' + (result.error || '未知错误'));
+      alert('保存失败！');
     }
-  }
-});
+  });
+}
+
+if (executeNowBtn) {
+  executeNowBtn.addEventListener('click', async () => {
+    const script = scriptEditor.value;
+    if (!script.trim()) {
+      alert('请输入脚本代码！');
+      return;
+    }
+
+    const result = await window.electronAPI.executeScriptNow(script);
+
+    if (result.success) {
+      alert('脚本执行成功！');
+    } else {
+      alert('脚本执行失败：' + (result.error || '未知错误'));
+    }
+  });
+}
+
+if (clearScriptBtn) {
+  clearScriptBtn.addEventListener('click', async () => {
+    if (confirm('确定要清除此页面的注入脚本吗？')) {
+      scriptEditor.value = '';
+      await window.electronAPI.setInjectScript(currentUrl, '');
+      await loadScriptList(); // 刷新脚本列表
+      alert('脚本已清除！');
+    }
+  });
+}
+
+// 脚本管理按钮
+if (importBtn) {
+  importBtn.addEventListener('click', async () => {
+    const result = await window.electronAPI.importScripts();
+
+    if (result.canceled) return;
+
+    if (result.success) {
+      alert(`成功导入 ${result.count} 个脚本！`);
+      await loadScriptList();
+    } else {
+      alert('导入失败：' + (result.error || '未知错误'));
+    }
+  });
+}
+
+if (exportBtn) {
+  exportBtn.addEventListener('click', async () => {
+    const result = await window.electronAPI.exportScripts();
+
+    if (result.canceled) return;
+
+    if (result.success) {
+      alert(`成功导出 ${result.count} 个脚本！`);
+    } else {
+      alert('导出失败：' + (result.error || '未知错误'));
+    }
+  });
+}
+
+if (openFolderBtn) {
+  openFolderBtn.addEventListener('click', async () => {
+    await window.electronAPI.openScriptsFolder();
+  });
+}
+
+if (clearAllBtn) {
+  clearAllBtn.addEventListener('click', async () => {
+    if (confirm('确定要清空所有已保存的脚本吗？此操作不可恢复！')) {
+      const result = await window.electronAPI.clearAllScripts();
+
+      if (result.success) {
+        scriptEditor.value = '';
+        await loadScriptList();
+        alert('所有脚本已清空！');
+      } else {
+        alert('清空失败：' + (result.error || '未知错误'));
+      }
+    }
+  });
+}
 
 // 加载用户信息
 async function loadUserInfo() {
@@ -909,28 +901,31 @@ async function selectSite(site, skipApiCall = false) {
       });
       console.log('[Site] ✅ 已更新 Cookie site_id:', site.id);
 
-      // 显示加载遮罩
+      // 显示全局加载遮罩（隐藏 BrowserView，让遮罩覆盖整个浏览器）
       const loadingMask = document.getElementById('__global_loading_mask__');
       if (loadingMask) {
         loadingMask.classList.add('show');
-        console.log('[Site] 显示加载遮罩');
       }
+      await window.electronAPI.showGlobalLoading();
+      console.log('[Site] 显示加载遮罩，隐藏 BrowserView');
 
       // 刷新 BrowserView 页面
       console.log('[Site] 刷新页面...');
       setTimeout(async () => {
         await window.electronAPI.refreshPage();
-        // 刷新后隐藏遮罩（延迟一点确保页面开始加载）
-        setTimeout(() => {
+        // 刷新后隐藏遮罩、恢复 BrowserView
+        setTimeout(async () => {
+          await window.electronAPI.hideGlobalLoading();
           if (loadingMask) {
             loadingMask.classList.remove('show');
-            console.log('[Site] 隐藏加载遮罩');
           }
+          console.log('[Site] 隐藏加载遮罩，恢复 BrowserView');
         }, 500);
       }, 2000)
     } catch (err) {
       console.error('[Site] 切换站点接口失败:', err);
-      // 出错时隐藏遮罩
+      // 出错时隐藏遮罩、恢复 BrowserView
+      await window.electronAPI.hideGlobalLoading();
       const loadingMask = document.getElementById('__global_loading_mask__');
       if (loadingMask) {
         loadingMask.classList.remove('show');

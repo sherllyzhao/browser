@@ -91,6 +91,7 @@ const HOME_URLS = [
   'http://localhost:5173/',
   'https://dev.china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
+  'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
   'https://zhjzt.china9.cn/jzt_all/#/geo/index',
   LOGIN_URL  // 登录页也作为首页处理
@@ -943,9 +944,9 @@ let isHeaderHidden = false;
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   const { width, height } = mainWindow.getContentBounds();
   // 公共头部高度 50px（登录页时隐藏）
-  // 开发环境额外为工具栏留出 60px
+  // 开发工具栏已移除，统一使用公共头部
   const headerHeight = isHeaderHidden ? 0 : 50;
-  const toolbarHeight = isProduction ? 0 : 60;
+  const toolbarHeight = 0; // 工具栏已移除
   const totalTopOffset = headerHeight + toolbarHeight;
   const viewWidth = scriptPanelOpen ? width - 400 : width;
   browserView.setBounds({ x: 0, y: totalTopOffset, width: viewWidth, height: height - totalTopOffset });
@@ -1627,6 +1628,28 @@ ipcMain.handle('refresh-page', async () => {
   if (browserView) {
     browserView.webContents.reload();
   }
+});
+
+// 显示全局加载遮罩（隐藏 BrowserView）
+ipcMain.handle('show-global-loading', async () => {
+  if (browserView && mainWindow) {
+    // 将 BrowserView 移出可视区域
+    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    console.log('[Loading] 显示全局加载遮罩，隐藏 BrowserView');
+    return { success: true };
+  }
+  return { success: false };
+});
+
+// 隐藏全局加载遮罩（恢复 BrowserView）
+ipcMain.handle('hide-global-loading', async () => {
+  if (browserView && mainWindow) {
+    // 恢复 BrowserView 位置
+    updateBrowserViewBounds(isScriptPanelOpen);
+    console.log('[Loading] 隐藏全局加载遮罩，恢复 BrowserView');
+    return { success: true };
+  }
+  return { success: false };
 });
 
 // 打开 DevTools

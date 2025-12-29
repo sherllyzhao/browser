@@ -81,6 +81,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 通知主进程站点下拉菜单状态变化
   toggleSiteDropdown: (isOpen) => ipcRenderer.send('site-dropdown-toggle', isOpen),
 
+  // 全局加载遮罩控制（隐藏/显示 BrowserView）
+  showGlobalLoading: () => ipcRenderer.invoke('show-global-loading'),
+  hideGlobalLoading: () => ipcRenderer.invoke('hide-global-loading'),
+
   // 显示站点选择原生菜单（悬浮在所有内容之上）
   showSiteMenu: (sites, currentSiteId) => ipcRenderer.invoke('show-site-menu', sites, currentSiteId),
 

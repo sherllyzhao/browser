@@ -105,13 +105,23 @@
     }
 
     // 通知首页刷新
+    console.log('[发布成功] 📤 准备通知首页刷新...');
+    console.log('[发布成功] browserAPI 存在:', !!window.browserAPI);
+    console.log('[发布成功] browserAPI.sendToHome 存在:', !!(window.browserAPI && window.browserAPI.sendToHome));
+
     if (window.browserAPI && window.browserAPI.sendToHome) {
-      console.log('[发布成功] 📤 通知首页刷新...');
-      window.browserAPI.sendToHome('发布成功，刷新数据');
-      console.log('[发布成功] ✅ 已通知首页');
+      try {
+        console.log('[发布成功] 📤 调用 browserAPI.sendToHome...');
+        window.browserAPI.sendToHome('发布成功，刷新数据');
+        console.log('[发布成功] ✅ browserAPI.sendToHome 调用完成');
+      } catch (e) {
+        console.error('[发布成功] ❌ browserAPI.sendToHome 调用出错:', e);
+      }
     } else if (typeof sendMessageToParent === 'function') {
       console.log('[发布成功] 📤 通过 sendMessageToParent 通知首页...');
       sendMessageToParent('发布成功，刷新数据');
+    } else {
+      console.error('[发布成功] ❌ 没有可用的消息发送方式！');
     }
 
     // 清除临时数据

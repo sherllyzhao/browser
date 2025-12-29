@@ -43,7 +43,11 @@
   let currentWindowId = null;
 
   // 获取窗口专属的发布成功数据 key
-  const getPublishSuccessKey = () => `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
+  const getPublishSuccessKey = () => {
+    const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
+    console.log('[百家号发布] 🔑 使用 localStorage key:', key);
+    return key;
+  };
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 百家号发布脚本已注入');
@@ -449,7 +453,7 @@
         return; // 页面已跳转，由 publish-success.js 处理
       }
 
-      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
+      // 检查窗口专属的 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
       if (!localStorage.getItem(getPublishSuccessKey())) {
         console.log('[百家号发布] ✅ 数据已被成功页处理，跳过后续检测');
         return;
@@ -979,14 +983,23 @@
                                   }
 
                                   // 等待确认弹窗出现并点击
-                                  await delay(2000);
+                                  await delay(1500);
 
-                                  // 点击确认按钮
+                                  // 点击确认按钮（使用 waitForElement 等待弹窗出现）
                                   let confirmClickResult = { success: false, message: '' };
                                   try {
-                                    const confirmBtnEleTwo = document.querySelectorAll(".cheetah-modal-confirm-btns .cheetah-btn-primary");
-                                    const finalBtn = confirmBtnEleTwo[confirmBtnEleTwo.length - 1];
-                                    if (finalBtn && finalBtn.offsetParent !== null) {
+                                    // 先等待确认弹窗出现
+                                    let finalBtn = null;
+                                    try {
+                                      await waitForElement(".cheetah-modal-confirm-btns .cheetah-btn-primary", 5000, 300);
+                                      const confirmBtnEleTwo = document.querySelectorAll(".cheetah-modal-confirm-btns .cheetah-btn-primary");
+                                      finalBtn = confirmBtnEleTwo[confirmBtnEleTwo.length - 1];
+                                    } catch (e) {
+                                      console.log('[百家号发布] ⚠️ 等待确认弹窗超时，可能已经直接发布成功');
+                                    }
+                                    // 检查按钮是否存在且可见（使用更宽松的检查）
+                                    const isVisible = finalBtn && (finalBtn.offsetParent !== null || getComputedStyle(finalBtn).display !== 'none');
+                                    if (isVisible) {
                                       console.log('[百家号发布] 点击确认按钮');
                                       confirmClickResult = await clickWithRetry(finalBtn, 3, 500, true);
                                       if (!confirmClickResult.success) {
@@ -1034,11 +1047,19 @@
                                   // 没有失败提示，认为发布已提交
                                   console.log('[百家号发布] ✅ 发布已提交');
 
-                                  // 注意：不在这里删除 PUBLISH_SUCCESS_DATA
+                                  // 注意：不在这里删除窗口专属的 PUBLISH_SUCCESS_DATA
                                   // 让 publish-success.js 在成功页删除它
                                   // 超时时通过检查它是否还存在来判断是否真的失败
 
-                                  sendMessageToParent('发布成功，刷新数据');
+                                  console.log('[百家号发布] 📤 准备发送成功消息到父页面...');
+                                  console.log('[百家号发布] sendMessageToParent 函数存在:', typeof sendMessageToParent);
+                                  console.log('[百家号发布] window.sendMessageToParent 函数存在:', typeof window.sendMessageToParent);
+                                  try {
+                                    const sendResult = sendMessageToParent('发布成功，刷新数据');
+                                    console.log('[百家号发布] 📤 sendMessageToParent 返回:', sendResult);
+                                  } catch (e) {
+                                    console.error('[百家号发布] ❌ sendMessageToParent 调用出错:', e);
+                                  }
 
                                   // 等待页面跳转到成功页，超时 60 秒
                                   console.log('[百家号发布] ⏳ 等待跳转到成功页（60秒超时）...');
@@ -1057,7 +1078,7 @@
                                       return;
                                     }
 
-                                    // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
+                                    // 检查窗口专属的 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
                                     if (!localStorage.getItem(getPublishSuccessKey())) {
                                       console.log('[百家号发布] ✅ 数据已被成功页处理，跳过后续检测');
                                       return;

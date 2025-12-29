@@ -213,11 +213,22 @@
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown {
-      display: none !important; /* 已改用原生菜单，隐藏 HTML 下拉菜单 */
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: #fff;
+      border-radius: 8px;
+      border: 1px solid #E4E7ED;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      max-height: 300px;
+      overflow-y: auto;
+      z-index: 1000;
+      display: none;
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown.show {
-      display: none !important;
+      display: block;
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item {
