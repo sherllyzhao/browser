@@ -39,6 +39,12 @@
   // 保存收到的父窗口消息（用于备用方案）
   let receivedMessageData = null;
 
+  // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
+  let currentWindowId = null;
+
+  // 获取窗口专属的发布成功数据 key
+  const getPublishSuccessKey = () => `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
+
   console.log('═══════════════════════════════════════');
   console.log('✅ 百家号发布脚本已注入');
   console.log('📍 当前 URL:', window.location.href);
@@ -150,9 +156,18 @@
   const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
+  // 获取当前窗口 ID（用于窗口专属的 localStorage key）
+  try {
+    currentWindowId = await window.browserAPI.getWindowId();
+    console.log('[百家号发布] 当前窗口 ID:', currentWindowId);
+  } catch (e) {
+    console.error('[百家号发布] ❌ 获取窗口 ID 失败:', e);
+  }
+
   console.log('[百家号发布] URL 参数:', {
     companyId,
-    transferId
+    transferId,
+    windowId: currentWindowId
   });
 
   // 存储发布数据到全局
@@ -329,7 +344,7 @@
 
     // 🔑 百家号成功后会直接跳转页面，必须在点击前保存数据
     try {
-      localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
+      localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
       console.log('[百家号发布] 💾 已提前保存 publishId 到 localStorage:', publishId);
     } catch (e) {
       console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
@@ -357,7 +372,7 @@
     if (!clickResult.success) {
       console.error('[百家号发布] ❌ 所有点击尝试均失败:', clickResult.message);
       // 清除提前保存的数据
-      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      localStorage.removeItem(getPublishSuccessKey());
       // 发送失败统计
       await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '百家号发布');
       publishRunning = false;
@@ -394,7 +409,7 @@
     // 如果检测到失败提示
     if (failureMessage) {
       console.log('[百家号发布] ❌ 发布失败:', failureMessage);
-      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      localStorage.removeItem(getPublishSuccessKey());
       await sendStatisticsError(publishId, failureMessage, '百家号发布');
       hasProcessed = true;
       publishRunning = false;
@@ -435,7 +450,7 @@
       }
 
       // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
-      if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+      if (!localStorage.getItem(getPublishSuccessKey())) {
         console.log('[百家号发布] ✅ 数据已被成功页处理，跳过后续检测');
         return;
       }
@@ -456,14 +471,14 @@
     }
 
     // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
-    if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+    if (!localStorage.getItem(getPublishSuccessKey())) {
       console.log('[百家号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
       return;
     }
 
     // 真正的超时失败
     console.log('[百家号发布] ❌ 等待超时（30秒），判定发布失败');
-    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    localStorage.removeItem(getPublishSuccessKey());
     await sendStatisticsError(publishId, lastErrorMessage || '发布超时，未跳转到成功页', '百家号发布');
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
@@ -858,8 +873,14 @@
 
                                 // 步骤2：点击编辑完成按钮
                                 if (editImgBtnEle) {
-                                  editImgBtnEle.click();
-                                  console.log('[百家号发布] ✅ 已点击编辑完成按钮');
+                                  // 使用模拟真实鼠标事件，确保点击生效
+                                  const clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                  });
+                                  editImgBtnEle.dispatchEvent(clickEvent);
+                                  console.log('[百家号发布] ✅ 已点击编辑完成按钮（模拟鼠标事件）');
                                   // 等待编辑器关闭和图片保存
                                   await delay(2000);
                                 } else {
@@ -930,7 +951,7 @@
 
                                   // 🔑 百家号成功后会直接跳转页面，必须在点击前保存数据
                                   try {
-                                    localStorage.setItem('PUBLISH_SUCCESS_DATA', JSON.stringify({ publishId: publishId }));
+                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
                                     console.log('[百家号发布] 💾 已提前保存 publishId 到 localStorage:', publishId);
                                   } catch (e) {
                                     console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
@@ -942,7 +963,7 @@
                                     const publishClickResult = await clickWithRetry(publishBtnEle, 3, 500, true);
                                     if (!publishClickResult.success) {
                                       console.error('[百家号发布] 发布按钮点击失败:', publishClickResult.message);
-                                      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+                                      localStorage.removeItem(getPublishSuccessKey());
                                       await sendStatisticsError(publishId, publishClickResult.message || '发布按钮点击失败', '百家号发布');
                                       await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                       return;
@@ -951,7 +972,7 @@
                                     }
                                   } else {
                                     console.log('[百家号发布] 发布按钮不存在或不可见');
-                                    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+                                    localStorage.removeItem(getPublishSuccessKey());
                                     await sendStatisticsError(publishId, '发布按钮不存在或不可见', '百家号发布');
                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                     return;
@@ -1004,7 +1025,7 @@
                                   // 如果检测到失败提示
                                   if (failureMessage) {
                                     console.log('[百家号发布] ❌ 发布失败:', failureMessage);
-                                    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+                                    localStorage.removeItem(getPublishSuccessKey());
                                     await sendStatisticsError(publishId, failureMessage, '百家号发布');
                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                     return;
@@ -1037,7 +1058,7 @@
                                     }
 
                                     // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
-                                    if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+                                    if (!localStorage.getItem(getPublishSuccessKey())) {
                                       console.log('[百家号发布] ✅ 数据已被成功页处理，跳过后续检测');
                                       return;
                                     }
@@ -1058,14 +1079,14 @@
                                   }
 
                                   // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
-                                  if (!localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+                                  if (!localStorage.getItem(getPublishSuccessKey())) {
                                     console.log('[百家号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
                                     return;
                                   }
 
                                   // 真正的超时失败
                                   console.log('[百家号发布] ❌ 等待超时（30秒），判定发布失败');
-                                  localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+                                  localStorage.removeItem(getPublishSuccessKey());
                                   await sendStatisticsError(publishId, lastErrorMessage || '发布超时，未跳转到成功页', '百家号发布');
                                   await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                 }

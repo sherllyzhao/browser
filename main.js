@@ -222,6 +222,13 @@ function createWindow() {
   // 获取或创建持久化 session
   const persistentSession = session.fromPartition('persist:browserview', { cache: true });
 
+  // 启动时清理可能损坏的缓存（解决 CSS 渲染成文字的问题）
+  persistentSession.clearCache().then(() => {
+    console.log('[Session] ✅ 已清理缓存');
+  }).catch(err => {
+    console.error('[Session] ⚠️ 清理缓存失败:', err);
+  });
+
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
   persistentSession.webRequest.onBeforeRequest((details, callback) => {
@@ -487,6 +494,19 @@ function createWindow() {
       (function() {
         if (!document.body) return { ready: false, reason: 'no body' };
 
+        // 跳过包含富文本编辑器的页面（TinyMCE, CKEditor 等）
+        const hasRichEditor = document.querySelector('.tiny-textarea, .tox, .tox-tinymce, .mce-container, .ck-editor, [data-tiny-editor]');
+        if (hasRichEditor) {
+          console.log('[Page Check] 检测到富文本编辑器，跳过CSS检测');
+          const preHideStyle = document.getElementById('__pre_hide_style__');
+          if (preHideStyle) preHideStyle.remove();
+          if (document.body) {
+            document.body.style.visibility = '';
+            document.body.style.opacity = '';
+          }
+          return { ready: true, reason: 'rich-editor-detected' };
+        }
+
         const bodyText = document.body.innerText || '';
         const cssPatterns = [
           'text-decoration:none',
@@ -529,6 +549,8 @@ function createWindow() {
       })()
     `;
 
+    // 【临时禁用】页面状态检测
+    /*
     try {
       // 先检查页面状态
       const pageState = await webContents.executeJavaScript(pageCheckScript);
@@ -561,6 +583,7 @@ function createWindow() {
         }
       }
     }
+    */
 
     // 注入公共头（已移至浏览器级别 index.html，不再每页注入）
     // 保留此注释以便将来参考，公共头现在固定在 index.html 中，不会随页面切换而闪烁
@@ -643,10 +666,10 @@ function createWindow() {
     console.log(`[Navigation] 导航开始 → ${url}`);
     // 不在这里发送 url-changed，避免重复触发
 
-    // 在导航开始时注入预防性隐藏脚本
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      browserView.webContents.executeJavaScript(preHideScript).catch(() => {});
-    }
+    // 【已禁用】预防性隐藏脚本 - 会导致 TinyMCE 白屏且对 CSS 渲染异常无效
+    // if (browserView && !browserView.webContents.isDestroyed()) {
+    //   browserView.webContents.executeJavaScript(preHideScript).catch(() => {});
+    // }
   });
 
   // 监听页面导航完成
@@ -664,6 +687,19 @@ function createWindow() {
       // 延迟一小段时间等待内容渲染
       setTimeout(() => {
         if (!document.body) return;
+
+        // 跳过包含富文本编辑器的页面（TinyMCE, CKEditor 等）
+        const hasRichEditor = document.querySelector('.tiny-textarea, .tox, .tox-tinymce, .mce-container, .ck-editor, [data-tiny-editor]');
+        if (hasRichEditor) {
+          console.log('[Early Check] 检测到富文本编辑器，跳过CSS检测');
+          const preHideStyle = document.getElementById('__pre_hide_style__');
+          if (preHideStyle) preHideStyle.remove();
+          if (document.body) {
+            document.body.style.visibility = '';
+            document.body.style.opacity = '';
+          }
+          return;
+        }
 
         const bodyText = document.body.innerText || '';
         const cssPatterns = [
@@ -709,13 +745,13 @@ function createWindow() {
     })()
   `;
 
-  // 在 dom-ready 时尽早检测页面状态（比 did-finish-load 更早）
-  browserView.webContents.on('dom-ready', () => {
-    console.log('[Navigation] DOM Ready，执行早期页面检测...');
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      browserView.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
-    }
-  });
+  // 【临时禁用】在 dom-ready 时尽早检测页面状态（比 did-finish-load 更早）
+  // browserView.webContents.on('dom-ready', () => {
+  //   console.log('[Navigation] DOM Ready，执行早期页面检测...');
+  //   if (browserView && !browserView.webContents.isDestroyed()) {
+  //     browserView.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+  //   }
+  // });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
   browserView.webContents.on('did-navigate-in-page', async (event, url) => {

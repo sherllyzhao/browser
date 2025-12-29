@@ -909,13 +909,32 @@ async function selectSite(site, skipApiCall = false) {
       });
       console.log('[Site] ✅ 已更新 Cookie site_id:', site.id);
 
+      // 显示加载遮罩
+      const loadingMask = document.getElementById('__global_loading_mask__');
+      if (loadingMask) {
+        loadingMask.classList.add('show');
+        console.log('[Site] 显示加载遮罩');
+      }
+
       // 刷新 BrowserView 页面
       console.log('[Site] 刷新页面...');
       setTimeout(async () => {
         await window.electronAPI.refreshPage();
+        // 刷新后隐藏遮罩（延迟一点确保页面开始加载）
+        setTimeout(() => {
+          if (loadingMask) {
+            loadingMask.classList.remove('show');
+            console.log('[Site] 隐藏加载遮罩');
+          }
+        }, 500);
       }, 2000)
     } catch (err) {
       console.error('[Site] 切换站点接口失败:', err);
+      // 出错时隐藏遮罩
+      const loadingMask = document.getElementById('__global_loading_mask__');
+      if (loadingMask) {
+        loadingMask.classList.remove('show');
+      }
     }
   }
 }
