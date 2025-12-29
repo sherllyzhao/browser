@@ -173,6 +173,18 @@ function createWindow() {
 
       if (browserView) {
         try {
+          // 🔑 保存当前页面 URL，下次启动时恢复
+          const currentUrl = browserView.webContents.getURL();
+          if (currentUrl && !currentUrl.includes('login.html')) {
+            globalStorage.last_page_url = currentUrl;
+            console.log('[Window Close] 💾 已保存退出时页面:', currentUrl);
+          } else {
+            // 如果在登录页退出，不保存（下次启动根据token决定去向）
+            delete globalStorage.last_page_url;
+            console.log('[Window Close] 在登录页退出，不保存页面URL');
+          }
+          saveGlobalStorage();
+
           const ses = browserView.webContents.session;
           const cookies = await ses.cookies.get({});
           console.log(`[Window Close] 当前共有 ${cookies.length} 个 cookies`);
@@ -429,12 +441,18 @@ function createWindow() {
         await ses.flushStorageData();
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
-        // 根据环境选择首页
-        startUrl = isProduction
-          ? 'https://dev.china9.cn/aigc_browser/'
-          : 'http://localhost:5173/';
-
-        console.log('[BrowserView] 将跳转到首页:', startUrl);
+        // 🔑 优先恢复上次退出时的页面，否则使用默认首页
+        const savedLastUrl = globalStorage.last_page_url;
+        if (savedLastUrl && !savedLastUrl.includes('login.html')) {
+          startUrl = savedLastUrl;
+          console.log('[BrowserView] 📍 恢复上次退出时的页面:', startUrl);
+        } else {
+          // 根据环境选择默认首页
+          startUrl = isProduction
+            ? 'https://dev.china9.cn/aigc_browser/'
+            : 'http://localhost:5173/';
+          console.log('[BrowserView] 将跳转到默认首页:', startUrl);
+        }
       } catch (err) {
         console.error('[BrowserView] ❌ 恢复登录状态失败:', err);
         startUrl = LOGIN_URL;
@@ -1619,6 +1637,10 @@ ipcMain.handle('navigate-to', async (event, url) => {
 ipcMain.handle('navigate-to-login', async () => {
   if (browserView) {
     console.log('[Main] 导航到登录页:', LOGIN_URL);
+    // 🔑 退出登录时清除保存的页面URL，下次启动不恢复
+    delete globalStorage.last_page_url;
+    saveGlobalStorage();
+    console.log('[Main] 已清除 last_page_url');
     browserView.webContents.loadURL(LOGIN_URL);
   }
 });

@@ -769,13 +769,39 @@
                   }
                 }
 
-                // 选中本地上传
+                // 选中本地上传（点击"选择封面"按钮）
                 setTimeout(async () => {
-                  const hasLocalTabWrapEle = await waitForElement(".cheetah-tabs-nav-list");
-                  if (hasLocalTabWrapEle) {
+                  // 通过文字内容查找"选择封面"按钮
+                  const findElementByText = (text) => {
+                    const allElements = document.querySelectorAll('div, span');
+                    for (const el of allElements) {
+                      // 精确匹配文字内容
+                      if (el.textContent.trim() === text && el.children.length === 0) {
+                        // 返回可点击的父级容器
+                        return el.closest('[class*="content"]') || el.parentElement || el;
+                      }
+                    }
+                    return null;
+                  };
+
+                  // 等待封面选择区域出现
+                  await waitForElement(".cheetah-spin-container, [class*='cover']");
+                  await delay(500); // 等待渲染完成
+
+                  // 查找并点击"选择封面"按钮
+                  const coverBtn = findElementByText('选择封面');
+                  if (coverBtn) {
+                    coverBtn.click();
+                    console.log('[百家号发布] ✅ 已点击"选择封面"按钮');
+                  } else {
+                    // 备用方案：使用原来的选择器
+                    console.log('[百家号发布] ⚠️ 未找到"选择封面"文字，尝试备用选择器');
                     const localTabWrapEle = document.querySelector(".cheetah-tabs-nav-list");
-                    const localTabEle = localTabWrapEle.querySelector('div[data-node-key="choose-remote"] > div');
-                    localTabEle.click();
+                    if (localTabWrapEle) {
+                      const fallbackTab = localTabWrapEle.querySelector('div[data-node-key="choose-remote"] > div');
+                      if (fallbackTab) fallbackTab.click();
+                    }
+                  }
 
                     setTimeout(async () => {
                       // 使用原生选择器获取元素
@@ -1195,7 +1221,6 @@
                         }, 2000);
                       }
                     }, 1000);
-                  }
                 }, 2000);
               }, 1000);
             } catch (error) {

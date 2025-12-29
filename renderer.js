@@ -989,17 +989,26 @@ async function loadSiteList(url) {
   }
 }
 
-// 站点下拉菜单点击事件
+// 站点下拉菜单点击事件 - 使用原生菜单（能浮在 BrowserView 之上）
 if (currentSiteEl) {
-  currentSiteEl.addEventListener('click', (e) => {
+  currentSiteEl.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (siteDropdownEl) {
-      const isOpen = siteDropdownEl.classList.toggle('show');
-      currentSiteEl.classList.toggle('active', isOpen);
-      // 通知主进程调整 BrowserView 位置（如果需要）
-      if (window.electronAPI && window.electronAPI.toggleSiteDropdown) {
-        window.electronAPI.toggleSiteDropdown(isOpen);
+
+    // 使用原生菜单，可以悬浮在 BrowserView 之上
+    if (window.electronAPI && window.electronAPI.showSiteMenu && siteListCache.length > 0) {
+      console.log('[Site Dropdown] 显示原生菜单, 站点数量:', siteListCache.length);
+      const result = await window.electronAPI.showSiteMenu(siteListCache, currentSiteId);
+      console.log('[Site Dropdown] 菜单选择结果:', result);
+
+      if (result && result.selected) {
+        // 用户选择了站点，从缓存中找到完整的站点对象
+        const selectedSite = siteListCache.find(s => s.id === result.siteId);
+        if (selectedSite) {
+          await selectSite(selectedSite);
+        }
       }
+    } else {
+      console.log('[Site Dropdown] 原生菜单不可用或站点列表为空');
     }
   });
 }
