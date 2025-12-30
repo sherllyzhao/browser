@@ -88,8 +88,8 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
-  'http://localhost:5173/',
-  'https://dev.china9.cn/aigc_browser/',
+  'http://localhost:5173/?showHeader=false',
+  'https://dev.china9.cn/aigc_browser/?showHeader=false',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
@@ -449,8 +449,8 @@ function createWindow() {
         } else {
           // 根据环境选择默认首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser/'
-            : 'http://localhost:5173/';
+            ? 'https://dev.china9.cn/aigc_browser/?showHeader=false'
+            : 'http://localhost:5173/?showHeader=false';
           console.log('[BrowserView] 将跳转到默认首页:', startUrl);
         }
       } catch (err) {
@@ -874,16 +874,16 @@ function createWindow() {
       }
     });
 
-    // 监听子窗口导航开始（用于调试和预防性隐藏）
+    // 监听子窗口导航开始（用于调试）
     newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
       console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
       if (url && url.toLowerCase().startsWith('bitbrowser:')) {
         console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
       }
-      // 在导航开始时注入预防性隐藏脚本
-      if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
-        newWindow.webContents.executeJavaScript(preHideScript).catch(() => {});
-      }
+      // 【已禁用】预防性隐藏脚本 - 会干扰正常页面渲染
+      // if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+      //   newWindow.webContents.executeJavaScript(preHideScript).catch(() => {});
+      // }
     });
 
     // 拦截子窗口打开新窗口的请求，阻止自定义协议
@@ -933,13 +933,13 @@ function createWindow() {
       newWindow.webContents.openDevTools();
     }
 
-    // 新窗口也添加早期页面检测（dom-ready 时执行）
-    newWindow.webContents.on('dom-ready', () => {
-      console.log('[New Window] DOM Ready，执行早期页面检测...');
-      if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
-        newWindow.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
-      }
-    });
+    // 【已禁用】新窗口早期页面检测 - 会误判正常页面导致不必要的刷新
+    // newWindow.webContents.on('dom-ready', () => {
+    //   console.log('[New Window] DOM Ready，执行早期页面检测...');
+    //   if (newWindow && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+    //     newWindow.webContents.executeJavaScript(earlyPageCheckScript).catch(() => {});
+    //   }
+    // });
 
     // 为新窗口添加脚本注入
     newWindow.webContents.on('did-finish-load', async () => {
@@ -1626,7 +1626,7 @@ ipcMain.handle('check-session-status', async () => {
   }
 });
 
-// 导航到指定 URL
+// 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
   if (browserView) {
     browserView.webContents.loadURL(url);
@@ -1637,10 +1637,59 @@ ipcMain.handle('navigate-to', async (event, url) => {
 ipcMain.handle('navigate-to-login', async () => {
   if (browserView) {
     console.log('[Main] 导航到登录页:', LOGIN_URL);
-    // 🔑 退出登录时清除保存的页面URL，下次启动不恢复
+
+    // 🔑 退出登录时清除所有登录相关数据
+    console.log('[Main] 清除退出登录数据...');
+
+    // 1. 清除 globalStorage 中的登录数据
     delete globalStorage.last_page_url;
+    delete globalStorage.login_token;
+    delete globalStorage.login_expires;
+    delete globalStorage.login_gcc;
+    delete globalStorage.company_id;
+    delete globalStorage.user_info;
+    delete globalStorage.siteInfo;
+    delete globalStorage.current_site;
+    delete globalStorage.current_site_id;
+    delete globalStorage.current_site_name;
     saveGlobalStorage();
-    console.log('[Main] 已清除 last_page_url');
+    console.log('[Main] ✅ 已清除 globalStorage 数据');
+
+    // 2. 清除 Cookies（token, access_token, site_id 等）
+    try {
+      const ses = browserView.webContents.session;
+      const cookies = await ses.cookies.get({});
+      console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+      // 需要清除的 cookie 名称列表
+      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+      let deletedCount = 0;
+      for (const cookie of cookies) {
+        if (cookiesToClear.includes(cookie.name)) {
+          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+          try {
+            await ses.cookies.remove(cookieUrl, cookie.name);
+            deletedCount++;
+            console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+          } catch (err) {
+            console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+          }
+        }
+      }
+
+      // 也清除 localhost 的 cookies
+      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+      await ses.flushStorageData();
+      console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+    } catch (err) {
+      console.error('[Main] ❌ 清除 cookies 失败:', err);
+    }
+
     browserView.webContents.loadURL(LOGIN_URL);
   }
 });
@@ -2152,6 +2201,127 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
     `;
 
     siteMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(menuHtml)}`);
+  });
+});
+
+// 用户菜单窗口
+let userMenuWindow = null;
+
+ipcMain.handle('show-user-menu', async (event) => {
+  // 如果已有菜单窗口，先关闭
+  if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+    userMenuWindow.close();
+    userMenuWindow = null;
+    return { selected: false };
+  }
+
+  return new Promise((resolve) => {
+    const contentBounds = mainWindow.getContentBounds();
+    const menuWidth = 140;
+    const menuHeight = 50;
+
+    // 计算菜单位置：对齐用户信息区域右侧
+    const menuX = contentBounds.x + contentBounds.width - menuWidth - 12;
+    const menuY = contentBounds.y + 55;
+
+    console.log('[User Menu] Creating menu window at:', menuX, menuY);
+
+    userMenuWindow = new BrowserWindow({
+      width: menuWidth,
+      height: menuHeight,
+      x: menuX,
+      y: menuY,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      show: false,
+      parent: mainWindow,
+      modal: false,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    });
+
+    userMenuWindow.once('ready-to-show', () => {
+      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+        userMenuWindow.show();
+        userMenuWindow.focus();
+      }
+    });
+
+    userMenuWindow.on('blur', () => {
+      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+        userMenuWindow.close();
+        userMenuWindow = null;
+        resolve({ selected: false, action: null });
+      }
+    });
+
+    userMenuWindow.on('closed', () => {
+      userMenuWindow = null;
+    });
+
+    ipcMain.once('user-menu-action', (e, action) => {
+      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+        userMenuWindow.close();
+        userMenuWindow = null;
+      }
+      resolve({ selected: true, action });
+    });
+
+    const menuHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          html, body { background: transparent !important; overflow: hidden; }
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+          .menu {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            padding: 6px 0;
+          }
+          .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 16px;
+            cursor: pointer;
+            transition: background 0.15s;
+            font-size: 14px;
+            color: #F56C6C;
+            gap: 8px;
+          }
+          .menu-item:hover { background: #FEF0F0; }
+          .menu-item svg { width: 16px; height: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="menu">
+          <div class="menu-item" id="logout">
+            <svg viewBox="0 0 1024 1024" fill="#F56C6C">
+              <path d="M868.352 495.616l-160-160a32 32 0 0 0-45.248 45.248L761.376 479.136l-409.376 0a32 32 0 0 0 0 64l409.376 0-98.272 98.272a32 32 0 1 0 45.248 45.248l160-160a32 32 0 0 0 0-45.248z"/>
+              <path d="M448 800 224 800 224 224l224 0a32 32 0 0 0 0-64L192 160a32 32 0 0 0-32 32l0 640a32 32 0 0 0 32 32l256 0a32 32 0 0 0 0-64z"/>
+            </svg>
+            <span>退出登录</span>
+          </div>
+        </div>
+        <script>
+          const { ipcRenderer } = require('electron');
+          document.getElementById('logout').onclick = () => {
+            ipcRenderer.send('user-menu-action', 'logout');
+          };
+        </script>
+      </body>
+      </html>
+    `;
+
+    userMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(menuHtml)}`);
   });
 });
 

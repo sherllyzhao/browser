@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 导航控制
   navigateTo: (url) => ipcRenderer.invoke('navigate-to', url),
+  navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   navigateToLogin: () => ipcRenderer.invoke('navigate-to-login'),
   refreshPage: () => ipcRenderer.invoke('refresh-page'),
   openDevTools: () => ipcRenderer.invoke('open-devtools'),
@@ -87,6 +88,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 显示站点选择原生菜单（悬浮在所有内容之上）
   showSiteMenu: (sites, currentSiteId) => ipcRenderer.invoke('show-site-menu', sites, currentSiteId),
+
+  // 显示用户菜单（退出登录等）
+  showUserMenu: () => ipcRenderer.invoke('show-user-menu'),
 
   // Cookie 功能
   getCookies: () => ipcRenderer.invoke('get-cookies'),

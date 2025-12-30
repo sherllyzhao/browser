@@ -46,17 +46,29 @@ const tabGeo = document.getElementById('__tab_geo__');
 // AIGC 和 GEO 的 URL（根据环境）
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 const AIGC_URL = isProduction
-  ? 'https://dev.china9.cn/aigc_browser/'
-  : 'http://localhost:5173/';
+  ? 'https://dev.china9.cn/aigc_browser/?showHeader=false'
+  : 'http://localhost:5173/?showHeader=false';
 const GEO_URL = isProduction
   ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-  : 'http://localhost:8080/#/geo/index';
-  //: 'http://172.16.6.17:8080/#/geo/index';
+  //: 'http://localhost:8080/#/geo/index';
+  : 'http://172.16.6.17:8080/#/geo/index';
 
 // 判断当前系统类型
 function getCurrentSystem(url) {
   if (!url) return 'aigc';
   const urlLower = url.toLowerCase();
+
+  // 检查 not-available.html 的查询参数（用于占位页保持正确的 Tab 选中状态）
+  if (urlLower.includes('not-available.html')) {
+    try {
+      const urlObj = new URL(url);
+      const systemParam = urlObj.searchParams.get('system');
+      if (systemParam === 'geo') return 'geo';
+      if (systemParam === 'aigc') return 'aigc';
+    } catch (e) {
+      // URL 解析失败，继续使用默认逻辑
+    }
+  }
 
   // GEO 系统特征
   if (urlLower.includes(':8080') ||
@@ -130,77 +142,50 @@ if (headerDevBtn) {
   };
 }
 
-// 退出登录按钮
-const logoutBtn = document.getElementById('logoutBtn');
+// 退出登录按钮 - 使用原生菜单（能浮在 BrowserView 之上）
 const userInfoEl = document.getElementById('userInfo');
-const userDropdown = document.getElementById('userDropdown');
 
-// 用户下拉菜单交互
-if (userInfoEl && userDropdown) {
-  userInfoEl.addEventListener('click', function(e) {
-    // 如果点击的是下拉菜单内部，不处理
-    if (userDropdown.contains(e.target)) return;
-
+if (userInfoEl) {
+  userInfoEl.addEventListener('click', async function(e) {
     e.stopPropagation();
-    const isOpen = userDropdown.classList.contains('show');
-    if (isOpen) {
-      userDropdown.classList.remove('show');
-      userInfoEl.classList.remove('active');
-    } else {
-      userDropdown.classList.add('show');
-      userInfoEl.classList.add('active');
-    }
-  });
 
-  // 点击外部关闭下拉菜单
-  document.addEventListener('click', function(e) {
-    if (!userInfoEl.contains(e.target)) {
-      userDropdown.classList.remove('show');
-      userInfoEl.classList.remove('active');
-    }
-  });
-}
+    // 使用原生菜单
+    if (window.electronAPI && window.electronAPI.showUserMenu) {
+      console.log('[User Menu] 显示原生菜单');
+      const result = await window.electronAPI.showUserMenu();
+      console.log('[User Menu] 菜单选择结果:', result);
 
-if (logoutBtn) {
-  logoutBtn.addEventListener('click', async function(e) {
-    e.stopPropagation();
-    e.preventDefault();
+      if (result && result.selected && result.action === 'logout') {
+        // 用户选择了退出登录
+        if (confirm('确定要退出登录吗？')) {
+          console.log('[Logout] 用户确认退出');
 
-    console.log('[Logout] 退出按钮被点击');
+          try {
+            // 清除用户信息
+            if (window.electronAPI && window.electronAPI.removeGlobalData) {
+              console.log('[Logout] 开始清除用户数据...');
+              await window.electronAPI.removeGlobalData('user_info');
+              await window.electronAPI.removeGlobalData('login_token');
+              await window.electronAPI.removeGlobalData('login_expires');
+              await window.electronAPI.removeGlobalData('login_gcc');
+              await window.electronAPI.removeGlobalData('company_id');
+              await window.electronAPI.removeGlobalData('siteInfo');
+              await window.electronAPI.removeGlobalData('current_site');
+              await window.electronAPI.removeGlobalData('current_site_id');
+              await window.electronAPI.removeGlobalData('current_site_name');
+              console.log('[Logout] ✅ 已清除用户信息');
+            }
 
-    // 关闭下拉菜单
-    if (userDropdown) userDropdown.classList.remove('show');
-    if (userInfoEl) userInfoEl.classList.remove('active');
-
-    if (confirm('确定要退出登录吗？')) {
-      console.log('[Logout] 用户确认退出');
-
-      try {
-        // 清除用户信息
-        if (window.electronAPI && window.electronAPI.removeGlobalData) {
-          console.log('[Logout] 开始清除用户数据...');
-          await window.electronAPI.removeGlobalData('user_info');
-          await window.electronAPI.removeGlobalData('login_token');
-          await window.electronAPI.removeGlobalData('login_expires');
-          await window.electronAPI.removeGlobalData('login_gcc');
-          await window.electronAPI.removeGlobalData('company_id');
-          await window.electronAPI.removeGlobalData('siteInfo');
-          await window.electronAPI.removeGlobalData('current_site');
-          await window.electronAPI.removeGlobalData('current_site_id');
-          await window.electronAPI.removeGlobalData('current_site_name');
-          console.log('[Logout] ✅ 已清除用户信息');
+            // 跳转到登录页
+            console.log('[Logout] 正在跳转到登录页...');
+            await window.electronAPI.navigateToLogin();
+            console.log('[Logout] ✅ 跳转成功');
+          } catch (err) {
+            console.error('[Logout] ❌ 退出登录失败:', err);
+            alert('退出登录失败，请重试');
+          }
         }
-
-        // 跳转到登录页
-        console.log('[Logout] 正在跳转到登录页...');
-        await window.electronAPI.navigateToLogin();
-        console.log('[Logout] ✅ 跳转成功');
-      } catch (err) {
-        console.error('[Logout] ❌ 退出登录失败:', err);
-        alert('退出登录失败，请重试');
       }
-    } else {
-      console.log('[Logout] 用户取消退出');
     }
   });
 }
@@ -717,7 +702,8 @@ async function loadUserInfo() {
       var userPhoneEl = document.getElementById('userPhone');
       var userAvatarEl = document.getElementById('userAvatar');
       if (companyNameEl) {
-        companyNameEl.textContent = '未登录';
+        console.log(1)
+        companyNameEl.textContent = '';
         companyNameEl.style.visibility = 'visible';
       }
       if (userPhoneEl) userPhoneEl.textContent = '未登录';
@@ -739,6 +725,7 @@ async function loadUserInfo() {
         var companyNameEl = document.getElementById('currentSiteName');
         var currentSiteEl = document.getElementById('currentSite');
         if (companyNameEl && userInfo.companyName) {
+          console.log(2)
           companyNameEl.textContent = userInfo.companyName;
           companyNameEl.style.visibility = 'visible';
           if (currentSiteEl) {
@@ -749,6 +736,11 @@ async function loadUserInfo() {
 
       // 更新用户手机号
       var userPhoneEl = document.getElementById('userPhone');
+      var companyNameEl = document.getElementById('currentSiteName');
+      if (companyNameEl){
+        console.log(3)
+        companyNameEl.textContent = await window.electronAPI.getGlobalData('current_site_name');
+      }
       if (userPhoneEl) {
         userPhoneEl.textContent = '';
         if (userInfo.phone && userInfo.phone.length === 11) {
@@ -765,16 +757,22 @@ async function loadUserInfo() {
         }
       }
     } else {
-      // 没有用户信息，显示默认值（仅非 GEO 系统）
+      // 没有用户信息，隐藏公司名称区域（不显示"未登录"）
       if (!isGeoSystem) {
         var companyNameEl = document.getElementById('currentSiteName');
         if (companyNameEl) {
-          companyNameEl.textContent = '未登录';
-          companyNameEl.style.visibility = 'visible';
+          console.log(4)
+          companyNameEl.textContent = '';
+          companyNameEl.style.visibility = 'hidden';
         }
       }
       var userPhoneEl = document.getElementById('userPhone');
-      if (userPhoneEl) userPhoneEl.textContent = '未登录';
+      if (userPhoneEl) userPhoneEl.textContent = '';
+      var companyNameEl = document.getElementById('currentSiteName');
+      if (companyNameEl){
+        console.log(5)
+        companyNameEl.textContent = await window.electronAPI.getGlobalData('current_site_name');
+      }
     }
   } catch (err) {
     console.error('[Common Header] 加载用户信息失败:', err);
@@ -814,7 +812,7 @@ async function getSiteListApi() {
     throw new Error(`HTTP error! status: ${response.status}`);
   }
   const result = await response.json();
-  return result.data;
+  return result.data || [];
 }
 
 // 渲染站点下拉列表
@@ -982,6 +980,8 @@ async function loadSiteList(url) {
     // 只有 GEO 系统才显示站点管理
     if (system !== 'geo') {
       console.log('[Site] 进入非GEO分支');
+      // 非 GEO 系统，清空站点缓存
+      siteListCache = [];
       if (siteManage) {
         siteManage.style.display = 'none';
         console.log('[Site] 非GEO系统，已隐藏站点管理');
@@ -998,6 +998,9 @@ async function loadSiteList(url) {
       siteManage.style.display = '';
     }
 
+    // 先清空缓存，确保获取新数据
+    siteListCache = [];
+
     // 加载站点列表
     const siteData = await getSiteListApi();
     console.log('[Site] 站点数据:', siteData);
@@ -1005,6 +1008,18 @@ async function loadSiteList(url) {
     // 处理返回的数据结构（可能是数组或对象）
     const sites = Array.isArray(siteData) ? siteData : (siteData?.list || [siteData]);
     siteListCache = sites;
+    if(sites.length === 0){
+      console.log('[Site] 没有站点列表，跳转到功能暂未开放页面');
+
+      var companyNameEl = document.getElementById('currentSiteName');
+      if (companyNameEl) {
+        await window.electronAPI.getGlobalData('current_site_name');
+      }
+      // 添加 system=geo 参数，让占位页保持 GEO Tab 选中状态
+      const notAvailablePath = 'file:///D:/浏览器/运营助手/not-available.html?system=geo';
+      await window.electronAPI.navigateCurrentWindow(notAvailablePath);
+      return;
+    }
 
     // 渲染下拉列表
     renderSiteDropdown(sites);

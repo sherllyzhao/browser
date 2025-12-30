@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>功能暂未开放</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #f5f7fb 0%, #e8eef5 50%, #f0f4f9 100%);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      position: relative;
+      overflow: hidden;
+      padding: clamp(1rem, 2vw, 2rem);
+    }
+
+    /* 背景装饰 */
+    .bg-decoration {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .bg-shape {
+      position: absolute;
+      background: linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(220,235,255,0.5) 100%);
+      border-radius: 16px;
+    }
+
+    .bg-shape-1 {
+      width: 350px;
+      height: 100px;
+      top: 12%;
+      left: -80px;
+      transform: rotate(-22deg);
+      box-shadow: 0 4px 20px rgba(200, 220, 255, 0.3);
+    }
+
+    .bg-shape-2 {
+      width: 280px;
+      height: 70px;
+      top: 28%;
+      left: 2%;
+      transform: rotate(-18deg);
+      background: linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(210,230,255,0.4) 100%);
+    }
+
+    .bg-shape-3 {
+      width: 320px;
+      height: 90px;
+      top: 18%;
+      right: -100px;
+      transform: rotate(18deg);
+      background: linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(230,240,255,0.5) 100%);
+    }
+
+    .bg-shape-4 {
+      width: 380px;
+      height: 95px;
+      bottom: 22%;
+      right: -120px;
+      transform: rotate(22deg);
+      background: linear-gradient(135deg, rgba(100,200,255,0.25) 0%, rgba(150,210,255,0.15) 100%);
+    }
+
+    /* 装饰元素 */
+    .decoration {
+      position: absolute;
+      border-radius: 50%;
+      opacity: 0.15;
+      z-index: 1;
+    }
+
+    .decoration-1 {
+      top: -100px;
+      right: -100px;
+      width: clamp(15rem, 25vw, 25rem);
+      height: clamp(15rem, 25vw, 25rem);
+      background: linear-gradient(135deg, #b8c6ff 0%, #d4a5ff 100%);
+      clip-path: polygon(30% 0%, 100% 0%, 100% 70%, 70% 100%, 0% 100%, 0% 30%);
+    }
+
+    .decoration-2 {
+      bottom: -80px;
+      left: -80px;
+      width: clamp(12rem, 20vw, 18.75rem);
+      height: clamp(12rem, 20vw, 18.75rem);
+      background: linear-gradient(135deg, #a5d4ff 0%, #b5e7ff 100%);
+      clip-path: polygon(0% 0%, 100% 0%, 70% 100%, 0% 70%);
+    }
+
+    /* 主内容卡片 */
+    .content-box {
+      position: relative;
+      z-index: 10;
+      width: clamp(320px, 85vw, 600px);
+      padding: clamp(2rem, 3vw, 3.5rem) clamp(1.5rem, 2.5vw, 2.5rem);
+      background: rgba(255, 255, 255, 0.7);
+      box-shadow: 0px 3px 46px 0px rgba(200, 217, 227, 0.35);
+      border-radius: clamp(0.75rem, 1vw, 1rem);
+      border: 1px solid #FFFFFF;
+      text-align: center;
+    }
+
+    /* 图标容器 */
+    .icon-container {
+      margin: 0 auto clamp(1.5rem, 2vw, 2rem);
+      width: clamp(80px, 12vw, 120px);
+      height: clamp(80px, 12vw, 120px);
+      background: linear-gradient(135deg, #f0f5ff 0%, #e6f0ff 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .icon-container::before {
+      content: '';
+      position: absolute;
+      width: 90%;
+      height: 90%;
+      border-radius: 50%;
+      background: linear-gradient(135deg, rgba(62, 122, 255, 0.1) 0%, rgba(62, 122, 255, 0.05) 100%);
+    }
+
+    /* 锁图标 */
+    .lock-icon {
+      width: clamp(40px, 6vw, 60px);
+      height: clamp(40px, 6vw, 60px);
+      fill: #3E7AFF;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* 标题 */
+    .title {
+      font-weight: bold;
+      font-size: clamp(1.5rem, 2vw + 0.5rem, 2rem);
+      color: #323E50;
+      margin-bottom: clamp(0.75rem, 1vw, 1rem);
+    }
+
+    /* 描述文字 */
+    .description {
+      font-size: clamp(0.875rem, 1vw + 0.125rem, 1.125rem);
+      color: #6B7280;
+      line-height: 1.6;
+      margin-bottom: clamp(1.5rem, 2vw, 2rem);
+    }
+
+    /* 按钮组 */
+    .button-group {
+      display: flex;
+      gap: clamp(0.75rem, 1vw, 1rem);
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    /* 按钮样式 */
+    .btn {
+      min-width: clamp(100px, 15vw, 140px);
+      height: clamp(2.5rem, 3vw, 3rem);
+      padding: 0 clamp(1rem, 1.5vw, 1.5rem);
+      font-size: clamp(0.875rem, 1vw, 1rem);
+      border: none;
+      border-radius: clamp(0.375rem, 0.4vw, 0.375rem);
+      cursor: pointer;
+      transition: all 0.3s;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-primary {
+      background: #3E7AFF;
+      color: #FFFFFF;
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #3a6be8 0%, #4e7cef 100%);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(74, 123, 250, 0.3);
+    }
+
+    .btn-secondary {
+      background: #F3F4F6;
+      color: #323E50;
+    }
+
+    .btn-secondary:hover {
+      background: #E5E7EB;
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    /* 响应式 */
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+
+      .content-box {
+        width: min(340px, 90vw);
+        padding: 2rem 1.25rem;
+      }
+
+      .button-group {
+        flex-direction: column;
+      }
+
+      .btn {
+        width: 100%;
+      }
+
+      .decoration-1,
+      .decoration-2 {
+        opacity: 0.08;
+      }
+
+      .bg-shape {
+        opacity: 0.5;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .content-box {
+        width: min(300px, 88vw);
+        padding: 1.5rem 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- 背景装饰 -->
+  <div class="bg-decoration">
+    <div class="bg-shape bg-shape-1"></div>
+    <div class="bg-shape bg-shape-2"></div>
+    <div class="bg-shape bg-shape-3"></div>
+    <div class="bg-shape bg-shape-4"></div>
+  </div>
+
+  <!-- 装饰元素 -->
+  <div class="decoration decoration-1"></div>
+  <div class="decoration decoration-2"></div>
+
+  <!-- 主内容 -->
+  <div class="content-box">
+    <!-- 图标 -->
+    <div class="icon-container">
+      <svg class="lock-icon" viewBox="0 0 1024 1024">
+        <path d="M832 464h-68V240c0-70.7-57.3-128-128-128H388c-70.7 0-128 57.3-128 128v224h-68c-17.7 0-32 14.3-32 32v384c0 17.7 14.3 32 32 32h640c17.7 0 32-14.3 32-32V496c0-17.7-14.3-32-32-32zM332 240c0-30.9 25.1-56 56-56h248c30.9 0 56 25.1 56 56v224H332V240zm460 600H232V536h560v304zM484 701v53c0 4.4 3.6 8 8 8h40c4.4 0 8-3.6 8-8v-53c12.1-8.7 20-22.9 20-39 0-26.5-21.5-48-48-48s-48 21.5-48 48c0 16.1 7.9 30.3 20 39z"/>
+      </svg>
+    </div>
+
+    <!-- 标题 -->
+    <h1 class="title">功能暂未开放</h1>
+
+    <!-- 描述 -->
+    <p class="description">
+      该功能正在开发中，敬请期待
+    </p>
+
+    <!-- 按钮组 -->
+    <div class="button-group">
+      <button class="btn btn-primary" onclick="goHome()">
+        返回首页
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // 返回上一页
+    function goBack() {
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        goHome();
+      }
+    }
+
+    // 返回首页
+    function goHome() {
+      // 判断是否是开发环境
+      const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+      const homeUrl = isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/';
+
+      // 使用 browserAPI 跳转（如果可用）
+      if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
+        window.browserAPI.navigateCurrentWindow(homeUrl);
+      } else {
+        // 降级使用 location
+        window.location.href = homeUrl;
+      }
+    }
+
+    console.log('[NotAvailable] 页面已加载');
+  </script>
+</body>
+</html>
