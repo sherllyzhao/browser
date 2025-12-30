@@ -718,90 +718,86 @@
         }
 
         // 获取用户信息并存储
-        try {
-          const userInfo = await getUserInfoApi(loginData.token);
-          console.log('[Login] 用户信息:', userInfo);
+        const userInfo = await getUserInfoApi(loginData.token);
+        console.log('[Login] 用户信息:', userInfo);
 
-          if (window.browserAPI && window.browserAPI.setGlobalData) {
-            // 存储完整用户信息供公共头部使用
-            await window.browserAPI.setGlobalData('user_info', userInfo);
-            console.log('[Login] 已存储用户信息:', userInfo);
+        if (window.browserAPI && window.browserAPI.setGlobalData) {
+          // 存储完整用户信息供公共头部使用
+          await window.browserAPI.setGlobalData('user_info', userInfo);
+          console.log('[Login] 已存储用户信息:', userInfo);
 
-            const companyId = await getCompanyId(loginData.token)
-            await window.browserAPI.setGlobalData('company_id', companyId.id);
+          const companyId = await getCompanyId(loginData.token)
+          await window.browserAPI.setGlobalData('company_id', companyId.id);
 
-            if (userInfo.company?.unique_id) {
-              //  获取建站通站点信息
-              const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
-              console.log('[Login] 站点信息:', siteInfo);
-              await window.browserAPI.setGlobalData('siteInfo', siteInfo);
+          if (userInfo.company?.unique_id) {
+            //  获取建站通站点信息
+            const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
+            console.log('[Login] 站点信息:', siteInfo);
+            await window.browserAPI.setGlobalData('siteInfo', siteInfo);
 
-              // 把站点id存进去
-              await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
-              await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
-              if (window.browserAPI && window.browserAPI.setCookie) {
-                try {
-                  // 1. 为 localhost:5173 设置 Cookie（开发环境）
-                  // 注意：localhost 不能设置 domain 参数，否则会失败
-                  console.log('[Login] 开始设置 site_id Cookie...');
-                  const sevedSiteId1 = await window.browserAPI.setCookie({
-                    url: 'http://localhost:5173/',
-                    name: 'site_id',
-                    value: String(siteInfo.id),
-                    path: '/',
-                    secure: false,
-                    sameSite: 'lax'
-                    // localhost 不能设置 domain，否则会失败
-                  });
-                  console.log('[Login] localhost:5173 site_id 设置结果:', sevedSiteId1);
+            // 把站点id存进去
+            await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
+            await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
+            if (window.browserAPI && window.browserAPI.setCookie) {
+              try {
+                // 1. 为 localhost:5173 设置 Cookie（开发环境）
+                // 注意：localhost 不能设置 domain 参数，否则会失败
+                console.log('[Login] 开始设置 site_id Cookie...');
+                const sevedSiteId1 = await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'site_id',
+                  value: String(siteInfo.id),
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                  // localhost 不能设置 domain，否则会失败
+                });
+                console.log('[Login] localhost:5173 site_id 设置结果:', sevedSiteId1);
 
-                  const sevedSiteId2 = await window.browserAPI.setCookie({
-                    url: 'http://localhost:8080/',
-                    name: 'site_id',
-                    value: String(siteInfo.id),
-                    path: '/',
-                    secure: false,
-                    sameSite: 'lax'
-                    // localhost 不能设置 domain，否则会失败
-                  });
-                  console.log('[Login] localhost:8080 site_id 设置结果:', sevedSiteId2);
+                const sevedSiteId2 = await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'site_id',
+                  value: String(siteInfo.id),
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                  // localhost 不能设置 domain，否则会失败
+                });
+                console.log('[Login] localhost:8080 site_id 设置结果:', sevedSiteId2);
 
-                  const sevedSiteId3 = await window.browserAPI.setCookie({
-                    url: 'https://china9.cn',
-                    name: 'site_id',
-                    value: String(siteInfo.id),
-                    path: '/',
-                    secure: true,
-                    sameSite: 'no_restriction',
-                    domain: '.china9.cn',
-                  });
-                  console.log('[Login] china9.cn site_id 设置结果:', sevedSiteId3);
+                const sevedSiteId3 = await window.browserAPI.setCookie({
+                  url: 'https://china9.cn',
+                  name: 'site_id',
+                  value: String(siteInfo.id),
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] china9.cn site_id 设置结果:', sevedSiteId3);
 
-                  console.log('[Login] ✅ site_id Cookie 设置完成');
-                } catch (e) {
-                  console.error('[Login] ❌ siteId保存失败:', e);
-                }
-              }
-
-              // 登录成功，跳转到首页
-              console.log('[Login] 准备跳转，activeTab:', activeTab);
-
-              // 等待一小段时间确保 Cookie 写入
-              await new Promise(resolve => setTimeout(resolve, 5000));
-
-              console.log('[Login] 跳转到:', targetUrl);
-
-              // 使用 browserAPI 跳转（如果可用）
-              if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
-                await window.browserAPI.navigateCurrentWindow(targetUrl);
-              } else {
-                // 降级使用 location
-                window.location.href = targetUrl;
+                console.log('[Login] ✅ site_id Cookie 设置完成');
+              } catch (e) {
+                console.error('[Login] ❌ siteId保存失败:', e);
               }
             }
+
+            // 登录成功，跳转到首页
+            console.log('[Login] 准备跳转，activeTab:', activeTab);
+
+            // 等待一小段时间确保 Cookie 写入
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            console.log('[Login] 跳转到:', targetUrl);
+
+            // 使用 browserAPI 跳转（如果可用）
+            if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
+              await window.browserAPI.navigateCurrentWindow(targetUrl);
+            } else {
+              // 降级使用 location
+              window.location.href = targetUrl;
+            }
           }
-        } catch (userErr) {
-          console.warn('[Login] 获取用户信息失败:', userErr);
         }
       } catch (error) {
         console.error('[Login] 登录失败:', error);
