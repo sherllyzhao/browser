@@ -51,6 +51,7 @@ const AIGC_URL = isProduction
 const GEO_URL = isProduction
   ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
+  //: 'http://172.16.6.17:8080/#/geo/index';
 
 // 判断当前系统类型
 function getCurrentSystem(url) {

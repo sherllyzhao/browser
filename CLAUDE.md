@@ -279,6 +279,51 @@ await window.browserAPI.setCookie({
 - `domain` 以点开头（如 `.china9.cn`）表示所有子域名可用
 - `expirationDate` 是秒级时间戳，`expires` 可以是毫秒时间戳
 
+### 10. 清除指定域名的 Cookies
+```javascript
+// 清除指定域名的登录状态（用于删除授权时清除浏览器登录信息）
+const result = await window.browserAPI.clearDomainCookies('douyin.com');
+console.log(result);
+// 返回值示例:
+// { success: true, deletedCount: 17 }
+// 或
+// { success: false, error: '错误信息' }
+```
+
+**平台域名参考**：
+| 平台 | 域名 |
+|------|------|
+| 抖音 | `douyin.com` |
+| 小红书 | `xiaohongshu.com` |
+| 微信公众号 | `weixin.qq.com`, `mp.weixin.qq.com` |
+| 百家号 | `baidu.com`, `baijiahao.baidu.com` |
+| 视频号 | `channels.weixin.qq.com` |
+
+**使用场景**：删除授权账号时，同步清除浏览器中该平台的登录 Cookies，防止下次授权时自动登录旧账号。
+
+**示例**（在 auth.vue 中使用）：
+```javascript
+// 删除授权后清除对应平台的 cookies
+const handleDelete = async (row) => {
+  await delAccount(row.id);
+
+  // 清除平台登录信息
+  if (window?.browserAPI?.clearDomainCookies) {
+    const platformDomains = {
+      '抖音': ['douyin.com'],
+      '小红书': ['xiaohongshu.com'],
+      '公众号': ['weixin.qq.com', 'mp.weixin.qq.com'],
+    };
+    const domains = platformDomains[row.media?.title];
+    if (domains) {
+      for (const domain of domains) {
+        await window.browserAPI.clearDomainCookies(domain);
+      }
+    }
+  }
+};
+```
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

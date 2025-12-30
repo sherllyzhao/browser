@@ -159,7 +159,7 @@
 
     // 统计接口成功后关闭弹窗
     setTimeout(() => {
-      window.browserAPI.closeCurrentWindow();
+      //window.browserAPI.closeCurrentWindow();
     }, 1000);
 
     // 检查是否有保存的发布页URL（从发布页跳转过来的）
