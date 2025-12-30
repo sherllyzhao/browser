@@ -392,6 +392,8 @@ const HOME_URL = 'http://localhost:5173/';
 - Session cookies converted to persistent (1 year expiration) on window close
 
 ### Data Storage Paths
+
+**根目录**：
 | 版本 | 数据存储位置 |
 |------|-------------|
 | 开发环境 | `%APPDATA%\运营助手` |
@@ -399,6 +401,66 @@ const HOME_URL = 'http://localhost:5173/';
 | 便携版 | `%LOCALAPPDATA%\运营助手-Portable` |
 
 便携版使用固定路径，无论 exe 放在哪里数据都不会丢失。
+
+#### 存储结构详解
+
+```
+%APPDATA%\运营助手\                          # 根目录（或便携版的 %LOCALAPPDATA%\运营助手-Portable\）
+├── global-storage.json                      # 🔑 自己平台登录信息（token、用户信息等）
+├── Preferences                              # 应用偏好设置
+└── Partitions\
+    └── browserview\                         # 🔑 第三方平台登录信息（持久化 Session）
+        ├── blob_storage\                    # Blob 存储
+        ├── Cache\                           # 网页缓存
+        ├── Code Cache\                      # JavaScript 代码缓存
+        ├── databases\                       # Web SQL 数据库
+        ├── DawnCache\                       # WebGPU Dawn 缓存
+        ├── File System\                     # File System API 数据
+        ├── GPUCache\                        # GPU 渲染缓存
+        ├── IndexedDB\                       # IndexedDB 数据库
+        ├── Local Storage\                   # localStorage 数据
+        ├── Network\
+        │   └── Cookies                      # ⭐ 第三方平台 Cookie（SQLite 数据库）
+        ├── Service Worker\                  # Service Worker 缓存
+        ├── Session Storage\                 # sessionStorage 数据
+        ├── shared_proto_db\                 # 共享 Protocol Buffer 数据库
+        ├── VideoDecodeStats\                # 视频解码统计
+        └── WebStorage\                      # Web Storage 数据
+```
+
+#### 数据分类说明
+
+| 数据类型 | 存储文件 | 说明 |
+|---------|---------|------|
+| **自己平台登录信息** | `global-storage.json` | token、user_info、company_id、siteInfo 等 |
+| **第三方平台登录信息** | `Partitions\browserview\Network\Cookies` | 抖音、小红书、微信、百家号等平台的登录 Cookie |
+| **退出时的页面 URL** | `global-storage.json` 中的 `last_page_url` | 用于下次启动时恢复页面 |
+
+#### global-storage.json 存储内容
+
+登录页（login.html）存储的数据：
+```json
+{
+  "login_token": "xxx",           // 登录 token
+  "login_expires": 1735689600,    // token 过期时间（秒级时间戳）
+  "login_gcc": "xxx",             // gcc 值（如果有）
+  "user_info": { ... },           // 完整用户信息对象
+  "company_id": "12345",          // 公司 ID
+  "siteInfo": { ... },            // 站点信息对象
+  "current_site_id": 123,         // 当前站点 ID
+  "current_site_name": "xxx",     // 当前站点名称
+  "last_page_url": "https://..."  // 退出时的页面 URL（用于恢复）
+}
+```
+
+#### 第三方平台 Cookie 存储
+
+第三方平台（抖音、小红书、微信、百家号等）的登录 Cookie 存储在：
+- **文件路径**: `Partitions\browserview\Network\Cookies`
+- **文件格式**: SQLite 数据库
+- **持久化方式**: `session.fromPartition('persist:browserview')` (main.js:236)
+
+**注意**: 用户手动删除 `Partitions\browserview` 目录会导致所有第三方平台的登录状态丢失。
 
 ## Important Patterns
 

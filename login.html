@@ -394,8 +394,8 @@
     // 跳转目标地址（根据环境自动选择）
     const TARGET_URLS = {
       aigc: isDev ? 'http://localhost:5173/?showHeader=false' : 'https://dev.china9.cn/aigc_browser/?showHeader=false',
-      //geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-      geo: isDev ? 'http://172.16.6.17:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+      //geo: isDev ? 'http://172.16.6.17:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
     };
 
     console.log('[Login] 环境:', isDev ? '开发' : '生产', 'TARGET_URLS:', TARGET_URLS);
