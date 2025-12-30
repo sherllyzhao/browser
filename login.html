@@ -615,7 +615,9 @@
         console.log('[Login] 登录成功:', loginData, '消息:', successMsg);
 
         // 显示成功提示
-        alert(successMsg);
+        if(!successMsg.includes('成功')){
+          alert(successMsg);
+        }
 
         // 🔑 把 token 存到全局存储（解决 file:// 和 http:// 跨域 Cookie 问题）
         if (window.browserAPI && window.browserAPI.setGlobalData) {

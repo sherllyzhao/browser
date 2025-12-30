@@ -188,6 +188,12 @@
       padding: clamp(0.25rem, 0.4vw, 0.375rem) clamp(0.5rem, 0.8vw, 0.75rem);
       transition: all 0.3s;
       cursor: pointer;
+      position: relative;
+      border-radius: 20px;
+    }
+
+    #__browser_common_header__ .header-right .user-info:hover {
+      background: #F5F7FA;
     }
 
     #__browser_common_header__ .header-right .user-info .user-avatar {
@@ -210,6 +216,63 @@
       color: #374151;
       font-weight: 500;
       white-space: nowrap;
+    }
+
+    #__browser_common_header__ .header-right .user-info .dropdown-arrow {
+      width: 12px;
+      height: 12px;
+      transition: transform 0.2s;
+    }
+
+    #__browser_common_header__ .header-right .user-info.active .dropdown-arrow {
+      transform: rotate(180deg);
+    }
+
+    /* 用户下拉菜单样式 */
+    #__browser_common_header__ .header-right .user-info .user-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      background: #FFFFFF;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+      min-width: 140px;
+      padding: 6px 0;
+      display: none;
+      z-index: 9999999;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown.show {
+      display: block;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown .dropdown-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      cursor: pointer;
+      transition: background 0.15s;
+      font-size: 14px;
+      color: #333;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown .dropdown-item:hover {
+      background: #F5F7FA;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown .dropdown-item.logout {
+      color: #F56C6C;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown .dropdown-item.logout:hover {
+      background: #FEF0F0;
+    }
+
+    #__browser_common_header__ .header-right .user-info .user-dropdown .dropdown-item img {
+      width: 16px;
+      height: 16px;
     }
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown {
@@ -284,11 +347,6 @@
 
     #__browser_common_header__ .header-right .site-manage .site-dropdown .site-item.active .check-icon {
       opacity: 1;
-    }
-
-    #__browser_common_header__ .header-right #logout {
-      width: 18px;
-      height: 18px;
     }
 
     .toolbar {
@@ -564,7 +622,14 @@
           <img src="./assets/avatar.png" alt="">
         </div>
         <div class="user-phone" id="userPhone">加载中...</div>
-        <img src="./assets/tuichu.png" alt="" id="logout">
+        <img src="./assets/xiala.png" alt="" class="dropdown-arrow">
+        <!-- 用户下拉菜单 -->
+        <div class="user-dropdown" id="userDropdown">
+          <div class="dropdown-item logout" id="logoutBtn">
+            <img src="./assets/tuichu.png" alt="">
+            <span>退出登录</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>

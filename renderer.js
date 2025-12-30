@@ -131,14 +131,46 @@ if (headerDevBtn) {
 }
 
 // 退出登录按钮
-const logoutBtn = document.getElementById('logout');
+const logoutBtn = document.getElementById('logoutBtn');
+const userInfoEl = document.getElementById('userInfo');
+const userDropdown = document.getElementById('userDropdown');
+
+// 用户下拉菜单交互
+if (userInfoEl && userDropdown) {
+  userInfoEl.addEventListener('click', function(e) {
+    // 如果点击的是下拉菜单内部，不处理
+    if (userDropdown.contains(e.target)) return;
+
+    e.stopPropagation();
+    const isOpen = userDropdown.classList.contains('show');
+    if (isOpen) {
+      userDropdown.classList.remove('show');
+      userInfoEl.classList.remove('active');
+    } else {
+      userDropdown.classList.add('show');
+      userInfoEl.classList.add('active');
+    }
+  });
+
+  // 点击外部关闭下拉菜单
+  document.addEventListener('click', function(e) {
+    if (!userInfoEl.contains(e.target)) {
+      userDropdown.classList.remove('show');
+      userInfoEl.classList.remove('active');
+    }
+  });
+}
+
 if (logoutBtn) {
-  // 使用 addEventListener 并阻止冒泡
   logoutBtn.addEventListener('click', async function(e) {
     e.stopPropagation();
     e.preventDefault();
 
     console.log('[Logout] 退出按钮被点击');
+
+    // 关闭下拉菜单
+    if (userDropdown) userDropdown.classList.remove('show');
+    if (userInfoEl) userInfoEl.classList.remove('active');
 
     if (confirm('确定要退出登录吗？')) {
       console.log('[Logout] 用户确认退出');
