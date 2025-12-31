@@ -555,7 +555,7 @@ async function publishApi(dataObj) {
       }
 
       if (btn.classList && btn.classList.contains("weui-desktop-btn_disabled")) {
-        throw new Error('发布按钮不可用，不符合平台发布规则');
+        throw new Error('发布按钮不可用，不符合平台发布要求');
       }
 
       return btn;
