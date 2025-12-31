@@ -300,12 +300,30 @@ let hasProcessed = false;
                     }
                   }
                 } catch (error) {
-                  // 忽略检测错误，继续正常流程
+                  // 视频下载/上传失败，调用失败接口
                   console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
+                  const publishId = messageData?.video?.dyPlatform?.id;
+                  if (publishId) {
+                    await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                  }
+                  await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                  isProcessing = false;
+                  return;
                 }
               } else {
                 // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
-                await uploadVideo(messageData);
+                try {
+                  await uploadVideo(messageData);
+                } catch (error) {
+                  console.log('[视频号发布] ❌ 视频上传失败:', error);
+                  const publishId = messageData?.video?.dyPlatform?.id;
+                  if (publishId) {
+                    await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                  }
+                  await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                  isProcessing = false;
+                  return;
+                }
               }
               try {
                 await retryOperation(async () => await fillFormData(messageData), 3, 2000);
@@ -406,10 +424,30 @@ let hasProcessed = false;
               await uploadVideo(messageData, wujieApp.shadowRoot);
             }
           } catch (error) {
+            // 视频下载/上传失败，调用失败接口
             console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
+            const publishId = messageData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
           }
         } else {
-          await uploadVideo(messageData);
+          // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
+          try {
+            await uploadVideo(messageData);
+          } catch (error) {
+            console.log('[视频号发布] ❌ 视频上传失败:', error);
+            const publishId = messageData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
+          }
         }
 
         try {
@@ -485,17 +523,17 @@ async function publishApi(dataObj) {
 
       // 检查视频是否有 src
       if (!video.src) {
-        throw new Error('Video has no src, still uploading');
+        throw new Error('视频没有链接');
       }
 
       // 检查视频是否可以播放 (readyState >= 2 表示有足够数据可以播放)
       if (video.readyState < 2) {
-        throw new Error('Video not ready to play, readyState=' + video.readyState);
+        throw new Error('视频未准备好播放，readyState=' + video.readyState);
       }
 
       // 检查视频时长是否有效
       if (isNaN(video.duration) || video.duration <= 0) {
-        throw new Error('Video duration invalid: ' + video.duration);
+        throw new Error('视频时长无效： ' + video.duration);
       }
 
       console.log('[视频号发布] ✅ 视频已上传完成，可以播放');
@@ -513,11 +551,11 @@ async function publishApi(dataObj) {
       const btn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 5000);
 
       if (!btn) {
-        throw new Error('Publish button not found');
+        throw new Error('未找到发布按钮');
       }
 
       if (btn.classList && btn.classList.contains("weui-desktop-btn_disabled")) {
-        throw new Error('Publish button is disabled');
+        throw new Error('发布按钮不可用，不符合平台发布规则');
       }
 
       return btn;

@@ -1095,6 +1095,13 @@
               }, 1000);
             } catch (error) {
               console.log('[百家号发布] ❌ 封面下载失败:', error);
+              stopErrorListener();
+              const publishId = dataObj?.video?.dyPlatform?.id;
+              if (publishId) {
+                await sendStatisticsError(publishId, error.message || '封面下载失败', '百家号发布');
+              }
+              await closeWindowWithMessage('封面下载失败，刷新数据', 1000);
+              return;
             }
           })();
         }
