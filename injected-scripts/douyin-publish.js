@@ -127,7 +127,7 @@ let hasProcessed = false;
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'publish-data' || message.type === 'auth-data') {
+        if (message.type === 'publish-data') {
           console.log('[抖音发布] ✅ 收到发布数据:', message.data);
           console.log('[抖音发布] ✅✅✅ 进入处理逻辑 ✅✅✅');
 
@@ -161,7 +161,15 @@ let hasProcessed = false;
           console.log('[抖音发布] 🔍 检查 message.data:', !!message.data);
           if (message.data) {
             // 兼容处理：message.data 可能是字符串或对象
-            const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            let messageData;
+            try {
+              messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            } catch (parseError) {
+              console.error('[抖音发布] ❌ 解析消息数据失败:', parseError);
+              console.error('[抖音发布] 原始数据:', message.data);
+              isProcessing = false;
+              return;
+            }
             console.log("🚀 ~  ~ messageData: ", messageData);
 
             window.__AUTH_DATA__ = {
@@ -882,6 +890,11 @@ async function fillFormData(dataObj) {
         await publishApi(dataObj);
       } catch (publishError) {
         console.error('[检测结果] ❌ 发布也失败:', publishError.message);
+        // 发送错误上报
+        const publishId = dataObj?.video?.dyPlatform?.id;
+        if (publishId) {
+          await sendStatisticsError(publishId, publishError.message || '发布失败', '抖音发布');
+        }
         // 发送失败消息并关闭窗口
         await closeWindowWithMessage('发布失败，刷新数据', 1000);
       }
@@ -890,6 +903,11 @@ async function fillFormData(dataObj) {
   } catch (error) {
     // 捕获填写表单过程中的任何错误（封面检测之前的错误）
     console.error('[抖音发布] fillFormData 错误:', error);
+    // 发送错误上报
+    const publishId = dataObj?.video?.dyPlatform?.id;
+    if (publishId) {
+      await sendStatisticsError(publishId, error.message || '填写表单失败', '抖音发布');
+    }
     // 填写表单失败也要关闭窗口，不阻塞下一个任务
     await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {

@@ -134,8 +134,11 @@
       // 也清除窗口专属 key（如果有 windowId）
       if (windowId) {
         localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+        // 清除窗口专属的平台数据
+        localStorage.removeItem(`SHIPINHAO_PUBLISH_DATA_${windowId}`);
+        localStorage.removeItem(`SHIPINHAO_PUBLISH_URL_${windowId}`);
       }
-      // 清除其他平台数据
+      // 清除其他平台数据（兼容旧版本）
       localStorage.removeItem('DOUYIN_PUBLISH_DATA');
       localStorage.removeItem('XHS_PUBLISH_DATA');
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');

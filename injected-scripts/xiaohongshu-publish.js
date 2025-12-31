@@ -119,7 +119,7 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
         console.log('═══════════════════════════════════════');
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-        if (message.type === 'publish-data' || message.type === 'auth-data') {
+        if (message.type === 'publish-data') {
           console.log('[小红书发布] ✅ 收到发布数据:', message.data);
 
           // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
@@ -140,7 +140,14 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
           }
 
           // 解析数据获取视频 ID（兼容字符串和对象）
-          const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+          let messageData;
+          try {
+            messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+          } catch (parseError) {
+            console.error('[小红书发布] ❌ 解析消息数据失败:', parseError);
+            console.error('[小红书发布] 原始数据:', message.data);
+            return;
+          }
           const videoId = messageData?.video?.dyPlatform?.id;
 
           if (!videoId) {
@@ -616,6 +623,11 @@ async function fillFormData(dataObj) {
 
   } catch (error) {
     console.error('[小红书发布] fillFormData 错误:', error);
+    // 发送错误上报
+    const publishId = dataObj?.video?.dyPlatform?.id;
+    if (publishId) {
+      await sendStatisticsError(publishId, error.message || '填写表单失败', '小红书发布');
+    }
     // 填写表单失败也要关闭窗口，不阻塞下一个任务
     await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {

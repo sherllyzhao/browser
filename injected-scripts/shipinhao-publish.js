@@ -56,9 +56,23 @@ let hasProcessed = false;
   const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
 
+  // 获取当前窗口 ID（用于窗口专属的 localStorage key，避免多窗口冲突）
+  let currentWindowId = null;
+  try {
+    currentWindowId = await window.browserAPI.getWindowId();
+    console.log('[视频号发布] 当前窗口 ID:', currentWindowId);
+  } catch (e) {
+    console.error('[视频号发布] ❌ 获取窗口 ID 失败:', e);
+  }
+
+  // 获取窗口专属的 localStorage key
+  const getPublishDataKey = () => `SHIPINHAO_PUBLISH_DATA_${currentWindowId || 'default'}`;
+  const getPublishUrlKey = () => `SHIPINHAO_PUBLISH_URL_${currentWindowId || 'default'}`;
+
   console.log('[视频号发布] URL 参数:', {
     companyId,
-    transferId
+    transferId,
+    windowId: currentWindowId
   });
 
   // 存储发布数据到全局
@@ -117,7 +131,7 @@ let hasProcessed = false;
           console.log('═══════════════════════════════════════');
 
           // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-          if (message.type === 'publish-data' || message.type === 'auth-data') {
+          if (message.type === 'publish-data') {
             console.log('[视频号发布] ✅ 收到发布数据:', message.data);
 
             // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
@@ -147,27 +161,37 @@ let hasProcessed = false;
             // 更新全局变量
             if (message.data) {
               // 兼容处理：message.data 可能是字符串或对象
-              const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+              let messageData;
+              try {
+                messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+              } catch (parseError) {
+                console.error('[视频号发布] ❌ 解析消息数据失败:', parseError);
+                console.error('[视频号发布] 原始数据:', message.data);
+                isProcessing = false;
+                return;
+              }
+              console.log("🚀 ~  ~ messageData: ", messageData);
               window.__AUTH_DATA__ = {
                 ...window.__AUTH_DATA__,
                 message: messageData,
                 receivedAt: Date.now()
               };
               console.log('[视频号发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-              console.log("🚀 ~  ~ messageData: ", messageData);
 
               // 💾 保存数据到 localStorage（用于授权跳转后恢复）
               try {
-                localStorage.setItem('SHIPINHAO_PUBLISH_DATA', message.data);
-                console.log('[视频号发布] 💾 数据已保存到 localStorage');
+                // 确保存储的是 JSON 字符串，避免对象直接存储变成 "[object Object]"
+                const dataToStore = typeof messageData === 'string' ? messageData : JSON.stringify(messageData);
+                localStorage.setItem(getPublishDataKey(), dataToStore);
+                console.log('[视频号发布] 💾 数据已保存到 localStorage, key:', getPublishDataKey());
               } catch (e) {
                 console.error('[视频号发布] ❌ 保存数据失败:', e);
               }
 
               // 🔖 保存当前发布页URL（用于授权跳转后返回）
               try {
-                localStorage.setItem('SHIPINHAO_PUBLISH_URL', window.location.href);
-                console.log('[视频号发布] 🔖 已保存发布页URL:', window.location.href);
+                localStorage.setItem(getPublishUrlKey(), window.location.href);
+                console.log('[视频号发布] 🔖 已保存发布页URL:', window.location.href, 'key:', getPublishUrlKey());
               } catch (e) {
                 console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
               }
@@ -330,10 +354,33 @@ let hasProcessed = false;
   // ===========================
   setTimeout(async () => {
     try {
-      const savedData = localStorage.getItem('SHIPINHAO_PUBLISH_DATA');
-      if (savedData && !isProcessing && !hasProcessed) {
+      const savedData = localStorage.getItem(getPublishDataKey());
+      console.log('[视频号发布] 🔍 检查恢复数据, key:', getPublishDataKey(), ', 数据:', savedData ? '有' : '无');
+
+      // 跳过恢复：如果已经在处理或已处理完成
+      if (isProcessing || hasProcessed) {
+        console.log('[视频号发布] ℹ️ 已在处理中或已完成，跳过恢复');
+        return;
+      }
+
+      if (savedData) {
+        // 验证数据格式：必须是有效的 JSON 且不是 "[object Object]"
+        if (savedData === '[object Object]' || savedData.startsWith('[object ')) {
+          console.warn('[视频号发布] ⚠️ 检测到无效的旧数据，清除并跳过恢复');
+          localStorage.removeItem(getPublishDataKey());
+          return;
+        }
+
         console.log('[视频号发布] 🔄 检测到保存的发布数据，准备恢复...');
         const messageData = JSON.parse(savedData);
+
+        // 额外验证：检查解析后的数据是否有必要字段
+        if (!messageData || typeof messageData !== 'object') {
+          console.warn('[视频号发布] ⚠️ 恢复的数据无效，清除并跳过');
+          localStorage.removeItem(getPublishDataKey());
+          return;
+        }
+
         console.log('[视频号发布] 📦 恢复的数据:', messageData);
 
         // 标记为正在处理
@@ -381,6 +428,15 @@ let hasProcessed = false;
       }
     } catch (error) {
       console.error('[视频号发布] ❌ 恢复数据失败:', error);
+      // 如果是 JSON 解析错误，清除无效数据
+      if (error instanceof SyntaxError) {
+        console.warn('[视频号发布] ⚠️ 数据格式错误，清除无效数据');
+        try {
+          localStorage.removeItem(getPublishDataKey());
+        } catch (e) {
+          // 忽略
+        }
+      }
       isProcessing = false;
     }
   }, 2000); // 延迟2秒，等待页面完全加载
@@ -406,6 +462,7 @@ async function publishApi(dataObj) {
     console.error('[视频号发布] ❌ 获取窗口ID失败:', e);
   }
   const storageKey = myWindowId ? `PUBLISH_SUCCESS_DATA_${myWindowId}` : 'PUBLISH_SUCCESS_DATA';
+  const publishDataKey = myWindowId ? `SHIPINHAO_PUBLISH_DATA_${myWindowId}` : 'SHIPINHAO_PUBLISH_DATA_default';
 
   try {
     // 标记发布正在进行
@@ -536,7 +593,7 @@ async function publishApi(dataObj) {
       if (window.location.href !== currentUrl) {
         console.log('[视频号发布] ✅ 检测到页面跳转，发布成功');
         // 清除发布数据
-        localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
+        localStorage.removeItem(publishDataKey);
         // 标记已完成
         hasProcessed = true;
         publishRunning = false;
@@ -577,7 +634,7 @@ async function publishApi(dataObj) {
     // 真正的超时失败
     console.log('[视频号发布] ❌ 等待超时（30秒），判定发布失败');
     localStorage.removeItem(storageKey);
-    localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
+    localStorage.removeItem(publishDataKey);
     hasProcessed = true;
     publishRunning = false;
     await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '视频号发布');
@@ -597,6 +654,7 @@ async function publishApi(dataObj) {
 
 // 填写表单数据
 async function fillFormData(dataObj) {
+    console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
   // 防止并发执行
   if (fillFormRunning) {
     // alert('⚠️ fillFormData already running, skipping');
@@ -825,6 +883,11 @@ async function fillFormData(dataObj) {
 
   } catch (error) {
     console.error('[视频号发布] fillFormData 错误:', error);
+    // 发送错误上报
+    const publishId = dataObj?.video?.dyPlatform?.id;
+    if (publishId) {
+      await sendStatisticsError(publishId, error.message || '填写表单失败', '视频号发布');
+    }
     // 填写表单失败也要关闭窗口，不阻塞下一个任务
     await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {

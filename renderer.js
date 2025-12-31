@@ -46,8 +46,8 @@ const tabGeo = document.getElementById('__tab_geo__');
 // AIGC 和 GEO 的 URL（根据环境）
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 const AIGC_URL = isProduction
-  ? 'https://dev.china9.cn/aigc_browser/?showHeader=false'
-  : 'http://localhost:5173/?showHeader=false';
+  ? 'https://dev.china9.cn/aigc_browser/'
+  : 'http://localhost:5173/';
 const GEO_URL = isProduction
   ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';

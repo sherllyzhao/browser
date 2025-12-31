@@ -218,7 +218,7 @@
 
                 // 统计接口成功后关闭弹窗
                 setTimeout(() => {
-                  window.browserAPI.closeCurrentWindow();
+                  //window.browserAPI.closeCurrentWindow();
                 }, 1000);
               } else {
                 throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');

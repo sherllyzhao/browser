@@ -90,7 +90,14 @@
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
         // 兼容 publish-data 和 auth-data 两种消息类型
         if (message.type === 'publish-data' || message.type === 'auth-data') {
-          const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+          let messageData;
+          try {
+            messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+          } catch (parseError) {
+            console.error('[百家号发布] ❌ 解析消息数据失败:', parseError);
+            console.error('[百家号发布] 原始数据:', message.data);
+            return;
+          }
 
           // 🔑 先检查 windowId 是否匹配（在保存数据之前！避免串数据）
           if (message.windowId) {
@@ -1078,6 +1085,11 @@
     } catch (error) {
       // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
       console.error('[百家号发布] fillFormData 错误:', error);
+      // 发送错误上报
+      const publishId = dataObj?.video?.dyPlatform?.id;
+      if (publishId) {
+        await sendStatisticsError(publishId, error.message || '填写表单失败', '百家号发布');
+      }
       // 同步错误时重置标记
       fillFormRunning = false;
       // 填写表单失败也要关闭窗口，不阻塞下一个任务

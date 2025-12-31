@@ -88,8 +88,8 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
-  'http://localhost:5173/?showHeader=false',
-  'https://dev.china9.cn/aigc_browser/?showHeader=false',
+  'http://localhost:5173/',
+  'https://dev.china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
@@ -449,8 +449,8 @@ function createWindow() {
         } else {
           // 根据环境选择默认首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser/?showHeader=false'
-            : 'http://localhost:5173/?showHeader=false';
+            ? 'https://dev.china9.cn/aigc_browser/'
+            : 'http://localhost:5173/';
           console.log('[BrowserView] 将跳转到默认首页:', startUrl);
         }
       } catch (err) {
