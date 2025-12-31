@@ -117,7 +117,7 @@
           console.log('═══════════════════════════════════════');
 
           // 接收完整的授权数据
-          if (message.type === 'publish-data' || message.type === 'auth-data') {
+          if (message.type === 'auth-data') {
             console.log('[抖音授权] ✅ 收到授权数据:', message.data);
 
             // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
@@ -218,7 +218,7 @@
 
                 // 统计接口成功后关闭弹窗
                 setTimeout(() => {
-                  //window.browserAPI.closeCurrentWindow();
+                  window.browserAPI.closeCurrentWindow();
                 }, 1000);
               } else {
                 throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');

@@ -120,7 +120,7 @@
           console.log('═══════════════════════════════════════');
 
           // 接收完整的授权数据
-          if (message.type === 'publish-data' || message.type === 'auth-data') {
+          if (message.type === 'auth-data') {
             console.log('[百家号授权] ✅ 收到授权数据:', message.data);
 
             // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）

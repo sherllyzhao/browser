@@ -89,7 +89,7 @@
 
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
         // 兼容 publish-data 和 auth-data 两种消息类型
-        if (message.type === 'publish-data' || message.type === 'auth-data') {
+        if (message.type === 'auth-data') {
           let messageData;
           try {
             messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
