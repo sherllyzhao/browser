@@ -988,6 +988,27 @@
                               });
                               publishBtn.dispatchEvent(clickEvent);
                               console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+
+                              // 🔴 点击发布后，等待并检测是否有错误信息
+                              console.log('[百家号发布] ⏳ 等待 5 秒检测发布结果...');
+                              await delay(5000);
+
+                              // 检查是否有错误信息
+                              const publishErrorMsg = getLatestError();
+                              if (publishErrorMsg) {
+                                console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
+                                stopErrorListener();
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                  console.log('[百家号发布] 📤 调用失败接口...');
+                                  await sendStatisticsError(publishId, publishErrorMsg, '百家号发布');
+                                }
+                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                return;
+                              } else {
+                                console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
+                                stopErrorListener();
+                              }
                             }else{
                               console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                               stopErrorListener();
