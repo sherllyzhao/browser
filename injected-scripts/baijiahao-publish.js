@@ -792,7 +792,7 @@
                       if (check && el.children.length === 0) {
                         console.log("🚀 ~ findElementByText ~ el: ", el);
                         // 返回可点击的父级容器
-                        return el.closest('[class*="content"]') || el.parentElement || el;
+                        return el.parentElement || el;
                       }
                     }
                     return null;
