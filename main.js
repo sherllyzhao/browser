@@ -104,6 +104,29 @@ function isHomeUrl(url) {
 
 const childWindows = []; // 跟踪所有打开的子窗口
 
+// ===========================
+// 单实例锁定 - 确保只运行一个浏览器实例
+// ===========================
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // 如果获取不到锁，说明已有实例在运行，退出当前实例
+  console.log('[Single Instance] 检测到已有实例运行，退出当前实例');
+  app.quit();
+} else {
+  // 当第二个实例启动时，聚焦到第一个实例的窗口
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    console.log('[Single Instance] 检测到第二个实例启动，聚焦到主窗口');
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // 在 app.whenReady() 之前注册自定义协议方案，使其可以被拦截
 protocol.registerSchemesAsPrivileged([
   { scheme: 'bitbrowser', privileges: { standard: false, secure: false, bypassCSP: false, allowServiceWorkers: false, supportFetchAPI: false, corsEnabled: false } }
@@ -1633,29 +1656,38 @@ ipcMain.handle('check-session-status', async () => {
     const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
 
     // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
+    // 扩大检测范围，避免漏检
     const douyinLoggedIn = douyinCookies.some(c =>
       c.name === 'sessionid' ||
       c.name === 'sessionid_ss' ||
       c.name === 'passport_csrf_token' ||
       c.name === 'sid_guard' ||
       c.name === 'uid_tt' ||
-      c.name === 'uid_tt_ss'
+      c.name === 'uid_tt_ss' ||
+      c.name === 'ttwid' ||
+      c.name === 'passport_auth_status'
     );
 
     const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
       c.name === 'web_session' ||
       c.name === 'websectiga' ||
-      c.name === 'sec_poison_id'
+      c.name === 'sec_poison_id' ||
+      c.name === 'a1' ||
+      c.name === 'webId'
     );
 
     const weixinLoggedIn = weixinCookies.some(c =>
       c.name === 'wxuin' ||
-      c.name === 'pass_ticket'
+      c.name === 'pass_ticket' ||
+      c.name === 'slave_user' ||
+      c.name === 'slave_sid'
     );
 
     const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
       c.name === 'BDUSS' ||
-      c.name === 'STOKEN'
+      c.name === 'STOKEN' ||
+      c.name === 'BAIDUID' ||
+      c.name === 'BIDUPSID'
     );
 
     const platformStatus = {
