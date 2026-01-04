@@ -196,15 +196,28 @@ function createWindow() {
 
       if (browserView) {
         try {
-          // 🔑 保存当前页面 URL，下次启动时恢复
+          // 🔑 只保存项目类型（aigc/geo），不保存具体页面URL
           const currentUrl = browserView.webContents.getURL();
           if (currentUrl && !currentUrl.includes('login.html')) {
-            globalStorage.last_page_url = currentUrl;
-            console.log('[Window Close] 💾 已保存退出时页面:', currentUrl);
-          } else {
-            // 如果在登录页退出，不保存（下次启动根据token决定去向）
+            // 判断是哪个项目
+            if (currentUrl.includes('aigc_browser') || currentUrl.includes('localhost:5173')) {
+              globalStorage.last_project = 'aigc';
+              console.log('[Window Close] 💾 记录项目类型: aigc');
+            } else if (currentUrl.includes('jzt_all') || currentUrl.includes('geo') ||
+                       currentUrl.includes('localhost:8080') || currentUrl.includes('172.16.6.17:8080')) {
+              globalStorage.last_project = 'geo';
+              console.log('[Window Close] 💾 记录项目类型: geo');
+            } else {
+              // 第三方平台页面，不记录
+              console.log('[Window Close] 第三方平台页面，不记录项目类型');
+            }
+            // 清除旧的 last_page_url（如果存在）
             delete globalStorage.last_page_url;
-            console.log('[Window Close] 在登录页退出，不保存页面URL');
+          } else {
+            // 如果在登录页退出，不保存
+            delete globalStorage.last_project;
+            delete globalStorage.last_page_url;
+            console.log('[Window Close] 在登录页退出，不保存项目类型');
           }
           saveGlobalStorage();
 
@@ -464,17 +477,20 @@ function createWindow() {
         await ses.flushStorageData();
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
-        // 🔑 优先恢复上次退出时的页面，否则使用默认首页
-        const savedLastUrl = globalStorage.last_page_url;
-        if (savedLastUrl && !savedLastUrl.includes('login.html')) {
-          startUrl = savedLastUrl;
-          console.log('[BrowserView] 📍 恢复上次退出时的页面:', startUrl);
+        // 🔑 根据上次退出的项目类型，跳转到对应首页
+        const savedProject = globalStorage.last_project;
+        if (savedProject === 'geo') {
+          // geo 项目首页
+          startUrl = isProduction
+            ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+            : 'http://localhost:8080/';
+          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
-          // 根据环境选择默认首页
+          // 默认 aigc 项目首页
           startUrl = isProduction
             ? 'https://dev.china9.cn/aigc_browser/'
             : 'http://localhost:5173/';
-          console.log('[BrowserView] 将跳转到默认首页:', startUrl);
+          console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
       } catch (err) {
         console.error('[BrowserView] ❌ 恢复登录状态失败:', err);
@@ -2461,13 +2477,29 @@ ipcMain.handle('show-user-menu', async (event) => {
 });
 
 // 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
-ipcMain.handle('open-new-window', async (event, url) => {
+// options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
+ipcMain.handle('open-new-window', async (event, url, options = {}) => {
   if (!url) {
     return { success: false, error: 'No URL provided' };
   }
 
   try {
     const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+
+    // 根据参数决定使用哪个 session
+    // useTemporarySession=true: 使用临时 session（每次打开都是全新的，不保存登录状态）
+    // useTemporarySession=false/undefined: 使用持久化 session（保持登录状态）
+    let windowSession;
+    if (options.useTemporarySession) {
+      // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
+      const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      windowSession = session.fromPartition(tempSessionId, { cache: false });
+      console.log('[Window Manager] 使用临时 session:', tempSessionId);
+    } else {
+      // 使用与主 BrowserView 相同的持久化 session
+      windowSession = browserView.webContents.session;
+      console.log('[Window Manager] 使用持久化 session');
+    }
 
     const newWindow = new BrowserWindow({
       width: 1200,
@@ -2477,7 +2509,7 @@ ipcMain.handle('open-new-window', async (event, url) => {
         preload: path.join(__dirname, 'content-preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        session: browserView.webContents.session // 使用相同的 session
+        session: windowSession
       }
     });
 

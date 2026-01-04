@@ -127,7 +127,7 @@ window.browserAPI.onWindowLoaded((data) => {
   console.log('时间戳:', data.timestamp);
 });
 
-// 打开新窗口，获取窗口 ID
+// 打开新窗口（使用持久化 session，保持登录状态）
 const result = await window.browserAPI.openNewWindow('https://example.com');
 if (result.success) {
   console.log('窗口创建成功, windowId:', result.windowId);
@@ -135,7 +135,19 @@ if (result.success) {
 } else {
   console.error('窗口创建失败:', result.error);
 }
+
+// 打开新窗口（使用临时 session，不保存登录状态，用于授权页）
+const authResult = await window.browserAPI.openNewWindow('https://auth.example.com', {
+  useTemporarySession: true  // 窗口关闭后登录状态会丢失
+});
 ```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| url | string | 是 | 要打开的 URL |
+| options | object | 否 | 配置选项 |
+| options.useTemporarySession | boolean | 否 | 为 true 时使用临时 session，窗口关闭后登录状态丢失（用于授权页） |
 
 **返回值说明**：
 | 字段 | 类型 | 说明 |

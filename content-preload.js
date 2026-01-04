@@ -265,7 +265,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
   },
 
   // 导航控制 API
-  openNewWindow: (url) => ipcRenderer.invoke('open-new-window', url),
+  // options: { useTemporarySession: boolean } - 为 true 时使用临时 session（不保存登录状态，用于授权页）
+  openNewWindow: (url, options) => ipcRenderer.invoke('open-new-window', url, options),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
   goBack: () => ipcRenderer.invoke('content-go-back'),

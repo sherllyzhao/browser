@@ -148,7 +148,7 @@ window.waitForElement = function(selector, timeout = 30000, checkInterval = 200,
 
                 if (Date.now() - startTime > timeout) {
                     clearTimeout(timeoutId);
-                    reject(new Error(`Element not found: ${selector}`));
+                    reject(new Error(`找不到元素: ${selector}`));
                     return;
                 }
 
@@ -503,7 +503,7 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
         // 如果一直没找到，延迟 reject（给递归一点时间）
         setTimeout(() => {
             if (!resolved) {
-                reject(new Error(`Element not found: ${selector}`));
+                reject(new Error(`找不到元素: ${selector}`));
             }
         }, 100);
     });
@@ -830,11 +830,16 @@ window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, cap
 };
 
 // 发送成功消息并关闭窗口
-window.closeWindowWithMessage = async function(message = '发布成功，刷新数据', delay = 1000) {
+// 🔑 增加默认延迟到 2500ms，确保消息有足够时间到达 Vue 应用
+window.closeWindowWithMessage = async function(message = '发布成功，刷新数据', delay = 2500) {
     console.log(`[closeWindow] 发送消息: ${message}`);
     window.sendMessageToParent(message);
 
+    // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     if (delay > 0) {
+        console.log(`[closeWindow] 等待 ${delay}ms 确保消息到达...`);
         await new Promise(resolve => setTimeout(resolve, delay));
     }
 

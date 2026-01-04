@@ -20,7 +20,8 @@
       "Bash(ping:*)",
       "Bash(powershell -Command:*)",
       "Bash(git checkout:*)",
-      "mcp__puppeteer__puppeteer_screenshot"
+      "mcp__puppeteer__puppeteer_screenshot",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/baijiahao-publish.js)"
     ],
     "deny": [],
     "ask": []

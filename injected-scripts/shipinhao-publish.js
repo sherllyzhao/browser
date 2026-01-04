@@ -647,13 +647,18 @@ async function publishApi(dataObj) {
       }
 
       // 检测是否出现提示，记录消息内容（用于超时后的错误信息）
+      // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
+      const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
       try {
         const toptipSpan = await waitForShadowElement("wujie-app", ".toptip-content span", 500);
         if (toptipSpan) {
           const text = (toptipSpan.textContent || '').trim();
-          if (text) {
+          const isSuccess = successKeywords.some(keyword => text.includes(keyword));
+          if (text && !isSuccess) {
             lastToastMessage = text;
             console.log('[视频号发布] 📨 检测到提示:', text);
+          } else if (isSuccess) {
+            console.log('[视频号发布] ✅ 检测到成功提示，忽略:', text);
           }
         }
       } catch (e) {

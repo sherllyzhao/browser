@@ -404,13 +404,18 @@
     // 百家号特定：检测失败提示元素
     // 注意：百家号的错误提示结构是 <span>图标</span><span>错误文本</span>，需要用 :last-child 选择文本
     let failureMessage = null;
+    const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
     try {
       const errorSpan = document.querySelector('.cheetah-message-custom-content.cheetah-message-error span:last-child');
       if (errorSpan) {
         const text = (errorSpan.textContent || '').trim();
-        if (text) {
+        // 🔑 过滤掉成功消息
+        const isSuccess = successKeywords.some(keyword => text.includes(keyword));
+        if (text && !isSuccess) {
           failureMessage = text;
           console.log('[百家号发布] ⚠️ 检测到错误提示:', failureMessage);
+        } else if (isSuccess) {
+          console.log('[百家号发布] ✅ 检测到成功提示，忽略:', text);
         }
       }
     } catch (e) {
@@ -759,7 +764,8 @@
           // 获取最新的错误信息
           const getLatestError = () => {
             // 优先返回最后一条非中间状态的错误
-            const ignoredMessages = ['正在上传', '加载中', '处理中'];
+            // 🔑 过滤掉成功消息和中间状态消息
+            const ignoredMessages = ['正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功'];
             for (let i = capturedErrors.length - 1; i >= 0; i--) {
               const msg = capturedErrors[i];
               const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
@@ -767,7 +773,8 @@
                 return msg;
               }
             }
-            return capturedErrors.length > 0 ? capturedErrors[capturedErrors.length - 1] : null;
+            // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
+            return null;
           };
 
           // 立即启动错误监听

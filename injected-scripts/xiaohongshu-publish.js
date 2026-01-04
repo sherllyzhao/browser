@@ -413,13 +413,18 @@ async function publishApi(dataObj) {
       }
 
       // 检测是否出现 toast 提示，记录消息内容
+      // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
+      const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
       try {
         const toastEl = document.querySelector('.d-toast-description');
         if (toastEl) {
           const text = (toastEl.textContent || '').trim();
-          if (text) {
+          const isSuccess = successKeywords.some(keyword => text.includes(keyword));
+          if (text && !isSuccess) {
             lastToastMessage = text;
             console.log('[小红书发布] 📨 检测到提示:', text);
+          } else if (isSuccess) {
+            console.log('[小红书发布] ✅ 检测到成功提示，忽略:', text);
           }
         }
       } catch (e) {
