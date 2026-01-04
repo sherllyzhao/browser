@@ -172,6 +172,18 @@
                 throw new Error('User data not found in response');
               }
 
+              // 获取百度域名的完整 cookies（包括 HttpOnly 的 BDUSS 等）
+              let cookiesStr = document.cookie;
+              try {
+                const cookieResult = await window.browserAPI.getDomainCookies('baidu.com');
+                if (cookieResult.success && cookieResult.cookies) {
+                  cookiesStr = cookieResult.cookies;
+                  console.log('[百家号授权] ✅ 获取完整 cookies 成功，共', cookieResult.count, '个');
+                }
+              } catch (err) {
+                console.warn('[百家号授权] ⚠️ 获取完整 cookies 失败，使用 document.cookie:', err);
+              }
+
               const scanData = {
                 data: JSON.stringify({
                   nickname: user.name,
@@ -183,7 +195,8 @@
                   favoriting_count: 0,
                   total_favorited: 0,
                   company_id: companyId,
-                  auth_type: messageData.auth_type
+                  auth_type: messageData.auth_type,
+                  cookies: cookiesStr
                 })
               };
 

@@ -302,6 +302,11 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 参数: pageName - 页面文件名，如 'not-available.html'、'login.html'
   navigateToLocalPage: (pageName) => ipcRenderer.invoke('navigate-to-local-page', pageName),
 
+  // 获取指定域名的所有 Cookies（包括 HttpOnly）
+  // 参数: domain - 域名，如 'baidu.com'
+  // 返回: { success: true, cookies: 'cookie_string' } 或 { success: false, error: '错误信息' }
+  getDomainCookies: (domain) => ipcRenderer.invoke('get-domain-cookies', domain),
+
   // ========== 全局数据存储 API（用于跨页面数据传递） ==========
   // 存储数据（如 company_id）
   setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),

@@ -1770,6 +1770,33 @@ ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
   return { success: false, error: 'browserView 不可用' };
 });
 
+// 获取指定域名的所有 Cookies（包括 HttpOnly）
+ipcMain.handle('get-domain-cookies', async (event, domain) => {
+  try {
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      return { success: false, error: 'browserView 不可用' };
+    }
+
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+
+    // 过滤指定域名的 cookies
+    const domainCookies = cookies.filter(cookie => {
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+    });
+
+    // 转换为 cookie 字符串格式：name=value; name2=value2
+    const cookieString = domainCookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+    console.log(`[Get Cookies] 获取 ${domain} 的 cookies: ${domainCookies.length} 个`);
+    return { success: true, cookies: cookieString, count: domainCookies.length };
+  } catch (err) {
+    console.error('[Get Cookies] 获取失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // 刷新页面
 ipcMain.handle('refresh-page', async () => {
   if (browserView) {
