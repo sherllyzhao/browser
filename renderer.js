@@ -704,6 +704,7 @@ async function loadUserInfo() {
       if (companyNameEl) {
         console.log(1)
         companyNameEl.textContent = '';
+        companyNameEl.setAttribute('title', '');
         companyNameEl.style.visibility = 'visible';
       }
       if (userPhoneEl) userPhoneEl.textContent = '未登录';
@@ -727,6 +728,7 @@ async function loadUserInfo() {
         if (companyNameEl && userInfo.companyName) {
           console.log(2)
           companyNameEl.textContent = userInfo.companyName;
+          companyNameEl.setAttribute('title', userInfo.companyName);
           companyNameEl.style.visibility = 'visible';
           if (currentSiteEl) {
             currentSiteEl.title = userInfo.companyName;
@@ -740,6 +742,7 @@ async function loadUserInfo() {
       if (companyNameEl){
         console.log(3)
         companyNameEl.textContent = await window.electronAPI.getGlobalData('current_site_name');
+        companyNameEl.setAttribute('title', await window.electronAPI.getGlobalData('current_site_name'));
       }
       if (userPhoneEl) {
         userPhoneEl.textContent = '';
@@ -763,6 +766,7 @@ async function loadUserInfo() {
         if (companyNameEl) {
           console.log(4)
           companyNameEl.textContent = '';
+          companyNameEl.setAttribute('title', '');
           companyNameEl.style.visibility = 'hidden';
         }
       }
@@ -772,6 +776,7 @@ async function loadUserInfo() {
       if (companyNameEl){
         console.log(5)
         companyNameEl.textContent = await window.electronAPI.getGlobalData('current_site_name');
+        companyNameEl.setAttribute('title', await window.electronAPI.getGlobalData('current_site_name'));
       }
     }
   } catch (err) {

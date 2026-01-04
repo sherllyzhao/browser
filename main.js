@@ -776,6 +776,34 @@ function createWindow() {
   browserView.webContents.on('did-navigate-in-page', async (event, url) => {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    // 检测远程登录页，自动跳转到本地登录页
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
+        (url.includes('china9.cn') && url.includes('#/login'))) {
+      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
+      browserView.webContents.loadURL(LOGIN_URL);
+      return;
+    }
+
+    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
+    if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
+      const savedToken = globalStorage.login_token;
+      const savedExpires = globalStorage.login_expires;
+      const now = Math.floor(Date.now() / 1000);
+
+      if (!savedToken || !savedExpires || savedExpires <= now) {
+        console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        // 清除过期数据
+        delete globalStorage.login_token;
+        delete globalStorage.login_expires;
+        delete globalStorage.login_gcc;
+        saveGlobalStorage();
+        browserView.webContents.loadURL(LOGIN_URL);
+        return;
+      }
+    }
+
     mainWindow.webContents.send('url-changed', url);
     // 根据 URL 判断是否需要隐藏公共头部
     updateHeaderVisibility(url);
@@ -786,6 +814,36 @@ function createWindow() {
 
   // 监听页面加载完成，注入自定义脚本
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
+
+  // 监听完整页面导航，检测远程登录页和 token 有效性
+  browserView.webContents.on('did-navigate', (event, url) => {
+    console.log(`[Navigation] 页面导航 → ${url}`);
+    // 检测远程登录页，自动跳转到本地登录页
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
+        (url.includes('china9.cn') && url.includes('#/login'))) {
+      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
+      browserView.webContents.loadURL(LOGIN_URL);
+      return;
+    }
+
+    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
+    if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
+      const savedToken = globalStorage.login_token;
+      const savedExpires = globalStorage.login_expires;
+      const now = Math.floor(Date.now() / 1000);
+
+      if (!savedToken || !savedExpires || savedExpires <= now) {
+        console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        // 清除过期数据
+        delete globalStorage.login_token;
+        delete globalStorage.login_expires;
+        delete globalStorage.login_gcc;
+        saveGlobalStorage();
+        browserView.webContents.loadURL(LOGIN_URL);
+      }
+    }
+  });
 
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
   browserView.webContents.setWindowOpenHandler(({ url }) => {
@@ -1692,6 +1750,24 @@ ipcMain.handle('navigate-to-login', async () => {
 
     browserView.webContents.loadURL(LOGIN_URL);
   }
+});
+
+// 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
+ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
+  if (browserView) {
+    // 安全检查：只允许跳转到指定的本地页面
+    const allowedPages = ['not-available.html', 'login.html'];
+    if (!allowedPages.includes(pageName)) {
+      console.log('[Main] ❌ 不允许跳转到未知页面:', pageName);
+      return { success: false, error: '不允许跳转到该页面' };
+    }
+
+    const localUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + pageName;
+    console.log('[Main] 跳转到本地页面:', localUrl);
+    browserView.webContents.loadURL(localUrl);
+    return { success: true };
+  }
+  return { success: false, error: 'browserView 不可用' };
 });
 
 // 刷新页面

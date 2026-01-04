@@ -324,6 +324,20 @@ const handleDelete = async (row) => {
 };
 ```
 
+### 11. 跳转到本地页面
+```javascript
+// 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
+// 注意：直接使用 window.location.href = 'not-available.html' 会跳转到远程服务器的路径
+// 使用此 API 可以正确跳转到浏览器本地的 HTML 文件
+await window.browserAPI.navigateToLocalPage('not-available.html');
+
+// 支持的本地页面：
+// - 'not-available.html' - 功能暂未开放页面
+// - 'login.html' - 登录页面
+```
+
+**使用场景**：当前端在远程服务器（如 `https://dev.china9.cn`）运行时，需要跳转到浏览器本地的 HTML 页面。
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

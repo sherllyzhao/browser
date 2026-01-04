@@ -298,6 +298,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 示例: setCookie({ name: 'token', value: 'xxx', domain: '.china9.cn', expires: Date.now() + 86400000 })
   setCookie: (cookieData) => ipcRenderer.invoke('set-cookie', cookieData),
 
+  // 跳转到本地 HTML 页面（用于跳转到 not-available.html 等本地页面）
+  // 参数: pageName - 页面文件名，如 'not-available.html'、'login.html'
+  navigateToLocalPage: (pageName) => ipcRenderer.invoke('navigate-to-local-page', pageName),
+
   // ========== 全局数据存储 API（用于跨页面数据传递） ==========
   // 存储数据（如 company_id）
   setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),

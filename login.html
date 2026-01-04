@@ -285,8 +285,8 @@
       }
 
       .login-box {
-        width: min(340px, 88vw);
-        max-width: 340px;
+        width: 340px;
+        max-width: 88vw;
         padding: 1.5rem 1rem;
       }
 
@@ -310,8 +310,8 @@
       }
 
       .login-box {
-        width: min(300px, 85vw);
-        max-width: 300px;
+        width: 300px;
+        max-width: 85vw;
         padding: 1.25rem 0.75rem;
       }
 
@@ -473,6 +473,7 @@
 
     // 获取用户信息
     async function getUserInfoApi(token) {
+        console.log("🚀 ~ getUserInfoApi ~ token: ", token);
         const response = await fetch(`https://dev.china9.cn/api/user/info`, {
           method: 'POST',
           headers: {
@@ -482,7 +483,9 @@
           credentials: 'include',
           body: JSON.stringify({
             type: 'pc',
-            enterpriseSide: 'pc'
+            enterpriseSide: 'pc',
+            token: token,
+            tokens: token
           })
         });
 
@@ -716,6 +719,7 @@
             console.error('[Login] ⚠️ Cookie 设置失败:', cookieErr);
           }
         }
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // 获取用户信息并存储
         const userInfo = await getUserInfoApi(loginData.token);
