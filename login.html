@@ -885,7 +885,7 @@
         }
       } catch (error) {
         console.error('[Login] 登录失败:', error);
-        alert(error.message || '登录失败，请检查账号密码');
+        // 不弹窗提示，只在控制台输出错误
         loginBtn.disabled = false;
         loginBtn.classList.remove('loading');
       }
@@ -893,7 +893,7 @@
 
     // 回车提交
     passwordInput.addEventListener('keyup', (e) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !loginBtn.disabled) {
         loginForm.dispatchEvent(new Event('submit'));
       }
     });
