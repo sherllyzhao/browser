@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Cookie 功能
   getCookies: () => ipcRenderer.invoke('get-cookies'),
   setCookie: (cookieDetails) => ipcRenderer.invoke('set-cookie', cookieDetails),
+  clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
   flushSession: () => ipcRenderer.invoke('flush-session'),
   getSessionPath: () => ipcRenderer.invoke('get-session-path'),
 

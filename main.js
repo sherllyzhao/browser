@@ -375,7 +375,9 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false, // 禁用沙箱以支持 window.opener
       webSecurity: false, // 禁用跨域限制，允许下载外部视频资源
-      session: persistentSession // 直接使用 session 对象
+      session: persistentSession, // 直接使用 session 对象
+      backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+      autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
     }
   });
 
@@ -932,7 +934,9 @@ function createWindow() {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: false, // 禁用沙箱以支持 window.opener
-          session: browserView.webContents.session // 使用相同的 session
+          session: browserView.webContents.session, // 使用相同的 session
+          backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+          autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
         }
       }
     };
@@ -1004,7 +1008,9 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            session: browserView.webContents.session
+            session: browserView.webContents.session,
+            backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+            autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
           }
         }
       };
@@ -2493,8 +2499,25 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
       const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      windowSession = session.fromPartition(tempSessionId, { cache: false });
+      windowSession = session.fromPartition(tempSessionId, { cache: true }); // 启用缓存，避免脚本加载异常
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
+
+      // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
+      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      windowSession.setUserAgent(customUA);
+      console.log('[Window Manager] 临时 session User-Agent 已设置');
+
+      // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
+      windowSession.webRequest.onBeforeRequest((details, callback) => {
+        const url = details.url;
+        if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', url);
+          callback({ cancel: true });
+          return;
+        }
+        callback({});
+      });
+      console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -2509,7 +2532,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         preload: path.join(__dirname, 'content-preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        session: windowSession
+        session: windowSession,
+        backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+        autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
       }
     });
 

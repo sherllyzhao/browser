@@ -672,6 +672,12 @@
         // 同时为 localhost 和 china9.cn 都设置 Cookie，确保两种环境都能工作
         if (window.browserAPI && window.browserAPI.setCookie) {
           try {
+            // 🔑 先清除 china9.cn 的旧 Cookie，避免旧数据（如 users_unique_id）干扰
+            if (window.browserAPI.clearDomainCookies) {
+              await window.browserAPI.clearDomainCookies('china9.cn');
+              console.log('[Login] ✅ 已清除 china9.cn 旧 Cookie');
+            }
+
             // 1. 为 localhost:5173 设置 Cookie（开发环境）
             // 注意：localhost 不能设置 domain 参数，否则会失败
             console.log('[Login] 开始设置 localhost Cookie...');
@@ -701,7 +707,7 @@
               await window.browserAPI.setCookie({
                 url: 'http://localhost:5173/',
                 name: 'gcc',
-                value: loginData.gcc,
+                value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
                 path: '/',
                 expirationDate: expirationDate,
                 secure: false,
@@ -730,11 +736,20 @@
               expirationDate: expirationDate,
               secure: true
             });
+            await window.browserAPI.setCookie({
+              url: 'https://china9.cn',
+              name: 'employee_token',
+              value: loginData.user.token,
+              domain: '.china9.cn',
+              path: '/',
+              expirationDate: expirationDate,
+              secure: true
+            });
             if (loginData.gcc) {
               await window.browserAPI.setCookie({
                 url: 'https://china9.cn',
                 name: 'gcc',
-                value: loginData.gcc,
+                value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
                 domain: '.china9.cn',
                 path: '/',
                 expirationDate: expirationDate,
@@ -752,6 +767,31 @@
         // 获取用户信息并存储
         const userInfo = await getUserInfoApi(loginData.token);
         console.log('[Login] 用户信息:', userInfo);
+        if (userInfo.company && userInfo.company.unique_id) {
+          await window.browserAPI.setCookie({
+            url: 'https://china9.cn',
+            name: 'company_unique_id',
+            value: userInfo.company.unique_id,
+            domain: '.china9.cn',
+            path: '/',
+            expirationDate: expirationDate,
+            secure: true
+          });
+        }
+
+        // 🔑 设置 users_unique_id Cookie（用户唯一标识，后端可能根据这个判断权限）
+        if (userInfo.unique_id) {
+          await window.browserAPI.setCookie({
+            url: 'https://china9.cn',
+            name: 'users_unique_id',
+            value: userInfo.unique_id,
+            domain: '.china9.cn',
+            path: '/',
+            expirationDate: expirationDate,
+            secure: true
+          });
+          console.log('[Login] ✅ 已设置 users_unique_id:', userInfo.unique_id);
+        }
 
         if (window.browserAPI && window.browserAPI.setGlobalData) {
           // 存储完整用户信息供公共头部使用
@@ -807,6 +847,18 @@
                   domain: '.china9.cn',
                 });
                 console.log('[Login] china9.cn site_id 设置结果:', sevedSiteId3);
+
+                // 🔑 设置 china_site_id Cookie（后端接口可能需要这个）
+                const sevedChinaSiteId = await window.browserAPI.setCookie({
+                  url: 'https://china9.cn',
+                  name: 'china_site_id',
+                  value: String(siteInfo.id),
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] china9.cn china_site_id 设置结果:', sevedChinaSiteId);
 
                 console.log('[Login] ✅ site_id Cookie 设置完成');
               } catch (e) {

@@ -176,6 +176,12 @@ if (userInfoEl) {
               console.log('[Logout] ✅ 已清除用户信息');
             }
 
+            // 🔑 清除 china9.cn 的 Cookie（避免旧 Cookie 如 users_unique_id 干扰下次登录）
+            if (window.electronAPI && window.electronAPI.clearDomainCookies) {
+              await window.electronAPI.clearDomainCookies('china9.cn');
+              console.log('[Logout] ✅ 已清除 china9.cn Cookie');
+            }
+
             // 跳转到登录页
             console.log('[Logout] 正在跳转到登录页...');
             await window.electronAPI.navigateToLogin();

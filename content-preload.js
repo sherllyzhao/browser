@@ -189,7 +189,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
                   intro: element.intro,
                 }
               },
-              dyPlatform: element.dyPlatform ||{ id: element.id }
+              dyPlatform: element.dyPlatform || { id: element.id }
             }
           };
           await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
