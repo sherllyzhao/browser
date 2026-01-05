@@ -633,7 +633,8 @@
 
       // 禁用按钮，显示加载状态
       loginBtn.disabled = true;
-      loginBtn.textContent = '登录中...';
+      loginBtn.classList.add('loading');
+      const originalText = loginBtn.textContent;
 
       try {
         console.log('[Login] 开始登录:', { username, type: activeTab });
@@ -834,7 +835,7 @@
         console.error('[Login] 登录失败:', error);
         alert(error.message || '登录失败，请检查账号密码');
         loginBtn.disabled = false;
-        loginBtn.textContent = '立即登录';
+        loginBtn.classList.remove('loading');
       }
     });
 
