@@ -213,6 +213,21 @@
                 // 标记已完成（防止重复发送）
                 hasProcessed = true;
 
+                // 🔑 迁移登录 Cookies 到持久化 session
+                // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
+                // 这样发布时才能用新授权的账号
+                try {
+                  console.log('[抖音授权] 🔄 开始迁移 Cookies 到持久化 session...');
+                  const migrateResult = await window.browserAPI.migrateCookiesToPersistent('douyin.com');
+                  if (migrateResult.success) {
+                    console.log(`[抖音授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                  } else {
+                    console.error('[抖音授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                  }
+                } catch (migrateError) {
+                  console.error('[抖音授权] ⚠️ Cookies 迁移异常:', migrateError);
+                }
+
                 // API 成功后通知父页面刷新
                 sendMessageToParent('授权成功，刷新数据');
 

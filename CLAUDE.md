@@ -350,6 +350,54 @@ await window.browserAPI.navigateToLocalPage('not-available.html');
 
 **使用场景**：当前端在远程服务器（如 `https://dev.china9.cn`）运行时，需要跳转到浏览器本地的 HTML 页面。
 
+### 12. 迁移临时 Session Cookies 到持久化 Session
+```javascript
+// 用于授权窗口（临时 session）授权成功后，把登录状态复制到持久化 session
+// 这样发布时才能用新授权的账号
+const result = await window.browserAPI.migrateCookiesToPersistent('baidu.com');
+console.log(result);
+// 返回值示例:
+// { success: true, migratedCount: 15, totalFound: 15 }
+// 或
+// { success: false, error: '错误信息' }
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| domain | string | 是 | 要迁移的域名，如 `baidu.com` |
+
+**返回值说明**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | boolean | 是否成功 |
+| migratedCount | number | 成功迁移的 cookie 数量 |
+| totalFound | number | 找到的该域名 cookie 总数 |
+| error | string | 错误信息（失败时返回） |
+
+**工作原理**：
+1. 从当前窗口的 session（临时 session）中获取指定域名的所有 cookies
+2. 清除持久化 session 中该域名的旧 cookies（避免冲突）
+3. 将临时 session 的 cookies 复制到持久化 session
+4. 设置为持久化 cookie（1年过期）
+
+**使用场景**：授权窗口使用 `useTemporarySession: true` 打开时，授权成功后调用此 API，把新账号的登录状态迁移到持久化 session。这样后续发布时就能用新授权的账号。
+
+**示例**（在授权脚本中使用）：
+```javascript
+// 授权成功后，迁移 cookies 到持久化 session
+if (authSuccess) {
+  const result = await window.browserAPI.migrateCookiesToPersistent('baidu.com');
+  if (result.success) {
+    console.log('Cookies 迁移成功，共迁移', result.migratedCount, '个');
+  }
+  // 然后通知首页刷新
+  sendMessageToParent('授权成功，刷新数据');
+  // 最后关闭窗口
+  window.browserAPI.closeCurrentWindow();
+}
+```
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

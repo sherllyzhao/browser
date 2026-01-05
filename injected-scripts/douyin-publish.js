@@ -313,7 +313,7 @@ async function publishApi(dataObj) {
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".button-dhlUZE");
       if (!btn) {
-        throw new Error('Publish button not found');
+        throw new Error('发布按钮未找到');
       }
       return btn;
     }, 10, 2000);

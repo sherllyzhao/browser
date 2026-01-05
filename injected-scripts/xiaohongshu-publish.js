@@ -191,9 +191,20 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
               console.error('[小红书发布] ❌ 保存发布页URL失败:', e);
             } */
 
-            // 更新横幅显示
-            const infoDisplay = document.getElementById('auth-info-display');
-            console.log('[小红书发布] 查找横幅元素 #auth-info-display:', infoDisplay);
+            // 查找是否有提示消息
+            const tipsEle = document.querySelector('.progetto-sugger-warn .tips');
+            if(tipsEle){
+              const tipsText = tipsEle.textContent.trim();
+              console.log('[小红书发布] ✅ 提示消息:', tipsText);
+              const canToError = tipsText.includes('未绑定手机号');
+              if(canToError){
+                console.log('[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面');
+                const publishId = messageData?.video?.dyPlatform?.id;
+                await sendStatisticsError(publishId, '未绑定手机号', '小红书发布');
+                await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                return;
+              }
+            }
 
             await uploadVideo(messageData);
             try {
@@ -313,7 +324,7 @@ async function publishApi(dataObj) {
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".submit > .custom-button.red");
       if (!btn) {
-        throw new Error('Publish button not found');
+        throw new Error('发布按钮未找到');
       }
       return btn;
     }, 10, 2000);

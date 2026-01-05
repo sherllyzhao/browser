@@ -345,7 +345,7 @@
     const publishBtn = await retryOperation(async () => {
       const btn = document.querySelector(".cheetah-modal-confirm-btns .cheetah-btn-primary");
       if (!btn) {
-        throw new Error('Publish button not found');
+        throw new Error('发布按钮未找到');
       }
       return btn;
     }, 10, 2000);
@@ -998,6 +998,28 @@
 
                               // 🔴 点击发布后，等待并检测是否有错误信息
                               console.log('[百家号发布] ⏳ 等待 5 秒检测发布结果...');
+                              await delay(1000);
+                              try{
+                                const transferDynamic = document.querySelectorAll('.cheetah-btn-default');
+                                if(transferDynamic && transferDynamic.length){
+                                  for(const btn of transferDynamic){
+                                    if(btn.textContent.trim().includes('保持图文发布')){
+                                      btn.click();
+                                    }
+                                  }
+                                }
+                                const continueBtn = document.querySelectorAll('.cheetah-btn-primary');
+                                if(continueBtn && continueBtn.length){
+                                  for(const btn of continueBtn){
+                                    if(btn.textContent.trim().includes('确定')){
+                                      btn.click();
+                                    }
+                                  }
+                                }
+                              }catch (e){
+                                console.log(e);
+                              }
+
                               await delay(5000);
 
                               // 检查是否有错误信息

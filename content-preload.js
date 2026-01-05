@@ -291,6 +291,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
 
+  // 迁移临时 Session 的 Cookies 到持久化 Session
+  // 用于授权窗口（临时session）授权成功后，把登录状态复制到持久化session
+  // 参数: domain - 要迁移的域名，如 'baidu.com'
+  // 返回: { success: true, migratedCount: 10 } 或 { success: false, error: '错误信息' }
+  migrateCookiesToPersistent: (domain) => ipcRenderer.invoke('migrate-cookies-to-persistent', domain),
+
   // 检查 Session 状态（用于检测登录状态是否被清除）
   checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),
 

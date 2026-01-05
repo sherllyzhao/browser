@@ -2855,6 +2855,107 @@ ipcMain.handle('set-cookie', async (event, cookieData) => {
   return { success: false, error: 'BrowserView 不可用' };
 });
 
+// ========== 迁移临时 Session 的 Cookies 到持久化 Session ==========
+// 用于授权窗口（临时session）授权成功后，把登录状态复制到持久化session
+ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
+  console.log('[Cookie Migration] ========== API 调用 ==========');
+  console.log('[Cookie Migration] 请求迁移域名:', domain);
+
+  if (!domain) {
+    return { success: false, error: '域名不能为空' };
+  }
+
+  try {
+    // 获取调用者的 session（临时 session）
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow) {
+      return { success: false, error: '无法获取发送者窗口' };
+    }
+
+    const tempSession = senderWindow.webContents.session;
+    const persistentSession = browserView.webContents.session;
+
+    // 检查是否是不同的 session
+    if (tempSession === persistentSession) {
+      console.log('[Cookie Migration] ⚠️ 已经是持久化 session，跳过迁移');
+      return { success: true, migratedCount: 0, message: '已经是持久化 session' };
+    }
+
+    // 获取临时 session 中指定域名的 cookies
+    const tempCookies = await tempSession.cookies.get({});
+    console.log(`[Cookie Migration] 临时 session 共有 ${tempCookies.length} 个 cookies`);
+
+    // 过滤出指定域名的 cookies
+    const domainCookies = tempCookies.filter(cookie => {
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+    });
+
+    console.log(`[Cookie Migration] 找到 ${domainCookies.length} 个 ${domain} 的 cookies`);
+
+    if (domainCookies.length === 0) {
+      return { success: false, error: `没有找到 ${domain} 的 cookies` };
+    }
+
+    // 先清除持久化 session 中该域名的旧 cookies（避免冲突）
+    const oldCookies = await persistentSession.cookies.get({});
+    for (const cookie of oldCookies) {
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      if (shouldDelete) {
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
+        try {
+          await persistentSession.cookies.remove(cookieUrl, cookie.name);
+          console.log(`[Cookie Migration] ✓ 清除旧 cookie: ${cookie.name}`);
+        } catch (err) {
+          // 忽略删除失败
+        }
+      }
+    }
+
+    // 将临时 session 的 cookies 复制到持久化 session
+    let migratedCount = 0;
+    const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+
+    for (const cookie of domainCookies) {
+      try {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
+
+        const newCookie = {
+          url: cookieUrl,
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          sameSite: cookie.sameSite || 'no_restriction',
+          // 设置为持久化 cookie（1年过期）
+          expirationDate: cookie.expirationDate || oneYearFromNow
+        };
+
+        await persistentSession.cookies.set(newCookie);
+        migratedCount++;
+        console.log(`[Cookie Migration] ✓ 迁移: ${cookie.name} @ ${cookie.domain}`);
+      } catch (err) {
+        console.error(`[Cookie Migration] ✗ 迁移失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+      }
+    }
+
+    // 刷新到磁盘
+    await persistentSession.flushStorageData();
+
+    console.log(`[Cookie Migration] ========== 迁移完成 ==========`);
+    console.log(`[Cookie Migration] ✅ 共迁移 ${migratedCount}/${domainCookies.length} 个 cookies`);
+
+    return { success: true, migratedCount, totalFound: domainCookies.length };
+  } catch (err) {
+    console.error('[Cookie Migration] 迁移失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 清除指定域名的 Cookies ==========
 ipcMain.handle('clear-domain-cookies', async (event, domain) => {
   console.log('[Clear Cookies] ========== API 调用 ==========');
