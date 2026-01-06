@@ -398,6 +398,223 @@ if (authSuccess) {
 }
 ```
 
+### 13. 多账号管理 API
+
+多账号功能允许每个平台保存多个账号的登录状态，每个账号使用独立的 Session 分区存储。
+
+#### 架构说明
+
+```
+主窗口 BrowserView
+└── session: persist:browserview （独立，仅用于浏览）
+
+平台账号（每个账号独立 session）
+├── 抖音
+│   ├── 账号A → session: persist:douyin_dy_xxx_1
+│   └── 账号B → session: persist:douyin_dy_xxx_2
+├── 小红书
+│   └── 账号X → session: persist:xiaohongshu_xhs_xxx_3
+└── ...
+```
+
+#### 数据存储
+
+账号列表元数据存储在 `global-storage.json`：
+
+```json
+{
+  "platformAccounts": {
+    "douyin": [
+      {
+        "id": "douyin_xxx_1",
+        "nickname": "账号昵称",
+        "avatar": "头像URL",
+        "platformUid": "平台用户ID",
+        "createdAt": 1704067200000,
+        "lastUsedAt": 1704153600000
+      }
+    ],
+    "xiaohongshu": [],
+    "baijiahao": [],
+    "weixin": [],
+    "shipinhao": []
+  }
+}
+```
+
+#### API 列表
+
+##### 获取账号列表
+```javascript
+// 获取指定平台的所有账号
+const accounts = await window.browserAPI.getAccounts('douyin');
+// 返回: [{ id, nickname, avatar, platformUid, createdAt, lastUsedAt }, ...]
+
+// 获取所有平台的所有账号
+const allAccounts = await window.browserAPI.getAllAccounts();
+// 返回: { douyin: [...], xiaohongshu: [...], baijiahao: [...], ... }
+```
+
+##### 添加账号
+```javascript
+// 授权成功后添加账号
+const result = await window.browserAPI.addAccount('douyin', {
+  nickname: '账号昵称',
+  avatar: '头像URL',
+  platformUid: '平台用户ID'  // 用于去重
+});
+// 返回: { success: true, accountId: 'douyin_xxx_1', isNew: true }
+// 如果 platformUid 已存在，返回 isNew: false，表示更新了现有账号
+```
+
+##### 删除账号
+```javascript
+// 删除账号（同时清理对应的 session 数据）
+const result = await window.browserAPI.removeAccount('douyin', 'douyin_xxx_1');
+// 返回: { success: true }
+```
+
+##### 更新账号信息
+```javascript
+// 更新账号信息
+const result = await window.browserAPI.updateAccount('douyin', 'douyin_xxx_1', {
+  nickname: '新昵称',
+  avatar: '新头像'
+});
+// 返回: { success: true, account: {...} }
+```
+
+##### 检查账号是否存在
+```javascript
+// 通过平台用户ID检查账号是否已存在
+const result = await window.browserAPI.accountExists('douyin', '平台用户ID');
+// 返回: { exists: true, accountId: 'douyin_xxx_1', account: {...} }
+// 或: { exists: false }
+```
+
+##### 获取单个账号信息
+```javascript
+// 获取指定账号的详细信息
+const result = await window.browserAPI.getAccount('douyin', 'douyin_xxx_1');
+// 返回: { success: true, account: { id, nickname, avatar, ... } }
+```
+
+##### 获取当前窗口账号信息
+```javascript
+// 在发布脚本中获取当前窗口对应的账号信息
+const result = await window.browserAPI.getCurrentAccount();
+// 返回: { success: true, platform: 'douyin', accountId: 'douyin_xxx_1', account: {...} }
+```
+
+##### 检查账号登录状态
+```javascript
+// 检查指定账号是否已登录（通过检测关键 Cookie）
+const result = await window.browserAPI.checkAccountLoginStatus('douyin', 'douyin_xxx_1');
+// 返回: { success: true, isLoggedIn: true, cookieCount: 50 }
+```
+
+##### 迁移到新账号（授权窗口使用）
+```javascript
+// 授权成功后，将临时 session 的 cookies 迁移到新账号
+const result = await window.browserAPI.migrateToNewAccount('douyin', {
+  nickname: '获取到的昵称',
+  avatar: '获取到的头像',
+  platformUid: '获取到的平台用户ID'
+});
+// 返回: { success: true, accountId: 'douyin_xxx_1', isNew: true, migratedCount: 20 }
+```
+
+#### 打开账号窗口
+
+```javascript
+// 打开指定账号的发布窗口（使用该账号的 session）
+const result = await window.browserAPI.openNewWindow(url, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1'
+});
+// 返回: { success: true, windowId: 123 }
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| url | string | 是 | 要打开的 URL |
+| options.platform | string | 多账号模式必填 | 平台名称 |
+| options.accountId | string | 多账号模式必填 | 账号 ID |
+| options.useTemporarySession | boolean | 否 | 为 true 时使用临时 session（授权模式） |
+
+**优先级**：`platform + accountId` > `useTemporarySession` > 默认持久化 session
+
+#### 授权流程示例
+
+```javascript
+// 1. 用户点击"添加抖音账号"，打开授权窗口（临时 session）
+const authResult = await window.browserAPI.openNewWindow(authUrl, {
+  useTemporarySession: true
+});
+
+// 2. 在授权脚本中，检测登录成功后获取用户信息并迁移
+async function onAuthSuccess(userInfo) {
+  // 迁移 cookies 到新账号
+  const result = await window.browserAPI.migrateToNewAccount('douyin', {
+    nickname: userInfo.nickname,
+    avatar: userInfo.avatar,
+    platformUid: userInfo.uid
+  });
+
+  if (result.success) {
+    console.log('授权成功，账号ID:', result.accountId);
+    // 通知首页刷新账号列表
+    window.browserAPI.sendToHome({ type: 'account-added', platform: 'douyin' });
+    // 关闭授权窗口
+    window.browserAPI.closeCurrentWindow();
+  }
+}
+```
+
+#### 发布流程示例
+
+```javascript
+// 1. 首页选择要发布的账号并打开发布窗口
+async function publishToAccount(platform, accountId, publishUrl) {
+  const result = await window.browserAPI.openNewWindow(publishUrl, {
+    platform: platform,
+    accountId: accountId
+  });
+
+  if (result.success) {
+    // 存储发布数据
+    await window.browserAPI.setGlobalData(`publish_data_window_${result.windowId}`, {
+      title: '视频标题',
+      content: '视频描述'
+    });
+  }
+}
+
+// 2. 在发布脚本中获取账号信息
+async function onPublishPageLoaded() {
+  // 获取当前窗口的账号信息
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  console.log('当前账号:', accountInfo.account?.nickname);
+
+  // 获取发布数据
+  const windowId = await window.browserAPI.getWindowId();
+  const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+
+  // 执行发布逻辑...
+}
+```
+
+#### 平台名称对照
+
+| 平台 | platform 值 |
+|------|------------|
+| 抖音 | `douyin` |
+| 小红书 | `xiaohongshu` |
+| 百家号 | `baijiahao` |
+| 微信公众号 | `weixin` |
+| 视频号 | `shipinhao` |
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

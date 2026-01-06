@@ -2484,6 +2484,7 @@ ipcMain.handle('show-user-menu', async (event) => {
 
 // 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
+// options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）
 ipcMain.handle('open-new-window', async (event, url, options = {}) => {
   if (!url) {
     return { success: false, error: 'No URL provided' };
@@ -2493,13 +2494,20 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
 
     // 根据参数决定使用哪个 session
-    // useTemporarySession=true: 使用临时 session（每次打开都是全新的，不保存登录状态）
-    // useTemporarySession=false/undefined: 使用持久化 session（保持登录状态）
+    // 优先级：platform + accountId > useTemporarySession > 默认持久化 session
     let windowSession;
-    if (options.useTemporarySession) {
+    let sessionType = 'default';
+
+    if (options.platform && options.accountId) {
+      // 多账号模式：使用指定账号的持久化 session
+      windowSession = getAccountSession(options.platform, options.accountId);
+      sessionType = 'account';
+      console.log(`[Window Manager] 使用账号 session: ${options.platform}/${options.accountId}`);
+    } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
       const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       windowSession = session.fromPartition(tempSessionId, { cache: true }); // 启用缓存，避免脚本加载异常
+      sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
@@ -2509,9 +2517,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const url = details.url;
-        if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', url);
+        const reqUrl = details.url;
+        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
+          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', reqUrl);
           callback({ cancel: true });
           return;
         }
@@ -2521,6 +2529,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
+      sessionType = 'persistent';
       console.log('[Window Manager] 使用持久化 session');
     }
 
@@ -2542,6 +2551,15 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     childWindows.push(newWindow);
     console.log('[Window Manager] 新窗口已添加，当前窗口数量:', childWindows.length);
 
+    // 如果是多账号模式，记录窗口和账号的映射关系
+    if (sessionType === 'account' && options.platform && options.accountId) {
+      windowAccountMap.set(newWindow.id, {
+        platform: options.platform,
+        accountId: options.accountId
+      });
+      console.log(`[Window Manager] 记录窗口账号映射: windowId=${newWindow.id}, platform=${options.platform}, accountId=${options.accountId}`);
+    }
+
     // 忽略页面的 beforeunload 事件，允许直接关闭窗口
     newWindow.webContents.on('will-prevent-unload', (event) => {
       console.log('[Window Manager] 忽略页面的 beforeunload 事件，强制关闭窗口');
@@ -2554,6 +2572,11 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
+      }
+      // 清理窗口账号映射
+      if (windowAccountMap.has(newWindow.id)) {
+        windowAccountMap.delete(newWindow.id);
+        console.log(`[Window Manager] 清理窗口账号映射: windowId=${newWindow.id}`);
       }
     });
 
@@ -3195,6 +3218,420 @@ ipcMain.handle('trigger-download', async (event, url) => {
     return { success: false, error: 'BrowserView not available' };
   } catch (err) {
     console.error('[Trigger Download] 错误:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 多账号管理功能 ==========
+// 账号 Session 缓存（避免重复创建）
+const accountSessions = new Map();
+
+// 生成唯一账号 ID
+function generateAccountId(platform) {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substr(2, 6);
+  return `${platform}_${timestamp}_${random}`;
+}
+
+// 获取或创建账号的 Session
+function getAccountSession(platform, accountId) {
+  const partitionName = `persist:${platform}_${accountId}`;
+
+  // 检查缓存
+  if (accountSessions.has(partitionName)) {
+    console.log(`[Account Session] 从缓存获取 session: ${partitionName}`);
+    return accountSessions.get(partitionName);
+  }
+
+  // 创建新的持久化 session
+  const accountSession = session.fromPartition(partitionName, { cache: true });
+
+  // 配置 User-Agent（与主 session 保持一致）
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  accountSession.setUserAgent(customUA);
+
+  // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
+  accountSession.webRequest.onBeforeRequest((details, callback) => {
+    const url = details.url;
+    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+      console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
+      callback({ cancel: true });
+      return;
+    }
+    callback({});
+  });
+
+  // 缓存 session
+  accountSessions.set(partitionName, accountSession);
+  console.log(`[Account Session] 创建新 session: ${partitionName}`);
+
+  return accountSession;
+}
+
+// 删除账号的 Session 数据
+async function deleteAccountSession(platform, accountId) {
+  const partitionName = `persist:${platform}_${accountId}`;
+
+  // 从缓存中移除
+  if (accountSessions.has(partitionName)) {
+    const accountSession = accountSessions.get(partitionName);
+    try {
+      // 清除 session 数据
+      await accountSession.clearStorageData();
+      console.log(`[Account Session] 已清除 session 数据: ${partitionName}`);
+    } catch (err) {
+      console.error(`[Account Session] 清除 session 数据失败: ${partitionName}`, err);
+    }
+    accountSessions.delete(partitionName);
+  }
+
+  // 尝试删除磁盘上的 session 目录
+  const sessionPath = path.join(app.getPath('userData'), 'Partitions', partitionName.replace('persist:', ''));
+  if (fs.existsSync(sessionPath)) {
+    try {
+      fs.rmSync(sessionPath, { recursive: true, force: true });
+      console.log(`[Account Session] 已删除 session 目录: ${sessionPath}`);
+    } catch (err) {
+      console.error(`[Account Session] 删除 session 目录失败: ${sessionPath}`, err);
+    }
+  }
+}
+
+// 初始化 platformAccounts 数据结构
+function ensurePlatformAccounts() {
+  if (!globalStorage.platformAccounts) {
+    globalStorage.platformAccounts = {
+      douyin: [],
+      xiaohongshu: [],
+      baijiahao: [],
+      weixin: [],
+      shipinhao: []
+    };
+    saveGlobalStorage();
+  }
+  return globalStorage.platformAccounts;
+}
+
+// 获取指定平台的所有账号
+ipcMain.handle('get-accounts', async (event, platform) => {
+  console.log('[Account Manager] 获取账号列表:', platform);
+
+  const platformAccounts = ensurePlatformAccounts();
+  const accounts = platformAccounts[platform] || [];
+
+  console.log(`[Account Manager] ${platform} 共有 ${accounts.length} 个账号`);
+  return { success: true, accounts };
+});
+
+// 获取所有平台的所有账号
+ipcMain.handle('get-all-accounts', async () => {
+  console.log('[Account Manager] 获取所有平台账号');
+
+  const platformAccounts = ensurePlatformAccounts();
+  return { success: true, platformAccounts };
+});
+
+// 添加账号
+ipcMain.handle('add-account', async (event, platform, accountInfo) => {
+  console.log('[Account Manager] 添加账号:', platform, accountInfo);
+
+  const platformAccounts = ensurePlatformAccounts();
+
+  if (!platformAccounts[platform]) {
+    platformAccounts[platform] = [];
+  }
+
+  // 检查是否已存在（通过 platformUid 去重）
+  if (accountInfo.platformUid) {
+    const existing = platformAccounts[platform].find(a => a.platformUid === accountInfo.platformUid);
+    if (existing) {
+      console.log('[Account Manager] 账号已存在，更新信息:', existing.id);
+      // 更新现有账号信息
+      existing.nickname = accountInfo.nickname || existing.nickname;
+      existing.avatar = accountInfo.avatar || existing.avatar;
+      existing.lastUsedAt = Date.now();
+      saveGlobalStorage();
+      return { success: true, accountId: existing.id, isNew: false };
+    }
+  }
+
+  // 创建新账号
+  const accountId = accountInfo.id || generateAccountId(platform);
+  const newAccount = {
+    id: accountId,
+    nickname: accountInfo.nickname || '未命名账号',
+    avatar: accountInfo.avatar || '',
+    platformUid: accountInfo.platformUid || '',
+    createdAt: Date.now(),
+    lastUsedAt: Date.now()
+  };
+
+  platformAccounts[platform].push(newAccount);
+  saveGlobalStorage();
+
+  console.log('[Account Manager] ✅ 账号添加成功:', accountId);
+  return { success: true, accountId, isNew: true };
+});
+
+// 删除账号
+ipcMain.handle('remove-account', async (event, platform, accountId) => {
+  console.log('[Account Manager] 删除账号:', platform, accountId);
+
+  const platformAccounts = ensurePlatformAccounts();
+
+  if (!platformAccounts[platform]) {
+    return { success: false, error: '平台不存在' };
+  }
+
+  const index = platformAccounts[platform].findIndex(a => a.id === accountId);
+  if (index === -1) {
+    return { success: false, error: '账号不存在' };
+  }
+
+  // 从列表中移除
+  platformAccounts[platform].splice(index, 1);
+  saveGlobalStorage();
+
+  // 删除对应的 session 数据
+  await deleteAccountSession(platform, accountId);
+
+  console.log('[Account Manager] ✅ 账号删除成功:', accountId);
+  return { success: true };
+});
+
+// 更新账号信息
+ipcMain.handle('update-account', async (event, platform, accountId, updates) => {
+  console.log('[Account Manager] 更新账号:', platform, accountId, updates);
+
+  const platformAccounts = ensurePlatformAccounts();
+
+  if (!platformAccounts[platform]) {
+    return { success: false, error: '平台不存在' };
+  }
+
+  const account = platformAccounts[platform].find(a => a.id === accountId);
+  if (!account) {
+    return { success: false, error: '账号不存在' };
+  }
+
+  // 更新允许的字段
+  if (updates.nickname !== undefined) account.nickname = updates.nickname;
+  if (updates.avatar !== undefined) account.avatar = updates.avatar;
+  if (updates.platformUid !== undefined) account.platformUid = updates.platformUid;
+  account.lastUsedAt = Date.now();
+
+  saveGlobalStorage();
+
+  console.log('[Account Manager] ✅ 账号更新成功:', accountId);
+  return { success: true, account };
+});
+
+// 检查账号是否已存在（通过平台用户 ID 判断）
+ipcMain.handle('account-exists', async (event, platform, platformUid) => {
+  console.log('[Account Manager] 检查账号是否存在:', platform, platformUid);
+
+  const platformAccounts = ensurePlatformAccounts();
+
+  if (!platformAccounts[platform]) {
+    return { exists: false };
+  }
+
+  const account = platformAccounts[platform].find(a => a.platformUid === platformUid);
+  if (account) {
+    console.log('[Account Manager] 账号已存在:', account.id);
+    return { exists: true, accountId: account.id, account };
+  }
+
+  return { exists: false };
+});
+
+// 获取账号信息
+ipcMain.handle('get-account', async (event, platform, accountId) => {
+  console.log('[Account Manager] 获取账号信息:', platform, accountId);
+
+  const platformAccounts = ensurePlatformAccounts();
+
+  if (!platformAccounts[platform]) {
+    return { success: false, error: '平台不存在' };
+  }
+
+  const account = platformAccounts[platform].find(a => a.id === accountId);
+  if (!account) {
+    return { success: false, error: '账号不存在' };
+  }
+
+  return { success: true, account };
+});
+
+// 窗口账号信息存储（用于窗口获取自己对应的账号）
+const windowAccountMap = new Map();
+
+// 获取当前窗口的账号信息
+ipcMain.handle('get-current-account', async (event) => {
+  try {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow) {
+      return { success: false, error: '无法获取发送者窗口' };
+    }
+
+    const windowId = senderWindow.id;
+    const accountInfo = windowAccountMap.get(windowId);
+
+    if (!accountInfo) {
+      return { success: false, error: '该窗口没有关联账号' };
+    }
+
+    // 获取完整账号信息
+    const platformAccounts = ensurePlatformAccounts();
+    const account = platformAccounts[accountInfo.platform]?.find(a => a.id === accountInfo.accountId);
+
+    return {
+      success: true,
+      platform: accountInfo.platform,
+      accountId: accountInfo.accountId,
+      account: account || null
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// 迁移临时 Session 到新账号
+ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) => {
+  console.log('[Account Manager] 迁移到新账号:', platform, accountInfo);
+
+  try {
+    // 获取调用者的 session（临时 session）
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow) {
+      return { success: false, error: '无法获取发送者窗口' };
+    }
+
+    const tempSession = senderWindow.webContents.session;
+
+    // 检查账号是否已存在
+    const platformAccounts = ensurePlatformAccounts();
+    let accountId;
+    let isNew = true;
+
+    if (accountInfo.platformUid) {
+      const existing = platformAccounts[platform]?.find(a => a.platformUid === accountInfo.platformUid);
+      if (existing) {
+        accountId = existing.id;
+        isNew = false;
+        // 更新现有账号信息
+        existing.nickname = accountInfo.nickname || existing.nickname;
+        existing.avatar = accountInfo.avatar || existing.avatar;
+        existing.lastUsedAt = Date.now();
+        console.log('[Account Manager] 账号已存在，更新并迁移到:', accountId);
+      }
+    }
+
+    if (!accountId) {
+      // 创建新账号
+      accountId = generateAccountId(platform);
+      const newAccount = {
+        id: accountId,
+        nickname: accountInfo.nickname || '未命名账号',
+        avatar: accountInfo.avatar || '',
+        platformUid: accountInfo.platformUid || '',
+        createdAt: Date.now(),
+        lastUsedAt: Date.now()
+      };
+
+      if (!platformAccounts[platform]) {
+        platformAccounts[platform] = [];
+      }
+      platformAccounts[platform].push(newAccount);
+      console.log('[Account Manager] 创建新账号:', accountId);
+    }
+
+    saveGlobalStorage();
+
+    // 获取目标账号的 session
+    const targetSession = getAccountSession(platform, accountId);
+
+    // 获取临时 session 中的所有 cookies
+    const tempCookies = await tempSession.cookies.get({});
+    console.log(`[Account Manager] 临时 session 共有 ${tempCookies.length} 个 cookies`);
+
+    // 确定要迁移的域名
+    const platformDomains = {
+      douyin: ['douyin.com'],
+      xiaohongshu: ['xiaohongshu.com'],
+      baijiahao: ['baidu.com'],
+      weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
+      shipinhao: ['channels.weixin.qq.com']
+    };
+
+    const domains = platformDomains[platform] || [];
+
+    // 过滤并迁移 cookies
+    const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+    let migratedCount = 0;
+
+    for (const cookie of tempCookies) {
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      const shouldMigrate = domains.some(d => cookieDomain.includes(d) || d.includes(cookieDomain));
+
+      if (shouldMigrate) {
+        try {
+          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
+          const newCookie = {
+            url: cookieUrl,
+            name: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain,
+            path: cookie.path,
+            secure: cookie.secure,
+            httpOnly: cookie.httpOnly,
+            sameSite: cookie.sameSite || 'no_restriction',
+            expirationDate: cookie.expirationDate || oneYearFromNow
+          };
+
+          await targetSession.cookies.set(newCookie);
+          migratedCount++;
+        } catch (err) {
+          console.error(`[Account Manager] 迁移 cookie 失败: ${cookie.name}`, err.message);
+        }
+      }
+    }
+
+    // 刷新到磁盘
+    await targetSession.flushStorageData();
+
+    console.log(`[Account Manager] ✅ 迁移完成: ${migratedCount} 个 cookies`);
+    return { success: true, accountId, isNew, migratedCount };
+  } catch (err) {
+    console.error('[Account Manager] 迁移失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// 检查账号登录状态
+ipcMain.handle('check-account-login-status', async (event, platform, accountId) => {
+  console.log('[Account Manager] 检查账号登录状态:', platform, accountId);
+
+  try {
+    const accountSession = getAccountSession(platform, accountId);
+    const cookies = await accountSession.cookies.get({});
+
+    // 平台登录凭证 cookie 名称
+    const loginCookies = {
+      douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
+      xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
+      baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
+      weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
+      shipinhao: ['wxuin', 'pass_ticket']
+    };
+
+    const requiredCookies = loginCookies[platform] || [];
+    const hasLoginCookie = cookies.some(c => requiredCookies.includes(c.name));
+
+    console.log(`[Account Manager] ${platform}/${accountId} 登录状态: ${hasLoginCookie}`);
+    return { success: true, isLoggedIn: hasLoginCookie, cookieCount: cookies.length };
+  } catch (err) {
+    console.error('[Account Manager] 检查登录状态失败:', err);
     return { success: false, error: err.message };
   }
 });
