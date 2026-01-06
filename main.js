@@ -733,12 +733,136 @@ function createWindow() {
   });
 
   // 监听页面导航完成
-  browserView.webContents.on('did-navigate', (event, url) => {
+  browserView.webContents.on('did-navigate', async (event, url) => {
     console.log(`[Navigation] 导航完成 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     // 根据 URL 判断是否需要隐藏公共头部
     updateHeaderVisibility(url);
+
+    // 🔑 检查是否是需要跳转登录页的特定 URL
+    const loginRedirectUrls = [
+      'account.china9.cn/login',
+      'china9.cn/#/home',
+      'dev.china9.cn/#/home',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
+      'localhost:5173/#/home',
+      'localhost:5173/#/login',
+      'localhost:8080/#/home',
+      'localhost:8080/#/login'
+    ];
+
+    const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
+    if (shouldRedirectToLogin) {
+      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
+      delete globalStorage.login_token;
+      delete globalStorage.login_expires;
+      delete globalStorage.login_gcc;
+      saveGlobalStorage();
+      browserView.webContents.loadURL(LOGIN_URL);
+      return;
+    }
+
+    // 🔑 检查登录状态（Cookie 中的 token, access_token, PHPSESSID）
+    // 排除：登录页、本地文件、第三方平台授权页
+    const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
+    const isLoginPage = url.includes('login.html') || url.includes('/login');
+    const isLocalFile = url.startsWith('file://');
+    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
+                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
+                             url.includes('channels.weixin.qq.com');
+
+    if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
+      try {
+        const ses = browserView.webContents.session;
+        const cookies = await ses.cookies.get({});
+
+        // 检查必要的 Cookie 是否存在
+        const hasToken = cookies.some(c => c.name === 'token' && c.value);
+        const hasAccessToken = cookies.some(c => c.name === 'access_token' && c.value);
+        const hasPHPSESSID = cookies.some(c => c.name === 'PHPSESSID' && c.value);
+
+        console.log(`[Auth Check] token: ${hasToken}, access_token: ${hasAccessToken}, PHPSESSID: ${hasPHPSESSID}`);
+
+        if (!hasToken || !hasAccessToken || !hasPHPSESSID) {
+          console.log('[Auth Check] ⚠️ 缺少登录凭证，跳转到登录页');
+          // 清除过期的登录信息
+          delete globalStorage.login_token;
+          delete globalStorage.login_expires;
+          delete globalStorage.login_gcc;
+          saveGlobalStorage();
+          // 跳转到登录页
+          browserView.webContents.loadURL(LOGIN_URL);
+          return;
+        }
+      } catch (err) {
+        console.error('[Auth Check] 检查 Cookie 失败:', err);
+      }
+    }
+  });
+
+  // 🔑 监听页面 DOM 准备完成（刷新页面时也会触发）
+  browserView.webContents.on('dom-ready', async () => {
+    const url = browserView.webContents.getURL();
+    console.log(`[DOM Ready] 页面准备完成 → ${url}`);
+
+    // 🔑 检查是否是需要跳转登录页的特定 URL
+    const loginRedirectUrls = [
+      'account.china9.cn/login',
+      'china9.cn/#/home',
+      'dev.china9.cn/#/home',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
+      'localhost:5173/#/home',
+      'localhost:5173/#/login',
+      'localhost:8080/#/home',
+      'localhost:8080/#/login'
+    ];
+
+    const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
+    if (shouldRedirectToLogin) {
+      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
+      delete globalStorage.login_token;
+      delete globalStorage.login_expires;
+      delete globalStorage.login_gcc;
+      saveGlobalStorage();
+      browserView.webContents.loadURL(LOGIN_URL);
+      return;
+    }
+
+    // 检查登录状态（与 did-navigate 相同的逻辑）
+    const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
+    const isLoginPage = url.includes('login.html') || url.includes('/login');
+    const isLocalFile = url.startsWith('file://');
+    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
+                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
+                             url.includes('channels.weixin.qq.com');
+
+    if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
+      try {
+        const ses = browserView.webContents.session;
+        const cookies = await ses.cookies.get({});
+
+        const hasToken = cookies.some(c => c.name === 'token' && c.value);
+        const hasAccessToken = cookies.some(c => c.name === 'access_token' && c.value);
+        const hasPHPSESSID = cookies.some(c => c.name === 'PHPSESSID' && c.value);
+
+        console.log(`[Auth Check - DOM Ready] token: ${hasToken}, access_token: ${hasAccessToken}, PHPSESSID: ${hasPHPSESSID}`);
+
+        if (!hasToken || !hasAccessToken || !hasPHPSESSID) {
+          console.log('[Auth Check - DOM Ready] ⚠️ 缺少登录凭证，跳转到登录页');
+          delete globalStorage.login_token;
+          delete globalStorage.login_expires;
+          delete globalStorage.login_gcc;
+          saveGlobalStorage();
+          browserView.webContents.loadURL(LOGIN_URL);
+          return;
+        }
+      } catch (err) {
+        console.error('[Auth Check - DOM Ready] 检查 Cookie 失败:', err);
+      }
+    }
   });
 
   // 页面异常检测脚本（在 dom-ready 时尽早执行）
