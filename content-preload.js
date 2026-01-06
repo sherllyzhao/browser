@@ -324,7 +324,65 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 获取所有数据
   getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
   // 清空所有数据
-  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear')
+  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear'),
+
+  // ========== 多账号管理 API ==========
+  // 获取指定平台的所有账号
+  // 参数: platform - 平台名称，如 'douyin', 'xiaohongshu', 'baijiahao', 'weixin', 'shipinhao'
+  // 返回: { success: true, accounts: [...] }
+  getAccounts: (platform) => ipcRenderer.invoke('get-accounts', platform).then(r => r.accounts || []),
+
+  // 获取所有平台的所有账号
+  // 返回: { douyin: [...], xiaohongshu: [...], ... }
+  getAllAccounts: () => ipcRenderer.invoke('get-all-accounts').then(r => r.platformAccounts || {}),
+
+  // 添加账号（授权成功后调用）
+  // 参数: platform - 平台名称
+  //       accountInfo - { nickname, avatar, platformUid, id? }
+  // 返回: { success: true, accountId: 'xxx', isNew: true/false }
+  addAccount: (platform, accountInfo) => ipcRenderer.invoke('add-account', platform, accountInfo),
+
+  // 删除账号（同时清理对应 session 数据）
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true }
+  removeAccount: (platform, accountId) => ipcRenderer.invoke('remove-account', platform, accountId),
+
+  // 更新账号信息
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  //       updates - { nickname?, avatar?, platformUid? }
+  // 返回: { success: true, account: {...} }
+  updateAccount: (platform, accountId, updates) => ipcRenderer.invoke('update-account', platform, accountId, updates),
+
+  // 检查账号是否已存在（通过平台用户 ID 判断）
+  // 参数: platform - 平台名称
+  //       platformUid - 平台用户 ID
+  // 返回: { exists: true, accountId: 'xxx', account: {...} } 或 { exists: false }
+  accountExists: (platform, platformUid) => ipcRenderer.invoke('account-exists', platform, platformUid),
+
+  // 获取账号信息
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, account: {...} }
+  getAccount: (platform, accountId) => ipcRenderer.invoke('get-account', platform, accountId),
+
+  // 获取当前窗口的账号信息（在发布脚本中使用）
+  // 返回: { success: true, platform: 'xxx', accountId: 'xxx', account: {...} }
+  getCurrentAccount: () => ipcRenderer.invoke('get-current-account'),
+
+  // 迁移临时 Session 到新账号（授权窗口使用）
+  // 用于授权成功后，将临时 session 的 cookies 迁移到新账号的持久化 session
+  // 参数: platform - 平台名称
+  //       accountInfo - { nickname, avatar, platformUid }
+  // 返回: { success: true, accountId: 'xxx', isNew: true/false, migratedCount: 10 }
+  migrateToNewAccount: (platform, accountInfo) => ipcRenderer.invoke('migrate-to-new-account', platform, accountInfo),
+
+  // 检查账号登录状态
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, isLoggedIn: true/false, cookieCount: 10 }
+  checkAccountLoginStatus: (platform, accountId) => ipcRenderer.invoke('check-account-login-status', platform, accountId)
 });
 
 // 在页面加载时注入通信代码和协议拦截
