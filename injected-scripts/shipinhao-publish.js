@@ -507,6 +507,28 @@ async function publishApi(dataObj) {
     publishRunning = true;
 
     // ===========================
+    // 检测视频上传进度是否完成
+    // ===========================
+    console.log('[视频号发布] ⏳ 等待视频上传完成...');
+    await retryOperation(async () => {
+      // 在 Shadow DOM 中查找上传进度元素
+      const progressText = await waitForShadowElement("wujie-app", ".ant-progress-text", 1000).catch(() => null);
+
+      if (progressText) {
+        const text = (progressText.textContent || '').trim();
+        // 如果进度不是 100%，继续等待
+        if (text !== '100%' && text !== '100') {
+          throw new Error('视频正在上传中: ' + text);
+        }
+        console.log('[视频号发布] ✅ 上传进度 100%');
+      } else {
+        // 元素不存在也认为上传完成
+        console.log('[视频号发布] ✅ 上传进度元素已消失，上传完成');
+      }
+      return true;
+    }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
+
+    // ===========================
     // 检测视频是否上传完成
     // ===========================
     console.log('[视频号发布] 🎬 开始检测视频上传状态...');

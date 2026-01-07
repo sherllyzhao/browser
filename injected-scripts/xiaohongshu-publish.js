@@ -358,9 +358,26 @@ async function publishApi(dataObj) {
       console.warn('[小红书发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
+    // 检测视频是否上传完成
+    console.log('[小红书发布] ⏳ 等待视频上传完成...');
+    await retryOperation(async () => {
+      const stageEle = document.querySelector('.stage');
+      if (!stageEle) {
+        throw new Error('.stage 元素未找到');
+      }
+      const stageText = stageEle.textContent || '';
+      if (!stageText.includes('上传成功')) {
+        throw new Error('视频尚未上传完成，当前状态: ' + stageText.substring(0, 30));
+      }
+      console.log('[小红书发布] ✅ 检测到视频上传成功');
+      return true;
+    }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
 
     // 生产环境：必须点击发布按钮
     console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
+    await delay(1000);
+
+    //return alert(123);
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
