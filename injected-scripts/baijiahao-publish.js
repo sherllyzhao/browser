@@ -424,12 +424,73 @@
                   throw new Error('iframe 未找到');
                 }
                 const editorIframeEle = document.querySelector("iframe");
-                const editorEle = editorIframeEle.contentWindow.document.querySelector(".news-editor-pc");
+                const iframeWin = editorIframeEle.contentWindow;
+                const iframeDoc = iframeWin.document;
+                const editorEle = iframeDoc.querySelector(".news-editor-pc");
                 if (!editorEle) {
                   throw new Error('编辑器元素 .news-editor-pc 未找到');
                 }
-                editorEle.innerHTML = dataObj.video.video.content;
-                editorEle.dispatchEvent(new Event("input", { bubbles: true }));
+
+                let htmlContent = dataObj.video.video.content;
+
+                // 解析 HTML 中的图片，通过百家号 dumpproxy 接口上传
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = htmlContent;
+                const images = tempDiv.querySelectorAll('img');
+
+                console.log('[百家号发布] 🖼️ 发现', images.length, '张图片需要处理');
+
+                for (const img of images) {
+                  const originalSrc = img.src;
+                  if (!originalSrc || originalSrc.startsWith('data:')) {
+                    continue; // 跳过空 src 或 base64 图片
+                  }
+
+                  // 如果已经是百家号的图片，跳过
+                  if (originalSrc.includes('baijiahao.baidu.com') || originalSrc.includes('mmbiz.qpic.cn')) {
+                    console.log('[百家号发布] ⏭️ 跳过已有图片:', originalSrc.substring(0, 50));
+                    continue;
+                  }
+
+                  try {
+                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 80));
+
+                    // 调用百家号图片代理接口
+                    const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                      },
+                      body: {
+                        url: encodeURIComponent(originalSrc)
+                      },
+                      credentials: 'include' // 带上 cookies
+                    });
+
+                    const result = await response.json();
+                    console.log('[百家号发布] 📥 上传结果:', result);
+
+                    if (result.errno === 0 && result.data && result.data.src) {
+                      // 替换为百家号服务器的图片地址
+                      img.src = result.data.src;
+                      console.log('[百家号发布] ✅ 图片替换成功:', result.data.src.substring(0, 50));
+                    } else {
+                      console.log('[百家号发布] ⚠️ 图片上传失败，保留原地址');
+                    }
+                  } catch (e) {
+                    console.error('[百家号发布] ❌ 图片上传异常:', e.message);
+                  }
+                }
+
+                // 获取处理后的 HTML
+                htmlContent = tempDiv.innerHTML;
+
+                // 使用 innerHTML 赋值
+                editorEle.innerHTML = htmlContent;
+
+                // 触发 input 事件
+                editorEle.dispatchEvent(new iframeWin.Event("input", { bubbles: true }));
+
                 console.log('[百家号发布] ✅ 内容填写完成');
               }, 3, 1000);
             } catch (e) {
@@ -713,8 +774,8 @@
                             await delay(2000);
                           //  点击发布按钮
                             if(publishBtn){
-                              /* alert(123)
-                              return */
+                              alert(123)
+                              return
                               // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
