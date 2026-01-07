@@ -350,6 +350,113 @@ async function publishApi(dataObj) {
     // 生产环境：必须点击发布按钮
     console.log('[抖音发布] ✅ 生产环境确认，准备点击发布按钮...');
 
+    // 检测视频是否上传完成
+    console.log('[抖音发布] ⏳ 等待视频上传完成...');
+    await retryOperation(async () => {
+      const percentEle = document.querySelector('[class*="upload-progress-style"] [class*="text-"]');
+      if (percentEle) {
+        const percentText = percentEle.textContent || '';
+        throw new Error('视频正在上传中: ' + percentText);
+      }
+      console.log('[抖音发布] ✅ 检测到视频上传完成（进度元素已消失）');
+      return true;
+    }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
+
+    // 检测封面是否通过检测
+    console.log('[抖音发布] ⏳ 等待封面检测通过...');
+    const coverCheckStartTime = Date.now();
+    const coverCheckTimeout = 120000; // 2分钟超时
+    const coverCheckInterval = 2000;
+
+    while (Date.now() - coverCheckStartTime < coverCheckTimeout) {
+      let checkElement = null;
+      try {
+        checkElement = await waitForElement('.cover-check [class*="title-"]', 5000);
+      } catch (e) {
+        console.log('[封面检测] ⚠️ 未找到检测元素，继续等待...');
+        await delay(coverCheckInterval);
+        continue;
+      }
+
+      const currentText = checkElement.textContent || '';
+      console.log('[封面检测] 当前状态:', currentText);
+
+      if (currentText.includes('封面检测通过')) {
+        console.log('[封面检测] ✅ 检测通过');
+        break;
+      }
+
+      // 尝试设置封面
+      console.log('[封面检测] ⚠️ 未通过，尝试设置封面...');
+      try {
+        let coverInput = null;
+        const selectors = [
+          '[class*="recommendCover-"]:nth-child(1)',
+          '[class*="recommendCover-"]:first-child',
+          '[class*="recommendCover-"]'
+        ];
+
+        for (const selector of selectors) {
+          try {
+            coverInput = await waitForElement(selector, 3000);
+            if (coverInput) {
+              console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+              break;
+            }
+          } catch (e) {
+            // 继续尝试下一个选择器
+          }
+        }
+
+        if (coverInput) {
+          const rect = coverInput.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+
+          const mouseEventOptions = {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: x,
+            clientY: y,
+            screenX: x,
+            screenY: y,
+            button: 0
+          };
+
+          coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+          await delay(50);
+          coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+          await delay(50);
+          coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+          await delay(50);
+          coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+          console.log('[封面设置] ✅ 已触发封面点击');
+          await delay(1000);
+
+          // 尝试确认弹窗
+          try {
+            const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+            const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+            confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+            console.log('[封面设置] ✅ 已确认弹窗');
+          } catch (dialogError) {
+            console.log('[封面设置] ⚠️ 未找到确认弹窗');
+          }
+
+          await delay(3000);
+        }
+      } catch (coverError) {
+        console.log('[封面设置] ❌ 设置封面失败:', coverError.message);
+      }
+
+      await delay(coverCheckInterval);
+    }
+
+    console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
+    await delay(1000);
+
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
     if (!clickResult.success) {
@@ -759,151 +866,10 @@ async function fillFormData(dataObj) {
     }
 
     // 等待表单填写完成
-    await new Promise(resolve => setTimeout(resolve, 15000));
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 检查是否通过检测 - 持续等待直到检测完成
-    try {
-      console.log('[检测结果] 等待检测元素出现...');
-
-      // 持续检查文本内容，直到变为"封面检测通过"或超时
-      const startTime = Date.now();
-      const timeout = 120000; // 2分钟超时
-      const checkInterval = 2000; // 每2秒检查一次
-      let checkPassed = false; // 标记检测是否通过
-
-      while (true) {
-        // 每次循环都重新查找元素，避免引用旧的DOM
-        let checkElement = null;
-        try {
-          checkElement = await waitForElement('.cover-check .title-owSXGj', 5000);
-        } catch (e) {
-          console.log('[检测结果] ⚠️ 未找到检测元素，可能正在刷新页面...');
-
-          // 检查是否超时
-          if (Date.now() - startTime > timeout) {
-            console.log('[检测结果] ❌ 等待检测元素超时（2分钟），取消发布');
-            break;
-          }
-
-          await new Promise(resolve => setTimeout(resolve, checkInterval));
-          continue;
-        }
-
-        const currentText = checkElement.textContent || '';
-        console.log('[检测结果] 当前内容:', currentText);
-
-        if (currentText.includes('封面检测通过')) {
-          console.log('[检测结果] ✅ 检测通过，准备发布');
-          checkPassed = true;
-          // 发布
-          await publishApi(dataObj);
-          break; // 发布后退出循环
-        }
-
-        // 只要不是"封面检测通过"，就尝试设置封面
-        console.log('[检测结果] ⚠️ 封面检测未通过，尝试设置封面...');
-
-        // 设置封面
-        try {
-          let coverInput = null;
-          const selectors = [
-            '.recommendCover-vWWsHB:nth-child(1)',
-            '.recommendCover-vWWsHB:first-child',
-            '.recommendCover-vWWsHB'
-          ];
-
-          for (const selector of selectors) {
-            try {
-              coverInput = await waitForElement(selector, 3000);
-              if (coverInput) {
-                console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-                break;
-              }
-            } catch (e) {
-              console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
-            }
-          }
-
-          if (coverInput) {
-            // 模拟完整的鼠标点击事件序列
-            const rect = coverInput.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-
-            const mouseEventOptions = {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX: x,
-              clientY: y,
-              screenX: x,
-              screenY: y,
-              button: 0
-            };
-
-            coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-            await new Promise(resolve => setTimeout(resolve, 50));
-            coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-            await new Promise(resolve => setTimeout(resolve, 50));
-            coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-            await new Promise(resolve => setTimeout(resolve, 50));
-            coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
-
-            console.log('[封面设置] ✅ 已触发封面点击');
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            // 尝试确认弹窗
-            try {
-              const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
-              const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
-              confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
-              console.log('[封面设置] ✅ 已确认弹窗');
-            } catch (dialogError) {
-              console.log('[封面设置] ⚠️ 未找到确认弹窗:', dialogError.message);
-            }
-
-            // 等待封面设置完成后继续检测
-            console.log('[封面设置] ⏳ 等待封面设置生效...');
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-        } catch (coverError) {
-          console.log('[封面设置] ❌ 设置封面失败:', coverError.message);
-        }
-
-        // 检查是否超时
-        if (Date.now() - startTime > timeout) {
-          console.log('[检测结果] ❌ 等待检测通过超时（2分钟）');
-          console.log('[检测结果] 最终内容:', currentText);
-          break; // 超时退出循环，但不抛出错误
-        }
-
-        // 等待后再次检查
-        console.log('[检测结果] ⏳ 2秒后重新检查...');
-        await new Promise(resolve => setTimeout(resolve, checkInterval));
-      }
-
-      // 如果检测未通过，仍然尝试发布
-      if (!checkPassed) {
-        console.log('[检测结果] ⚠️ 检测未通过或超时，但仍尝试发布');
-        await publishApi(dataObj);
-      }
-    } catch (error) {
-      console.log('[检测结果] ❌ 检测失败:', error.message);
-      // 即使失败也尝试发布
-      console.log('[检测结果] ⚠️ 检测异常，但仍尝试发布');
-      try {
-        await publishApi(dataObj);
-      } catch (publishError) {
-        console.error('[检测结果] ❌ 发布也失败:', publishError.message);
-        // 发送错误上报
-        const publishId = dataObj?.video?.dyPlatform?.id;
-        if (publishId) {
-          await sendStatisticsError(publishId, publishError.message || '发布失败', '抖音发布');
-        }
-        // 发送失败消息并关闭窗口
-        await closeWindowWithMessage('发布失败，刷新数据', 1000);
-      }
-    }
+    // 直接调用发布（封面检测移到 publishApi 中，在视频上传完成后进行）
+    await publishApi(dataObj);
 
   } catch (error) {
     // 捕获填写表单过程中的任何错误（封面检测之前的错误）
