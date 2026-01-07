@@ -774,8 +774,8 @@
                             await delay(2000);
                           //  点击发布按钮
                             if(publishBtn){
-                              alert(123)
-                              return
+                              //alert(123)
+                              //return
                               // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
