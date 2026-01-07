@@ -458,21 +458,21 @@
                     // 调用百家号图片代理接口
                     const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
                       method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                      },
-                      body: {
-                        url: encodeURIComponent(originalSrc)
-                      },
+                      body: new URLSearchParams({
+                        usage: 'content',
+                        article_type: 'news',
+                        is_waterlog: '1',
+                        url: originalSrc
+                      }),
                       credentials: 'include' // 带上 cookies
                     });
 
                     const result = await response.json();
                     console.log('[百家号发布] 📥 上传结果:', result);
 
-                    if (result.errno === 0 && result.data && result.data.src) {
+                    if (result.errno === 0 && result.data && result.data.bos_url) {
                       // 替换为百家号服务器的图片地址
-                      img.src = result.data.src;
+                      img.src = result.data.bos_url;
                       console.log('[百家号发布] ✅ 图片替换成功:', result.data.src.substring(0, 50));
                     } else {
                       console.log('[百家号发布] ⚠️ 图片上传失败，保留原地址');
