@@ -164,8 +164,9 @@
               })
             };
 
-            // 发送数据到服务器
-            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/sphinfo', {
+            // 发送数据到服务器（根据环境选择域名）
+            const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+            const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(scanData)

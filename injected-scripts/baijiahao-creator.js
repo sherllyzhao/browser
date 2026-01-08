@@ -201,8 +201,9 @@
               };
 
               console.log('[百家号授权] 📤 准备发送数据到接口...');
-              // 发送数据到服务器
-              const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/bjhinfo', {
+              // 发送数据到服务器（根据环境选择域名）
+              const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+              const apiResponse = await fetch(`${apiDomain}/api/mediaauth/bjhinfo`, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json'

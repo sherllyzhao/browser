@@ -513,28 +513,35 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
 // 公共发布方法
 // ===========================
 
+// 根据环境获取 API 域名
+window.getApiDomain = function() {
+    // 生产环境使用 api.china9.cn，开发环境使用 apidev.china9.cn
+    const isProduction = window.browserAPI?.isProduction;
+    return isProduction ? 'https://api.china9.cn' : 'https://apidev.china9.cn';
+};
+
 // 根据主窗口域名获取统计接口 URL
 window.getStatisticsUrl = async function(isError = false) {
     const endpoint = isError ? 'tjlogerror' : 'tjlog';
-    const urlMap = {
-        'localhost:5173': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
-        'china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
-        'www.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
-        'dev.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
-        'www.dev.china9.cn': `https://apidev.china9.cn/api/mediaauth/${endpoint}`,
+    const apiDomain = window.getApiDomain();
+
+    // 特殊域名映射（覆盖默认逻辑）
+    const specialUrlMap = {
         'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
         'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
         '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
         'localhost:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
     };
 
-    let url = `https://apidev.china9.cn/api/mediaauth/${endpoint}`; // 默认值
+    let url = `${apiDomain}/api/mediaauth/${endpoint}`; // 默认值（根据环境自动选择）
     try {
         if (window.browserAPI && window.browserAPI.getMainUrl) {
             const mainInfo = await window.browserAPI.getMainUrl();
-            if (mainInfo.success && urlMap[mainInfo.host]) {
-                url = urlMap[mainInfo.host];
+            // 检查是否有特殊映射
+            if (mainInfo.success && specialUrlMap[mainInfo.host]) {
+                url = specialUrlMap[mainInfo.host];
             }
+            // localhost:5173 等其他情况使用默认值（根据 isProduction 判断）
         }
     } catch (e) {
         console.warn('[统计接口] 获取主窗口 URL 失败，使用默认地址:', e);
