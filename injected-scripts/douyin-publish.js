@@ -665,81 +665,6 @@ async function fillFormData(dataObj) {
 
   fillFormRunning = true;
 
-  // 设置封面
-  try {
-    console.log('[封面设置] 开始设置封面...');
-
-    // 尝试多种选择器策略
-    let coverInput = null;
-    const selectors = [
-      '.recommendCover-vWWsHB:nth-child(1)',
-      '.recommendCover-vWWsHB:first-child',
-      '.recommendCover-vWWsHB'
-    ];
-
-    for (const selector of selectors) {
-      try {
-        coverInput = await waitForElement(selector, 3000);
-        if (coverInput) {
-          console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-          break;
-        }
-      } catch (e) {
-        console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
-      }
-    }
-
-    if (!coverInput) {
-      throw new Error('未找到任何封面元素');
-    }
-
-    console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
-
-    // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
-    const rect = coverInput.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-
-    const mouseEventOptions = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: x,
-      clientY: y,
-      screenX: x,
-      screenY: y,
-      button: 0
-    };
-
-    // 完整的鼠标事件序列
-    coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-    await new Promise(resolve => setTimeout(resolve, 50));
-
-    coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-    await new Promise(resolve => setTimeout(resolve, 50));
-
-    coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-    await new Promise(resolve => setTimeout(resolve, 50));
-
-    coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
-
-    console.log('[封面设置] ✅ 已触发完整点击事件序列');
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // 尝试查找并确认弹窗（如果没有弹窗也没关系）
-    try {
-      const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
-      const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
-      confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
-      console.log('[封面设置] ✅ 已确认弹窗');
-    } catch (dialogError) {
-      console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
-    }
-  } catch (error) {
-    console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
-  }
-
   try {
     const titleAndIntro = dataObj.video.video.sendlog;
     // alert(JSON.stringify(titleAndIntro));
@@ -769,6 +694,36 @@ async function fillFormData(dataObj) {
 
     } catch (error) {
       // alert('❌ Title setting failed: ' + error.message);
+    }
+    // 设置发布时间
+    const publishTime = dataObj.video.formData.send_set;
+    if (+publishTime === 2) {
+      try {
+        // 定时发布
+        const publishSection = await waitForElement('.container-EMGgQp:nth-of-type(3) .content-obt4oA.new-layout-sLYOT6:nth-of-type(4)', 3000);
+
+        const immediatePublish = publishSection.querySelector('input[type="checkbox"][value="0"]');
+        const scheduledPublish = publishSection.querySelector('input[type="checkbox"][value="1"]');
+
+        if (immediatePublish && scheduledPublish) {
+          setNativeValue(immediatePublish, false);
+          setNativeValue(scheduledPublish, true);
+
+          // 设置日期时间
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const dateInput = await waitForElement('.date-picker-ioPchj input', 3000);
+
+          // 多次设置确保生效
+          for (let i = 0; i < 2; i++) {
+            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+      } catch (error) {
+        // alert('⚠️ Schedule time setting failed: ' + error.message);
+      }
     }
 
     // 填写简介
@@ -813,7 +768,7 @@ async function fillFormData(dataObj) {
             .join('\n')
             .trim();
 
-        const targetContent = cleanedText;
+        let targetContent = cleanedText;
 
         // Debug: Show current vs target
         // alert('Current content: ' + JSON.stringify(currentContent) + '\nTarget: ' + JSON.stringify(targetContent) + '\nEqual: ' + (currentContent === targetContent));
@@ -831,7 +786,13 @@ async function fillFormData(dataObj) {
             introInput.removeChild(introInput.firstChild);
           }
 
-          // alert('After clear, innerHTML: ' + JSON.stringify(introInput.innerHTML));
+          // 检测内容是否有#并且其后跟有文字
+          const topicList = extractAfterHash(targetContent, { all: true, includeHash: true });
+          console.log("🚀 ~ fillFormData ~ topicList: ", topicList);
+          if (topicList.length > 0) {
+            //  删除掉所有话题
+            cleanedText = removeHashTags(targetContent);
+          }
 
           // 先触发focus事件
           if (typeof introInput.focus === 'function') {
@@ -883,14 +844,70 @@ async function fillFormData(dataObj) {
             }
           });
 
-          // if (removedCount > 0) {
-          //   alert('Removed ' + removedCount + ' empty ace-line elements');
-          // } else {
-          //   alert('No empty ace-line elements found');
-          // }
+          // 单独处理话题
+          if (topicList.length > 0) {
+            const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
+            for (let topicListElement of topicList) {
+              // 聚焦编辑器
+              introInput.focus();
 
-          // 再次检查是否还有开头空行
-          // alert('After cleanup:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
+              // 将光标移到末尾
+              const selection = window.getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(introInput);
+              range.collapse(false); // false = 折叠到末尾
+              selection.removeAllRanges();
+              selection.addRange(range);
+
+              // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
+              document.execCommand('insertText', false, topicListElement);
+
+              // 触发 input 事件确保编辑器识别变化
+              introInput.dispatchEvent(new InputEvent('input', {
+                inputType: 'insertText',
+                data: topicListElement,
+                bubbles: true,
+              }));
+
+              // 等待话题建议列表出现（使用 waitForElement）
+              try {
+                const mentionSuggest = await waitForElement('.mention-suggest-mount-dom', 3000);
+                console.log('🏷️ 话题建议列表已出现:', mentionSuggest);
+
+                if (mentionSuggest) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+
+                  // 尝试多种选择器找到话题选项
+                  const selectors = [
+                    '[class*="tag-dVUDkJ"]',
+                    '[class*="mention-suggest-item-container"] > div > div:first-child',
+                    '[class*="tag-hash-"]',
+                    '[class*="suggest-item-container"] > div > div',
+                    '[class*="mention-suggest"] div div div'
+                  ];
+
+                  let firstOption = null;
+                  for (const selector of selectors) {
+                    firstOption = mentionSuggest.querySelector(selector);
+                    if (firstOption) {
+                      console.log('🏷️ 找到话题选项，选择器:', selector, firstOption);
+                      break;
+                    }
+                  }
+
+                  if (firstOption) {
+                    firstOption.click();
+                    console.log('🏷️ 已点击话题选项');
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                  } else {
+                    console.log('🏷️ 未找到话题选项，列表内容:', mentionSuggest.innerHTML.substring(0, 500));
+                  }
+                }
+              } catch (e) {
+                console.log('🏷️ 话题建议列表未出现:', e.message);
+              }
+            }
+          }
 
           // 延迟后触发blur事件
           await new Promise(resolve => setTimeout(resolve, 200));
@@ -916,35 +933,79 @@ async function fillFormData(dataObj) {
       // alert('⚠️ Intro handling failed: ' + error.message);
     }
 
-    // 设置发布时间
-    const publishTime = dataObj.video.formData.send_set;
-    if (+publishTime === 2) {
-      try {
-        // 定时发布
-        const publishSection = await waitForElement('.container-EMGgQp:nth-of-type(3) .content-obt4oA.new-layout-sLYOT6:nth-of-type(4)', 3000);
+    // 设置封面
+    try {
+      console.log('[封面设置] 开始设置封面...');
 
-        const immediatePublish = publishSection.querySelector('input[type="checkbox"][value="0"]');
-        const scheduledPublish = publishSection.querySelector('input[type="checkbox"][value="1"]');
+      // 尝试多种选择器策略
+      let coverInput = null;
+      const selectors = [
+        '.recommendCover-vWWsHB:nth-child(1)',
+        '.recommendCover-vWWsHB:first-child',
+        '.recommendCover-vWWsHB'
+      ];
 
-        if (immediatePublish && scheduledPublish) {
-          setNativeValue(immediatePublish, false);
-          setNativeValue(scheduledPublish, true);
-
-          // 设置日期时间
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const dateInput = await waitForElement('.date-picker-ioPchj input', 3000);
-
-          // 多次设置确保生效
-          for (let i = 0; i < 2; i++) {
-            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-              break;
-            }
-            await new Promise(resolve => setTimeout(resolve, 300));
+      for (const selector of selectors) {
+        try {
+          coverInput = await waitForElement(selector, 3000);
+          if (coverInput) {
+            console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+            break;
           }
+        } catch (e) {
+          console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
         }
-      } catch (error) {
-        // alert('⚠️ Schedule time setting failed: ' + error.message);
       }
+
+      if (!coverInput) {
+        throw new Error('未找到任何封面元素');
+      }
+
+      console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
+
+      // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
+      const rect = coverInput.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+
+      const mouseEventOptions = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+        button: 0
+      };
+
+      // 完整的鼠标事件序列
+      coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+      console.log('[封面设置] ✅ 已触发完整点击事件序列');
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // 尝试查找并确认弹窗（如果没有弹窗也没关系）
+      try {
+        const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+        const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+        confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+        console.log('[封面设置] ✅ 已确认弹窗');
+      } catch (dialogError) {
+        console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
+      }
+    } catch (error) {
+      console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
     }
 
     // 等待表单填写完成

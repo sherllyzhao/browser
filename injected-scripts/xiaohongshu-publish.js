@@ -473,7 +473,7 @@ async function publishApi(dataObj) {
     console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
     await delay(1000);
 
-    //return alert(123);
+    return alert(123);
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
@@ -681,10 +681,21 @@ async function fillFormData(dataObj) {
           // alert('⚠️ Intro input not found with any selector, skipping intro...');
         } else {
           const targetIntro = titleAndIntro.intro || '';
-          const targetContent = targetIntro.trim();
+          let targetContent = targetIntro.trim();
 
           // 检查实际内容
           const currentContent = (introInput.textContent || introInput.innerText || '').trim();
+
+          // 检测内容是否有#并且其后跟有文字（提取话题）
+          const topicList = extractAfterHash(targetContent, { all: true, includeHash: true });
+          console.log("[小红书发布] 🏷️ 检测到话题列表: ", topicList);
+
+          // 如果有话题，先从内容中移除话题文本
+          let cleanedIntro = targetContent;
+          if (topicList.length > 0) {
+            cleanedIntro = removeHashTags(targetContent);
+            console.log("[小红书发布] 清理后的简介内容: ", cleanedIntro);
+          }
 
           // 只有在标记未设置且内容不同时才填写
           if (currentContent !== targetContent) {
@@ -695,8 +706,8 @@ async function fillFormData(dataObj) {
 
             // 清空现有内容，避免累积
             introInput.innerHTML = '';
-            if (titleAndIntro.intro) {
-              introInput.innerHTML = '<p>' + titleAndIntro.intro + '</p>';
+            if (cleanedIntro) {
+              introInput.innerHTML = '<p>' + cleanedIntro + '</p>';
             }
 
             // 触发input事件
@@ -705,6 +716,80 @@ async function fillFormData(dataObj) {
             }
 
             // alert('✅ Intro filled successfully');
+
+            // 单独处理话题
+            if (topicList.length > 0) {
+              console.log('[小红书发布] 🏷️ 开始填写话题...');
+              await delay(500); // 等待编辑器稳定
+
+              for (let topicText of topicList) {
+                try {
+                  // 重新获取编辑器引用
+                  const editor = await waitForElement('.tiptap-container .ProseMirror', 3000);
+
+                  // 聚焦编辑器
+                  editor.focus();
+
+                  // 将光标移到末尾
+                  const selection = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(editor);
+                  range.collapse(false); // false = 折叠到末尾
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+
+                  // 先插入一个空格分隔
+                  document.execCommand('insertText', false, ' ');
+                  await delay(100);
+
+                  // 使用 execCommand 模拟真实输入话题（这会触发编辑器的话题检测）
+                  document.execCommand('insertText', false, topicText);
+
+                  // 触发 input 事件确保编辑器识别变化
+                  editor.dispatchEvent(new InputEvent('input', {
+                    inputType: 'insertText',
+                    data: topicText,
+                    bubbles: true,
+                  }));
+
+                  console.log('[小红书发布] 🏷️ 已输入话题:', topicText);
+
+                  // 等待话题建议列表出现
+                  try {
+                    let topicSuggest = null;
+                    topicSuggest = await waitForElement('#creator-editor-topic-container', 2000);
+                    console.log("🚀 ~ fillFormData ~ topicSuggest: ", topicSuggest);
+
+                    if (topicSuggest) {
+                      await delay(3000);
+
+                      let firstOption = null;
+
+                      firstOption = await waitForElement('#creator-editor-topic-container .item.is-selected', 5000);
+                      console.log("🚀 ~ fillFormData ~ firstOption: ", firstOption);
+
+                      if (firstOption) {
+                        firstOption.click();
+                        console.log('[小红书发布] 🏷️ 已点击话题选项');
+                        await delay(300);
+                      } else {
+                        console.log('[小红书发布] 🏷️ 未找到话题选项，话题建议列表内容:', topicSuggest.innerHTML.substring(0, 500));
+                      }
+                    } else {
+                      console.log('[小红书发布] 🏷️ 话题建议列表未出现');
+                    }
+                  } catch (e) {
+                    console.log('[小红书发布] 🏷️ 等待话题建议列表失败:', e.message);
+                  }
+
+                  await delay(300);
+                } catch (topicError) {
+                  console.error('[小红书发布] 🏷️ 处理话题失败:', topicText, topicError);
+                }
+              }
+
+              console.log('[小红书发布] 🏷️ 话题填写完成');
+            }
           } else {
             // 内容已经正确，也标记为已填写
             introFilled = true;

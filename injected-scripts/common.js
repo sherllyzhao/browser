@@ -870,6 +870,62 @@ console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMe
 
 } // 结束 if-else 块，所有函数在 else 块内定义
 
+/**
+ * 高级版本：获取#后面的内容
+ * @param {string} str 输入字符串
+ * @param {Object} options 配置选项
+ * @param {boolean} options.all 是否获取所有匹配（默认false）
+ * @param {boolean} options.includeHash 是否包含#符号（默认false）
+ * @param {RegExp} options.delimiter 分隔符正则（默认空白字符）
+ * @returns {string|string[]|null} 结果
+ */
+window.extractAfterHash = function(str, options = {}) {
+    const {
+        all = false,
+        includeHash = false,
+        delimiter = /\s/
+    } = options;
+
+    // 构建正则表达式
+    const delimiterPattern = delimiter.source;
+    const pattern = all
+        ? `#([^${delimiterPattern}#]+)`
+        : `#([^${delimiterPattern}#]+)`;
+
+    const regex = new RegExp(pattern, all ? 'g' : '');
+
+    if (!all) {
+        // 单次匹配
+        const match = str.match(regex);
+        if (!match) return null;
+        return includeHash ? match[0] : match[1];
+    } else {
+        // 全局匹配
+        const matches = [];
+        let match;
+
+        while ((match = regex.exec(str)) !== null) {
+            matches.push(includeHash ? match[0] : match[1]);
+        }
+
+        return matches;
+    }
+}
+
+window.removeHashTags = function(str) {
+    // 先移除 # 及其内容
+    let result = str.replace(/#[^\s#]+/g, '');
+
+    // 清理因移除而产生的多余空格
+    // 将多个连续空格替换为单个空格
+    result = result.replace(/\s+/g, ' ');
+
+    // 去掉首尾空格
+    result = result.trim();
+
+    return result;
+}
+
 // 定义全局别名，确保向后兼容
 if (typeof waitForElement === 'undefined') window.waitForElement && (waitForElement = window.waitForElement);
 if (typeof retryOperation === 'undefined') window.retryOperation && (retryOperation = window.retryOperation);
@@ -886,6 +942,8 @@ if (typeof getStatisticsUrl === 'undefined') window.getStatisticsUrl && (getStat
 if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof delay === 'undefined') window.delay && (delay = window.delay);
+if (typeof extractAfterHash === 'undefined') window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
+if (typeof removeHashTags === 'undefined') window.removeHashTags && (removeHashTags = window.removeHashTags);
 
 // ===========================
 // 前端拦截自定义协议（如 bitbrowser://）
