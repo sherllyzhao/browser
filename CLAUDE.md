@@ -398,7 +398,72 @@ if (authSuccess) {
 }
 ```
 
-### 13. 多账号管理 API
+### 13. 获取完整会话数据（用于存储到后台）
+```javascript
+// 获取完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+// 用于授权后将完整登录状态存储到后台
+const result = await window.browserAPI.getFullSessionData('douyin.com');
+console.log(result);
+// 返回值示例:
+// {
+//   success: true,
+//   data: {
+//     domain: 'douyin.com',
+//     timestamp: 1704067200000,
+//     cookies: [...],        // Cookie 数组
+//     localStorage: {...},   // localStorage 键值对
+//     sessionStorage: {...}, // sessionStorage 键值对
+//     indexedDB: {...}       // IndexedDB 数据库数据
+//   },
+//   size: 102400  // 数据大小（字节）
+// }
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| domain | string | 是 | 要获取的域名，如 `douyin.com` |
+
+**返回值说明**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | boolean | 是否成功 |
+| data.cookies | array | Cookies 数组，包含 name, value, domain, path, secure, httpOnly, sameSite, expirationDate |
+| data.localStorage | object | localStorage 键值对 |
+| data.sessionStorage | object | sessionStorage 键值对 |
+| data.indexedDB | object | IndexedDB 数据库数据（按数据库名分组） |
+| size | number | 数据总大小（字节） |
+
+**使用场景**：授权成功后，获取完整的登录状态数据并提交到后台存储，后续发布时可以从后台获取并恢复。
+
+**示例**（在授权脚本中使用）：
+```javascript
+// 构建提交数据
+const scanData = {
+  data: JSON.stringify({
+    nickname: '用户昵称',
+    uid: '用户ID',
+    company_id: companyId,
+    auth_type: 1
+  })
+};
+
+// 获取完整会话数据
+const sessionResult = await window.browserAPI.getFullSessionData('douyin.com');
+if (sessionResult.success) {
+  const dataObj = JSON.parse(scanData.data);
+  dataObj.cookies = JSON.stringify(sessionResult.data);  // 完整会话数据
+  scanData.data = JSON.stringify(dataObj);
+}
+
+// 提交到后台
+await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
+  method: 'POST',
+  body: JSON.stringify(scanData)
+});
+```
+
+### 14. 多账号管理 API
 
 多账号功能允许每个平台保存多个账号的登录状态，每个账号使用独立的 Session 分区存储。
 

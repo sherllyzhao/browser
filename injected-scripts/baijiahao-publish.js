@@ -110,6 +110,28 @@
             console.log('[百家号发布] ✅ windowId 匹配，处理消息');
           }
 
+          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+          if (messageData.cookies) {
+            console.log('[百家号发布] 📦 检测到 cookies 数据，开始恢复会话...');
+            try {
+              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+              if (restoreResult.success) {
+                console.log('[百家号发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                // 恢复 cookies 后需要刷新页面才能生效
+                console.log('[百家号发布] 🔄 刷新页面以应用 cookies...');
+                // 保存消息数据到全局存储，刷新后继续使用
+                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                window.location.reload();
+                return; // 刷新后脚本会重新注入
+              } else {
+                console.warn('[百家号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+              }
+            } catch (restoreError) {
+              console.error('[百家号发布] ⚠️ 会话数据恢复异常:', restoreError);
+            }
+          }
+
           // windowId 匹配后才保存消息数据
           receivedMessageData = messageData;
           console.log('[百家号发布] 💾 已保存收到的消息数据到 receivedMessageData');
@@ -230,6 +252,69 @@
   console.log('  - sendMessage(msg) : 发送自定义消息');
   console.log('  - getAuthData()    : 获取发布数据');
   console.log('═══════════════════════════════════════');
+
+  // ===========================
+  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
+  // ===========================
+  (async () => {
+    // 如果已经在处理或已处理完成，跳过
+    if (isProcessing || hasProcessed) {
+      console.log('[百家号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+      return;
+    }
+
+    try {
+      // 获取当前窗口 ID
+      const windowId = await window.browserAPI.getWindowId();
+      console.log('[百家号发布] 检查全局存储，窗口 ID:', windowId);
+
+      if (!windowId) {
+        console.log('[百家号发布] ❌ 无法获取窗口 ID');
+        return;
+      }
+
+      // 检查是否有恢复 cookies 后保存的发布数据
+      const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+      console.log('[百家号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
+
+      if (publishData && !isProcessing && !hasProcessed) {
+        console.log('[百家号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+        console.log('[百家号发布] 🗑️ 已清除 publish_data_window_' + windowId);
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: publishData,
+          source: 'cookieRestore',
+          windowId: windowId,
+          receivedAt: Date.now()
+        };
+
+        try {
+          const tourBtn = document.querySelector('.cheetah-tour-close');
+          if(tourBtn){
+            tourBtn.click();
+          }
+          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+        } catch (e) {
+          console.log('[百家号发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[百家号发布] 📤 准备发送数据到接口...');
+        console.log('[百家号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        isProcessing = false;
+      }
+    } catch (error) {
+      console.error('[百家号发布] ❌ 从全局存储读取数据失败:', error);
+    }
+  })();
 
   // ===========================
   // 7. 从全局存储读取发布数据（备用方案，不依赖消息）

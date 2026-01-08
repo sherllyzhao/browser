@@ -189,6 +189,23 @@
                 })
               };
 
+              // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+              console.log('[抖音授权] 📦 正在获取完整会话数据...');
+              try {
+                const sessionResult = await window.browserAPI.getFullSessionData('douyin.com');
+                if (sessionResult.success) {
+                  // 将会话数据添加到提交数据中
+                  const dataObj = JSON.parse(scanData.data);
+                  dataObj.cookies = JSON.stringify(sessionResult.data);
+                  scanData.data = JSON.stringify(dataObj);
+                  console.log(`[抖音授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                } else {
+                  console.warn('[抖音授权] ⚠️ 获取会话数据失败:', sessionResult.error);
+                }
+              } catch (sessionError) {
+                console.error('[抖音授权] ⚠️ 获取会话数据异常:', sessionError);
+              }
+
               console.log('[抖音授权] 📤 准备发送数据到接口...');
               // 发送数据到服务器
               const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {

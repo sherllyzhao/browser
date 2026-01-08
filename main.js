@@ -3759,3 +3759,421 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
     return { success: false, error: err.message };
   }
 });
+
+// ========== 获取完整会话数据（Cookies + Storage + IndexedDB） ==========
+// 用于授权后将完整登录状态存储到后台
+ipcMain.handle('get-full-session-data', async (event, domain) => {
+  console.log('[Session Data] ========== 获取完整会话数据 ==========');
+  console.log('[Session Data] 域名:', domain);
+
+  if (!domain) {
+    return { success: false, error: '域名不能为空' };
+  }
+
+  try {
+    // 获取调用者的 session
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    let ses;
+    let webContents;
+
+    if (senderWindow) {
+      ses = senderWindow.webContents.session;
+      webContents = senderWindow.webContents;
+      console.log('[Session Data] 使用子窗口 session');
+    } else if (browserView && !browserView.webContents.isDestroyed()) {
+      ses = browserView.webContents.session;
+      webContents = browserView.webContents;
+      console.log('[Session Data] 使用 BrowserView session');
+    } else {
+      return { success: false, error: 'session 不可用' };
+    }
+
+    // 1. 获取 Cookies
+    const allCookies = await ses.cookies.get({});
+    const domainCookies = allCookies.filter(cookie => {
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+    });
+
+    const cookiesArray = domainCookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      secure: c.secure,
+      httpOnly: c.httpOnly,
+      sameSite: c.sameSite,
+      expirationDate: c.expirationDate
+    }));
+
+    console.log(`[Session Data] Cookies: ${cookiesArray.length} 个`);
+
+    // 2. 获取 localStorage 和 sessionStorage（通过执行 JS）
+    let storageData = { localStorage: {}, sessionStorage: {} };
+    try {
+      storageData = await webContents.executeJavaScript(`
+        (function() {
+          const result = { localStorage: {}, sessionStorage: {} };
+
+          // 获取 localStorage
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              result.localStorage[key] = localStorage.getItem(key);
+            }
+          } catch (e) {
+            console.error('获取 localStorage 失败:', e);
+          }
+
+          // 获取 sessionStorage
+          try {
+            for (let i = 0; i < sessionStorage.length; i++) {
+              const key = sessionStorage.key(i);
+              result.sessionStorage[key] = sessionStorage.getItem(key);
+            }
+          } catch (e) {
+            console.error('获取 sessionStorage 失败:', e);
+          }
+
+          return result;
+        })()
+      `);
+      console.log(`[Session Data] localStorage: ${Object.keys(storageData.localStorage).length} 项`);
+      console.log(`[Session Data] sessionStorage: ${Object.keys(storageData.sessionStorage).length} 项`);
+    } catch (err) {
+      console.error('[Session Data] 获取 Storage 失败:', err.message);
+    }
+
+    // 3. 获取 IndexedDB 数据库列表和数据
+    let indexedDBData = {};
+    try {
+      indexedDBData = await webContents.executeJavaScript(`
+        (async function() {
+          const result = {};
+
+          try {
+            // 获取所有数据库
+            const databases = await indexedDB.databases();
+            console.log('[IndexedDB] 发现数据库:', databases.length);
+
+            for (const dbInfo of databases) {
+              const dbName = dbInfo.name;
+              if (!dbName) continue;
+
+              try {
+                const db = await new Promise((resolve, reject) => {
+                  const request = indexedDB.open(dbName);
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+
+                const dbData = {
+                  version: db.version,
+                  stores: {}
+                };
+
+                // 遍历所有 object store
+                const storeNames = Array.from(db.objectStoreNames);
+                for (const storeName of storeNames) {
+                  try {
+                    const tx = db.transaction(storeName, 'readonly');
+                    const store = tx.objectStore(storeName);
+                    const allData = await new Promise((resolve, reject) => {
+                      const request = store.getAll();
+                      request.onsuccess = () => resolve(request.result);
+                      request.onerror = () => reject(request.error);
+                    });
+
+                    // 限制数据量，避免数据过大
+                    if (allData.length <= 1000) {
+                      dbData.stores[storeName] = allData;
+                    } else {
+                      dbData.stores[storeName] = allData.slice(0, 1000);
+                      dbData.stores[storeName + '_truncated'] = true;
+                    }
+                  } catch (storeErr) {
+                    console.error('[IndexedDB] 读取 store 失败:', storeName, storeErr);
+                  }
+                }
+
+                db.close();
+                result[dbName] = dbData;
+              } catch (dbErr) {
+                console.error('[IndexedDB] 打开数据库失败:', dbName, dbErr);
+              }
+            }
+          } catch (e) {
+            console.error('[IndexedDB] 获取数据库列表失败:', e);
+          }
+
+          return result;
+        })()
+      `);
+      console.log(`[Session Data] IndexedDB: ${Object.keys(indexedDBData).length} 个数据库`);
+    } catch (err) {
+      console.error('[Session Data] 获取 IndexedDB 失败:', err.message);
+    }
+
+    // 组装完整的会话数据
+    const sessionData = {
+      domain: domain,
+      timestamp: Date.now(),
+      cookies: cookiesArray,
+      localStorage: storageData.localStorage,
+      sessionStorage: storageData.sessionStorage,
+      indexedDB: indexedDBData
+    };
+
+    // 计算数据大小（用于日志）
+    const dataSize = JSON.stringify(sessionData).length;
+    console.log(`[Session Data] ========== 获取完成 ==========`);
+    console.log(`[Session Data] 总数据大小: ${Math.round(dataSize / 1024)} KB`);
+
+    return { success: true, data: sessionData, size: dataSize };
+  } catch (err) {
+    console.error('[Session Data] 获取失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 恢复完整会话数据（Cookies + Storage + IndexedDB） ==========
+// 用于发布时从后台获取的会话数据恢复到当前窗口
+ipcMain.handle('restore-session-data', async (event, sessionDataStr) => {
+  console.log('[Session Restore] ========== 开始恢复会话数据 ==========');
+
+  if (!sessionDataStr) {
+    return { success: false, error: '会话数据为空' };
+  }
+
+  try {
+    // 解析会话数据
+    let sessionData;
+    try {
+      sessionData = typeof sessionDataStr === 'string' ? JSON.parse(sessionDataStr) : sessionDataStr;
+    } catch (parseErr) {
+      return { success: false, error: '会话数据解析失败: ' + parseErr.message };
+    }
+
+    console.log('[Session Restore] 域名:', sessionData.domain);
+    console.log('[Session Restore] 时间戳:', new Date(sessionData.timestamp).toLocaleString());
+
+    // 获取调用者的 session 和 webContents
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    let ses;
+    let webContents;
+
+    if (senderWindow) {
+      ses = senderWindow.webContents.session;
+      webContents = senderWindow.webContents;
+      console.log('[Session Restore] 使用子窗口 session');
+    } else if (browserView && !browserView.webContents.isDestroyed()) {
+      ses = browserView.webContents.session;
+      webContents = browserView.webContents;
+      console.log('[Session Restore] 使用 BrowserView session');
+    } else {
+      return { success: false, error: 'session 不可用' };
+    }
+
+    const results = {
+      cookies: { restored: 0, failed: 0 },
+      localStorage: { restored: 0, failed: 0 },
+      sessionStorage: { restored: 0, failed: 0 },
+      indexedDB: { restored: 0, failed: 0 }
+    };
+
+    // 1. 恢复 Cookies
+    if (sessionData.cookies && Array.isArray(sessionData.cookies)) {
+      console.log(`[Session Restore] 开始恢复 ${sessionData.cookies.length} 个 Cookies...`);
+
+      for (const cookie of sessionData.cookies) {
+        try {
+          // 构建 cookie URL
+          const protocol = cookie.secure ? 'https' : 'http';
+          const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+          const url = `${protocol}://${domain}${cookie.path || '/'}`;
+
+          const cookieDetails = {
+            url: url,
+            name: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain,
+            path: cookie.path || '/',
+            secure: cookie.secure || false,
+            httpOnly: cookie.httpOnly || false,
+            sameSite: cookie.sameSite || 'no_restriction'
+          };
+
+          // 设置过期时间（如果有的话，否则设置为1年后）
+          if (cookie.expirationDate) {
+            cookieDetails.expirationDate = cookie.expirationDate;
+          } else {
+            cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+          }
+
+          await ses.cookies.set(cookieDetails);
+          results.cookies.restored++;
+        } catch (cookieErr) {
+          console.error(`[Session Restore] Cookie 恢复失败 (${cookie.name}):`, cookieErr.message);
+          results.cookies.failed++;
+        }
+      }
+      console.log(`[Session Restore] Cookies 恢复完成: ${results.cookies.restored} 成功, ${results.cookies.failed} 失败`);
+    }
+
+    // 2. 恢复 localStorage
+    if (sessionData.localStorage && Object.keys(sessionData.localStorage).length > 0) {
+      console.log(`[Session Restore] 开始恢复 ${Object.keys(sessionData.localStorage).length} 个 localStorage 项...`);
+
+      try {
+        const localStorageData = sessionData.localStorage;
+        await webContents.executeJavaScript(`
+          (function() {
+            const data = ${JSON.stringify(localStorageData)};
+            let restored = 0;
+            let failed = 0;
+            for (const [key, value] of Object.entries(data)) {
+              try {
+                localStorage.setItem(key, value);
+                restored++;
+              } catch (e) {
+                console.error('localStorage 恢复失败:', key, e);
+                failed++;
+              }
+            }
+            return { restored, failed };
+          })()
+        `).then(result => {
+          results.localStorage = result;
+          console.log(`[Session Restore] localStorage 恢复完成: ${result.restored} 成功, ${result.failed} 失败`);
+        });
+      } catch (storageErr) {
+        console.error('[Session Restore] localStorage 恢复失败:', storageErr.message);
+      }
+    }
+
+    // 3. 恢复 sessionStorage
+    if (sessionData.sessionStorage && Object.keys(sessionData.sessionStorage).length > 0) {
+      console.log(`[Session Restore] 开始恢复 ${Object.keys(sessionData.sessionStorage).length} 个 sessionStorage 项...`);
+
+      try {
+        const sessionStorageData = sessionData.sessionStorage;
+        await webContents.executeJavaScript(`
+          (function() {
+            const data = ${JSON.stringify(sessionStorageData)};
+            let restored = 0;
+            let failed = 0;
+            for (const [key, value] of Object.entries(data)) {
+              try {
+                sessionStorage.setItem(key, value);
+                restored++;
+              } catch (e) {
+                console.error('sessionStorage 恢复失败:', key, e);
+                failed++;
+              }
+            }
+            return { restored, failed };
+          })()
+        `).then(result => {
+          results.sessionStorage = result;
+          console.log(`[Session Restore] sessionStorage 恢复完成: ${result.restored} 成功, ${result.failed} 失败`);
+        });
+      } catch (storageErr) {
+        console.error('[Session Restore] sessionStorage 恢复失败:', storageErr.message);
+      }
+    }
+
+    // 4. 恢复 IndexedDB（复杂，可能需要页面刷新才能生效）
+    if (sessionData.indexedDB && Object.keys(sessionData.indexedDB).length > 0) {
+      console.log(`[Session Restore] 开始恢复 ${Object.keys(sessionData.indexedDB).length} 个 IndexedDB 数据库...`);
+
+      try {
+        const indexedDBData = sessionData.indexedDB;
+        await webContents.executeJavaScript(`
+          (async function() {
+            const data = ${JSON.stringify(indexedDBData)};
+            let restored = 0;
+            let failed = 0;
+
+            for (const [dbName, dbData] of Object.entries(data)) {
+              try {
+                // 打开数据库（使用保存的版本号）
+                const db = await new Promise((resolve, reject) => {
+                  const request = indexedDB.open(dbName, dbData.version || 1);
+
+                  request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    // 创建 object stores
+                    for (const storeName of Object.keys(dbData.stores || {})) {
+                      if (!db.objectStoreNames.contains(storeName)) {
+                        try {
+                          db.createObjectStore(storeName, { autoIncrement: true });
+                        } catch (e) {
+                          console.warn('创建 object store 失败:', storeName, e);
+                        }
+                      }
+                    }
+                  };
+
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+
+                // 恢复数据到各个 object store
+                for (const [storeName, storeData] of Object.entries(dbData.stores || {})) {
+                  if (storeName.endsWith('_truncated')) continue;
+                  if (!db.objectStoreNames.contains(storeName)) continue;
+
+                  try {
+                    const tx = db.transaction(storeName, 'readwrite');
+                    const store = tx.objectStore(storeName);
+
+                    // 清空现有数据
+                    await new Promise((resolve, reject) => {
+                      const clearReq = store.clear();
+                      clearReq.onsuccess = resolve;
+                      clearReq.onerror = reject;
+                    });
+
+                    // 写入保存的数据
+                    for (const item of storeData) {
+                      await new Promise((resolve, reject) => {
+                        const addReq = store.add(item);
+                        addReq.onsuccess = resolve;
+                        addReq.onerror = () => resolve(); // 忽略单条失败
+                      });
+                    }
+
+                    restored++;
+                  } catch (storeErr) {
+                    console.error('恢复 object store 失败:', storeName, storeErr);
+                    failed++;
+                  }
+                }
+
+                db.close();
+              } catch (dbErr) {
+                console.error('恢复数据库失败:', dbName, dbErr);
+                failed++;
+              }
+            }
+
+            return { restored, failed };
+          })()
+        `).then(result => {
+          results.indexedDB = result;
+          console.log(`[Session Restore] IndexedDB 恢复完成: ${result.restored} 成功, ${result.failed} 失败`);
+        });
+      } catch (idbErr) {
+        console.error('[Session Restore] IndexedDB 恢复失败:', idbErr.message);
+      }
+    }
+
+    console.log('[Session Restore] ========== 恢复完成 ==========');
+    console.log('[Session Restore] 恢复统计:', results);
+
+    return { success: true, results: results };
+  } catch (err) {
+    console.error('[Session Restore] 恢复失败:', err);
+    return { success: false, error: err.message };
+  }
+});

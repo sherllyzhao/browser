@@ -314,6 +314,18 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 返回: { success: true, cookies: 'cookie_string' } 或 { success: false, error: '错误信息' }
   getDomainCookies: (domain) => ipcRenderer.invoke('get-domain-cookies', domain),
 
+  // 获取完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+  // 用于授权后将完整登录状态存储到后台
+  // 参数: domain - 域名，如 'baidu.com'
+  // 返回: { success: true, data: { cookies, localStorage, sessionStorage, indexedDB }, size: 数据大小 }
+  getFullSessionData: (domain) => ipcRenderer.invoke('get-full-session-data', domain),
+
+  // 恢复完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+  // 用于发布时从后台获取的会话数据恢复到当前窗口
+  // 参数: sessionData - 会话数据对象或 JSON 字符串（与 getFullSessionData 返回的 data 格式相同）
+  // 返回: { success: true, results: { cookies, localStorage, sessionStorage, indexedDB } }
+  restoreSessionData: (sessionData) => ipcRenderer.invoke('restore-session-data', sessionData),
+
   // ========== 全局数据存储 API（用于跨页面数据传递） ==========
   // 存储数据（如 company_id）
   setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),

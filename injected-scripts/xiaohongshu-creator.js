@@ -141,6 +141,22 @@
                         })
                     };
 
+                    // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+                    console.log('[小红书授权] 📦 正在获取完整会话数据...');
+                    try {
+                        const sessionResult = await window.browserAPI.getFullSessionData('xiaohongshu.com');
+                        if (sessionResult.success) {
+                            const dataObj = JSON.parse(scanData.data);
+                            dataObj.cookies = JSON.stringify(sessionResult.data);
+                            scanData.data = JSON.stringify(dataObj);
+                            console.log(`[小红书授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                        } else {
+                            console.warn('[小红书授权] ⚠️ 获取会话数据失败:', sessionResult.error);
+                        }
+                    } catch (sessionError) {
+                        console.error('[小红书授权] ⚠️ 获取会话数据异常:', sessionError);
+                    }
+
                     const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/xhsinfo', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },

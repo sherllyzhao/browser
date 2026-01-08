@@ -21,7 +21,11 @@
       "Bash(powershell -Command:*)",
       "Bash(git checkout:*)",
       "mcp__puppeteer__puppeteer_screenshot",
-      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/baijiahao-publish.js)"
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/baijiahao-publish.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -10)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff HEAD~1 --stat)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff HEAD~1)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" status)"
     ],
     "deny": [],
     "ask": []

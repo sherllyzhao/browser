@@ -145,6 +145,38 @@ let hasProcessed = false;
               console.log('[视频号发布] ✅ windowId 匹配，处理消息');
             }
 
+            // 兼容处理：message.data 可能是字符串或对象
+            let messageData;
+            try {
+              messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            } catch (parseError) {
+              console.error('[视频号发布] ❌ 解析消息数据失败:', parseError);
+              console.error('[视频号发布] 原始数据:', message.data);
+              return;
+            }
+
+            // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+            if (messageData.cookies) {
+              console.log('[视频号发布] 📦 检测到 cookies 数据，开始恢复会话...');
+              try {
+                const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+                const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+                if (restoreResult.success) {
+                  console.log('[视频号发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                  // 恢复 cookies 后需要刷新页面才能生效
+                  console.log('[视频号发布] 🔄 刷新页面以应用 cookies...');
+                  // 保存消息数据到全局存储，刷新后继续使用
+                  await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                  window.location.reload();
+                  return; // 刷新后脚本会重新注入
+                } else {
+                  console.warn('[视频号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+                }
+              } catch (restoreError) {
+                console.error('[视频号发布] ⚠️ 会话数据恢复异常:', restoreError);
+              }
+            }
+
             // 防重复检查
             if (isProcessing) {
               console.warn('[视频号发布] ⚠️ 正在处理中，忽略重复消息');
@@ -160,16 +192,6 @@ let hasProcessed = false;
 
             // 更新全局变量
             if (message.data) {
-              // 兼容处理：message.data 可能是字符串或对象
-              let messageData;
-              try {
-                messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-              } catch (parseError) {
-                console.error('[视频号发布] ❌ 解析消息数据失败:', parseError);
-                console.error('[视频号发布] 原始数据:', message.data);
-                isProcessing = false;
-                return;
-              }
               console.log("🚀 ~  ~ messageData: ", messageData);
               window.__AUTH_DATA__ = {
                 ...window.__AUTH_DATA__,
@@ -368,7 +390,103 @@ let hasProcessed = false;
   console.log('═══════════════════════════════════════');
 
   // ===========================
-  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
+  // ===========================
+  (async () => {
+    // 如果已经在处理或已处理完成，跳过
+    if (isProcessing || hasProcessed) {
+      console.log('[视频号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+      return;
+    }
+
+    try {
+      // 获取当前窗口 ID
+      const windowId = await window.browserAPI.getWindowId();
+      console.log('[视频号发布] 检查全局存储，窗口 ID:', windowId);
+
+      if (!windowId) {
+        console.log('[视频号发布] ❌ 无法获取窗口 ID');
+        return;
+      }
+
+      // 检查是否有恢复 cookies 后保存的发布数据
+      const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+      console.log('[视频号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
+
+      if (publishData && !isProcessing && !hasProcessed) {
+        console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+        console.log('[视频号发布] 🗑️ 已清除 publish_data_window_' + windowId);
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: publishData,
+          source: 'cookieRestore',
+          windowId: windowId,
+          receivedAt: Date.now()
+        };
+
+        // 等待wujie-app元素
+        const wujieApp = await waitForElement("wujie-app", 15000);
+        if (wujieApp) {
+          let videoAlreadyUploaded = false;
+          try {
+            const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+            if (fullScreenVideo && fullScreenVideo.src) {
+              videoAlreadyUploaded = true;
+            }
+            if (!videoAlreadyUploaded) {
+              await uploadVideo(publishData, wujieApp.shadowRoot);
+            }
+          } catch (error) {
+            console.log('[视频号发布] ❌ 视频上传失败:', error);
+            const publishId = publishData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
+          }
+        } else {
+          try {
+            await uploadVideo(publishData);
+          } catch (error) {
+            console.log('[视频号发布] ❌ 视频上传失败:', error);
+            const publishId = publishData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
+          }
+        }
+
+        try {
+          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+        } catch (e) {
+          console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[视频号发布] 📤 准备发送数据到接口...');
+        console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        isProcessing = false;
+      }
+    } catch (error) {
+      console.error('[视频号发布] ❌ 从全局存储读取数据失败:', error);
+    }
+  })();
+
+  // ===========================
+  // 8. 检查是否有保存的发布数据（授权跳转恢复 - localStorage）
   // ===========================
   setTimeout(async () => {
     try {
