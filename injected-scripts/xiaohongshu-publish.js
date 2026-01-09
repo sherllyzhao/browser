@@ -215,7 +215,8 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
             } */
 
             // 查找是否有提示消息
-            const tipsEle = document.querySelector('.progetto-sugger-warn .tips');
+            const tipsEle = await waitForElement('.progetto-sugger-warn .tips', 2000);
+            console.log("🚀 ~  ~ tipsEle: ", tipsEle);
             if(tipsEle){
               const tipsText = tipsEle.textContent.trim();
               console.log('[小红书发布] ✅ 提示消息:', tipsText);
@@ -274,7 +275,7 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
   // ===========================
   // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
-  (async () => {
+  await (async () => {
     // 如果已经在处理，跳过
     if (isProcessing) {
       console.log('[小红书发布] ⏭️ 已在处理中，跳过全局存储读取');
@@ -323,6 +324,26 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
           receivedAt: Date.now()
         };
 
+        // 查找是否有提示消息
+        try{
+          const tipsEle = await waitForElement('.progetto-sugger-warn .tips', 2000);
+          console.log("🚀 ~  ~ tipsEle: ", tipsEle);
+          if(tipsEle){
+            const tipsText = tipsEle.textContent.trim();
+            console.log('[小红书发布] ✅ 提示消息:', tipsText);
+            const canToError = tipsText.includes('未绑定手机号');
+            if(canToError){
+              console.log('[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面');
+              const publishId = publishData?.video?.dyPlatform?.id;
+              await sendStatisticsError(publishId, '未绑定手机号', '小红书发布');
+              await closeWindowWithMessage('发布失败，刷新数据', 1000);
+              return;
+            }
+          }
+        } catch (e) {
+          console.log('[小红书发布] ❌ 查找提示消息失败:', e);
+        }
+
         await uploadVideo(publishData);
         try {
           await retryOperation(async () => await fillFormData(publishData), 3, 2000);
@@ -347,45 +368,6 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
   // ===========================
   // 7. 检查是否有保存的发布数据（授权跳转恢复）
   // ===========================
-  /* setTimeout(async () => {
-    try {
-      const savedData = localStorage.getItem('XHS_PUBLISH_DATA');
-      if (savedData && !isProcessing && !hasProcessed) {
-        console.log('[小红书发布] 🔄 检测到保存的发布数据，准备恢复...');
-        const messageData = JSON.parse(savedData);
-        console.log('[小红书发布] 📦 恢复的数据:', messageData);
-
-        // 标记为正在处理
-        isProcessing = true;
-
-        // 更新全局变量
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: messageData,
-          recoveredAt: Date.now()
-        };
-
-        // 执行上传流程
-        await uploadVideo(messageData);
-        try {
-          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-        } catch (e) {
-          console.log('[小红书发布] ❌ 填写表单数据失败:', e);
-        }
-
-        console.log('[小红书发布] 📤 恢复数据后准备发送数据到接口...');
-        console.log('[小红书发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-        // 重置处理标志
-        isProcessing = false;
-      } else {
-        console.log('[小红书发布] ℹ️ 没有需要恢复的数据');
-      }
-    } catch (error) {
-      console.error('[小红书发布] ❌ 恢复数据失败:', error);
-      isProcessing = false;
-    }
-  }, 2000); // 延迟2秒，等待页面完全加载 */
 
 })();
 

@@ -173,11 +173,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
           // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
           const openOptions = {};
 
-          // 使用平台名称作为默认的账号标识（每个平台一个 session）
+          // 为每个窗口创建唯一的 session ID（避免多窗口共享 session 导致登录覆盖）
+          const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
           if (platformFullName) {
             openOptions.platform = platformFullName;
-            openOptions.accountId = `${platformFullName}_default`;
-            console.log(`[BrowserAPI] 📋 使用平台 session: platform=${platformFullName}, accountId=${openOptions.accountId}`);
+            openOptions.accountId = uniqueSessionId;
+            console.log(`[BrowserAPI] 📋 使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
           }
 
           // 检查是否有 cookies 数据
