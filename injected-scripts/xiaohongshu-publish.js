@@ -473,7 +473,7 @@ async function publishApi(dataObj) {
     console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
     await delay(1000);
 
-    return alert(123);
+    //return alert(123);
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
