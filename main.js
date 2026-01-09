@@ -2690,6 +2690,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       event.preventDefault();
     });
 
+    // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
+    const windowId = newWindow.id;
+
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
       const index = childWindows.indexOf(newWindow);
@@ -2698,9 +2701,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
       // 清理窗口账号映射
-      if (windowAccountMap.has(newWindow.id)) {
-        windowAccountMap.delete(newWindow.id);
-        console.log(`[Window Manager] 清理窗口账号映射: windowId=${newWindow.id}`);
+      if (windowAccountMap.has(windowId)) {
+        windowAccountMap.delete(windowId);
+        console.log(`[Window Manager] 清理窗口账号映射: windowId=${windowId}`);
       }
     });
 

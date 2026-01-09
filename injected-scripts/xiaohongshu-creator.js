@@ -185,7 +185,12 @@
                         }
 
                         sendMessageToParent('授权成功，刷新数据');
-                        setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                        const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+                        if(isDev){
+                            console.log('[小红书授权] ✅ 开发环境，不关闭窗口');
+                        }else{
+                            setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                        }
                     } else {
                         throw new Error(apiResult.msg || 'Failed');
                     }
