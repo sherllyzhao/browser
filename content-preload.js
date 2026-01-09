@@ -152,17 +152,43 @@ contextBridge.exposeInMainWorld('browserAPI', {
         'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
       };
       const platformMap = { 1: 'dy', 6: 'xhs', 7: 'sph', 4: 'bjh' };
+      // 短名称到长名称的映射（用于多账号系统）
+      const platformFullNameMap = {
+        'dy': 'douyin',
+        'xhs': 'xiaohongshu',
+        'sph': 'shipinhao',
+        'bjh': 'baijiahao'
+      };
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
           const platform = platformMap[element.account_info.media.id];
+          const platformFullName = platformFullNameMap[platform];
           const url = urlMap[platform];
           console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
 
+          // 构建 openNewWindow 的 options
+          // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
+          const openOptions = {};
+
+          // 使用平台名称作为默认的账号标识（每个平台一个 session）
+          if (platformFullName) {
+            openOptions.platform = platformFullName;
+            openOptions.accountId = `${platformFullName}_default`;
+            console.log(`[BrowserAPI] 📋 使用平台 session: platform=${platformFullName}, accountId=${openOptions.accountId}`);
+          }
+
+          // 检查是否有 cookies 数据
+          if (element.cookies && element.cookies.length > 0) {
+            openOptions.sessionData = element.cookies;
+            console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${element.cookies.length} 个`);
+          }
+
           // 打开新窗口，获取窗口 ID
-          const result = await ipcRenderer.invoke('open-new-window', url);
+          console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(openOptions, null, 2));
+          const result = await ipcRenderer.invoke('open-new-window', url, openOptions);
           if (!result.success) {
             console.error(`❌ [${index + 1}] 打开窗口失败: ${result.error}`);
             continue; // 继续下一个，不要 return
@@ -190,7 +216,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
                 }
               },
               dyPlatform: element.dyPlatform || { id: element.id }
-            }
+            },
           };
           await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
           console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
@@ -265,7 +291,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   },
 
   // 导航控制 API
-  // options: { useTemporarySession: boolean } - 为 true 时使用临时 session（不保存登录状态，用于授权页）
+  // options: {
+  //   useTemporarySession: boolean - 为 true 时使用临时 session（不保存登录状态，用于授权页）
+  //   platform: string - 平台名称（多账号模式必填）
+  //   accountId: string - 账号 ID（多账号模式必填）
+  //   sessionData: object | string - 会话数据（可选）。如果提供，浏览器会在打开窗口前自动清空旧登录信息并恢复此数据
+  // }
   openNewWindow: (url, options) => ipcRenderer.invoke('open-new-window', url, options),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
@@ -394,7 +425,22 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 参数: platform - 平台名称
   //       accountId - 账号 ID
   // 返回: { success: true, isLoggedIn: true/false, cookieCount: 10 }
-  checkAccountLoginStatus: (platform, accountId) => ipcRenderer.invoke('check-account-login-status', platform, accountId)
+  checkAccountLoginStatus: (platform, accountId) => ipcRenderer.invoke('check-account-login-status', platform, accountId),
+
+  // 恢复账号会话数据（在打开窗口之前调用）
+  // 用于从后台获取的会话数据恢复到指定账号的 session
+  // 参数: platform - 平台名称（如 'douyin', 'xiaohongshu'）
+  //       accountId - 账号 ID（如 'douyin_xxx_1'）
+  //       sessionData - 会话数据对象或 JSON 字符串（getFullSessionData 返回的格式）
+  // 返回: { success: true, results: { cookies, localStorage, sessionStorage, indexedDB } }
+  restoreAccountSession: (platform, accountId, sessionData) => ipcRenderer.invoke('restore-account-session', platform, accountId, sessionData),
+
+  // 清空账号的所有 Cookies（在窗口关闭前调用）
+  // 用于清空发布窗口对应账号的登录状态
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, deletedCount: 10 }
+  clearAccountCookies: (platform, accountId) => ipcRenderer.invoke('clear-account-cookies', platform, accountId)
 });
 
 // 在页面加载时注入通信代码和协议拦截

@@ -593,9 +593,17 @@ const result = await window.browserAPI.migrateToNewAccount('douyin', {
 
 ```javascript
 // 打开指定账号的发布窗口（使用该账号的 session）
+// 方式1: 仅打开窗口，使用账号现有的登录信息
 const result = await window.browserAPI.openNewWindow(url, {
   platform: 'douyin',
   accountId: 'douyin_xxx_1'
+});
+
+// 方式2: 传递会话数据，浏览器自动清空旧登录信息并恢复新登录信息（推荐）
+const result = await window.browserAPI.openNewWindow(url, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1',
+  sessionData: sessionDataFromBackend  // 从后台获取的会话数据（对象或 JSON 字符串）
 });
 // 返回: { success: true, windowId: 123 }
 ```
@@ -606,9 +614,18 @@ const result = await window.browserAPI.openNewWindow(url, {
 | url | string | 是 | 要打开的 URL |
 | options.platform | string | 多账号模式必填 | 平台名称 |
 | options.accountId | string | 多账号模式必填 | 账号 ID |
+| options.sessionData | object/string | 否 | 会话数据（getFullSessionData 返回的格式）。如果提供，浏览器会在打开窗口前**自动清空该账号的旧 cookies 并恢复新的会话数据**，无需手动调用 clearAccountCookies 和 restoreAccountSession |
 | options.useTemporarySession | boolean | 否 | 为 true 时使用临时 session（授权模式） |
 
 **优先级**：`platform + accountId` > `useTemporarySession` > 默认持久化 session
+
+**注意**：
+- 如果不传 `sessionData`，窗口会使用该账号现有的登录信息
+- 如果传了 `sessionData`，浏览器会自动完成以下流程：
+  1. 清空该账号的所有旧 cookies
+  2. 恢复 sessionData 中的新 cookies
+  3. 打开窗口
+- 这样父页面只需要传递数据，不需要手动调用清空和恢复 API，适合有多个项目的场景
 
 #### 授权流程示例
 
@@ -642,9 +659,16 @@ async function onAuthSuccess(userInfo) {
 ```javascript
 // 1. 首页选择要发布的账号并打开发布窗口
 async function publishToAccount(platform, accountId, publishUrl) {
+  // 从后台获取该账号的会话数据
+  const response = await fetch(`https://apidev.china9.cn/api/mediaauth/get-session/${accountId}`);
+  const { sessionData } = await response.json();
+
+  // 打开发布窗口，传入 sessionData 参数
+  // 浏览器会自动清空旧 cookies 并恢复新的会话数据
   const result = await window.browserAPI.openNewWindow(publishUrl, {
     platform: platform,
-    accountId: accountId
+    accountId: accountId,
+    sessionData: sessionData  // 浏览器会自动清空并恢复
   });
 
   if (result.success) {
@@ -670,6 +694,16 @@ async function onPublishPageLoaded() {
 }
 ```
 
+**推荐流程**：
+1. 父页面从后台获取账号的 `sessionData`
+2. 调用 `openNewWindow` 时传入 `sessionData` 参数
+3. 浏览器自动完成清空和恢复操作
+4. 打开窗口时已经是最新的登录状态
+
+**注意**：
+- 如果使用 `sessionData` 参数，无需手动调用 `clearAccountCookies` 和 `restoreAccountSession`
+- 这种方式适合多项目场景，所有逻辑由浏览器内部完成，父页面只负责传数据
+
 #### 平台名称对照
 
 | 平台 | platform 值 |
@@ -679,6 +713,73 @@ async function onPublishPageLoaded() {
 | 百家号 | `baijiahao` |
 | 微信公众号 | `weixin` |
 | 视频号 | `shipinhao` |
+
+#### 会话数据恢复与清理
+
+##### 恢复账号会话数据（打开窗口前调用）
+```javascript
+// 从后台获取账号的完整会话数据后，在打开发布窗口之前恢复到账号 session
+const result = await window.browserAPI.restoreAccountSession('douyin', 'douyin_xxx_1', sessionData);
+// 参数:
+//   platform - 平台名称（如 'douyin'）
+//   accountId - 账号 ID（如 'douyin_xxx_1'）
+//   sessionData - 会话数据对象或 JSON 字符串（getFullSessionData 返回的格式）
+// 返回: { success: true, results: { cookies: {restored, failed}, ... } }
+
+// 使用示例：打开发布窗口前恢复会话
+async function openPublishWindow(platform, accountId, publishUrl) {
+  // 1. 从后台获取账号的会话数据
+  const response = await fetch(`https://apidev.china9.cn/api/mediaauth/get-session/${accountId}`);
+  const { sessionData } = await response.json();
+
+  // 2. 恢复会话数据到账号 session
+  const restoreResult = await window.browserAPI.restoreAccountSession(platform, accountId, sessionData);
+  if (restoreResult.success) {
+    console.log(`已恢复 ${restoreResult.results.cookies.restored} 个 cookies`);
+
+    // 3. 打开发布窗口（会自动使用该账号的 session）
+    const windowResult = await window.browserAPI.openNewWindow(publishUrl, {
+      platform: platform,
+      accountId: accountId
+    });
+  }
+}
+```
+
+##### 清空账号的所有 Cookies
+```javascript
+// 清空指定账号的所有 cookies（用于发布窗口关闭前清理）
+const result = await window.browserAPI.clearAccountCookies('douyin', 'douyin_xxx_1');
+// 参数:
+//   platform - 平台名称
+//   accountId - 账号 ID
+// 返回: { success: true, deletedCount: 10 }
+
+// 使用方式 1: 手动调用（在发布脚本中）
+async function onPublishComplete() {
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  if (accountInfo.success) {
+    // 发布完成后清空登录状态
+    await window.browserAPI.clearAccountCookies(accountInfo.platform, accountInfo.accountId);
+    // 然后关闭窗口
+    await window.browserAPI.closeCurrentWindow();
+  }
+}
+
+// 使用方式 2: 自动清空（在窗口关闭前自动执行）
+// 需要在发布脚本的 window.beforeunload 或 pagehide 事件中调用
+window.addEventListener('beforeunload', async (e) => {
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  if (accountInfo.success) {
+    await window.browserAPI.clearAccountCookies(accountInfo.platform, accountInfo.accountId);
+  }
+});
+```
+
+**注意事项**：
+1. `restoreAccountSession` 目前只恢复 Cookies，localStorage/sessionStorage/IndexedDB 需要在窗口打开后通过页面脚本恢复（使用 `restoreSessionData`）
+2. `clearAccountCookies` 会清空该账号 session 中的所有 cookies，确保下次发布时使用的是从后台恢复的最新会话数据
+3. 建议在发布完成或窗口关闭前调用 `clearAccountCookies`，避免登录状态累积
 
 ## Script Storage
 

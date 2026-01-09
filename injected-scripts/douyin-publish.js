@@ -259,7 +259,7 @@ let hasProcessed = false;
   // ===========================
   // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
-  (async () => {
+  await (async () => {
     // 如果已经在处理或已处理完成，跳过
     if (isProcessing || hasProcessed) {
       console.log('[抖音发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');

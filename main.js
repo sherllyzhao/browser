@@ -2622,11 +2622,196 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     let windowSession;
     let sessionType = 'default';
 
+    // 调试日志：打印完整的 options
+    console.log('[Window Manager] ========== 收到 open-new-window 请求 ==========');
+    console.log('[Window Manager] URL:', url);
+    console.log('[Window Manager] options:', JSON.stringify(options, null, 2));
+    console.log('[Window Manager] options.platform:', options.platform);
+    console.log('[Window Manager] options.accountId:', options.accountId);
+    console.log('[Window Manager] options.sessionData:', options.sessionData ? '有数据' : '无数据');
+
     if (options.platform && options.accountId) {
       // 多账号模式：使用指定账号的持久化 session
       windowSession = getAccountSession(options.platform, options.accountId);
       sessionType = 'account';
       console.log(`[Window Manager] 使用账号 session: ${options.platform}/${options.accountId}`);
+      console.log(`[Window Manager] options.sessionData 存在: ${!!options.sessionData}`);
+      console.log(`[Window Manager] options.sessionData 类型: ${typeof options.sessionData}`);
+      if (options.sessionData) {
+        console.log(`[Window Manager] options.sessionData 是数组: ${Array.isArray(options.sessionData)}`);
+        if (Array.isArray(options.sessionData)) {
+          console.log(`[Window Manager] options.sessionData 长度: ${options.sessionData.length}`);
+        }
+      }
+
+      // 如果提供了 sessionData，先清空旧的 cookies，再恢复新的会话数据
+      if (options.sessionData) {
+        console.log('[Window Manager] ========== 检测到 sessionData，开始自动清空并恢复会话数据 ==========');
+
+        try {
+          // 1. 清空该账号的所有 cookies
+          const cookies = await windowSession.cookies.get({});
+          console.log(`[Window Manager] 找到 ${cookies.length} 个旧 cookies，开始清空...`);
+
+          let deletedCount = 0;
+          for (const cookie of cookies) {
+            try {
+              const protocol = cookie.secure ? 'https' : 'http';
+              const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+              const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
+              await windowSession.cookies.remove(cookieUrl, cookie.name);
+              deletedCount++;
+            } catch (err) {
+              console.error(`[Window Manager] 删除 cookie 失败 (${cookie.name}):`, err.message);
+            }
+          }
+          console.log(`[Window Manager] ✅ 清空完成，删除了 ${deletedCount} 个 cookies`);
+
+          // 2. 恢复新的会话数据
+          // 支持多种数据格式：
+          // - 格式1: {cookies: [{...}, ...]} - getFullSessionData 返回的格式
+          // - 格式2: [{...}, ...] - 直接的 cookies 数组
+          // - 格式3: ["{...}", ...] - JSON 字符串数组（每个字符串是一个 cookie）
+          // - 格式4: ["{domain, timestamp, cookies: [...]}"] - 包装的 session 数据（element.cookies 的实际格式）
+          let sessionData = options.sessionData;
+
+          // 如果是字符串，先尝试解析
+          if (typeof sessionData === 'string') {
+            try {
+              sessionData = JSON.parse(sessionData);
+            } catch (parseErr) {
+              console.error('[Window Manager] ❌ sessionData 解析失败:', parseErr.message);
+              throw new Error('会话数据解析失败: ' + parseErr.message);
+            }
+          }
+
+          // 获取 cookies 数组
+          let cookiesArray = [];
+
+          if (Array.isArray(sessionData)) {
+            console.log('[Window Manager] sessionData 是数组，长度:', sessionData.length);
+
+            // 检查数组第一个元素来判断格式
+            if (sessionData.length > 0) {
+              let firstItem = sessionData[0];
+
+              // 如果第一个元素是字符串，先解析
+              if (typeof firstItem === 'string') {
+                try {
+                  firstItem = JSON.parse(firstItem);
+                  console.log('[Window Manager] 解析后的第一个元素 keys:', Object.keys(firstItem));
+                } catch (e) {
+                  console.error('[Window Manager] 第一个元素解析失败');
+                }
+              }
+
+              // 格式4: 解析后的对象包含 cookies 字段（这是 element.cookies 的实际格式）
+              if (firstItem && firstItem.cookies && Array.isArray(firstItem.cookies)) {
+                console.log('[Window Manager] 检测到数据格式4: [{domain, timestamp, cookies: [...]}]');
+                // 遍历所有元素，提取 cookies
+                for (let item of sessionData) {
+                  let parsed = item;
+                  if (typeof item === 'string') {
+                    try {
+                      parsed = JSON.parse(item);
+                    } catch (e) {
+                      continue;
+                    }
+                  }
+                  if (parsed.cookies && Array.isArray(parsed.cookies)) {
+                    cookiesArray = cookiesArray.concat(parsed.cookies);
+                  }
+                }
+                console.log(`[Window Manager] 从格式4提取到 ${cookiesArray.length} 个 cookies`);
+              }
+              // 格式2/3: 第一个元素是 cookie 对象（有 name 和 domain 字段）
+              else if (firstItem && firstItem.name && firstItem.domain) {
+                console.log('[Window Manager] 检测到数据格式: 直接的 cookies 数组');
+                // 需要解析每个元素
+                for (let item of sessionData) {
+                  if (typeof item === 'string') {
+                    try {
+                      cookiesArray.push(JSON.parse(item));
+                    } catch (e) {
+                      continue;
+                    }
+                  } else {
+                    cookiesArray.push(item);
+                  }
+                }
+              }
+              else {
+                console.warn('[Window Manager] ⚠️ 无法识别的数组元素格式:', firstItem);
+              }
+            }
+          } else if (sessionData && sessionData.cookies && Array.isArray(sessionData.cookies)) {
+            // 格式1：包含 cookies 字段
+            cookiesArray = sessionData.cookies;
+            console.log('[Window Manager] 检测到数据格式: {cookies: [...]}');
+          } else {
+            console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式');
+          }
+
+          if (cookiesArray.length > 0) {
+            console.log(`[Window Manager] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
+
+            let restoredCount = 0;
+            for (let cookieItem of cookiesArray) {
+              try {
+                // 如果是字符串，需要先解析（格式3）
+                let cookie = cookieItem;
+                if (typeof cookieItem === 'string') {
+                  try {
+                    cookie = JSON.parse(cookieItem);
+                  } catch (e) {
+                    console.error('[Window Manager] Cookie 解析失败:', cookieItem.substring(0, 50));
+                    continue;
+                  }
+                }
+
+                // 检查必要字段
+                if (!cookie.name || !cookie.domain) {
+                  console.warn('[Window Manager] Cookie 缺少必要字段:', cookie);
+                  continue;
+                }
+
+                const protocol = cookie.secure ? 'https' : 'http';
+                const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+                const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
+
+                const cookieDetails = {
+                  url: cookieUrl,
+                  name: cookie.name,
+                  value: cookie.value || '',
+                  domain: cookie.domain,
+                  path: cookie.path || '/',
+                  secure: cookie.secure || false,
+                  httpOnly: cookie.httpOnly || false,
+                  sameSite: cookie.sameSite || 'no_restriction'
+                };
+
+                // 设置过期时间
+                if (cookie.expirationDate) {
+                  cookieDetails.expirationDate = cookie.expirationDate;
+                } else {
+                  cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+                }
+
+                await windowSession.cookies.set(cookieDetails);
+                restoredCount++;
+              } catch (cookieErr) {
+                console.error(`[Window Manager] Cookie 恢复失败:`, cookieErr.message);
+              }
+            }
+            console.log(`[Window Manager] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+          }
+
+          console.log('[Window Manager] ========== 会话数据处理完成 ==========');
+        } catch (err) {
+          console.error('[Window Manager] ❌ 会话数据处理失败:', err);
+          // 不影响窗口创建，继续执行
+        }
+      }
     } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
       const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -4177,6 +4362,134 @@ ipcMain.handle('restore-session-data', async (event, sessionDataStr) => {
     return { success: true, results: results };
   } catch (err) {
     console.error('[Session Restore] 恢复失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 恢复账号会话数据（打开窗口之前调用） ==========
+// 用于从后台获取的会话数据恢复到指定账号的 session
+ipcMain.handle('restore-account-session', async (event, platform, accountId, sessionDataStr) => {
+  console.log('[Account Session Restore] ========== 开始恢复账号会话数据 ==========');
+  console.log('[Account Session Restore] 平台:', platform);
+  console.log('[Account Session Restore] 账号ID:', accountId);
+
+  if (!sessionDataStr) {
+    return { success: false, error: '会话数据为空' };
+  }
+
+  try {
+    // 解析会话数据
+    let sessionData;
+    try {
+      sessionData = typeof sessionDataStr === 'string' ? JSON.parse(sessionDataStr) : sessionDataStr;
+    } catch (parseErr) {
+      return { success: false, error: '会话数据解析失败: ' + parseErr.message };
+    }
+
+    console.log('[Account Session Restore] 域名:', sessionData.domain);
+    console.log('[Account Session Restore] 时间戳:', new Date(sessionData.timestamp).toLocaleString());
+
+    // 获取账号对应的 session（格式：persist:accountId）
+    const sessionPartition = `persist:${accountId}`;
+    const targetSession = session.fromPartition(sessionPartition);
+    console.log('[Account Session Restore] 目标 Session 分区:', sessionPartition);
+
+    const results = {
+      cookies: { restored: 0, failed: 0 },
+      // localStorage 和 sessionStorage 需要在窗口打开后通过页面脚本恢复
+      // 因为无法在窗口打开前注入 JavaScript 到特定域名的上下文
+      localStorage: { restored: 0, failed: 0, skipped: true },
+      sessionStorage: { restored: 0, failed: 0, skipped: true },
+      indexedDB: { restored: 0, failed: 0, skipped: true }
+    };
+
+    // 1. 恢复 Cookies（可以在窗口打开前恢复）
+    if (sessionData.cookies && Array.isArray(sessionData.cookies)) {
+      console.log(`[Account Session Restore] 开始恢复 ${sessionData.cookies.length} 个 Cookies...`);
+
+      for (const cookie of sessionData.cookies) {
+        try {
+          // 构建 cookie URL
+          const protocol = cookie.secure ? 'https' : 'http';
+          const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+          const url = `${protocol}://${domain}${cookie.path || '/'}`;
+
+          const cookieDetails = {
+            url: url,
+            name: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain,
+            path: cookie.path || '/',
+            secure: cookie.secure || false,
+            httpOnly: cookie.httpOnly || false,
+            sameSite: cookie.sameSite || 'no_restriction'
+          };
+
+          // 设置过期时间（如果有的话，否则设置为1年后）
+          if (cookie.expirationDate) {
+            cookieDetails.expirationDate = cookie.expirationDate;
+          } else {
+            cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+          }
+
+          await targetSession.cookies.set(cookieDetails);
+          results.cookies.restored++;
+        } catch (cookieErr) {
+          console.error(`[Account Session Restore] Cookie 恢复失败 (${cookie.name}):`, cookieErr.message);
+          results.cookies.failed++;
+        }
+      }
+      console.log(`[Account Session Restore] Cookies 恢复完成: ${results.cookies.restored} 成功, ${results.cookies.failed} 失败`);
+    }
+
+    console.log('[Account Session Restore] ========== 恢复完成 ==========');
+    console.log('[Account Session Restore] 恢复统计:', results);
+    console.log('[Account Session Restore] 提示: localStorage/sessionStorage/IndexedDB 需要在窗口打开后通过页面脚本恢复');
+
+    return { success: true, results: results };
+  } catch (err) {
+    console.error('[Account Session Restore] 恢复失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 清空账号的所有 Cookies（窗口关闭前调用） ==========
+// 用于清空发布窗口对应账号的登录状态
+ipcMain.handle('clear-account-cookies', async (event, platform, accountId) => {
+  console.log('[Clear Account Cookies] ========== 开始清空账号 Cookies ==========');
+  console.log('[Clear Account Cookies] 平台:', platform);
+  console.log('[Clear Account Cookies] 账号ID:', accountId);
+
+  try {
+    // 获取账号对应的 session
+    const sessionPartition = `persist:${accountId}`;
+    const targetSession = session.fromPartition(sessionPartition);
+    console.log('[Clear Account Cookies] 目标 Session 分区:', sessionPartition);
+
+    // 获取所有 cookies
+    const cookies = await targetSession.cookies.get({});
+    console.log(`[Clear Account Cookies] 找到 ${cookies.length} 个 cookies`);
+
+    let deletedCount = 0;
+    // 删除所有 cookies
+    for (const cookie of cookies) {
+      try {
+        const protocol = cookie.secure ? 'https' : 'http';
+        const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        const url = `${protocol}://${domain}${cookie.path || '/'}`;
+        await targetSession.cookies.remove(url, cookie.name);
+        deletedCount++;
+      } catch (err) {
+        console.error(`[Clear Account Cookies] 删除失败 (${cookie.name}):`, err.message);
+      }
+    }
+
+    console.log('[Clear Account Cookies] ========== 清空完成 ==========');
+    console.log(`[Clear Account Cookies] 成功删除 ${deletedCount} 个 cookies`);
+
+    return { success: true, deletedCount: deletedCount };
+  } catch (err) {
+    console.error('[Clear Account Cookies] 清空失败:', err);
     return { success: false, error: err.message };
   }
 });
