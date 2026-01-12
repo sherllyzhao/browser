@@ -674,62 +674,71 @@ async function fillFormData(dataObj) {
   try {
     const titleAndIntro = dataObj.video.video.sendlog;
     // alert(JSON.stringify(titleAndIntro));
+    await retryOperation(async () => {
+      // 填写标题
+      const titleInput = await waitForElement('.editor-kit-root-container .semi-input', 5000);
 
-    // 填写标题
-    const titleInput = await waitForElement('.editor-kit-root-container .semi-input', 5000);
-    // alert(`Filling title: ${titleAndIntro.title || ''}`);
-
-    try {
       // 先触发focus事件
       if (typeof titleInput.focus === 'function') {
         titleInput.focus();
       } else {
-        titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
+        titleInput.dispatchEvent(new Event('focus', {bubbles: true}));
       }
 
       // 延迟执行，让React状态稳定
       await new Promise(resolve => setTimeout(resolve, 300));
 
       // 使用setNativeValue设置值
-      setNativeValue(titleInput, titleAndIntro.title || '');
+      const targetTitle = titleAndIntro.title || '';
+      setNativeValue(titleInput, targetTitle);
 
       // 额外触发input事件
-      titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+      titleInput.dispatchEvent(new Event('input', {bubbles: true}));
 
-      // alert('✅ Title filled successfully');
+      // 等待 React 更新
+      await new Promise(resolve => setTimeout(resolve, 200));
 
-    } catch (error) {
-      // alert('❌ Title setting failed: ' + error.message);
-    }
+      // 🔑 验证是否成功设置（清除前后空格后比较）
+      const currentValue = (titleInput.value || '').trim();
+      const expectedValue = targetTitle.trim();
+      if (currentValue !== expectedValue) {
+        throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+      }
+
+      console.log('[抖音发布] ✅ 标题设置成功:', currentValue);
+    }, 5, 1000)
+    // alert(`Filling title: ${titleAndIntro.title || ''}`);
     // 设置发布时间
     const publishTime = dataObj.video.formData.send_set;
     if (+publishTime === 2) {
-      try {
-        // 定时发布
-        const publishSection = await waitForElement('.container-EMGgQp:nth-of-type(3) .content-obt4oA.new-layout-sLYOT6:nth-of-type(4)', 3000);
+      await retryOperation(async () => {
+        try {
+          // 定时发布
+          const publishSection = await waitForElement('.container-EMGgQp:nth-of-type(3) .content-obt4oA.new-layout-sLYOT6:nth-of-type(4)', 3000);
 
-        const immediatePublish = publishSection.querySelector('input[type="checkbox"][value="0"]');
-        const scheduledPublish = publishSection.querySelector('input[type="checkbox"][value="1"]');
+          const immediatePublish = publishSection.querySelector('input[type="checkbox"][value="0"]');
+          const scheduledPublish = publishSection.querySelector('input[type="checkbox"][value="1"]');
 
-        if (immediatePublish && scheduledPublish) {
-          setNativeValue(immediatePublish, false);
-          setNativeValue(scheduledPublish, true);
+          if (immediatePublish && scheduledPublish) {
+            setNativeValue(immediatePublish, false);
+            setNativeValue(scheduledPublish, true);
 
-          // 设置日期时间
-          await new Promise(resolve => setTimeout(resolve, 500));
-          const dateInput = await waitForElement('.date-picker-ioPchj input', 3000);
+            // 设置日期时间
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const dateInput = await waitForElement('.date-picker-ioPchj input', 3000);
 
-          // 多次设置确保生效
-          for (let i = 0; i < 2; i++) {
-            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-              break;
+            // 多次设置确保生效
+            for (let i = 0; i < 2; i++) {
+              if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
+                break;
+              }
+              await new Promise(resolve => setTimeout(resolve, 300));
             }
-            await new Promise(resolve => setTimeout(resolve, 300));
           }
+        } catch (error) {
+          // alert('⚠️ Schedule time setting failed: ' + error.message);
         }
-      } catch (error) {
-        // alert('⚠️ Schedule time setting failed: ' + error.message);
-      }
+      }, 5, 1000)
     }
 
     // 填写简介
@@ -739,202 +748,252 @@ async function fillFormData(dataObj) {
         // alert('Intro already filled, introFilled=' + introFilled);
         // 直接跳过，不再查找元素或进行任何操作
       } else {
-        // alert('Intro not filled yet, starting to fill, introFilled=' + introFilled);
-        const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
-        const targetIntro = titleAndIntro.intro || '';
+        await retryOperation(async () => {
+          // alert('Intro not filled yet, starting to fill, introFilled=' + introFilled);
+          const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
+          const targetIntro = titleAndIntro.intro || '';
 
-        // Debug: Show original intro
-        // alert('Original intro length: ' + targetIntro.length + '\nJSON: ' + JSON.stringify(targetIntro));
+          // Debug: Show original intro
+          // alert('Original intro length: ' + targetIntro.length + '\nJSON: ' + JSON.stringify(targetIntro));
 
-        // 超强清理换行符逻辑:使用split/filter彻底清除空行
-        // 1. 将所有HTML标签和换行符统一转为换行符
-        // 2. 分割成行数组
-        // 3. 过滤掉所有空行
-        // 4. 重新组装
-        let cleanedText = targetIntro
-            .replace(/<br\s*\/?>/gi, '\n')              // 将<br>转为换行符
-            .replace(/<\/?(p|div|span)[^>]*>/gi, '\n')  // 将块级元素转为换行符
-            .replace(/<[^>]+>/g, '')                    // 移除所有其他HTML标签
-            .replace(/&nbsp;/g, ' ')                    // 将&nbsp;转为空格
-            .split('\n')                                // 按换行符分割成数组
-            .map(line => line.trim())                   // 每行去除首尾空格
-            .filter(line => line.length > 0)            // 过滤掉空行
-            .join('\n')                                 // 用单个换行符重新连接
-            .trim();
+          // 超强清理换行符逻辑:使用split/filter彻底清除空行
+          // 1. 将所有HTML标签和换行符统一转为换行符
+          // 2. 分割成行数组
+          // 3. 过滤掉所有空行
+          // 4. 重新组装
+          let cleanedText = targetIntro
+              .replace(/<br\s*\/?>/gi, '\n')              // 将<br>转为换行符
+              .replace(/<\/?(p|div|span)[^>]*>/gi, '\n')  // 将块级元素转为换行符
+              .replace(/<[^>]+>/g, '')                    // 移除所有其他HTML标签
+              .replace(/&nbsp;/g, ' ')                    // 将&nbsp;转为空格
+              .split('\n')                                // 按换行符分割成数组
+              .map(line => line.trim())                   // 每行去除首尾空格
+              .filter(line => line.length > 0)            // 过滤掉空行
+              .join('\n')                                 // 用单个换行符重新连接
+              .trim();
 
-        // Debug: Show cleaned text
-        // alert('Cleaned text length: ' + cleanedText.length + '\nJSON: ' + JSON.stringify(cleanedText));
+          // Debug: Show cleaned text
+          // alert('Cleaned text length: ' + cleanedText.length + '\nJSON: ' + JSON.stringify(cleanedText));
 
-        // 对当前页面内容进行同样的清理,确保比较标准一致
-        const currentRawContent = (introInput.textContent || introInput.innerText || '');
-        const currentContent = currentRawContent
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0)
-            .join('\n')
-            .trim();
+          // 对当前页面内容进行同样的清理,确保比较标准一致
+          const currentRawContent = (introInput.textContent || introInput.innerText || '');
+          const currentContent = currentRawContent
+              .split('\n')
+              .map(line => line.trim())
+              .filter(line => line.length > 0)
+              .join('\n')
+              .trim();
 
-        let targetContent = cleanedText;
+          let targetContent = cleanedText;
 
-        // Debug: Show current vs target
-        // alert('Current content: ' + JSON.stringify(currentContent) + '\nTarget: ' + JSON.stringify(targetContent) + '\nEqual: ' + (currentContent === targetContent));
+          // Debug: Show current vs target
+          // alert('Current content: ' + JSON.stringify(currentContent) + '\nTarget: ' + JSON.stringify(targetContent) + '\nEqual: ' + (currentContent === targetContent));
 
-        // 只有在标记未设置且内容不同时才填写
-        if (currentContent !== targetContent) {
-          // 立即标记为已填写（在任何操作之前，防止并发）
-          introFilled = true;
+          // 只有在标记未设置且内容不同时才填写
+          if (currentContent !== targetContent) {
+            // 立即标记为已填写（在任何操作之前，防止并发）
+            introFilled = true;
 
-          // 清空现有内容，避免累积
-          introInput.innerHTML = '';
+            // 清空现有内容，避免累积
+            introInput.innerHTML = '';
 
-          // 额外清理：移除可能存在的占位符或空节点
-          while (introInput.firstChild) {
-            introInput.removeChild(introInput.firstChild);
-          }
-
-          // 检测内容是否有#并且其后跟有文字
-          const topicList = extractAfterHash(targetContent, { all: true, includeHash: true });
-          console.log("🚀 ~ fillFormData ~ topicList: ", topicList);
-          if (topicList.length > 0) {
-            //  删除掉所有话题
-            cleanedText = removeHashTags(targetContent);
-          }
-
-          // 先触发focus事件
-          if (typeof introInput.focus === 'function') {
-            introInput.focus();
-          } else {
-            introInput.dispatchEvent(new Event('focus', { bubbles: true }));
-          }
-
-          // 延迟执行，让React状态稳定
-          await new Promise(resolve => setTimeout(resolve, 300));
-
-          // 使用简单的方式填充内容
-          const lines = cleanedText.split('\n').filter(line => line.trim());
-          const fragment = document.createDocumentFragment();
-
-          lines.forEach((line, index) => {
-            const textNode = document.createTextNode(line);
-            fragment.appendChild(textNode);
-            // 不是最后一行才加<br>
-            if (index < lines.length - 1) {
-              const br = document.createElement('br');
-              fragment.appendChild(br);
+            // 额外清理：移除可能存在的占位符或空节点
+            while (introInput.firstChild) {
+              introInput.removeChild(introInput.firstChild);
             }
-          });
 
-          introInput.innerHTML = '';
-          introInput.appendChild(fragment);
-
-          // 只触发一次input事件
-          introInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-          // 延迟后检查编辑器是否自动添加了额外内容
-          await new Promise(resolve => setTimeout(resolve, 100));
-          // alert('After input event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
-
-          // 清理所有空的 ace-line 元素（编辑器可能在开头自动添加）
-          const aceLines = introInput.querySelectorAll('.ace-line');
-          // alert('Found ace-line elements: ' + aceLines.length);
-
-          let removedCount = 0;
-          aceLines.forEach((line, idx) => {
-            const text = (line.textContent || '').trim();
-            // 移除所有空白字符和零宽字符（\u200B-\u200D, \uFEFF）
-            const cleanText = text.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
-            // alert('ace-line[' + idx + '] text: "' + text + '" clean: "' + cleanText + '" length: ' + cleanText.length);
-            if (!cleanText || cleanText.length === 0) {
-              line.remove();
-              removedCount++;
+            // 检测内容是否有#并且其后跟有文字
+            const topicList = extractAfterHash(targetContent, {all: true, includeHash: true});
+            console.log("🚀 ~ fillFormData ~ topicList: ", topicList);
+            if (topicList.length > 0) {
+              //  删除掉所有话题
+              cleanedText = removeHashTags(targetContent);
             }
-          });
 
-          // 单独处理话题
-          if (topicList.length > 0) {
-            const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
-            for (let topicListElement of topicList) {
-              // 聚焦编辑器
+            // 先触发focus事件
+            if (typeof introInput.focus === 'function') {
               introInput.focus();
+            } else {
+              introInput.dispatchEvent(new Event('focus', {bubbles: true}));
+            }
 
-              // 将光标移到末尾
-              const selection = window.getSelection();
-              const range = document.createRange();
-              range.selectNodeContents(introInput);
-              range.collapse(false); // false = 折叠到末尾
-              selection.removeAllRanges();
-              selection.addRange(range);
+            // 延迟执行，让React状态稳定
+            await new Promise(resolve => setTimeout(resolve, 300));
 
-              // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
-              document.execCommand('insertText', false, topicListElement);
+            // 使用简单的方式填充内容
+            const lines = cleanedText.split('\n').filter(line => line.trim());
+            const fragment = document.createDocumentFragment();
 
-              // 触发 input 事件确保编辑器识别变化
-              introInput.dispatchEvent(new InputEvent('input', {
-                inputType: 'insertText',
-                data: topicListElement,
-                bubbles: true,
-              }));
+            lines.forEach((line, index) => {
+              const textNode = document.createTextNode(line);
+              fragment.appendChild(textNode);
+              // 不是最后一行才加<br>
+              if (index < lines.length - 1) {
+                const br = document.createElement('br');
+                fragment.appendChild(br);
+              }
+            });
 
-              // 等待话题建议列表出现（使用 waitForElement）
-              try {
-                const mentionSuggest = await waitForElement('.mention-suggest-mount-dom', 3000);
-                console.log('🏷️ 话题建议列表已出现:', mentionSuggest);
+            introInput.innerHTML = '';
+            introInput.appendChild(fragment);
 
-                if (mentionSuggest) {
-                  await new Promise(resolve => setTimeout(resolve, 100));
+            // 只触发一次input事件
+            introInput.dispatchEvent(new Event('input', {bubbles: true}));
 
-                  // 尝试多种选择器找到话题选项
-                  const selectors = [
-                    '[class*="tag-dVUDkJ"]',
-                    '[class*="mention-suggest-item-container"] > div > div:first-child',
-                    '[class*="tag-hash-"]',
-                    '[class*="suggest-item-container"] > div > div',
-                    '[class*="mention-suggest"] div div div'
-                  ];
+            // 延迟后检查编辑器是否自动添加了额外内容
+            await new Promise(resolve => setTimeout(resolve, 100));
+            // alert('After input event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
 
-                  let firstOption = null;
-                  for (const selector of selectors) {
-                    firstOption = mentionSuggest.querySelector(selector);
+            // 清理所有空的 ace-line 元素（编辑器可能在开头自动添加）
+            const aceLines = introInput.querySelectorAll('.ace-line');
+            // alert('Found ace-line elements: ' + aceLines.length);
+
+            let removedCount = 0;
+            aceLines.forEach((line, idx) => {
+              const text = (line.textContent || '').trim();
+              // 移除所有空白字符和零宽字符（\u200B-\u200D, \uFEFF）
+              const cleanText = text.replace(/[\s\u200B-\u200D\uFEFF]/g, '');
+              // alert('ace-line[' + idx + '] text: "' + text + '" clean: "' + cleanText + '" length: ' + cleanText.length);
+              if (!cleanText || cleanText.length === 0) {
+                line.remove();
+                removedCount++;
+              }
+            });
+
+            // 单独处理话题（添加防重复标记）
+            if (topicList.length > 0 && !window.__TOPIC_FILLED__) {
+              window.__TOPIC_FILLED__ = true; // 标记话题已处理
+
+              const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
+              for (let topicListElement of topicList) {
+                console.log('🏷️ 开始处理话题:', topicListElement);
+
+                // 聚焦编辑器
+                introInput.focus();
+
+                // 将光标移到末尾
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(introInput);
+                range.collapse(false); // false = 折叠到末尾
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
+                document.execCommand('insertText', false, topicListElement);
+
+                // 触发 input 事件确保编辑器识别变化
+                introInput.dispatchEvent(new InputEvent('input', {
+                  inputType: 'insertText',
+                  data: topicListElement,
+                  bubbles: true,
+                }));
+
+                // 等待话题建议列表出现（使用 waitForElement）
+                try {
+                  const mentionSuggest = await waitForElement('.mention-suggest-mount-dom', 3000);
+                  console.log('🏷️ 话题建议列表已出现');
+
+                  if (mentionSuggest) {
+                    // 轮询等待话题选项出现（因为选项是异步接口返回的）
+                    let firstOption = null;
+                    const maxRetries = 30; // 最多等待3秒（30 * 100ms）
+                    let retryCount = 0;
+
+                    while (!firstOption && retryCount < maxRetries) {
+                      // 根据截图的实际 DOM 结构，使用精确的选择器
+                      const selectors = [
+                        // 方式1: 直接找第一个 mention-suggest-item-container
+                        '[class*="mention-suggest-item-container"]:first-of-type',
+                        // 方式2: 通过层级关系找
+                        '.mention-suggest-mount-dom > div > [class*="mention-suggest-item-container"]:first-child',
+                        // 方式3: 找任意一个 item-container
+                        '[class*="mention-suggest-item-container"]',
+                        // 方式4: 更深层的结构
+                        '.mention-suggest-mount-dom [class*="mention-suggest-item-container"] > div:first-child'
+                      ];
+
+                      for (const selector of selectors) {
+                        const options = mentionSuggest.querySelectorAll('[class*="mention-suggest-item-container-"] [class*="tag-"]');
+                        if (options.length > 0) {
+                          firstOption = options[0];
+                          console.log('🏷️ 找到话题选项，选择器:', selector, '共', options.length, '个选项');
+                          console.log('🏷️ 选项文本:', firstOption.textContent?.trim().substring(0, 50));
+                          break;
+                        }
+                      }
+
+                      // 如果还没找到，每10次重试打印 DOM 结构
+                      if (!firstOption) {
+                        if (retryCount % 10 === 0) {
+                          console.log('🏷️ 重试', retryCount, '次，当前DOM:', mentionSuggest.innerHTML.substring(0, 500));
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        retryCount++;
+                      }
+                    }
+
                     if (firstOption) {
-                      console.log('🏷️ 找到话题选项，选择器:', selector, firstOption);
-                      break;
+                      // 确保元素可见
+                      firstOption.scrollIntoView({ block: 'nearest' });
+                      await new Promise(resolve => setTimeout(resolve, 100));
+
+                      // 尝试多种点击方式
+                      console.log('🏷️ 准备点击话题选项');
+
+                      // 方式1: 模拟完整的鼠标事件
+                      const rect = firstOption.getBoundingClientRect();
+                      const clickX = rect.left + rect.width / 2;
+                      const clickY = rect.top + rect.height / 2;
+
+                      firstOption.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: clickX, clientY: clickY }));
+                      await new Promise(resolve => setTimeout(resolve, 50));
+
+                      firstOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: clickX, clientY: clickY }));
+                      await new Promise(resolve => setTimeout(resolve, 50));
+
+                      firstOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: clickX, clientY: clickY }));
+                      await new Promise(resolve => setTimeout(resolve, 50));
+
+                      firstOption.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: clickX, clientY: clickY }));
+
+                      // 方式2: 原生点击（作为兜底）
+                      await new Promise(resolve => setTimeout(resolve, 50));
+                      firstOption.click();
+
+                      console.log('🏷️ 已点击话题选项');
+                      await new Promise(resolve => setTimeout(resolve, 500));
+                    } else {
+                      console.log('🏷️ 未找到话题选项（已重试', retryCount, '次）');
+                      console.log('🏷️ 完整DOM:', mentionSuggest.innerHTML);
                     }
                   }
-
-                  if (firstOption) {
-                    firstOption.click();
-                    console.log('🏷️ 已点击话题选项');
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                  } else {
-                    console.log('🏷️ 未找到话题选项，列表内容:', mentionSuggest.innerHTML.substring(0, 500));
-                  }
+                } catch (e) {
+                  console.log('🏷️ 话题建议列表未出现:', e.message);
                 }
-              } catch (e) {
-                console.log('🏷️ 话题建议列表未出现:', e.message);
               }
             }
-          }
 
-          // 延迟后触发blur事件
-          await new Promise(resolve => setTimeout(resolve, 200));
-          if (typeof introInput.blur === 'function') {
-            introInput.blur();
+            // 延迟后触发blur事件
+            await new Promise(resolve => setTimeout(resolve, 200));
+            if (typeof introInput.blur === 'function') {
+              introInput.blur();
+            } else {
+              introInput.dispatchEvent(new Event('blur', {bubbles: true}));
+            }
+
+            // 最后再检查一次
+            await new Promise(resolve => setTimeout(resolve, 100));
+            // alert('After blur event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
+
+            // alert('✅ Intro filled successfully');
           } else {
-            introInput.dispatchEvent(new Event('blur', { bubbles: true }));
+            // 内容已经正确，也标记为已填写
+            introFilled = true;
+            // alert('✅ Intro content already correct, marking as filled');
           }
-
-          // 最后再检查一次
-          await new Promise(resolve => setTimeout(resolve, 100));
-          // alert('After blur event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
-
-          // alert('✅ Intro filled successfully');
-        } else {
-          // 内容已经正确，也标记为已填写
-          introFilled = true;
-          // alert('✅ Intro content already correct, marking as filled');
-        }
+        }, 5, 1000)
       }
-
     } catch (error) {
       // alert('⚠️ Intro handling failed: ' + error.message);
     }
@@ -943,73 +1002,75 @@ async function fillFormData(dataObj) {
     try {
       console.log('[封面设置] 开始设置封面...');
 
-      // 尝试多种选择器策略
-      let coverInput = null;
-      const selectors = [
-        '.recommendCover-vWWsHB:nth-child(1)',
-        '.recommendCover-vWWsHB:first-child',
-        '.recommendCover-vWWsHB'
-      ];
+      await retryOperation(async () => {
+        // 尝试多种选择器策略
+        let coverInput = null;
+        const selectors = [
+          '.recommendCover-vWWsHB:nth-child(1)',
+          '.recommendCover-vWWsHB:first-child',
+          '.recommendCover-vWWsHB'
+        ];
 
-      for (const selector of selectors) {
-        try {
-          coverInput = await waitForElement(selector, 3000);
-          if (coverInput) {
-            console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-            break;
+        for (const selector of selectors) {
+          try {
+            coverInput = await waitForElement(selector, 3000);
+            if (coverInput) {
+              console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+              break;
+            }
+          } catch (e) {
+            console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
           }
-        } catch (e) {
-          console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
         }
-      }
 
-      if (!coverInput) {
-        throw new Error('未找到任何封面元素');
-      }
+        if (!coverInput) {
+          throw new Error('未找到任何封面元素');
+        }
 
-      console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
+        console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
 
-      // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
-      const rect = coverInput.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
+        // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
+        const rect = coverInput.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
 
-      const mouseEventOptions = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: x,
-        clientY: y,
-        screenX: x,
-        screenY: y,
-        button: 0
-      };
+        const mouseEventOptions = {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+          screenX: x,
+          screenY: y,
+          button: 0
+        };
 
-      // 完整的鼠标事件序列
-      coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
+        // 完整的鼠标事件序列
+        coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+        await new Promise(resolve => setTimeout(resolve, 50));
 
-      coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
+        coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+        await new Promise(resolve => setTimeout(resolve, 50));
 
-      coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-      await new Promise(resolve => setTimeout(resolve, 50));
+        coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+        await new Promise(resolve => setTimeout(resolve, 50));
 
-      coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+        coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
 
-      console.log('[封面设置] ✅ 已触发完整点击事件序列');
+        console.log('[封面设置] ✅ 已触发完整点击事件序列');
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // 尝试查找并确认弹窗（如果没有弹窗也没关系）
-      try {
-        const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
-        const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
-        confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
-        console.log('[封面设置] ✅ 已确认弹窗');
-      } catch (dialogError) {
-        console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
-      }
+        // 尝试查找并确认弹窗（如果没有弹窗也没关系）
+        try {
+          const confirmDialog = await waitForElement('.semi-modal-content.semi-modal-content-animate-show', 3000);
+          const confirmBtn = await waitForElement('.semi-button.semi-button-primary', 3000, 200, confirmDialog);
+          confirmBtn.dispatchEvent(new Event('click', { bubbles: true }));
+          console.log('[封面设置] ✅ 已确认弹窗');
+        } catch (dialogError) {
+          console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置:', dialogError.message);
+        }
+      }, 5, 1000);
     } catch (error) {
       console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
     }

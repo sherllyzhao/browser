@@ -674,13 +674,13 @@ async function fillFormData(dataObj) {
 
           // 检测内容是否有#并且其后跟有文字（提取话题）
           const topicList = extractAfterHash(targetContent, { all: true, includeHash: true });
-          console.log("[小红书发布] 🏷️ 检测到话题列表: ", topicList);
+          console.log("🚀 ~ fillFormData ~ topicList: ", topicList);
 
           // 如果有话题，先从内容中移除话题文本
           let cleanedIntro = targetContent;
           if (topicList.length > 0) {
+            //  删除掉所有话题
             cleanedIntro = removeHashTags(targetContent);
-            console.log("[小红书发布] 清理后的简介内容: ", cleanedIntro);
           }
 
           // 只有在标记未设置且内容不同时才填写
@@ -705,76 +705,78 @@ async function fillFormData(dataObj) {
 
             // 单独处理话题
             if (topicList.length > 0) {
-              console.log('[小红书发布] 🏷️ 开始填写话题...');
-              await delay(500); // 等待编辑器稳定
+              const introInput = await waitForElement('.tiptap-container .ProseMirror', 5000);
+              for (let topicListElement of topicList) {
+                // 聚焦编辑器
+                introInput.focus();
 
-              for (let topicText of topicList) {
+                // 将光标移到末尾
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(introInput);
+                range.collapse(false); // false = 折叠到末尾
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                // 先插入一个空格分隔
+                document.execCommand('insertText', false, ' ');
+
+                // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
+                document.execCommand('insertText', false, topicListElement);
+
+                // 触发 input 事件确保编辑器识别变化
+                introInput.dispatchEvent(new InputEvent('input', {
+                  inputType: 'insertText',
+                  data: topicListElement,
+                  bubbles: true,
+                }));
+
+                // 等待话题建议列表出现（使用 waitForElement）
                 try {
-                  // 重新获取编辑器引用
-                  const editor = await waitForElement('.tiptap-container .ProseMirror', 3000);
+                  const topicSuggest = await waitForElement('#creator-editor-topic-container', 3000);
+                  console.log('🏷️ 话题建议列表已出现:', topicSuggest);
 
-                  // 聚焦编辑器
-                  editor.focus();
+                  if (topicSuggest) {
+                    // 尝试多种选择器找到话题选项
+                    const selectors = [
+                      '#creator-editor-topic-container .item.is-selected',
+                      '#creator-editor-topic-container .item:first-child',
+                      '#creator-editor-topic-container .item',
+                      '#creator-editor-topic-container div[class*="item"]'
+                    ];
 
-                  // 将光标移到末尾
-                  const selection = window.getSelection();
-                  const range = document.createRange();
-                  range.selectNodeContents(editor);
-                  range.collapse(false); // false = 折叠到末尾
-                  selection.removeAllRanges();
-                  selection.addRange(range);
+                    // 轮询等待话题选项出现（因为选项是异步接口返回的）
+                    let firstOption = null;
+                    const maxRetries = 30; // 最多等待3秒（30 * 100ms）
+                    let retryCount = 0;
 
-                  // 先插入一个空格分隔
-                  document.execCommand('insertText', false, ' ');
-                  await delay(100);
-
-                  // 使用 execCommand 模拟真实输入话题（这会触发编辑器的话题检测）
-                  document.execCommand('insertText', false, topicText);
-
-                  // 触发 input 事件确保编辑器识别变化
-                  editor.dispatchEvent(new InputEvent('input', {
-                    inputType: 'insertText',
-                    data: topicText,
-                    bubbles: true,
-                  }));
-
-                  console.log('[小红书发布] 🏷️ 已输入话题:', topicText);
-
-                  // 等待话题建议列表出现
-                  try {
-                    let topicSuggest = null;
-                    topicSuggest = await waitForElement('#creator-editor-topic-container', 2000);
-                    console.log("🚀 ~ fillFormData ~ topicSuggest: ", topicSuggest);
-
-                    if (topicSuggest) {
-                      await delay(3000);
-
-                      let firstOption = null;
-
-                      firstOption = await waitForElement('#creator-editor-topic-container .item.is-selected', 5000);
-                      console.log("🚀 ~ fillFormData ~ firstOption: ", firstOption);
-
-                      if (firstOption) {
-                        firstOption.click();
-                        console.log('[小红书发布] 🏷️ 已点击话题选项');
-                        await delay(300);
-                      } else {
-                        console.log('[小红书发布] 🏷️ 未找到话题选项，话题建议列表内容:', topicSuggest.innerHTML.substring(0, 500));
+                    while (!firstOption && retryCount < maxRetries) {
+                      for (const selector of selectors) {
+                        firstOption = topicSuggest.querySelector(selector);
+                        if (firstOption) {
+                          console.log('🏷️ 找到话题选项，选择器:', selector, '重试次数:', retryCount, firstOption);
+                          break;
+                        }
                       }
-                    } else {
-                      console.log('[小红书发布] 🏷️ 话题建议列表未出现');
-                    }
-                  } catch (e) {
-                    console.log('[小红书发布] 🏷️ 等待话题建议列表失败:', e.message);
-                  }
 
-                  await delay(300);
-                } catch (topicError) {
-                  console.error('[小红书发布] 🏷️ 处理话题失败:', topicText, topicError);
+                      if (!firstOption) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        retryCount++;
+                      }
+                    }
+
+                    if (firstOption) {
+                      firstOption.click();
+                      console.log('🏷️ 已点击话题选项');
+                      await new Promise(resolve => setTimeout(resolve, 200));
+                    } else {
+                      console.log('🏷️ 未找到话题选项（已重试', retryCount, '次），列表内容:', topicSuggest.innerHTML.substring(0, 500));
+                    }
+                  }
+                } catch (e) {
+                  console.log('🏷️ 话题建议列表未出现:', e.message);
                 }
               }
-
-              console.log('[小红书发布] 🏷️ 话题填写完成');
             }
           } else {
             // 内容已经正确，也标记为已填写
