@@ -218,6 +218,15 @@ let hasProcessed = false;
                 console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
               }
 
+              // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+              const currentUrl = window.location.href;
+              const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+              if (!isPublishPage) {
+                console.log('[视频号发布] ⏭️ 当前不是发布页，跳过上传流程，URL:', currentUrl);
+                isProcessing = false;
+                return;
+              }
+
               // 等待wujie-app元素
               const wujieApp = await waitForElement("wujie-app", 15000);
               if (wujieApp) {
@@ -392,10 +401,18 @@ let hasProcessed = false;
   // ===========================
   // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
-  (async () => {
+  await (async () => {
     // 如果已经在处理或已处理完成，跳过
     if (isProcessing || hasProcessed) {
       console.log('[视频号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+      return;
+    }
+
+    // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+    const currentUrl = window.location.href;
+    const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+    if (!isPublishPage) {
+      console.log('[视频号发布] ⏭️ 当前不是发布页，跳过全局存储读取，URL:', currentUrl);
       return;
     }
 

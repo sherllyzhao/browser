@@ -304,34 +304,40 @@ window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
     let blob;
     let contentType = 'video/mp4';
 
-    // 优先使用主进程下载（绕过跨域限制）
-    if (window.browserAPI?.downloadVideo) {
-        console.log('[uploadVideo] 使用主进程下载...');
-        const result = await window.browserAPI.downloadVideo(pathImage);
+    // 优先使用主进程下载（绕过跨域限制），添加重试机制防止并发下载时连接被重置
+    const downloadResult = await retryOperation(async () => {
+        if (window.browserAPI?.downloadVideo) {
+            console.log('[uploadVideo] 使用主进程下载...');
+            const result = await window.browserAPI.downloadVideo(pathImage);
 
-        if (!result.success) {
-            throw new Error('Video download failed: ' + result.error);
-        }
+            if (!result.success) {
+                throw new Error('Video download failed: ' + result.error);
+            }
 
-        // 将 base64 转换为 Blob
-        const binaryString = atob(result.data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+            // 将 base64 转换为 Blob
+            const binaryString = atob(result.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            const downloadedBlob = new Blob([bytes], { type: result.contentType });
+            console.log('[uploadVideo] 主进程下载成功，大小:', result.size, 'bytes');
+            return { blob: downloadedBlob, contentType: result.contentType };
+        } else {
+            // 回退到 fetch（可能有跨域问题）
+            console.log('[uploadVideo] browserAPI.downloadVideo 不可用，使用 fetch...');
+            const response = await fetch(pathImage);
+            if (!response.ok) {
+                throw new Error('HTTP error! status: ' + response.status);
+            }
+            const downloadedBlob = await response.blob();
+            const type = response.headers.get('Content-Type') || downloadedBlob.type || 'video/mp4';
+            return { blob: downloadedBlob, contentType: type };
         }
-        blob = new Blob([bytes], { type: result.contentType });
-        contentType = result.contentType;
-        console.log('[uploadVideo] 主进程下载成功，大小:', result.size, 'bytes');
-    } else {
-        // 回退到 fetch（可能有跨域问题）
-        console.log('[uploadVideo] browserAPI.downloadVideo 不可用，使用 fetch...');
-        const response = await fetch(pathImage);
-        if (!response.ok) {
-            throw new Error('HTTP error! status: ' + response.status);
-        }
-        blob = await response.blob();
-        contentType = response.headers.get('Content-Type') || blob.type || 'video/mp4';
-    }
+    }, 5, 3000);  // 最多重试5次，每次间隔3秒（处理并发下载时的 ECONNRESET 错误）
+
+    blob = downloadResult.blob;
+    contentType = downloadResult.contentType;
 
     // 从 URL 或 Content-Type 中提取文件扩展名
     let extension = '.mp4'; // 默认扩展名
@@ -356,17 +362,19 @@ window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
 
     const file = new File([blob], fileName, {type: contentType});
 
-    // 等待上传按钮
-    //alert('Looking for upload input...');
+    // 等待上传按钮（使用重试机制，最多等待60秒）
+    console.log('[uploadVideo] 开始查找上传 input 元素...');
     let uploadInput;
     if (!shadowRoot) {
-        // alert('wujie-app has no shadow root, trying to access iframe directly');
-        // 如果没有Shadow DOM，尝试直接查找iframe
-        uploadInput = await waitForElement('input[type="file"]', 3000);
+        // 如果没有Shadow DOM，尝试直接查找
+        uploadInput = await waitForElement('input[type="file"]', 30000);
     } else {
-        // 深入Shadow DOM查找
-        uploadInput = await deepShadowSearch(shadowRoot, 'input[type="file"]', 3);
+        // 深入Shadow DOM查找，使用重试机制（deepShadowSearch 超时时间短，需要多次重试）
+        uploadInput = await retryOperation(async () => {
+            return await deepShadowSearch(shadowRoot, 'input[type="file"]', 5);
+        }, 30, 2000);  // 最多重试30次，每次间隔2秒，总共最多60秒
     }
+    console.log('[uploadVideo] ✅ 找到上传 input 元素:', uploadInput ? 'success' : 'failed');
 
     // 执行文件上传
     //alert('Uploading file: ' + file.name);

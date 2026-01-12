@@ -25,7 +25,14 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -10)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff HEAD~1 --stat)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff HEAD~1)",
-      "Bash(git -C \"D:\\浏览器\\运营助手\" status)"
+      "Bash(git -C \"D:\\浏览器\\运营助手\" status)",
+      "Bash(cmd /c \"dir /b D:\\浏览器\\运营助手\\*.js\")",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff main.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" checkout main.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-publish.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" checkout injected-scripts/shipinhao-publish.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff content-preload.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" checkout content-preload.js)"
     ],
     "deny": [],
     "ask": []

@@ -173,18 +173,28 @@ contextBridge.exposeInMainWorld('browserAPI', {
           // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
           const openOptions = {};
 
-          // 为每个窗口创建唯一的 session ID（避免多窗口共享 session 导致登录覆盖）
-          const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-          if (platformFullName) {
-            openOptions.platform = platformFullName;
-            openOptions.accountId = uniqueSessionId;
-            console.log(`[BrowserAPI] 📋 使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
-          }
+          // 🔑 多账号模式开关
+          // true: 每个窗口使用独立 session，从父页面传入的 cookies 恢复登录状态
+          // false: 所有窗口使用共享 session（persist:browserview）
+          const ENABLE_MULTI_ACCOUNT = true;
 
-          // 检查是否有 cookies 数据
-          if (element.cookies && element.cookies.length > 0) {
+          if (ENABLE_MULTI_ACCOUNT && element.cookies && element.cookies.length > 0) {
+            // 多账号模式：为每个窗口创建唯一的 session ID
+            const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+            if (platformFullName) {
+              openOptions.platform = platformFullName;
+              openOptions.accountId = uniqueSessionId;
+              console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
+            }
             openOptions.sessionData = element.cookies;
             console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${element.cookies.length} 个`);
+          } else {
+            // 普通模式：使用共享 session，保持现有登录状态
+            if (element.cookies && element.cookies.length > 0) {
+              console.log(`[BrowserAPI] 📋 检测到 cookies 数据（${element.cookies.length} 个），但多账号模式已禁用，使用共享 session`);
+            } else {
+              console.log(`[BrowserAPI] 📋 普通模式，使用共享 session（persist:browserview）`);
+            }
           }
 
           // 打开新窗口，获取窗口 ID

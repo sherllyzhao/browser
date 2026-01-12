@@ -539,6 +539,12 @@ async function publishApi(dataObj) {
     console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
     await delay(1000);
 
+    if (isDevEnvironment) {
+      alert(123);
+      console.log('[小红书发布] ⚠️ 开发环境确认，跳过点击发布按钮');
+      return;
+    }
+
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
     if (!clickResult.success) {

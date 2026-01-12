@@ -89,7 +89,7 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
   'http://localhost:5173/',
-  'https://dev.china9.cn/aigc_browser/',
+  'https://dev.china9.cn/aigc_browser2/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
@@ -200,7 +200,7 @@ function createWindow() {
           const currentUrl = browserView.webContents.getURL();
           if (currentUrl && !currentUrl.includes('login.html')) {
             // 判断是哪个项目
-            if (currentUrl.includes('aigc_browser') || currentUrl.includes('localhost:5173')) {
+            if (currentUrl.includes('aigc_browser2') || currentUrl.includes('localhost:5173')) {
               globalStorage.last_project = 'aigc';
               console.log('[Window Close] 💾 记录项目类型: aigc');
             } else if (currentUrl.includes('jzt_all') || currentUrl.includes('geo') ||
@@ -490,7 +490,7 @@ function createWindow() {
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser/'
+            ? 'https://dev.china9.cn/aigc_browser2/'
             : 'http://localhost:5173/';
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
@@ -745,8 +745,8 @@ function createWindow() {
       'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
+      'dev.china9.cn/aigc_browser2/#/login',
+      'china9.cn/aigc_browser2/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
@@ -779,13 +779,14 @@ function createWindow() {
         const cookies = await ses.cookies.get({});
 
         // 检查必要的 Cookie 是否存在
+        // 注意：只检查 token 和 access_token，不检查 PHPSESSID
+        // PHPSESSID 是服务器端设置的会话 Cookie，首次访问时还没有
         const hasToken = cookies.some(c => c.name === 'token' && c.value);
         const hasAccessToken = cookies.some(c => c.name === 'access_token' && c.value);
-        const hasPHPSESSID = cookies.some(c => c.name === 'PHPSESSID' && c.value);
 
-        console.log(`[Auth Check] token: ${hasToken}, access_token: ${hasAccessToken}, PHPSESSID: ${hasPHPSESSID}`);
+        console.log(`[Auth Check] token: ${hasToken}, access_token: ${hasAccessToken}`);
 
-        if (!hasToken || !hasAccessToken || !hasPHPSESSID) {
+        if (!hasToken || !hasAccessToken) {
           console.log('[Auth Check] ⚠️ 缺少登录凭证，跳转到登录页');
           // 清除过期的登录信息
           delete globalStorage.login_token;
@@ -812,8 +813,8 @@ function createWindow() {
       'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
+      'dev.china9.cn/aigc_browser2/#/login',
+      'china9.cn/aigc_browser2/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
@@ -846,11 +847,10 @@ function createWindow() {
 
         const hasToken = cookies.some(c => c.name === 'token' && c.value);
         const hasAccessToken = cookies.some(c => c.name === 'access_token' && c.value);
-        const hasPHPSESSID = cookies.some(c => c.name === 'PHPSESSID' && c.value);
 
-        console.log(`[Auth Check - DOM Ready] token: ${hasToken}, access_token: ${hasAccessToken}, PHPSESSID: ${hasPHPSESSID}`);
+        console.log(`[Auth Check - DOM Ready] token: ${hasToken}, access_token: ${hasAccessToken}`);
 
-        if (!hasToken || !hasAccessToken || !hasPHPSESSID) {
+        if (!hasToken || !hasAccessToken) {
           console.log('[Auth Check - DOM Ready] ⚠️ 缺少登录凭证，跳转到登录页');
           delete globalStorage.login_token;
           delete globalStorage.login_expires;
@@ -943,7 +943,7 @@ function createWindow() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);
@@ -984,7 +984,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);
@@ -2805,6 +2805,16 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             }
             console.log(`[Window Manager] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
           }
+
+          // 🔑 强制刷新到磁盘，确保数据完全持久化
+          console.log('[Window Manager] ⏳ 正在刷新 Session 数据到磁盘...');
+          await windowSession.flushStorageData();
+          console.log('[Window Manager] ✅ Session 数据已刷新到磁盘');
+
+          // 🔑 延迟 500ms，确保数据完全写入后再创建窗口
+          console.log('[Window Manager] ⏳ 等待 500ms 确保数据持久化...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          console.log('[Window Manager] ✅ 等待完成，准备创建窗口');
 
           console.log('[Window Manager] ========== 会话数据处理完成 ==========');
         } catch (err) {
