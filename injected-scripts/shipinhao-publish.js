@@ -740,22 +740,6 @@ async function publishApi(dataObj) {
       console.error('[视频号发布] ❌ 保存 publishId 失败:', e);
     }
 
-    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
-    // 默认策略：无法确定环境时，执行点击（安全优先）
-    let isDevEnvironment = false;
-
-    if (window.browserAPI) {
-      isDevEnvironment = window.browserAPI.isProduction === false;
-      console.log('[视频号发布] 环境检测:', {
-        hasBrowserAPI: true,
-        isProduction: window.browserAPI.isProduction,
-        isDevEnvironment: isDevEnvironment
-      });
-    } else {
-      console.warn('[视频号发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
-    }
-
-
     // 生产环境：必须点击发布按钮
     console.log('[视频号发布] ✅ 生产环境确认，准备点击发布按钮...');
 

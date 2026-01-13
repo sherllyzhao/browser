@@ -1105,13 +1105,6 @@ window.closeWindowWithMessage = async function(message = '发布成功，刷新�
         return true;
     }
 
-    if (isDevEnvironment) {
-        const result = await window.browserAPI.saveSessionToBackend();
-        console.log('保存结果:', result);
-        // { success: true, cookieCount: 50, response: '...' }
-        return; // 开发环境跳过真正发布
-    }
-
     try {
         console.log('[closeWindow] 尝试关闭窗口...');
         await window.browserAPI.closeCurrentWindow();

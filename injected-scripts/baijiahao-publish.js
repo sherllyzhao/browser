@@ -27,19 +27,6 @@
 
   window.__BJH_SCRIPT_LOADED__ = true;
 
-  let isDevEnvironment = false;
-
-  if (window.browserAPI) {
-    isDevEnvironment = window.browserAPI.isProduction === false;
-    console.log('[抖音发布] 环境检测:', {
-      hasBrowserAPI: true,
-      isProduction: window.browserAPI.isProduction,
-      isDevEnvironment: isDevEnvironment
-    });
-  } else {
-    console.warn('[抖音发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
-  }
-
   // 变量声明（放在防重复检查之后）
   let introFilled = false; // 标记 intro 是否已填写
   let fillFormRunning = false; // 标记 fillFormData 是否正在执行
@@ -853,11 +840,6 @@
                                   await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
                                 }
                                 await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                return;
-                              }
-                              if (isDevEnvironment) {
-                                alert(123);
-                                console.log('[百家号发布] ⚠️ 开发环境确认，跳过点击发布按钮');
                                 return;
                               }
                               // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口

@@ -425,21 +425,6 @@ async function publishApi(dataObj) {
       console.error('[小红书发布] ❌ 保存 publishId 失败:', e);
     }
 
-    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
-    // 默认策略：无法确定环境时，执行点击（安全优先）
-    let isDevEnvironment = false;
-
-    if (window.browserAPI) {
-      isDevEnvironment = window.browserAPI.isProduction === false;
-      console.log('[小红书发布] 环境检测:', {
-        hasBrowserAPI: true,
-        isProduction: window.browserAPI.isProduction,
-        isDevEnvironment: isDevEnvironment
-      });
-    } else {
-      console.warn('[小红书发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
-    }
-
     // 检测视频是否上传完成
     console.log('[小红书发布] ⏳ 等待视频上传完成...');
     await retryOperation(async () => {
@@ -458,12 +443,6 @@ async function publishApi(dataObj) {
     // 生产环境：必须点击发布按钮
     console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
     await delay(1000);
-
-    if (isDevEnvironment) {
-      alert(123);
-      console.log('[小红书发布] ⚠️ 开发环境确认，跳过点击发布按钮');
-      return;
-    }
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
