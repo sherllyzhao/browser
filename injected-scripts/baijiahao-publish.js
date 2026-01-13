@@ -110,6 +110,28 @@
             console.log('[百家号发布] ✅ windowId 匹配，处理消息');
           }
 
+          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+          if (messageData.cookies) {
+            console.log('[百家号发布] 📦 检测到 cookies 数据，开始恢复会话...');
+            try {
+              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+              if (restoreResult.success) {
+                console.log('[百家号发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                // 恢复 cookies 后需要刷新页面才能生效
+                console.log('[百家号发布] 🔄 刷新页面以应用 cookies...');
+                // 保存消息数据到全局存储，刷新后继续使用
+                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                window.location.reload();
+                return; // 刷新后脚本会重新注入
+              } else {
+                console.warn('[百家号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+              }
+            } catch (restoreError) {
+              console.error('[百家号发布] ⚠️ 会话数据恢复异常:', restoreError);
+            }
+          }
+
           // windowId 匹配后才保存消息数据
           receivedMessageData = messageData;
           console.log('[百家号发布] 💾 已保存收到的消息数据到 receivedMessageData');
@@ -140,10 +162,6 @@
             console.log("🚀 ~  ~ messageData: ", messageData);
 
             try {
-              const tourBtn = document.querySelector('.cheetah-tour-close');
-              if(tourBtn){
-                tourBtn.click()
-              }
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
             } catch (e) {
               console.log('[百家号发布] ❌ 填写表单数据失败:', e);
@@ -232,9 +250,9 @@
   console.log('═══════════════════════════════════════');
 
   // ===========================
-  // 7. 从全局存储读取发布数据（备用方案，不依赖消息）
+  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
-  /* setTimeout(async () => {
+  await (async () => {
     // 如果已经在处理或已处理完成，跳过
     if (isProcessing || hasProcessed) {
       console.log('[百家号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
@@ -244,19 +262,23 @@
     try {
       // 获取当前窗口 ID
       const windowId = await window.browserAPI.getWindowId();
-      console.log('[百家号发布] 当前窗口 ID:', windowId);
+      console.log('[百家号发布] 检查全局存储，窗口 ID:', windowId);
 
       if (!windowId) {
         console.log('[百家号发布] ❌ 无法获取窗口 ID');
         return;
       }
 
-      // 用窗口 ID 读取对应的发布数据
+      // 检查是否有恢复 cookies 后保存的发布数据
       const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
-      console.log('[百家号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData);
+      console.log('[百家号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
 
       if (publishData && !isProcessing && !hasProcessed) {
-        console.log('[百家号发布] ✅ 从全局存储获取到发布数据，开始处理...');
+        console.log('[百家号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+        console.log('[百家号发布] 🗑️ 已清除 publish_data_window_' + windowId);
 
         // 标记为正在处理
         isProcessing = true;
@@ -265,7 +287,7 @@
         window.__AUTH_DATA__ = {
           ...window.__AUTH_DATA__,
           message: publishData,
-          source: 'globalStorage',
+          source: 'cookieRestore',
           windowId: windowId,
           receivedAt: Date.now()
         };
@@ -279,49 +301,16 @@
         console.log('[百家号发布] 📤 准备发送数据到接口...');
         console.log('[百家号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
 
-        // 清除已使用的数据，避免重复处理
-        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-        console.log('[百家号发布] 🗑️ 已清除 publish_data_window_' + windowId);
-
         isProcessing = false;
-      } else {
-        console.log('[百家号发布] ℹ️ 全局存储中没有 publish_data_window_' + windowId + ' 数据');
-
-        // 检查是否有收到过父窗口的消息数据
-        if (receivedMessageData && !isProcessing && !hasProcessed) {
-          console.log('[百家号发布] ✅ 使用之前收到的父窗口消息数据');
-
-          // 标记为正在处理
-          isProcessing = true;
-
-          // 更新全局变量
-          window.__AUTH_DATA__ = {
-            ...window.__AUTH_DATA__,
-            message: receivedMessageData,
-            source: 'receivedMessage',
-            windowId: windowId,
-            receivedAt: Date.now()
-          };
-
-          try {
-            await retryOperation(async () => await fillFormData(receivedMessageData), 3, 2000);
-          } catch (e) {
-            console.log('[百家号发布] ❌ 填写表单数据失败:', e);
-          }
-
-          console.log('[百家号发布] 📤 准备发送数据到接口...');
-          console.log('[百家号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-          isProcessing = false;
-        } else {
-          console.log('[百家号发布] ⚠️ 没有可用的发布数据（全局存储为空，也没有收到父窗口消息）');
-        }
       }
     } catch (error) {
       console.error('[百家号发布] ❌ 从全局存储读取数据失败:', error);
-      isProcessing = false;
     }
-  }, 5000); // 延迟 5 秒，给消息监听一些时间先处理 */
+  })();
+
+  // ===========================
+  // 7. 从全局存储读取发布数据（备用方案，不依赖消息）
+  // ===========================
 
   // ===========================
   // 8. 检查是否有保存的发布数据（授权跳转恢复）
@@ -349,12 +338,44 @@
       }
 
       setTimeout(async () => {
-        // 标题
-        const hasTitleEle = await waitForElement(".client_components_titleInput .input-container .input-box textarea");
-        if (hasTitleEle) {
-          const titleEle = document.querySelector(".client_components_titleInput .input-container .input-box textarea");
-          setNativeValue(titleEle, dataObj.video.video.title);
-        }
+        await retryOperation (async () => {
+          const tourBtn = await waitForElement('.cheetah-tour-close', 5, 1000);
+          if (tourBtn) {
+            tourBtn.click()
+          }
+        }, 5, 1000)
+        // 标题（带重试和验证）
+        await retryOperation(async () => {
+          const titleEle = await waitForElement(".client_components_titleInput .input-container .input-box textarea", 5000);
+
+          // 先触发focus事件
+          if (typeof titleEle.focus === 'function') {
+            titleEle.focus();
+          } else {
+            titleEle.dispatchEvent(new Event('focus', { bubbles: true }));
+          }
+
+          // 延迟执行，让React状态稳定
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+          const targetTitle = dataObj.video.video.title || '';
+          setNativeValue(titleEle, targetTitle);
+
+          // 额外触发input事件
+          titleEle.dispatchEvent(new Event('input', { bubbles: true }));
+
+          // 等待 React 更新
+          await new Promise(resolve => setTimeout(resolve, 200));
+
+          // 🔑 验证是否成功设置
+          const currentValue = (titleEle.value || '').trim();
+          const expectedValue = targetTitle.trim();
+          if (currentValue !== expectedValue) {
+            throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+          }
+
+          console.log('[百家号发布] ✅ 标题设置成功:', currentValue);
+        }, 5, 1000);
 
         // 设置封面为单图模式
         const hasSettingsWrapEle = await waitForElement("#bjhEditWrapSet");
@@ -372,45 +393,66 @@
             }
           }
 
-          //设置简介
+          //设置简介（带重试）
           try {
-            // 首先检查是否已经填写过（通过全局标记）
-            if (introFilled) {
-              console.log('[百家号发布] 简介已填写过，跳过');
-            } else {
-              console.log('[百家号发布] 开始填写简介...');
-              const hasIntroEle = await waitForElement(".news_abstract_form_item textarea");
-              console.log('[百家号发布] 简介元素是否存在:', hasIntroEle);
-              if (hasIntroEle) {
-                // 使用 document.querySelector 而不是 settingsWrapEle.querySelector，因为元素可能不在 settingsWrapEle 内
-                const introEle = document.querySelector(".news_abstract_form_item textarea");
-                console.log('[百家号发布] 简介输入框元素:', introEle);
-                const targetIntro = dataObj.video.video.intro || '';
-                const targetContent = targetIntro.trim();
-                console.log('[百家号发布] 目标简介内容:', targetContent);
-
-                // 检查实际内容
-                const currentContent = (introEle?.value || '').trim();
-                console.log('[百家号发布] 当前简介内容:', currentContent);
-
-                // 只有在标记未设置且内容不同时才填写
-                if (introEle && currentContent !== targetContent) {
-                  // 立即标记为已填写（在任何操作之前，防止并发）
-                  introFilled = true;
-                  console.log('[百家号发布] 正在填写简介...');
-                  setNativeValue(introEle, dataObj.video.video.intro);
-                  console.log('[百家号发布] ✅ 简介填写完成');
-                } else if (!introEle) {
-                  console.log('[百家号发布] ❌ 简介输入框元素为空');
-                } else {
-                  // 内容已经正确，也标记为已填写
-                  introFilled = true;
-                  console.log('[百家号发布] 简介内容已正确，无需修改');
-                }
-              } else {
-                console.log('[百家号发布] ❌ 未找到简介元素 .news_abstract_form_item textarea');
+            await retryOperation(async () => {
+              // 首先检查是否已经填写过（通过全局标记）
+              if (introFilled) {
+                console.log('[百家号发布] 简介已填写过，跳过');
+                return; // 跳过重试
               }
-            }
+
+              console.log('[百家号发布] 开始填写简介...');
+              const introEle = await waitForElement(".news_abstract_form_item textarea", 5000);
+              console.log('[百家号发布] 简介输入框元素:', introEle);
+
+              const targetIntro = dataObj.video.video.intro || '';
+              const targetContent = targetIntro.trim();
+              console.log('[百家号发布] 目标简介内容:', targetContent);
+
+              // 检查实际内容
+              const currentContent = (introEle?.value || '').trim();
+              console.log('[百家号发布] 当前简介内容:', currentContent);
+
+              // 只有在标记未设置且内容不同时才填写
+              if (introEle && currentContent !== targetContent) {
+                // 立即标记为已填写（在任何操作之前，防止并发）
+                introFilled = true;
+                console.log('[百家号发布] 正在填写简介...');
+
+                // 先触发focus事件
+                if (typeof introEle.focus === 'function') {
+                  introEle.focus();
+                } else {
+                  introEle.dispatchEvent(new Event('focus', { bubbles: true }));
+                }
+
+                // 延迟执行，让React状态稳定
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                setNativeValue(introEle, dataObj.video.video.intro);
+
+                // 额外触发input事件
+                introEle.dispatchEvent(new Event('input', { bubbles: true }));
+
+                // 等待 React 更新
+                await new Promise(resolve => setTimeout(resolve, 200));
+
+                // 🔑 验证是否成功设置
+                const updatedValue = (introEle.value || '').trim();
+                if (updatedValue !== targetContent) {
+                  throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedValue.substring(0, 50)}..."`);
+                }
+
+                console.log('[百家号发布] ✅ 简介填写完成');
+              } else if (!introEle) {
+                throw new Error('简介输入框元素为空');
+              } else {
+                // 内容已经正确，也标记为已填写
+                introFilled = true;
+                console.log('[百家号发布] 简介内容已正确，无需修改');
+              }
+            }, 5, 1000);
           } catch (error) {
             console.log('[百家号发布] ❌ 简介填写失败:', error.message);
           }
@@ -419,17 +461,93 @@
           setTimeout(async () => {
             try {
               await retryOperation(async () => {
-                const hasIframeEle = await waitForElement("iframe");
+                const hasIframeEle = await waitForElement("iframe", 10000); // 🔑 增加等待时间
                 if (!hasIframeEle) {
                   throw new Error('iframe 未找到');
                 }
                 const editorIframeEle = document.querySelector("iframe");
-                const editorEle = editorIframeEle.contentWindow.document.querySelector(".news-editor-pc");
+
+                // 🔑 等待 iframe 完全加载
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                const iframeWin = editorIframeEle.contentWindow;
+                if (!iframeWin) {
+                  throw new Error('iframe contentWindow 不可访问');
+                }
+
+                const iframeDoc = iframeWin.document;
+                if (!iframeDoc || iframeDoc.readyState !== 'complete') {
+                  throw new Error('iframe 文档未完全加载，状态: ' + (iframeDoc?.readyState || 'null'));
+                }
+
+                // 🔑 额外等待编辑器初始化
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                const editorEle = iframeDoc.querySelector(".news-editor-pc");
                 if (!editorEle) {
                   throw new Error('编辑器元素 .news-editor-pc 未找到');
                 }
-                editorEle.innerHTML = dataObj.video.video.content;
-                editorEle.dispatchEvent(new Event("input", { bubbles: true }));
+
+                let htmlContent = dataObj.video.video.content;
+
+                // 解析 HTML 中的图片，通过百家号 dumpproxy 接口上传
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = htmlContent;
+                const images = tempDiv.querySelectorAll('img');
+
+                console.log('[百家号发布] 🖼️ 发现', images.length, '张图片需要处理');
+
+                for (const img of images) {
+                  const originalSrc = img.src;
+                  if (!originalSrc || originalSrc.startsWith('data:')) {
+                    continue; // 跳过空 src 或 base64 图片
+                  }
+
+                  // 如果已经是百家号的图片，跳过
+                  if (originalSrc.includes('baijiahao.baidu.com') || originalSrc.includes('mmbiz.qpic.cn')) {
+                    console.log('[百家号发布] ⏭️ 跳过已有图片:', originalSrc.substring(0, 50));
+                    continue;
+                  }
+
+                  try {
+                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 80));
+
+                    // 调用百家号图片代理接口
+                    const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
+                      method: 'POST',
+                      body: new URLSearchParams({
+                        usage: 'content',
+                        article_type: 'news',
+                        is_waterlog: '1',
+                        url: originalSrc
+                      }),
+                      credentials: 'include' // 带上 cookies
+                    });
+
+                    const result = await response.json();
+                    console.log('[百家号发布] 📥 上传结果:', result);
+
+                    if (result.errno === 0 && result.data && result.data.bos_url) {
+                      // 替换为百家号服务器的图片地址
+                      img.src = result.data.bos_url;
+                      console.log('[百家号发布] ✅ 图片替换成功:', result.data.src.substring(0, 50));
+                    } else {
+                      console.log('[百家号发布] ⚠️ 图片上传失败，保留原地址');
+                    }
+                  } catch (e) {
+                    console.error('[百家号发布] ❌ 图片上传异常:', e.message);
+                  }
+                }
+
+                // 获取处理后的 HTML
+                htmlContent = tempDiv.innerHTML;
+
+                // 使用 innerHTML 赋值
+                editorEle.innerHTML = htmlContent;
+
+                // 触发 input 事件
+                editorEle.dispatchEvent(new iframeWin.Event("input", { bubbles: true }));
+
                 console.log('[百家号发布] ✅ 内容填写完成');
               }, 3, 1000);
             } catch (e) {
@@ -713,8 +831,17 @@
                             await delay(2000);
                           //  点击发布按钮
                             if(publishBtn){
-                              /* alert(123)
-                              return */
+                              // 🔑 检查发布按钮是否 disabled
+                              if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
+                                console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
+                                stopErrorListener();
+                                const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                if (publishIdForError) {
+                                  await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
+                                }
+                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                return;
+                              }
                               // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
@@ -870,7 +997,6 @@
                 await sendStatisticsError(publishId, error.message || '封面下载失败', '百家号发布');
               }
               await closeWindowWithMessage('封面下载失败，刷新数据', 1000);
-              return;
             }
           })();
         }

@@ -145,6 +145,38 @@ let hasProcessed = false;
               console.log('[视频号发布] ✅ windowId 匹配，处理消息');
             }
 
+            // 兼容处理：message.data 可能是字符串或对象
+            let messageData;
+            try {
+              messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+            } catch (parseError) {
+              console.error('[视频号发布] ❌ 解析消息数据失败:', parseError);
+              console.error('[视频号发布] 原始数据:', message.data);
+              return;
+            }
+
+            // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+            if (messageData.cookies) {
+              console.log('[视频号发布] 📦 检测到 cookies 数据，开始恢复会话...');
+              try {
+                const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+                const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+                if (restoreResult.success) {
+                  console.log('[视频号发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                  // 恢复 cookies 后需要刷新页面才能生效
+                  console.log('[视频号发布] 🔄 刷新页面以应用 cookies...');
+                  // 保存消息数据到全局存储，刷新后继续使用
+                  await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                  window.location.reload();
+                  return; // 刷新后脚本会重新注入
+                } else {
+                  console.warn('[视频号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+                }
+              } catch (restoreError) {
+                console.error('[视频号发布] ⚠️ 会话数据恢复异常:', restoreError);
+              }
+            }
+
             // 防重复检查
             if (isProcessing) {
               console.warn('[视频号发布] ⚠️ 正在处理中，忽略重复消息');
@@ -160,16 +192,6 @@ let hasProcessed = false;
 
             // 更新全局变量
             if (message.data) {
-              // 兼容处理：message.data 可能是字符串或对象
-              let messageData;
-              try {
-                messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-              } catch (parseError) {
-                console.error('[视频号发布] ❌ 解析消息数据失败:', parseError);
-                console.error('[视频号发布] 原始数据:', message.data);
-                isProcessing = false;
-                return;
-              }
               console.log("🚀 ~  ~ messageData: ", messageData);
               window.__AUTH_DATA__ = {
                 ...window.__AUTH_DATA__,
@@ -194,6 +216,15 @@ let hasProcessed = false;
                 console.log('[视频号发布] 🔖 已保存发布页URL:', window.location.href, 'key:', getPublishUrlKey());
               } catch (e) {
                 console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
+              }
+
+              // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+              const currentUrl = window.location.href;
+              const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+              if (!isPublishPage) {
+                console.log('[视频号发布] ⏭️ 当前不是发布页，跳过上传流程，URL:', currentUrl);
+                isProcessing = false;
+                return;
               }
 
               // 等待wujie-app元素
@@ -368,7 +399,111 @@ let hasProcessed = false;
   console.log('═══════════════════════════════════════');
 
   // ===========================
-  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
+  // ===========================
+  await (async () => {
+    // 如果已经在处理或已处理完成，跳过
+    if (isProcessing || hasProcessed) {
+      console.log('[视频号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+      return;
+    }
+
+    // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+    const currentUrl = window.location.href;
+    const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+    if (!isPublishPage) {
+      console.log('[视频号发布] ⏭️ 当前不是发布页，跳过全局存储读取，URL:', currentUrl);
+      return;
+    }
+
+    try {
+      // 获取当前窗口 ID
+      const windowId = await window.browserAPI.getWindowId();
+      console.log('[视频号发布] 检查全局存储，窗口 ID:', windowId);
+
+      if (!windowId) {
+        console.log('[视频号发布] ❌ 无法获取窗口 ID');
+        return;
+      }
+
+      // 检查是否有恢复 cookies 后保存的发布数据
+      const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+      console.log('[视频号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
+
+      if (publishData && !isProcessing && !hasProcessed) {
+        console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+        console.log('[视频号发布] 🗑️ 已清除 publish_data_window_' + windowId);
+
+        // 标记为正在处理
+        isProcessing = true;
+
+        // 更新全局变量
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: publishData,
+          source: 'cookieRestore',
+          windowId: windowId,
+          receivedAt: Date.now()
+        };
+
+        // 等待wujie-app元素
+        const wujieApp = await waitForElement("wujie-app", 15000);
+        if (wujieApp) {
+          let videoAlreadyUploaded = false;
+          try {
+            const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+            if (fullScreenVideo && fullScreenVideo.src) {
+              videoAlreadyUploaded = true;
+            }
+            if (!videoAlreadyUploaded) {
+              await uploadVideo(publishData, wujieApp.shadowRoot);
+            }
+          } catch (error) {
+            console.log('[视频号发布] ❌ 视频上传失败:', error);
+            const publishId = publishData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
+          }
+        } else {
+          try {
+            await uploadVideo(publishData);
+          } catch (error) {
+            console.log('[视频号发布] ❌ 视频上传失败:', error);
+            const publishId = publishData?.video?.dyPlatform?.id;
+            if (publishId) {
+              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+            }
+            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+            isProcessing = false;
+            return;
+          }
+        }
+
+        try {
+          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+        } catch (e) {
+          console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+        }
+
+        console.log('[视频号发布] 📤 准备发送数据到接口...');
+        console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+        isProcessing = false;
+      }
+    } catch (error) {
+      console.error('[视频号发布] ❌ 从全局存储读取数据失败:', error);
+    }
+  })();
+
+  // ===========================
+  // 8. 检查是否有保存的发布数据（授权跳转恢复 - localStorage）
   // ===========================
   setTimeout(async () => {
     try {
@@ -511,11 +646,21 @@ async function publishApi(dataObj) {
     // ===========================
     console.log('[视频号发布] ⏳ 等待视频上传完成...');
     await retryOperation(async () => {
+      // 🔑 首先检测是否有上传错误提示
+      const errorTip = await waitForShadowElement("wujie-app", ".upload-error, .error-tip, [class*='error']", 500).catch(() => null);
+      if (errorTip && errorTip.textContent && errorTip.textContent.trim()) {
+        const errorText = errorTip.textContent.trim();
+        if (errorText.includes('失败') || errorText.includes('错误') || errorText.includes('error')) {
+          throw new Error('视频上传失败: ' + errorText.substring(0, 50));
+        }
+      }
+
       // 在 Shadow DOM 中查找上传进度元素
       const progressText = await waitForShadowElement("wujie-app", ".ant-progress-text", 1000).catch(() => null);
 
       if (progressText) {
         const text = (progressText.textContent || '').trim();
+        console.log('[视频号发布] 📊 当前上传进度:', text);
         // 如果进度不是 100%，继续等待
         if (text !== '100%' && text !== '100') {
           throw new Error('视频正在上传中: ' + text);
@@ -594,22 +739,6 @@ async function publishApi(dataObj) {
     } catch (e) {
       console.error('[视频号发布] ❌ 保存 publishId 失败:', e);
     }
-
-    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
-    // 默认策略：无法确定环境时，执行点击（安全优先）
-    let isDevEnvironment = false;
-
-    if (window.browserAPI) {
-      isDevEnvironment = window.browserAPI.isProduction === false;
-      console.log('[视频号发布] 环境检测:', {
-        hasBrowserAPI: true,
-        isProduction: window.browserAPI.isProduction,
-        isDevEnvironment: isDevEnvironment
-      });
-    } else {
-      console.warn('[视频号发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
-    }
-
 
     // 生产环境：必须点击发布按钮
     console.log('[视频号发布] ✅ 生产环境确认，准备点击发布按钮...');
@@ -735,26 +864,20 @@ async function fillFormData(dataObj) {
     // 等待wujie-app
     const wujieApp = await waitForElement("wujie-app", 10000);
 
-    // 填写简介 - 针对可编辑div的特殊处理
+    // 填写简介 - 针对可编辑div的特殊处理（带重试）
     try {
-      // 首先检查是否已经填写过（通过全局标记）
-      if (introFilled) {
-        // alert('✅ Intro already filled (by flag), skipping');
-        // 直接跳过，不再查找元素或进行任何操作
-      } else {
+      await retryOperation(async () => {
+        // 首先检查是否已经填写过（通过全局标记）
+        if (introFilled) {
+          console.log('[视频号发布] 简介已填写过，跳过');
+          return; // 跳过重试
+        }
+
         const introInput = await waitForShadowElement("wujie-app", ".input-editor", 5000);
         const targetIntro = titleAndIntro.intro || '';
         const targetContent = targetIntro.trim();
 
         // alert(`Filling intro: ${titleAndIntro.intro || ''}`);
-
-        // 调试：检查元素类型
-        // alert(`introInput type check:
-        // - Element: ${introInput ? 'exists' : 'null'}
-        // - nodeType: ${introInput?.nodeType}
-        // - tagName: ${introInput?.tagName}
-        // - dispatchEvent: ${typeof introInput?.dispatchEvent}
-        // - innerHTML: ${typeof introInput?.innerHTML}`);
 
         // 确保是真实的DOM元素
         if (!introInput || typeof introInput.dispatchEvent !== 'function') {
@@ -861,82 +984,93 @@ async function fillFormData(dataObj) {
           // 最后再延迟确保所有事件都被处理
           await new Promise(resolve => setTimeout(resolve, 200));
 
-          // alert('✅ introInput filled successfully');
+          // 🔑 验证是否成功设置
+          const updatedContent = (introInput.textContent || introInput.innerText || '').trim();
+          if (updatedContent !== targetContent) {
+            throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedContent.substring(0, 50)}..."`);
+          }
+
+          console.log('[视频号发布] ✅ 简介填写成功');
         } else {
           // 内容已经正确，也标记为已填写
           introFilled = true;
-          // alert('✅ Intro content already correct, marking as filled');
+          console.log('[视频号发布] 简介内容已正确，无需修改');
         }
-      }
+      }, 5, 1000);
     } catch (error) {
-      // alert('⚠️ introInput handling failed: ' + error.message);
+      console.log('[视频号发布] ❌ 简介填写失败:', error.message);
     }
 
-    // 填写标题 - 参考xhs.js的方法
-    const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
-    // alert(`Filling title: ${titleAndIntro.title || ''}`);
-
+    // 填写标题（带重试和验证）
     try {
-      // 调试：检查元素类型
-      // alert(`titleInput type check:
-      // - Element: ${titleInput ? 'exists' : 'null'}
-      // - nodeType: ${titleInput?.nodeType}
-      // - tagName: ${titleInput?.tagName}
-      // - type: ${titleInput?.type}
-      // - dispatchEvent: ${typeof titleInput?.dispatchEvent}
-      // - value: ${typeof titleInput?.value}`);
+      await retryOperation(async () => {
+        const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
 
-      // 确保是真实的DOM元素
-      if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
-        throw new Error('Invalid titleInput element');
-      }
+        // 确保是真实的DOM元素
+        if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
+          throw new Error('Invalid titleInput element');
+        }
 
-      // 先触发focus事件
-      if (typeof titleInput.focus === 'function') {
-        titleInput.focus();
-      } else {
-        titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
-      }
+        // 先触发focus事件
+        if (typeof titleInput.focus === 'function') {
+          titleInput.focus();
+        } else {
+          titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
+        }
 
-      // 延迟执行，让React状态稳定（关键！）
-      await new Promise(resolve => setTimeout(resolve, 300));
+        // 延迟执行，让React状态稳定（关键！）
+        await new Promise(resolve => setTimeout(resolve, 300));
 
-      // 使用setNativeValue设置值
-      setNativeValue(titleInput, titleAndIntro.title || '');
+        const targetTitle = titleAndIntro.title || '';
+        setNativeValue(titleInput, targetTitle);
 
-      // 额外触发input事件（xhs.js的做法）
-      titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+        // 额外触发input事件（xhs.js的做法）
+        titleInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-      // alert('✅ Title filled successfully');
+        // 等待 React 更新
+        await new Promise(resolve => setTimeout(resolve, 200));
 
+        // 🔑 验证是否成功设置
+        const currentValue = (titleInput.value || '').trim();
+        const expectedValue = targetTitle.trim();
+        if (currentValue !== expectedValue) {
+          throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+        }
+
+        console.log('[视频号发布] ✅ 标题设置成功:', currentValue);
+      }, 5, 1000);
     } catch (error) {
-      // alert('❌ Title setting failed: ' + error.message);
+      console.log('[视频号发布] ❌ 标题填写失败:', error.message);
     }
 
-    // 设置发布时间
+    // 设置发布时间（带重试）
     const publishTime = dataObj.video.formData.send_set;
     if (+publishTime === 2) {
       try {
-        // 定时发布
-        const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
-        const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
+        await retryOperation(async () => {
+          // 定时发布
+          const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
+          const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
 
-        setNativeValue(immediateRadio, false);
-        setNativeValue(scheduleRadio, true);
+          setNativeValue(immediateRadio, false);
+          setNativeValue(scheduleRadio, true);
 
-        // 设置日期时间
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
+          // 设置日期时间
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
 
-        // 多次设置确保生效
-        for (let i = 0; i < 2; i++) {
-          if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-            break;
+          // 多次设置确保生效
+          for (let i = 0; i < 2; i++) {
+            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+
+          console.log('[视频号发布] ✅ 定时发布时间设置成功');
+        }, 5, 1000);
       } catch (error) {
-        // alert('⚠️ Schedule time setting failed: ' + error.message);
+        console.log('[视频号发布] ❌ 定时发布时间设置失败:', error.message);
       }
     }
 

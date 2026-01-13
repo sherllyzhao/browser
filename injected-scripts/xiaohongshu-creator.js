@@ -141,6 +141,22 @@
                         })
                     };
 
+                    // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+                    console.log('[小红书授权] 📦 正在获取完整会话数据...');
+                    try {
+                        const sessionResult = await window.browserAPI.getFullSessionData('xiaohongshu.com');
+                        if (sessionResult.success) {
+                            const dataObj = JSON.parse(scanData.data);
+                            dataObj.cookies = JSON.stringify(sessionResult.data);
+                            scanData.data = JSON.stringify(dataObj);
+                            console.log(`[小红书授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                        } else {
+                            console.warn('[小红书授权] ⚠️ 获取会话数据失败:', sessionResult.error);
+                        }
+                    } catch (sessionError) {
+                        console.error('[小红书授权] ⚠️ 获取会话数据异常:', sessionError);
+                    }
+
                     // 发送数据到服务器（根据环境选择域名）
                     const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
                     const apiResponse = await fetch(`${apiDomain}/api/mediaauth/xhsinfo`, {
@@ -171,7 +187,12 @@
                         }
 
                         sendMessageToParent('授权成功，刷新数据');
-                        setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                        const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+                        if(isDev){
+                            console.log('[小红书授权] ✅ 开发环境，不关闭窗口');
+                        }else{
+                            setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                        }
                     } else {
                         throw new Error(apiResult.msg || 'Failed');
                     }

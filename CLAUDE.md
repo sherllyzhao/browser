@@ -163,6 +163,58 @@ const authResult = await window.browserAPI.openNewWindow('https://auth.example.c
 | windowId | number | 窗口 ID |
 | timestamp | number | 加载完成的时间戳 |
 
+**onSessionUpdated 回调参数**（发布窗口关闭时自动触发）：
+
+浏览器会在多账号模式的发布窗口关闭时**自动保存最新 cookies 到后台**，无需前端处理。
+
+**自动保存逻辑**：
+1. 检测是否是多账号模式的窗口（通过 `windowAccountMap`）
+2. 获取该窗口 session 的最新平台相关 cookies
+3. 从 `publishData` 中获取账号 ID（`element.account_info.id`）
+4. 从主窗口 URL 获取后台 API 域名
+5. 调用保存接口（见下方配置）
+
+**接口配置**（父页面在 element 中传入，必填）：
+```javascript
+// 在 element 中指定保存接口路径
+element.saveSessionApi = '/api/mediaauth/douyininfo';
+// 或
+element.save_session_api = '/api/mediaauth/douyininfo';
+
+// 如果不传 saveSessionApi，浏览器不会保存 cookies
+```
+
+**请求参数**：
+```json
+{
+  "id": "账号ID（从 publishData.element.account_info.id 获取）",
+  "cookies": "{\"cookies\": [...]}"  // JSON 字符串
+}
+```
+
+**如需监听此事件**（可选）：
+```javascript
+window.browserAPI.onSessionUpdated((data) => {
+  console.log('发布窗口关闭，已自动保存会话数据');
+  console.log('平台:', data.platform);
+  console.log('账号ID:', data.accountId);
+});
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| windowId | number | 关闭的窗口 ID |
+| platform | string | 平台名称（douyin/xiaohongshu/baijiahao/weixin/shipinhao） |
+| accountId | string | 账号 ID（如 douyin_xxx_1） |
+| cookies | array | 最新的平台相关 cookies 数组 |
+| publishData | object | 发布数据（包含 element 中的账号信息） |
+| timestamp | number | 事件触发时间戳 |
+
+**使用场景**：
+- 平台可能在发布过程中自动刷新登录凭证（如 token 续期）
+- 发布窗口关闭时自动保存最新的 cookies 到后台
+- 下次发布时使用最新的登录状态
+
 ### 6. 获取窗口 ID 和主窗口 URL
 ```javascript
 // 获取当前窗口的 ID（用于新窗口识别自己，读取对应的发布数据）
@@ -176,7 +228,7 @@ console.log(mainInfo);
 // 返回值示例:
 // {
 //   success: true,
-//   url: "https://dev.china9.cn/aigc_browser/#/xxx",
+//   url: "https://dev.china9.cn/aigc_browser2/#/xxx",
 //   origin: "https://dev.china9.cn",     // 协议+域名，用于构建 API 地址
 //   host: "dev.china9.cn",               // 仅域名
 //   protocol: "https:"                   // 仅协议
@@ -397,6 +449,389 @@ if (authSuccess) {
   window.browserAPI.closeCurrentWindow();
 }
 ```
+
+### 13. 获取完整会话数据（用于存储到后台）
+```javascript
+// 获取完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+// 用于授权后将完整登录状态存储到后台
+const result = await window.browserAPI.getFullSessionData('douyin.com');
+console.log(result);
+// 返回值示例:
+// {
+//   success: true,
+//   data: {
+//     domain: 'douyin.com',
+//     timestamp: 1704067200000,
+//     cookies: [...],        // Cookie 数组
+//     localStorage: {...},   // localStorage 键值对
+//     sessionStorage: {...}, // sessionStorage 键值对
+//     indexedDB: {...}       // IndexedDB 数据库数据
+//   },
+//   size: 102400  // 数据大小（字节）
+// }
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| domain | string | 是 | 要获取的域名，如 `douyin.com` |
+
+**返回值说明**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | boolean | 是否成功 |
+| data.cookies | array | Cookies 数组，包含 name, value, domain, path, secure, httpOnly, sameSite, expirationDate |
+| data.localStorage | object | localStorage 键值对 |
+| data.sessionStorage | object | sessionStorage 键值对 |
+| data.indexedDB | object | IndexedDB 数据库数据（按数据库名分组） |
+| size | number | 数据总大小（字节） |
+
+**使用场景**：授权成功后，获取完整的登录状态数据并提交到后台存储，后续发布时可以从后台获取并恢复。
+
+**示例**（在授权脚本中使用）：
+```javascript
+// 构建提交数据
+const scanData = {
+  data: JSON.stringify({
+    nickname: '用户昵称',
+    uid: '用户ID',
+    company_id: companyId,
+    auth_type: 1
+  })
+};
+
+// 获取完整会话数据
+const sessionResult = await window.browserAPI.getFullSessionData('douyin.com');
+if (sessionResult.success) {
+  const dataObj = JSON.parse(scanData.data);
+  dataObj.cookies = JSON.stringify(sessionResult.data);  // 完整会话数据
+  scanData.data = JSON.stringify(dataObj);
+}
+
+// 提交到后台
+await fetch('https://apidev.china9.cn/api/mediaauth/douyininfo', {
+  method: 'POST',
+  body: JSON.stringify(scanData)
+});
+```
+
+### 14. 多账号管理 API
+
+多账号功能允许每个平台保存多个账号的登录状态，每个账号使用独立的 Session 分区存储。
+
+#### 架构说明
+
+```
+主窗口 BrowserView
+└── session: persist:browserview （独立，仅用于浏览）
+
+平台账号（每个账号独立 session）
+├── 抖音
+│   ├── 账号A → session: persist:douyin_dy_xxx_1
+│   └── 账号B → session: persist:douyin_dy_xxx_2
+├── 小红书
+│   └── 账号X → session: persist:xiaohongshu_xhs_xxx_3
+└── ...
+```
+
+#### 数据存储
+
+账号列表元数据存储在 `global-storage.json`：
+
+```json
+{
+  "platformAccounts": {
+    "douyin": [
+      {
+        "id": "douyin_xxx_1",
+        "nickname": "账号昵称",
+        "avatar": "头像URL",
+        "platformUid": "平台用户ID",
+        "createdAt": 1704067200000,
+        "lastUsedAt": 1704153600000
+      }
+    ],
+    "xiaohongshu": [],
+    "baijiahao": [],
+    "weixin": [],
+    "shipinhao": []
+  }
+}
+```
+
+#### API 列表
+
+##### 获取账号列表
+```javascript
+// 获取指定平台的所有账号
+const accounts = await window.browserAPI.getAccounts('douyin');
+// 返回: [{ id, nickname, avatar, platformUid, createdAt, lastUsedAt }, ...]
+
+// 获取所有平台的所有账号
+const allAccounts = await window.browserAPI.getAllAccounts();
+// 返回: { douyin: [...], xiaohongshu: [...], baijiahao: [...], ... }
+```
+
+##### 添加账号
+```javascript
+// 授权成功后添加账号
+const result = await window.browserAPI.addAccount('douyin', {
+  nickname: '账号昵称',
+  avatar: '头像URL',
+  platformUid: '平台用户ID'  // 用于去重
+});
+// 返回: { success: true, accountId: 'douyin_xxx_1', isNew: true }
+// 如果 platformUid 已存在，返回 isNew: false，表示更新了现有账号
+```
+
+##### 删除账号
+```javascript
+// 删除账号（同时清理对应的 session 数据）
+const result = await window.browserAPI.removeAccount('douyin', 'douyin_xxx_1');
+// 返回: { success: true }
+```
+
+##### 更新账号信息
+```javascript
+// 更新账号信息
+const result = await window.browserAPI.updateAccount('douyin', 'douyin_xxx_1', {
+  nickname: '新昵称',
+  avatar: '新头像'
+});
+// 返回: { success: true, account: {...} }
+```
+
+##### 检查账号是否存在
+```javascript
+// 通过平台用户ID检查账号是否已存在
+const result = await window.browserAPI.accountExists('douyin', '平台用户ID');
+// 返回: { exists: true, accountId: 'douyin_xxx_1', account: {...} }
+// 或: { exists: false }
+```
+
+##### 获取单个账号信息
+```javascript
+// 获取指定账号的详细信息
+const result = await window.browserAPI.getAccount('douyin', 'douyin_xxx_1');
+// 返回: { success: true, account: { id, nickname, avatar, ... } }
+```
+
+##### 获取当前窗口账号信息
+```javascript
+// 在发布脚本中获取当前窗口对应的账号信息
+const result = await window.browserAPI.getCurrentAccount();
+// 返回: { success: true, platform: 'douyin', accountId: 'douyin_xxx_1', account: {...} }
+```
+
+##### 检查账号登录状态
+```javascript
+// 检查指定账号是否已登录（通过检测关键 Cookie）
+const result = await window.browserAPI.checkAccountLoginStatus('douyin', 'douyin_xxx_1');
+// 返回: { success: true, isLoggedIn: true, cookieCount: 50 }
+```
+
+##### 迁移到新账号（授权窗口使用）
+```javascript
+// 授权成功后，将临时 session 的 cookies 迁移到新账号
+const result = await window.browserAPI.migrateToNewAccount('douyin', {
+  nickname: '获取到的昵称',
+  avatar: '获取到的头像',
+  platformUid: '获取到的平台用户ID'
+});
+// 返回: { success: true, accountId: 'douyin_xxx_1', isNew: true, migratedCount: 20 }
+```
+
+#### 打开账号窗口
+
+```javascript
+// 打开指定账号的发布窗口（使用该账号的 session）
+// 方式1: 仅打开窗口，使用账号现有的登录信息
+const result = await window.browserAPI.openNewWindow(url, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1'
+});
+
+// 方式2: 传递会话数据，浏览器自动清空旧登录信息并恢复新登录信息（推荐）
+const result = await window.browserAPI.openNewWindow(url, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1',
+  sessionData: sessionDataFromBackend  // 从后台获取的会话数据（对象或 JSON 字符串）
+});
+// 返回: { success: true, windowId: 123 }
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| url | string | 是 | 要打开的 URL |
+| options.platform | string | 多账号模式必填 | 平台名称 |
+| options.accountId | string | 多账号模式必填 | 账号 ID |
+| options.sessionData | object/string | 否 | 会话数据（getFullSessionData 返回的格式）。如果提供，浏览器会在打开窗口前**自动清空该账号的旧 cookies 并恢复新的会话数据**，无需手动调用 clearAccountCookies 和 restoreAccountSession |
+| options.useTemporarySession | boolean | 否 | 为 true 时使用临时 session（授权模式） |
+
+**优先级**：`platform + accountId` > `useTemporarySession` > 默认持久化 session
+
+**注意**：
+- 如果不传 `sessionData`，窗口会使用该账号现有的登录信息
+- 如果传了 `sessionData`，浏览器会自动完成以下流程：
+  1. 清空该账号的所有旧 cookies
+  2. 恢复 sessionData 中的新 cookies
+  3. 打开窗口
+- 这样父页面只需要传递数据，不需要手动调用清空和恢复 API，适合有多个项目的场景
+
+#### 授权流程示例
+
+```javascript
+// 1. 用户点击"添加抖音账号"，打开授权窗口（临时 session）
+const authResult = await window.browserAPI.openNewWindow(authUrl, {
+  useTemporarySession: true
+});
+
+// 2. 在授权脚本中，检测登录成功后获取用户信息并迁移
+async function onAuthSuccess(userInfo) {
+  // 迁移 cookies 到新账号
+  const result = await window.browserAPI.migrateToNewAccount('douyin', {
+    nickname: userInfo.nickname,
+    avatar: userInfo.avatar,
+    platformUid: userInfo.uid
+  });
+
+  if (result.success) {
+    console.log('授权成功，账号ID:', result.accountId);
+    // 通知首页刷新账号列表
+    window.browserAPI.sendToHome({ type: 'account-added', platform: 'douyin' });
+    // 关闭授权窗口
+    window.browserAPI.closeCurrentWindow();
+  }
+}
+```
+
+#### 发布流程示例
+
+```javascript
+// 1. 首页选择要发布的账号并打开发布窗口
+async function publishToAccount(platform, accountId, publishUrl) {
+  // 从后台获取该账号的会话数据
+  const response = await fetch(`https://apidev.china9.cn/api/mediaauth/get-session/${accountId}`);
+  const { sessionData } = await response.json();
+
+  // 打开发布窗口，传入 sessionData 参数
+  // 浏览器会自动清空旧 cookies 并恢复新的会话数据
+  const result = await window.browserAPI.openNewWindow(publishUrl, {
+    platform: platform,
+    accountId: accountId,
+    sessionData: sessionData  // 浏览器会自动清空并恢复
+  });
+
+  if (result.success) {
+    // 存储发布数据
+    await window.browserAPI.setGlobalData(`publish_data_window_${result.windowId}`, {
+      title: '视频标题',
+      content: '视频描述'
+    });
+  }
+}
+
+// 2. 在发布脚本中获取账号信息
+async function onPublishPageLoaded() {
+  // 获取当前窗口的账号信息
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  console.log('当前账号:', accountInfo.account?.nickname);
+
+  // 获取发布数据
+  const windowId = await window.browserAPI.getWindowId();
+  const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+
+  // 执行发布逻辑...
+}
+```
+
+**推荐流程**：
+1. 父页面从后台获取账号的 `sessionData`
+2. 调用 `openNewWindow` 时传入 `sessionData` 参数
+3. 浏览器自动完成清空和恢复操作
+4. 打开窗口时已经是最新的登录状态
+
+**注意**：
+- 如果使用 `sessionData` 参数，无需手动调用 `clearAccountCookies` 和 `restoreAccountSession`
+- 这种方式适合多项目场景，所有逻辑由浏览器内部完成，父页面只负责传数据
+
+#### 平台名称对照
+
+| 平台 | platform 值 |
+|------|------------|
+| 抖音 | `douyin` |
+| 小红书 | `xiaohongshu` |
+| 百家号 | `baijiahao` |
+| 微信公众号 | `weixin` |
+| 视频号 | `shipinhao` |
+
+#### 会话数据恢复与清理
+
+##### 恢复账号会话数据（打开窗口前调用）
+```javascript
+// 从后台获取账号的完整会话数据后，在打开发布窗口之前恢复到账号 session
+const result = await window.browserAPI.restoreAccountSession('douyin', 'douyin_xxx_1', sessionData);
+// 参数:
+//   platform - 平台名称（如 'douyin'）
+//   accountId - 账号 ID（如 'douyin_xxx_1'）
+//   sessionData - 会话数据对象或 JSON 字符串（getFullSessionData 返回的格式）
+// 返回: { success: true, results: { cookies: {restored, failed}, ... } }
+
+// 使用示例：打开发布窗口前恢复会话
+async function openPublishWindow(platform, accountId, publishUrl) {
+  // 1. 从后台获取账号的会话数据
+  const response = await fetch(`https://apidev.china9.cn/api/mediaauth/get-session/${accountId}`);
+  const { sessionData } = await response.json();
+
+  // 2. 恢复会话数据到账号 session
+  const restoreResult = await window.browserAPI.restoreAccountSession(platform, accountId, sessionData);
+  if (restoreResult.success) {
+    console.log(`已恢复 ${restoreResult.results.cookies.restored} 个 cookies`);
+
+    // 3. 打开发布窗口（会自动使用该账号的 session）
+    const windowResult = await window.browserAPI.openNewWindow(publishUrl, {
+      platform: platform,
+      accountId: accountId
+    });
+  }
+}
+```
+
+##### 清空账号的所有 Cookies
+```javascript
+// 清空指定账号的所有 cookies（用于发布窗口关闭前清理）
+const result = await window.browserAPI.clearAccountCookies('douyin', 'douyin_xxx_1');
+// 参数:
+//   platform - 平台名称
+//   accountId - 账号 ID
+// 返回: { success: true, deletedCount: 10 }
+
+// 使用方式 1: 手动调用（在发布脚本中）
+async function onPublishComplete() {
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  if (accountInfo.success) {
+    // 发布完成后清空登录状态
+    await window.browserAPI.clearAccountCookies(accountInfo.platform, accountInfo.accountId);
+    // 然后关闭窗口
+    await window.browserAPI.closeCurrentWindow();
+  }
+}
+
+// 使用方式 2: 自动清空（在窗口关闭前自动执行）
+// 需要在发布脚本的 window.beforeunload 或 pagehide 事件中调用
+window.addEventListener('beforeunload', async (e) => {
+  const accountInfo = await window.browserAPI.getCurrentAccount();
+  if (accountInfo.success) {
+    await window.browserAPI.clearAccountCookies(accountInfo.platform, accountInfo.accountId);
+  }
+});
+```
+
+**注意事项**：
+1. `restoreAccountSession` 目前只恢复 Cookies，localStorage/sessionStorage/IndexedDB 需要在窗口打开后通过页面脚本恢复（使用 `restoreSessionData`）
+2. `clearAccountCookies` 会清空该账号 session 中的所有 cookies，确保下次发布时使用的是从后台恢复的最新会话数据
+3. 建议在发布完成或窗口关闭前调用 `clearAccountCookies`，避免登录状态累积
 
 ## Script Storage
 

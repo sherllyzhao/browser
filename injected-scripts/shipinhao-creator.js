@@ -164,6 +164,22 @@
               })
             };
 
+            // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+            console.log('[视频号授权] 📦 正在获取完整会话数据...');
+            try {
+              const sessionResult = await window.browserAPI.getFullSessionData('weixin.qq.com');
+              if (sessionResult.success) {
+                const dataObj = JSON.parse(scanData.data);
+                dataObj.cookies = JSON.stringify(sessionResult.data);
+                scanData.data = JSON.stringify(dataObj);
+                console.log(`[视频号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+              } else {
+                console.warn('[视频号授权] ⚠️ 获取会话数据失败:', sessionResult.error);
+              }
+            } catch (sessionError) {
+              console.error('[视频号授权] ⚠️ 获取会话数据异常:', sessionError);
+            }
+
             // 发送数据到服务器（根据环境选择域名）
             const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
             const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {

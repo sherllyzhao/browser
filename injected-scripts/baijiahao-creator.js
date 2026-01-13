@@ -172,16 +172,25 @@
                 throw new Error('User data not found in response');
               }
 
-              // 获取百度域名的完整 cookies（包括 HttpOnly 的 BDUSS 等）
-              let cookiesStr = document.cookie;
+              // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+              console.log('[百家号授权] 📦 正在获取完整会话数据...');
+              let cookiesData = '';
               try {
-                const cookieResult = await window.browserAPI.getDomainCookies('baidu.com');
-                if (cookieResult.success && cookieResult.cookies) {
-                  cookiesStr = cookieResult.cookies;
-                  console.log('[百家号授权] ✅ 获取完整 cookies 成功，共', cookieResult.count, '个');
+                const sessionResult = await window.browserAPI.getFullSessionData('baidu.com');
+                if (sessionResult.success) {
+                  cookiesData = JSON.stringify(sessionResult.data);
+                  console.log(`[百家号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                } else {
+                  console.warn('[百家号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
+                  // 降级为简单 cookie 字符串
+                  const cookieResult = await window.browserAPI.getDomainCookies('baidu.com');
+                  if (cookieResult.success && cookieResult.cookies) {
+                    cookiesData = cookieResult.cookies;
+                  }
                 }
-              } catch (err) {
-                console.warn('[百家号授权] ⚠️ 获取完整 cookies 失败，使用 document.cookie:', err);
+              } catch (sessionError) {
+                console.error('[百家号授权] ⚠️ 获取会话数据异常:', sessionError);
+                cookiesData = document.cookie;
               }
 
               const scanData = {
@@ -196,7 +205,7 @@
                   total_favorited: 0,
                   company_id: companyId,
                   auth_type: messageData.auth_type,
-                  cookies: cookiesStr
+                  cookies: cookiesData
                 })
               };
 

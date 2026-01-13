@@ -17,6 +17,177 @@ console.log('[common.js] 当前窗口:', window.location.href);
 window.__COMMON_JS_LOADED__ = true;
 
 // ===========================
+// 🔑 统一配置常量（低风险优化：提取硬编码延迟）
+// ===========================
+window.PUBLISH_CONFIG = {
+  // 通用延迟配置（毫秒）
+  delays: {
+    short: 300,           // 短延迟：事件触发后等待
+    medium: 1000,         // 中延迟：操作间等待
+    long: 2000,           // 长延迟：页面加载等待
+    veryLong: 5000,       // 超长延迟：复杂操作等待
+  },
+  // 重试配置
+  retry: {
+    maxRetries: 10,       // 默认最大重试次数
+    retryDelay: 2000,     // 默认重试间隔
+    uploadMaxRetries: 150, // 上传检测最大重试次数
+    uploadRetryDelay: 2000, // 上传检测重试间隔
+  },
+  // 超时配置
+  timeout: {
+    element: 30000,       // 等待元素超时
+    upload: 300000,       // 上传超时（5分钟）
+    publish: 30000,       // 发布超时
+    iframe: 10000,        // iframe 加载超时
+    shadowDom: 5000,      // Shadow DOM 查找超时
+  },
+  // 各平台选择器（方便维护和检查有效性）
+  selectors: {
+    douyin: {
+      publishBtn: '.button-dhlUZE',
+      titleInput: '.editor-kit-root-container .semi-input',
+      introInput: '.editor-kit-root-container .editor-kit-container.editor',
+      coverCheck: '.cover-check [class*="title-"]',
+      uploadProgress: '[class*="upload-progress-style"] [class*="text-"]',
+    },
+    xiaohongshu: {
+      publishBtn: '.submit > .custom-button.red',
+      titleInput: '.d-input-wrapper .d-input input',
+      introInput: '.tiptap-container .ProseMirror',
+      uploadStage: '.stage',
+    },
+    baijiahao: {
+      publishBtn: '.cheetah-btn-primary',
+      editor: '.news-editor-pc',
+      iframe: 'iframe',
+    },
+    shipinhao: {
+      publishBtn: '.weui-desktop-btn_primary',
+      wujieApp: 'wujie-app',
+      uploadProgress: '.ant-progress-text',
+      video: '#fullScreenVideo',
+    },
+  },
+};
+
+// ===========================
+// 🔑 选择器有效性检查工具
+// ===========================
+window.checkSelectorValidity = async function(platform) {
+  const config = window.PUBLISH_CONFIG.selectors[platform];
+  if (!config) {
+    console.warn(`[选择器检查] ⚠️ 未知平台: ${platform}`);
+    return { valid: true, missing: [] };
+  }
+
+  const missing = [];
+  for (const [name, selector] of Object.entries(config)) {
+    try {
+      const element = document.querySelector(selector);
+      if (!element) {
+        missing.push({ name, selector });
+      }
+    } catch (e) {
+      missing.push({ name, selector, error: e.message });
+    }
+  }
+
+  if (missing.length > 0) {
+    console.warn(`[选择器检查] ⚠️ ${platform} 平台有 ${missing.length} 个选择器未找到:`);
+    missing.forEach(m => console.warn(`  - ${m.name}: ${m.selector}`));
+  } else {
+    console.log(`[选择器检查] ✅ ${platform} 平台所有选择器有效`);
+  }
+
+  return { valid: missing.length === 0, missing };
+};
+
+// ===========================
+// 🔑 详细错误日志工具（低风险优化）
+// ===========================
+window.PublishLogger = {
+  // 存储日志历史（用于错误上报时附带上下文）
+  _history: [],
+  _maxHistory: 100,
+
+  // 记录日志
+  log: function(platform, action, message, data = null) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      platform,
+      action,
+      message,
+      data,
+      url: window.location.href,
+    };
+    this._history.push(entry);
+    if (this._history.length > this._maxHistory) {
+      this._history.shift();
+    }
+    console.log(`[${platform}] [${action}] ${message}`, data || '');
+  },
+
+  // 记录错误（带堆栈信息）
+  error: function(platform, action, error, context = {}) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      platform,
+      action,
+      error: {
+        message: error.message || String(error),
+        stack: error.stack || null,
+        name: error.name || 'Error',
+      },
+      context,
+      url: window.location.href,
+      // 页面状态快照
+      pageState: {
+        title: document.title,
+        readyState: document.readyState,
+        bodyExists: !!document.body,
+        visibilityState: document.visibilityState,
+      },
+    };
+    this._history.push(entry);
+    console.error(`[${platform}] [${action}] ❌ ${error.message}`, { error, context });
+    return entry;
+  },
+
+  // 获取最近的日志（用于错误上报）
+  getRecentLogs: function(count = 20) {
+    return this._history.slice(-count);
+  },
+
+  // 获取指定平台的日志
+  getPlatformLogs: function(platform) {
+    return this._history.filter(log => log.platform === platform);
+  },
+
+  // 生成错误报告（用于发送到后台）
+  generateErrorReport: function(platform, error) {
+    return {
+      error: {
+        message: error.message || String(error),
+        stack: error.stack || null,
+      },
+      recentLogs: this.getRecentLogs(10),
+      platformLogs: this.getPlatformLogs(platform).slice(-5),
+      environment: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  },
+
+  // 清空日志
+  clear: function() {
+    this._history = [];
+  },
+};
+
+// ===========================
 // 页面状态检查 - 防止异常渲染
 // ===========================
 window.checkPageState = function(scriptName = '脚本') {
@@ -304,34 +475,40 @@ window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
     let blob;
     let contentType = 'video/mp4';
 
-    // 优先使用主进程下载（绕过跨域限制）
-    if (window.browserAPI?.downloadVideo) {
-        console.log('[uploadVideo] 使用主进程下载...');
-        const result = await window.browserAPI.downloadVideo(pathImage);
+    // 优先使用主进程下载（绕过跨域限制），添加重试机制防止并发下载时连接被重置
+    const downloadResult = await retryOperation(async () => {
+        if (window.browserAPI?.downloadVideo) {
+            console.log('[uploadVideo] 使用主进程下载...');
+            const result = await window.browserAPI.downloadVideo(pathImage);
 
-        if (!result.success) {
-            throw new Error('Video download failed: ' + result.error);
-        }
+            if (!result.success) {
+                throw new Error('Video download failed: ' + result.error);
+            }
 
-        // 将 base64 转换为 Blob
-        const binaryString = atob(result.data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+            // 将 base64 转换为 Blob
+            const binaryString = atob(result.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            const downloadedBlob = new Blob([bytes], { type: result.contentType });
+            console.log('[uploadVideo] 主进程下载成功，大小:', result.size, 'bytes');
+            return { blob: downloadedBlob, contentType: result.contentType };
+        } else {
+            // 回退到 fetch（可能有跨域问题）
+            console.log('[uploadVideo] browserAPI.downloadVideo 不可用，使用 fetch...');
+            const response = await fetch(pathImage);
+            if (!response.ok) {
+                throw new Error('HTTP error! status: ' + response.status);
+            }
+            const downloadedBlob = await response.blob();
+            const type = response.headers.get('Content-Type') || downloadedBlob.type || 'video/mp4';
+            return { blob: downloadedBlob, contentType: type };
         }
-        blob = new Blob([bytes], { type: result.contentType });
-        contentType = result.contentType;
-        console.log('[uploadVideo] 主进程下载成功，大小:', result.size, 'bytes');
-    } else {
-        // 回退到 fetch（可能有跨域问题）
-        console.log('[uploadVideo] browserAPI.downloadVideo 不可用，使用 fetch...');
-        const response = await fetch(pathImage);
-        if (!response.ok) {
-            throw new Error('HTTP error! status: ' + response.status);
-        }
-        blob = await response.blob();
-        contentType = response.headers.get('Content-Type') || blob.type || 'video/mp4';
-    }
+    }, 5, 3000);  // 最多重试5次，每次间隔3秒（处理并发下载时的 ECONNRESET 错误）
+
+    blob = downloadResult.blob;
+    contentType = downloadResult.contentType;
 
     // 从 URL 或 Content-Type 中提取文件扩展名
     let extension = '.mp4'; // 默认扩展名
@@ -356,17 +533,19 @@ window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
 
     const file = new File([blob], fileName, {type: contentType});
 
-    // 等待上传按钮
-    //alert('Looking for upload input...');
+    // 等待上传按钮（使用重试机制，最多等待60秒）
+    console.log('[uploadVideo] 开始查找上传 input 元素...');
     let uploadInput;
     if (!shadowRoot) {
-        // alert('wujie-app has no shadow root, trying to access iframe directly');
-        // 如果没有Shadow DOM，尝试直接查找iframe
-        uploadInput = await waitForElement('input[type="file"]', 3000);
+        // 如果没有Shadow DOM，尝试直接查找
+        uploadInput = await waitForElement('input[type="file"]', 30000);
     } else {
-        // 深入Shadow DOM查找
-        uploadInput = await deepShadowSearch(shadowRoot, 'input[type="file"]', 3);
+        // 深入Shadow DOM查找，使用重试机制（deepShadowSearch 超时时间短，需要多次重试）
+        uploadInput = await retryOperation(async () => {
+            return await deepShadowSearch(shadowRoot, 'input[type="file"]', 5);
+        }, 30, 2000);  // 最多重试30次，每次间隔2秒，总共最多60秒
     }
+    console.log('[uploadVideo] ✅ 找到上传 input 元素:', uploadInput ? 'success' : 'failed');
 
     // 执行文件上传
     //alert('Uploading file: ' + file.name);
@@ -427,24 +606,68 @@ window.setNativeValue = function(el, value) {
     }
 };
 
-// 等待Shadow DOM中的元素
-window.waitForShadowElement = function(hostSelector, shadowSelector, timeout = 30000) {
-    return window.waitForElement(hostSelector, timeout).then(host => {
-        if (!host.shadowRoot) {
-            throw new Error(`Host element has no shadow root: ${hostSelector}`);
+// 等待Shadow DOM中的元素（优化版 - 支持多选择器和重试）
+window.waitForShadowElement = function(hostSelector, shadowSelector, timeout = 30000, checkInterval = 200) {
+    const startTime = Date.now();
+    const selectors = Array.isArray(shadowSelector) ? shadowSelector : [shadowSelector];
+
+    return new Promise((resolve, reject) => {
+        async function check() {
+            if (Date.now() - startTime > timeout) {
+                reject(new Error(`Shadow 元素超时: ${selectors.join(' | ')}`));
+                return;
+            }
+
+            try {
+                // 查找宿主元素
+                const host = document.querySelector(hostSelector);
+                if (!host) {
+                    setTimeout(check, checkInterval);
+                    return;
+                }
+
+                // 等待 shadowRoot 可用
+                if (!host.shadowRoot) {
+                    setTimeout(check, checkInterval);
+                    return;
+                }
+
+                // 🔑 尝试所有选择器
+                for (const selector of selectors) {
+                    const element = host.shadowRoot.querySelector(selector);
+                    if (element) {
+                        console.log(`[waitForShadowElement] ✅ 找到: ${selector}`);
+                        resolve(element);
+                        return;
+                    }
+                }
+
+                // 没找到，继续等待
+                setTimeout(check, checkInterval);
+            } catch (error) {
+                setTimeout(check, checkInterval);
+            }
         }
-        return window.waitForElement(() => host.shadowRoot.querySelector(shadowSelector), timeout);
+
+        check();
     });
 };
 
-// 深度搜索Shadow DOM中的元素（修复版 - 防止白屏）
-window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
+// 深度搜索Shadow DOM中的元素（修复版 - 防止白屏，增加超时）
+window.deepShadowSearch = function(rootElement, selector, maxDepth = 3, timeout = 5000) {
     return new Promise((resolve, reject) => {
         let resolved = false; // 防止多次 resolve
+        const startTime = Date.now();
+        const selectors = Array.isArray(selector) ? selector : [selector];
 
         function searchInShadow(element, depth) {
             // 已经找到了，直接返回
             if (resolved) {
+                return;
+            }
+
+            // 🔑 检查超时
+            if (Date.now() - startTime > timeout) {
                 return;
             }
 
@@ -453,13 +676,16 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
                 return;
             }
 
-            // 在当前元素中查找
+            // 🔑 在当前元素中查找（支持多选择器）
             try {
-                const found = element.querySelector(selector);
-                if (found && !resolved) {
-                    resolved = true;
-                    resolve(found);
-                    return;
+                for (const sel of selectors) {
+                    const found = element.querySelector(sel);
+                    if (found && !resolved) {
+                        resolved = true;
+                        console.log(`[deepShadowSearch] ✅ 找到: ${sel}`);
+                        resolve(found);
+                        return;
+                    }
                 }
             } catch (error) {
                 // querySelector 可能在某些情况下失败，继续搜索
@@ -500,12 +726,12 @@ window.deepShadowSearch = function(rootElement, selector, maxDepth = 3) {
 
         searchInShadow(rootElement, 0);
 
-        // 如果一直没找到，延迟 reject（给递归一点时间）
+        // 🔑 使用配置的超时时间（而不是固定 100ms）
         setTimeout(() => {
             if (!resolved) {
-                reject(new Error(`找不到元素: ${selector}`));
+                reject(new Error(`找不到元素: ${selectors.join(' | ')}`));
             }
-        }, 100);
+        }, timeout);
     });
 };
 
@@ -570,8 +796,38 @@ window.sendStatistics = async function(publishId, platform = '') {
 };
 
 // 发送错误统计接口（发布失败时调用）
-window.sendStatisticsError = async function(publishId, statusText, platform = '') {
-    const scanData = { data: JSON.stringify({ id: publishId, status_text: statusText }) };
+// 🔑 增强版：附带详细的错误上下文日志
+window.sendStatisticsError = async function(publishId, statusText, platform = '', errorObj = null) {
+    // 使用 PublishLogger 记录错误
+    if (window.PublishLogger && errorObj) {
+        window.PublishLogger.error(platform || '发布', 'sendStatisticsError', errorObj, { publishId, statusText });
+    }
+
+    // 构建错误数据（包含更多上下文信息）
+    const errorData = {
+        id: publishId,
+        status_text: statusText,
+        // 🔑 附加诊断信息
+        context: {
+            url: window.location.href,
+            timestamp: new Date().toISOString(),
+            platform: platform || 'unknown',
+        }
+    };
+
+    // 如果有 PublishLogger，附加最近日志摘要
+    if (window.PublishLogger) {
+        const recentLogs = window.PublishLogger.getRecentLogs(5);
+        if (recentLogs.length > 0) {
+            errorData.context.recentActions = recentLogs.map(log => ({
+                time: log.timestamp,
+                action: log.action,
+                message: log.message,
+            }));
+        }
+    }
+
+    const scanData = { data: JSON.stringify(errorData) };
     try {
         console.log(`[${platform || '发布'}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
         const url = await getStatisticsUrl(true);
@@ -877,6 +1133,62 @@ console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMe
 
 } // 结束 if-else 块，所有函数在 else 块内定义
 
+/**
+ * 高级版本：获取#后面的内容
+ * @param {string} str 输入字符串
+ * @param {Object} options 配置选项
+ * @param {boolean} options.all 是否获取所有匹配（默认false）
+ * @param {boolean} options.includeHash 是否包含#符号（默认false）
+ * @param {RegExp} options.delimiter 分隔符正则（默认空白字符）
+ * @returns {string|string[]|null} 结果
+ */
+window.extractAfterHash = function(str, options = {}) {
+    const {
+        all = false,
+        includeHash = false,
+        delimiter = /\s/
+    } = options;
+
+    // 构建正则表达式
+    const delimiterPattern = delimiter.source;
+    const pattern = all
+        ? `#([^${delimiterPattern}#]+)`
+        : `#([^${delimiterPattern}#]+)`;
+
+    const regex = new RegExp(pattern, all ? 'g' : '');
+
+    if (!all) {
+        // 单次匹配
+        const match = str.match(regex);
+        if (!match) return null;
+        return includeHash ? match[0] : match[1];
+    } else {
+        // 全局匹配
+        const matches = [];
+        let match;
+
+        while ((match = regex.exec(str)) !== null) {
+            matches.push(includeHash ? match[0] : match[1]);
+        }
+
+        return matches;
+    }
+}
+
+window.removeHashTags = function(str) {
+    // 先移除 # 及其内容
+    let result = str.replace(/#[^\s#]+/g, '');
+
+    // 清理因移除而产生的多余空格
+    // 将多个连续空格替换为单个空格
+    result = result.replace(/\s+/g, ' ');
+
+    // 去掉首尾空格
+    result = result.trim();
+
+    return result;
+}
+
 // 定义全局别名，确保向后兼容
 if (typeof waitForElement === 'undefined') window.waitForElement && (waitForElement = window.waitForElement);
 if (typeof retryOperation === 'undefined') window.retryOperation && (retryOperation = window.retryOperation);
@@ -893,6 +1205,8 @@ if (typeof getStatisticsUrl === 'undefined') window.getStatisticsUrl && (getStat
 if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof delay === 'undefined') window.delay && (delay = window.delay);
+if (typeof extractAfterHash === 'undefined') window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
+if (typeof removeHashTags === 'undefined') window.removeHashTags && (removeHashTags = window.removeHashTags);
 
 // ===========================
 // 前端拦截自定义协议（如 bitbrowser://）

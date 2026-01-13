@@ -133,12 +133,6 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
             console.log('[小红书发布] ✅ windowId 匹配，处理消息');
           }
 
-          // 防重复检查
-          if (isProcessing) {
-            console.warn('[小红书发布] ⚠️ 正在处理中，忽略重复消息');
-            return;
-          }
-
           // 解析数据获取视频 ID（兼容字符串和对象）
           let messageData;
           try {
@@ -148,6 +142,35 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
             console.error('[小红书发布] 原始数据:', message.data);
             return;
           }
+
+          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+          if (messageData.cookies) {
+            console.log('[小红书发布] 📦 检测到 cookies 数据，开始恢复会话...');
+            try {
+              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+              if (restoreResult.success) {
+                console.log('[小红书发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                // 恢复 cookies 后需要刷新页面才能生效
+                console.log('[小红书发布] 🔄 刷新页面以应用 cookies...');
+                // 保存消息数据到全局存储，刷新后继续使用
+                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                window.location.reload();
+                return; // 刷新后脚本会重新注入
+              } else {
+                console.warn('[小红书发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+              }
+            } catch (restoreError) {
+              console.error('[小红书发布] ⚠️ 会话数据恢复异常:', restoreError);
+            }
+          }
+
+          // 防重复检查
+          if (isProcessing) {
+            console.warn('[小红书发布] ⚠️ 正在处理中，忽略重复消息');
+            return;
+          }
+
           const videoId = messageData?.video?.dyPlatform?.id;
 
           if (!videoId) {
@@ -192,7 +215,8 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
             } */
 
             // 查找是否有提示消息
-            const tipsEle = document.querySelector('.progetto-sugger-warn .tips');
+            const tipsEle = await waitForElement('.progetto-sugger-warn .tips', 2000);
+            console.log("🚀 ~  ~ tipsEle: ", tipsEle);
             if(tipsEle){
               const tipsText = tipsEle.textContent.trim();
               console.log('[小红书发布] ✅ 提示消息:', tipsText);
@@ -249,15 +273,44 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
   console.log('═══════════════════════════════════════');
 
   // ===========================
-  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
-  /* setTimeout(async () => {
+  await (async () => {
+    // 如果已经在处理，跳过
+    if (isProcessing) {
+      console.log('[小红书发布] ⏭️ 已在处理中，跳过全局存储读取');
+      return;
+    }
+
     try {
-      const savedData = localStorage.getItem('XHS_PUBLISH_DATA');
-      if (savedData && !isProcessing && !hasProcessed) {
-        console.log('[小红书发布] 🔄 检测到保存的发布数据，准备恢复...');
-        const messageData = JSON.parse(savedData);
-        console.log('[小红书发布] 📦 恢复的数据:', messageData);
+      // 获取当前窗口 ID
+      const windowId = await window.browserAPI.getWindowId();
+      console.log('[小红书发布] 检查全局存储，窗口 ID:', windowId);
+
+      if (!windowId) {
+        console.log('[小红书发布] ❌ 无法获取窗口 ID');
+        return;
+      }
+
+      // 检查是否有恢复 cookies 后保存的发布数据
+      const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+      console.log('[小红书发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
+
+      if (publishData && !isProcessing) {
+        const videoId = publishData?.video?.dyPlatform?.id;
+
+        // 检查是否已处理过这个视频
+        if (videoId && processedVideoIds.has(videoId)) {
+          console.warn('[小红书发布] ⚠️ 视频已处理过，跳过. Video ID:', videoId);
+          await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+          return;
+        }
+
+        console.log('[小红书发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+        // 清除已使用的数据，避免重复处理
+        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+        console.log('[小红书发布] 🗑️ 已清除 publish_data_window_' + windowId);
 
         // 标记为正在处理
         isProcessing = true;
@@ -265,31 +318,56 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
         // 更新全局变量
         window.__AUTH_DATA__ = {
           ...window.__AUTH_DATA__,
-          message: messageData,
-          recoveredAt: Date.now()
+          message: publishData,
+          source: 'cookieRestore',
+          windowId: windowId,
+          receivedAt: Date.now()
         };
 
-        // 执行上传流程
-        await uploadVideo(messageData);
+        // 查找是否有提示消息
+        try{
+          const tipsEle = await waitForElement('.progetto-sugger-warn .tips', 2000);
+          console.log("🚀 ~  ~ tipsEle: ", tipsEle);
+          if(tipsEle){
+            const tipsText = tipsEle.textContent.trim();
+            console.log('[小红书发布] ✅ 提示消息:', tipsText);
+            const canToError = tipsText.includes('未绑定手机号');
+            if(canToError){
+              console.log('[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面');
+              const publishId = publishData?.video?.dyPlatform?.id;
+              await sendStatisticsError(publishId, '未绑定手机号', '小红书发布');
+              await closeWindowWithMessage('发布失败，刷新数据', 1000);
+              return;
+            }
+          }
+        } catch (e) {
+          console.log('[小红书发布] ❌ 查找提示消息失败:', e);
+        }
+
+        await uploadVideo(publishData);
         try {
-          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
         } catch (e) {
           console.log('[小红书发布] ❌ 填写表单数据失败:', e);
         }
 
-        console.log('[小红书发布] 📤 恢复数据后准备发送数据到接口...');
+        console.log('[小红书发布] 📤 准备发送数据到接口...');
         console.log('[小红书发布] ✅ 发布流程已启动，等待 publishApi 完成...');
 
-        // 重置处理标志
+        // 标记视频已处理
+        if (videoId) {
+          processedVideoIds.add(videoId);
+        }
         isProcessing = false;
-      } else {
-        console.log('[小红书发布] ℹ️ 没有需要恢复的数据');
       }
     } catch (error) {
-      console.error('[小红书发布] ❌ 恢复数据失败:', error);
-      isProcessing = false;
+      console.error('[小红书发布] ❌ 从全局存储读取数据失败:', error);
     }
-  }, 2000); // 延迟2秒，等待页面完全加载 */
+  })();
+
+  // ===========================
+  // 7. 检查是否有保存的发布数据（授权跳转恢复）
+  // ===========================
 
 })();
 
@@ -326,6 +404,10 @@ async function publishApi(dataObj) {
       if (!btn) {
         throw new Error('发布按钮未找到');
       }
+      // 🔑 检查按钮是否 disabled
+      if (btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('disabled') !== null) {
+        throw new Error('发布按钮当前不可用(disabled)，可能不符合发布要求');
+      }
       return btn;
     }, 10, 2000);
 
@@ -341,21 +423,6 @@ async function publishApi(dataObj) {
       console.log('[小红书发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
     } catch (e) {
       console.error('[小红书发布] ❌ 保存 publishId 失败:', e);
-    }
-
-    // 🚨 开发环境检测：使用 browserAPI.isProduction 判断
-    // 默认策略：无法确定环境时，执行点击（安全优先）
-    let isDevEnvironment = false;
-
-    if (window.browserAPI) {
-      isDevEnvironment = window.browserAPI.isProduction === false;
-      console.log('[小红书发布] 环境检测:', {
-        hasBrowserAPI: true,
-        isProduction: window.browserAPI.isProduction,
-        isDevEnvironment: isDevEnvironment
-      });
-    } else {
-      console.warn('[小红书发布] ⚠️ browserAPI 不可用，默认执行发布（生产模式）');
     }
 
     // 检测视频是否上传完成
@@ -376,8 +443,6 @@ async function publishApi(dataObj) {
     // 生产环境：必须点击发布按钮
     console.log('[小红书发布] ✅ 生产环境确认，准备点击发布按钮...');
     await delay(1000);
-
-    //return alert(123);
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
@@ -585,10 +650,21 @@ async function fillFormData(dataObj) {
           // alert('⚠️ Intro input not found with any selector, skipping intro...');
         } else {
           const targetIntro = titleAndIntro.intro || '';
-          const targetContent = targetIntro.trim();
+          let targetContent = targetIntro.trim();
 
           // 检查实际内容
           const currentContent = (introInput.textContent || introInput.innerText || '').trim();
+
+          // 检测内容是否有#并且其后跟有文字（提取话题）
+          const topicList = extractAfterHash(targetContent, { all: true, includeHash: true });
+          console.log("🚀 ~ fillFormData ~ topicList: ", topicList);
+
+          // 如果有话题，先从内容中移除话题文本
+          let cleanedIntro = targetContent;
+          if (topicList.length > 0) {
+            //  删除掉所有话题
+            cleanedIntro = removeHashTags(targetContent);
+          }
 
           // 只有在标记未设置且内容不同时才填写
           if (currentContent !== targetContent) {
@@ -599,8 +675,8 @@ async function fillFormData(dataObj) {
 
             // 清空现有内容，避免累积
             introInput.innerHTML = '';
-            if (titleAndIntro.intro) {
-              introInput.innerHTML = '<p>' + titleAndIntro.intro + '</p>';
+            if (cleanedIntro) {
+              introInput.innerHTML = '<p>' + cleanedIntro + '</p>';
             }
 
             // 触发input事件
@@ -609,6 +685,82 @@ async function fillFormData(dataObj) {
             }
 
             // alert('✅ Intro filled successfully');
+
+            // 单独处理话题
+            if (topicList.length > 0) {
+              const introInput = await waitForElement('.tiptap-container .ProseMirror', 5000);
+              for (let topicListElement of topicList) {
+                // 聚焦编辑器
+                introInput.focus();
+
+                // 将光标移到末尾
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(introInput);
+                range.collapse(false); // false = 折叠到末尾
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                // 先插入一个空格分隔
+                document.execCommand('insertText', false, ' ');
+
+                // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
+                document.execCommand('insertText', false, topicListElement);
+
+                // 触发 input 事件确保编辑器识别变化
+                introInput.dispatchEvent(new InputEvent('input', {
+                  inputType: 'insertText',
+                  data: topicListElement,
+                  bubbles: true,
+                }));
+
+                // 等待话题建议列表出现（使用 waitForElement）
+                try {
+                  const topicSuggest = await waitForElement('#creator-editor-topic-container', 3000);
+                  console.log('🏷️ 话题建议列表已出现:', topicSuggest);
+
+                  if (topicSuggest) {
+                    // 尝试多种选择器找到话题选项
+                    const selectors = [
+                      '#creator-editor-topic-container .item.is-selected',
+                      '#creator-editor-topic-container .item:first-child',
+                      '#creator-editor-topic-container .item',
+                      '#creator-editor-topic-container div[class*="item"]'
+                    ];
+
+                    // 轮询等待话题选项出现（因为选项是异步接口返回的）
+                    let firstOption = null;
+                    const maxRetries = 30; // 最多等待3秒（30 * 100ms）
+                    let retryCount = 0;
+
+                    while (!firstOption && retryCount < maxRetries) {
+                      for (const selector of selectors) {
+                        firstOption = topicSuggest.querySelector(selector);
+                        if (firstOption) {
+                          console.log('🏷️ 找到话题选项，选择器:', selector, '重试次数:', retryCount, firstOption);
+                          break;
+                        }
+                      }
+
+                      if (!firstOption) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        retryCount++;
+                      }
+                    }
+
+                    if (firstOption) {
+                      firstOption.click();
+                      console.log('🏷️ 已点击话题选项');
+                      await new Promise(resolve => setTimeout(resolve, 200));
+                    } else {
+                      console.log('🏷️ 未找到话题选项（已重试', retryCount, '次），列表内容:', topicSuggest.innerHTML.substring(0, 500));
+                    }
+                  }
+                } catch (e) {
+                  console.log('🏷️ 话题建议列表未出现:', e.message);
+                }
+              }
+            }
           } else {
             // 内容已经正确，也标记为已填写
             introFilled = true;

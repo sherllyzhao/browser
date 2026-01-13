@@ -1,5 +1,28 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 配置（内联，因为 preload 脚本沙盒环境不能使用 path 模块）
+const config = {
+  platformPublishUrls: {
+    dy: 'https://creator.douyin.com/creator-micro/content/upload',
+    xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
+    sph: 'https://channels.weixin.qq.com/platform/post/create',
+    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+  },
+  platformIdMap: {
+    1: 'dy',    // 抖音
+    4: 'bjh',   // 百家号
+    6: 'xhs',   // 小红书
+    7: 'sph'    // 视频号
+  },
+  platformNameMap: {
+    'dy': 'douyin',
+    'xhs': 'xiaohongshu',
+    'sph': 'shipinhao',
+    'bjh': 'baijiahao',
+    'wx': 'weixin'
+  }
+};
+
 // 检测是否为生产环境（打包后运行）
 // 使用多种方式判断，确保准确
 const isProduction = (() => {
@@ -145,24 +168,71 @@ contextBridge.exposeInMainWorld('browserAPI', {
       console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
       console.log(`[BrowserAPI] 📋 共有 ${dataArray.length} 篇文章待发布`);
 
-      const urlMap = {
-        'dy': 'https://creator.douyin.com/creator-micro/content/upload',
-        'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
-        'sph': 'https://channels.weixin.qq.com/platform/post/create',
-        'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
-      };
-      const platformMap = { 1: 'dy', 6: 'xhs', 7: 'sph', 4: 'bjh' };
+      // 使用配置文件中的映射
+      const urlMap = config.platformPublishUrls;
+      const platformMap = config.platformIdMap;
+      const platformFullNameMap = config.platformNameMap;
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
           const platform = platformMap[element.account_info.media.id];
+          const platformFullName = platformFullNameMap[platform];
           const url = urlMap[platform];
           console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
 
+          // 构建 openNewWindow 的 options
+          // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
+          const openOptions = {};
+
+          // 🔑 多账号模式开关
+          // true: 每个窗口使用独立 session，从父页面传入的 cookies 恢复登录状态
+          // false: 所有窗口使用共享 session（persist:browserview）
+          const ENABLE_MULTI_ACCOUNT = true;
+
+          // 解析 element.cookies（格式: {domain, timestamp, cookies: [...]} 或 JSON 字符串）
+          let cookiesData = null;
+          let cookiesArray = [];
+          if (element.cookies) {
+            try {
+              cookiesData = typeof element.cookies === 'string' ? JSON.parse(element.cookies) : element.cookies;
+              // cookiesData 可能是 {domain, cookies: [...]} 或直接是数组
+              if (Array.isArray(cookiesData)) {
+                cookiesArray = cookiesData;
+              } else if (cookiesData.cookies && Array.isArray(cookiesData.cookies)) {
+                cookiesArray = cookiesData.cookies;
+              }
+              console.log("🚀 ~ element.cookies 解析成功, cookies 数量:", cookiesArray.length);
+            } catch (e) {
+              console.error("🚀 ~ element.cookies 解析失败:", e);
+            }
+          }
+
+          // 🔑 关键判断：只要 element.cookies 存在（即使内部 cookies 数组为空），就使用多账号模式
+          // 这样每个账号窗口使用独立 session，避免登录状态互相干扰
+          if (ENABLE_MULTI_ACCOUNT && element.cookies) {
+            // 多账号模式：为每个窗口创建唯一的 session ID
+            const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+            if (platformFullName) {
+              openOptions.platform = platformFullName;
+              openOptions.accountId = uniqueSessionId;
+              console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
+            }
+            openOptions.sessionData = element.cookies;  // 传原始数据，main.js 会解析
+            console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
+          } else {
+            // 普通模式：使用共享 session，保持现有登录状态
+            if (element.cookies) {
+              console.log(`[BrowserAPI] 📋 检测到 cookies 数据，但多账号模式已禁用，使用共享 session`);
+            } else {
+              console.log(`[BrowserAPI] 📋 普通模式（无 cookies 数据），使用共享 session（persist:browserview）`);
+            }
+          }
+
           // 打开新窗口，获取窗口 ID
-          const result = await ipcRenderer.invoke('open-new-window', url);
+          console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(openOptions, null, 2));
+          const result = await ipcRenderer.invoke('open-new-window', url, openOptions);
           if (!result.success) {
             console.error(`❌ [${index + 1}] 打开窗口失败: ${result.error}`);
             continue; // 继续下一个，不要 return
@@ -190,7 +260,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
                 }
               },
               dyPlatform: element.dyPlatform || { id: element.id }
-            }
+            },
           };
           await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
           console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
@@ -256,6 +326,16 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onWindowLoaded 监听器已注册');
   },
 
+  // 监听会话更新事件（首页使用，用于保存发布窗口关闭时的最新 cookies）
+  // data: { windowId, platform, accountId, cookies, publishData, timestamp }
+  onSessionUpdated: (callback) => {
+    ipcRenderer.on('session-updated', (event, data) => {
+      console.log('[BrowserAPI] 收到 session-updated 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
+  },
+
   // 清除所有监听器（用于组件卸载）
   clearMessageListeners: () => {
     messageCallbacks.fromHome = null;
@@ -265,7 +345,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   },
 
   // 导航控制 API
-  // options: { useTemporarySession: boolean } - 为 true 时使用临时 session（不保存登录状态，用于授权页）
+  // options: {
+  //   useTemporarySession: boolean - 为 true 时使用临时 session（不保存登录状态，用于授权页）
+  //   platform: string - 平台名称（多账号模式必填）
+  //   accountId: string - 账号 ID（多账号模式必填）
+  //   sessionData: object | string - 会话数据（可选）。如果提供，浏览器会在打开窗口前自动清空旧登录信息并恢复此数据
+  // }
   openNewWindow: (url, options) => ipcRenderer.invoke('open-new-window', url, options),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
@@ -314,6 +399,18 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 返回: { success: true, cookies: 'cookie_string' } 或 { success: false, error: '错误信息' }
   getDomainCookies: (domain) => ipcRenderer.invoke('get-domain-cookies', domain),
 
+  // 获取完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+  // 用于授权后将完整登录状态存储到后台
+  // 参数: domain - 域名，如 'baidu.com'
+  // 返回: { success: true, data: { cookies, localStorage, sessionStorage, indexedDB }, size: 数据大小 }
+  getFullSessionData: (domain) => ipcRenderer.invoke('get-full-session-data', domain),
+
+  // 恢复完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
+  // 用于发布时从后台获取的会话数据恢复到当前窗口
+  // 参数: sessionData - 会话数据对象或 JSON 字符串（与 getFullSessionData 返回的 data 格式相同）
+  // 返回: { success: true, results: { cookies, localStorage, sessionStorage, indexedDB } }
+  restoreSessionData: (sessionData) => ipcRenderer.invoke('restore-session-data', sessionData),
+
   // ========== 全局数据存储 API（用于跨页面数据传递） ==========
   // 存储数据（如 company_id）
   setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),
@@ -324,7 +421,85 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 获取所有数据
   getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
   // 清空所有数据
-  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear')
+  clearGlobalData: () => ipcRenderer.invoke('global-storage-clear'),
+
+  // ========== 多账号管理 API ==========
+  // 获取指定平台的所有账号
+  // 参数: platform - 平台名称，如 'douyin', 'xiaohongshu', 'baijiahao', 'weixin', 'shipinhao'
+  // 返回: { success: true, accounts: [...] }
+  getAccounts: (platform) => ipcRenderer.invoke('get-accounts', platform).then(r => r.accounts || []),
+
+  // 获取所有平台的所有账号
+  // 返回: { douyin: [...], xiaohongshu: [...], ... }
+  getAllAccounts: () => ipcRenderer.invoke('get-all-accounts').then(r => r.platformAccounts || {}),
+
+  // 添加账号（授权成功后调用）
+  // 参数: platform - 平台名称
+  //       accountInfo - { nickname, avatar, platformUid, id? }
+  // 返回: { success: true, accountId: 'xxx', isNew: true/false }
+  addAccount: (platform, accountInfo) => ipcRenderer.invoke('add-account', platform, accountInfo),
+
+  // 删除账号（同时清理对应 session 数据）
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true }
+  removeAccount: (platform, accountId) => ipcRenderer.invoke('remove-account', platform, accountId),
+
+  // 更新账号信息
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  //       updates - { nickname?, avatar?, platformUid? }
+  // 返回: { success: true, account: {...} }
+  updateAccount: (platform, accountId, updates) => ipcRenderer.invoke('update-account', platform, accountId, updates),
+
+  // 检查账号是否已存在（通过平台用户 ID 判断）
+  // 参数: platform - 平台名称
+  //       platformUid - 平台用户 ID
+  // 返回: { exists: true, accountId: 'xxx', account: {...} } 或 { exists: false }
+  accountExists: (platform, platformUid) => ipcRenderer.invoke('account-exists', platform, platformUid),
+
+  // 获取账号信息
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, account: {...} }
+  getAccount: (platform, accountId) => ipcRenderer.invoke('get-account', platform, accountId),
+
+  // 获取当前窗口的账号信息（在发布脚本中使用）
+  // 返回: { success: true, platform: 'xxx', accountId: 'xxx', account: {...} }
+  getCurrentAccount: () => ipcRenderer.invoke('get-current-account'),
+
+  // 迁移临时 Session 到新账号（授权窗口使用）
+  // 用于授权成功后，将临时 session 的 cookies 迁移到新账号的持久化 session
+  // 参数: platform - 平台名称
+  //       accountInfo - { nickname, avatar, platformUid }
+  // 返回: { success: true, accountId: 'xxx', isNew: true/false, migratedCount: 10 }
+  migrateToNewAccount: (platform, accountInfo) => ipcRenderer.invoke('migrate-to-new-account', platform, accountInfo),
+
+  // 检查账号登录状态
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, isLoggedIn: true/false, cookieCount: 10 }
+  checkAccountLoginStatus: (platform, accountId) => ipcRenderer.invoke('check-account-login-status', platform, accountId),
+
+  // 恢复账号会话数据（在打开窗口之前调用）
+  // 用于从后台获取的会话数据恢复到指定账号的 session
+  // 参数: platform - 平台名称（如 'douyin', 'xiaohongshu'）
+  //       accountId - 账号 ID（如 'douyin_xxx_1'）
+  //       sessionData - 会话数据对象或 JSON 字符串（getFullSessionData 返回的格式）
+  // 返回: { success: true, results: { cookies, localStorage, sessionStorage, indexedDB } }
+  restoreAccountSession: (platform, accountId, sessionData) => ipcRenderer.invoke('restore-account-session', platform, accountId, sessionData),
+
+  // 清空账号的所有 Cookies（在窗口关闭前调用）
+  // 用于清空发布窗口对应账号的登录状态
+  // 参数: platform - 平台名称
+  //       accountId - 账号 ID
+  // 返回: { success: true, deletedCount: 10 }
+  clearAccountCookies: (platform, accountId) => ipcRenderer.invoke('clear-account-cookies', platform, accountId),
+
+  // 手动保存会话数据到后台（开发调试用）
+  // 在不关闭窗口的情况下保存最新 cookies 到后台
+  // 返回: { success: true, cookieCount: 10, response: '...' }
+  saveSessionToBackend: () => ipcRenderer.invoke('save-session-to-backend')
 });
 
 // 在页面加载时注入通信代码和协议拦截
