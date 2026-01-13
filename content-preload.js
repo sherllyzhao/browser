@@ -1,5 +1,28 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 配置（内联，因为 preload 脚本沙盒环境不能使用 path 模块）
+const config = {
+  platformPublishUrls: {
+    dy: 'https://creator.douyin.com/creator-micro/content/upload',
+    xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
+    sph: 'https://channels.weixin.qq.com/platform/post/create',
+    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+  },
+  platformIdMap: {
+    1: 'dy',    // 抖音
+    4: 'bjh',   // 百家号
+    6: 'xhs',   // 小红书
+    7: 'sph'    // 视频号
+  },
+  platformNameMap: {
+    'dy': 'douyin',
+    'xhs': 'xiaohongshu',
+    'sph': 'shipinhao',
+    'bjh': 'baijiahao',
+    'wx': 'weixin'
+  }
+};
+
 // 检测是否为生产环境（打包后运行）
 // 使用多种方式判断，确保准确
 const isProduction = (() => {
@@ -145,20 +168,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
       console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
       console.log(`[BrowserAPI] 📋 共有 ${dataArray.length} 篇文章待发布`);
 
-      const urlMap = {
-        'dy': 'https://creator.douyin.com/creator-micro/content/upload',
-        'xhs': 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
-        'sph': 'https://channels.weixin.qq.com/platform/post/create',
-        'bjh': 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
-      };
-      const platformMap = { 1: 'dy', 6: 'xhs', 7: 'sph', 4: 'bjh' };
-      // 短名称到长名称的映射（用于多账号系统）
-      const platformFullNameMap = {
-        'dy': 'douyin',
-        'xhs': 'xiaohongshu',
-        'sph': 'shipinhao',
-        'bjh': 'baijiahao'
-      };
+      // 使用配置文件中的映射
+      const urlMap = config.platformPublishUrls;
+      const platformMap = config.platformIdMap;
+      const platformFullNameMap = config.platformNameMap;
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
@@ -178,7 +191,27 @@ contextBridge.exposeInMainWorld('browserAPI', {
           // false: 所有窗口使用共享 session（persist:browserview）
           const ENABLE_MULTI_ACCOUNT = true;
 
-          if (ENABLE_MULTI_ACCOUNT && element.cookies && element.cookies.length > 0) {
+          // 解析 element.cookies（格式: {domain, timestamp, cookies: [...]} 或 JSON 字符串）
+          let cookiesData = null;
+          let cookiesArray = [];
+          if (element.cookies) {
+            try {
+              cookiesData = typeof element.cookies === 'string' ? JSON.parse(element.cookies) : element.cookies;
+              // cookiesData 可能是 {domain, cookies: [...]} 或直接是数组
+              if (Array.isArray(cookiesData)) {
+                cookiesArray = cookiesData;
+              } else if (cookiesData.cookies && Array.isArray(cookiesData.cookies)) {
+                cookiesArray = cookiesData.cookies;
+              }
+              console.log("🚀 ~ element.cookies 解析成功, cookies 数量:", cookiesArray.length);
+            } catch (e) {
+              console.error("🚀 ~ element.cookies 解析失败:", e);
+            }
+          }
+
+          // 🔑 关键判断：只要 element.cookies 存在（即使内部 cookies 数组为空），就使用多账号模式
+          // 这样每个账号窗口使用独立 session，避免登录状态互相干扰
+          if (ENABLE_MULTI_ACCOUNT && element.cookies) {
             // 多账号模式：为每个窗口创建唯一的 session ID
             const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             if (platformFullName) {
@@ -186,14 +219,14 @@ contextBridge.exposeInMainWorld('browserAPI', {
               openOptions.accountId = uniqueSessionId;
               console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
             }
-            openOptions.sessionData = element.cookies;
-            console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${element.cookies.length} 个`);
+            openOptions.sessionData = element.cookies;  // 传原始数据，main.js 会解析
+            console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
           } else {
             // 普通模式：使用共享 session，保持现有登录状态
-            if (element.cookies && element.cookies.length > 0) {
-              console.log(`[BrowserAPI] 📋 检测到 cookies 数据（${element.cookies.length} 个），但多账号模式已禁用，使用共享 session`);
+            if (element.cookies) {
+              console.log(`[BrowserAPI] 📋 检测到 cookies 数据，但多账号模式已禁用，使用共享 session`);
             } else {
-              console.log(`[BrowserAPI] 📋 普通模式，使用共享 session（persist:browserview）`);
+              console.log(`[BrowserAPI] 📋 普通模式（无 cookies 数据），使用共享 session（persist:browserview）`);
             }
           }
 
@@ -291,6 +324,16 @@ contextBridge.exposeInMainWorld('browserAPI', {
       callback(data);
     });
     console.log('[BrowserAPI] onWindowLoaded 监听器已注册');
+  },
+
+  // 监听会话更新事件（首页使用，用于保存发布窗口关闭时的最新 cookies）
+  // data: { windowId, platform, accountId, cookies, publishData, timestamp }
+  onSessionUpdated: (callback) => {
+    ipcRenderer.on('session-updated', (event, data) => {
+      console.log('[BrowserAPI] 收到 session-updated 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
   },
 
   // 清除所有监听器（用于组件卸载）
@@ -451,7 +494,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 参数: platform - 平台名称
   //       accountId - 账号 ID
   // 返回: { success: true, deletedCount: 10 }
-  clearAccountCookies: (platform, accountId) => ipcRenderer.invoke('clear-account-cookies', platform, accountId)
+  clearAccountCookies: (platform, accountId) => ipcRenderer.invoke('clear-account-cookies', platform, accountId),
+
+  // 手动保存会话数据到后台（开发调试用）
+  // 在不关闭窗口的情况下保存最新 cookies 到后台
+  // 返回: { success: true, cookieCount: 10, response: '...' }
+  saveSessionToBackend: () => ipcRenderer.invoke('save-session-to-backend')
 });
 
 // 在页面加载时注入通信代码和协议拦截

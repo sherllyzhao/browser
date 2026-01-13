@@ -163,6 +163,58 @@ const authResult = await window.browserAPI.openNewWindow('https://auth.example.c
 | windowId | number | 窗口 ID |
 | timestamp | number | 加载完成的时间戳 |
 
+**onSessionUpdated 回调参数**（发布窗口关闭时自动触发）：
+
+浏览器会在多账号模式的发布窗口关闭时**自动保存最新 cookies 到后台**，无需前端处理。
+
+**自动保存逻辑**：
+1. 检测是否是多账号模式的窗口（通过 `windowAccountMap`）
+2. 获取该窗口 session 的最新平台相关 cookies
+3. 从 `publishData` 中获取账号 ID（`element.account_info.id`）
+4. 从主窗口 URL 获取后台 API 域名
+5. 调用保存接口（见下方配置）
+
+**接口配置**（父页面在 element 中传入，必填）：
+```javascript
+// 在 element 中指定保存接口路径
+element.saveSessionApi = '/api/mediaauth/douyininfo';
+// 或
+element.save_session_api = '/api/mediaauth/douyininfo';
+
+// 如果不传 saveSessionApi，浏览器不会保存 cookies
+```
+
+**请求参数**：
+```json
+{
+  "id": "账号ID（从 publishData.element.account_info.id 获取）",
+  "cookies": "{\"cookies\": [...]}"  // JSON 字符串
+}
+```
+
+**如需监听此事件**（可选）：
+```javascript
+window.browserAPI.onSessionUpdated((data) => {
+  console.log('发布窗口关闭，已自动保存会话数据');
+  console.log('平台:', data.platform);
+  console.log('账号ID:', data.accountId);
+});
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| windowId | number | 关闭的窗口 ID |
+| platform | string | 平台名称（douyin/xiaohongshu/baijiahao/weixin/shipinhao） |
+| accountId | string | 账号 ID（如 douyin_xxx_1） |
+| cookies | array | 最新的平台相关 cookies 数组 |
+| publishData | object | 发布数据（包含 element 中的账号信息） |
+| timestamp | number | 事件触发时间戳 |
+
+**使用场景**：
+- 平台可能在发布过程中自动刷新登录凭证（如 token 续期）
+- 发布窗口关闭时自动保存最新的 cookies 到后台
+- 下次发布时使用最新的登录状态
+
 ### 6. 获取窗口 ID 和主窗口 URL
 ```javascript
 // 获取当前窗口的 ID（用于新窗口识别自己，读取对应的发布数据）
