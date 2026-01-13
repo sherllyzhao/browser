@@ -1,3 +1,12 @@
+// 判断是否开发环境（通过 browserAPI.isProduction）
+const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+
+// 根据环境获取 API 域名
+function getApiDomain() {
+  // 生产环境使用正式域名，开发环境使用 dev.china9.cn
+  return isDev ? 'https://dev.china9.cn' : 'https://www.china9.cn';
+}
+
 /**
  * 运营助手配置文件
  *
@@ -9,7 +18,7 @@
 
 module.exports = {
   // API 基础地址（默认值，实际会从主窗口 URL 自动获取）
-  apiBaseUrl: 'https://dev.china9.cn',
+  apiBaseUrl: getApiDomain(),
 
   // 各平台保存会话的接口路径
   // 注意：现在改为由父页面在 element.saveSessionApi 中传入，此处仅作为备用/参考
