@@ -2981,7 +2981,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             }));
 
             // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-            let apiOrigin = config.apiBaseUrl;
+            let apiOrigin = config.getApiDomain(isProduction);
             if (browserView && !browserView.webContents.isDestroyed()) {
               try {
                 const mainUrl = browserView.webContents.getURL();
@@ -4747,7 +4747,7 @@ ipcMain.handle('save-session-to-backend', async (event) => {
     }));
 
     // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.apiBaseUrl;
+    let apiOrigin = config.getApiDomain(isProduction);
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const mainUrl = browserView.webContents.getURL();
