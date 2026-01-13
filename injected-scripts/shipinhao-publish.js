@@ -646,11 +646,21 @@ async function publishApi(dataObj) {
     // ===========================
     console.log('[视频号发布] ⏳ 等待视频上传完成...');
     await retryOperation(async () => {
+      // 🔑 首先检测是否有上传错误提示
+      const errorTip = await waitForShadowElement("wujie-app", ".upload-error, .error-tip, [class*='error']", 500).catch(() => null);
+      if (errorTip && errorTip.textContent && errorTip.textContent.trim()) {
+        const errorText = errorTip.textContent.trim();
+        if (errorText.includes('失败') || errorText.includes('错误') || errorText.includes('error')) {
+          throw new Error('视频上传失败: ' + errorText.substring(0, 50));
+        }
+      }
+
       // 在 Shadow DOM 中查找上传进度元素
       const progressText = await waitForShadowElement("wujie-app", ".ant-progress-text", 1000).catch(() => null);
 
       if (progressText) {
         const text = (progressText.textContent || '').trim();
+        console.log('[视频号发布] 📊 当前上传进度:', text);
         // 如果进度不是 100%，继续等待
         if (text !== '100%' && text !== '100') {
           throw new Error('视频正在上传中: ' + text);
@@ -870,26 +880,20 @@ async function fillFormData(dataObj) {
     // 等待wujie-app
     const wujieApp = await waitForElement("wujie-app", 10000);
 
-    // 填写简介 - 针对可编辑div的特殊处理
+    // 填写简介 - 针对可编辑div的特殊处理（带重试）
     try {
-      // 首先检查是否已经填写过（通过全局标记）
-      if (introFilled) {
-        // alert('✅ Intro already filled (by flag), skipping');
-        // 直接跳过，不再查找元素或进行任何操作
-      } else {
+      await retryOperation(async () => {
+        // 首先检查是否已经填写过（通过全局标记）
+        if (introFilled) {
+          console.log('[视频号发布] 简介已填写过，跳过');
+          return; // 跳过重试
+        }
+
         const introInput = await waitForShadowElement("wujie-app", ".input-editor", 5000);
         const targetIntro = titleAndIntro.intro || '';
         const targetContent = targetIntro.trim();
 
         // alert(`Filling intro: ${titleAndIntro.intro || ''}`);
-
-        // 调试：检查元素类型
-        // alert(`introInput type check:
-        // - Element: ${introInput ? 'exists' : 'null'}
-        // - nodeType: ${introInput?.nodeType}
-        // - tagName: ${introInput?.tagName}
-        // - dispatchEvent: ${typeof introInput?.dispatchEvent}
-        // - innerHTML: ${typeof introInput?.innerHTML}`);
 
         // 确保是真实的DOM元素
         if (!introInput || typeof introInput.dispatchEvent !== 'function') {
@@ -996,82 +1000,93 @@ async function fillFormData(dataObj) {
           // 最后再延迟确保所有事件都被处理
           await new Promise(resolve => setTimeout(resolve, 200));
 
-          // alert('✅ introInput filled successfully');
+          // 🔑 验证是否成功设置
+          const updatedContent = (introInput.textContent || introInput.innerText || '').trim();
+          if (updatedContent !== targetContent) {
+            throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedContent.substring(0, 50)}..."`);
+          }
+
+          console.log('[视频号发布] ✅ 简介填写成功');
         } else {
           // 内容已经正确，也标记为已填写
           introFilled = true;
-          // alert('✅ Intro content already correct, marking as filled');
+          console.log('[视频号发布] 简介内容已正确，无需修改');
         }
-      }
+      }, 5, 1000);
     } catch (error) {
-      // alert('⚠️ introInput handling failed: ' + error.message);
+      console.log('[视频号发布] ❌ 简介填写失败:', error.message);
     }
 
-    // 填写标题 - 参考xhs.js的方法
-    const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
-    // alert(`Filling title: ${titleAndIntro.title || ''}`);
-
+    // 填写标题（带重试和验证）
     try {
-      // 调试：检查元素类型
-      // alert(`titleInput type check:
-      // - Element: ${titleInput ? 'exists' : 'null'}
-      // - nodeType: ${titleInput?.nodeType}
-      // - tagName: ${titleInput?.tagName}
-      // - type: ${titleInput?.type}
-      // - dispatchEvent: ${typeof titleInput?.dispatchEvent}
-      // - value: ${typeof titleInput?.value}`);
+      await retryOperation(async () => {
+        const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
 
-      // 确保是真实的DOM元素
-      if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
-        throw new Error('Invalid titleInput element');
-      }
+        // 确保是真实的DOM元素
+        if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
+          throw new Error('Invalid titleInput element');
+        }
 
-      // 先触发focus事件
-      if (typeof titleInput.focus === 'function') {
-        titleInput.focus();
-      } else {
-        titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
-      }
+        // 先触发focus事件
+        if (typeof titleInput.focus === 'function') {
+          titleInput.focus();
+        } else {
+          titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
+        }
 
-      // 延迟执行，让React状态稳定（关键！）
-      await new Promise(resolve => setTimeout(resolve, 300));
+        // 延迟执行，让React状态稳定（关键！）
+        await new Promise(resolve => setTimeout(resolve, 300));
 
-      // 使用setNativeValue设置值
-      setNativeValue(titleInput, titleAndIntro.title || '');
+        const targetTitle = titleAndIntro.title || '';
+        setNativeValue(titleInput, targetTitle);
 
-      // 额外触发input事件（xhs.js的做法）
-      titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+        // 额外触发input事件（xhs.js的做法）
+        titleInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-      // alert('✅ Title filled successfully');
+        // 等待 React 更新
+        await new Promise(resolve => setTimeout(resolve, 200));
 
+        // 🔑 验证是否成功设置
+        const currentValue = (titleInput.value || '').trim();
+        const expectedValue = targetTitle.trim();
+        if (currentValue !== expectedValue) {
+          throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+        }
+
+        console.log('[视频号发布] ✅ 标题设置成功:', currentValue);
+      }, 5, 1000);
     } catch (error) {
-      // alert('❌ Title setting failed: ' + error.message);
+      console.log('[视频号发布] ❌ 标题填写失败:', error.message);
     }
 
-    // 设置发布时间
+    // 设置发布时间（带重试）
     const publishTime = dataObj.video.formData.send_set;
     if (+publishTime === 2) {
       try {
-        // 定时发布
-        const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
-        const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
+        await retryOperation(async () => {
+          // 定时发布
+          const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
+          const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
 
-        setNativeValue(immediateRadio, false);
-        setNativeValue(scheduleRadio, true);
+          setNativeValue(immediateRadio, false);
+          setNativeValue(scheduleRadio, true);
 
-        // 设置日期时间
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
+          // 设置日期时间
+          await new Promise(resolve => setTimeout(resolve, 500));
+          const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
 
-        // 多次设置确保生效
-        for (let i = 0; i < 2; i++) {
-          if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-            break;
+          // 多次设置确保生效
+          for (let i = 0; i < 2; i++) {
+            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
+
+          console.log('[视频号发布] ✅ 定时发布时间设置成功');
+        }, 5, 1000);
       } catch (error) {
-        // alert('⚠️ Schedule time setting failed: ' + error.message);
+        console.log('[视频号发布] ❌ 定时发布时间设置失败:', error.message);
       }
     }
 

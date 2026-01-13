@@ -404,6 +404,10 @@ async function publishApi(dataObj) {
       if (!btn) {
         throw new Error('发布按钮未找到');
       }
+      // 🔑 检查按钮是否 disabled
+      if (btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('disabled') !== null) {
+        throw new Error('发布按钮当前不可用(disabled)，可能不符合发布要求');
+      }
       return btn;
     }, 10, 2000);
 

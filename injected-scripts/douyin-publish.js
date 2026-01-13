@@ -397,6 +397,10 @@ async function publishApi(dataObj) {
       if (!btn) {
         throw new Error('发布按钮未找到');
       }
+      // 🔑 检查按钮是否 disabled
+      if (btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('disabled') !== null) {
+        throw new Error('发布按钮当前不可用(disabled)，可能不符合发布要求');
+      }
       return btn;
     }, 10, 2000);
 
@@ -449,8 +453,11 @@ async function publishApi(dataObj) {
     const coverCheckStartTime = Date.now();
     const coverCheckTimeout = 120000; // 2分钟超时
     const coverCheckInterval = 2000;
+    const maxCoverRetries = 30; // 🔑 最大重试次数（30次 * 2秒 = 60秒内尝试设置封面）
+    let coverRetryCount = 0;
 
-    while (Date.now() - coverCheckStartTime < coverCheckTimeout) {
+    while (Date.now() - coverCheckStartTime < coverCheckTimeout && coverRetryCount < maxCoverRetries) {
+      coverRetryCount++;
       let checkElement = null;
       try {
         checkElement = await waitForElement('.cover-check [class*="title-"]', 5000);
@@ -536,14 +543,19 @@ async function publishApi(dataObj) {
       await delay(coverCheckInterval);
     }
 
+    // 🔑 检查退出原因
+    if (coverRetryCount >= maxCoverRetries) {
+      console.log(`[抖音发布] ⚠️ 封面设置重试次数已达上限(${maxCoverRetries}次)，继续发布流程`);
+    }
+
     console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
     await delay(1000);
 
-    if (isDevEnvironment) {
+    /* if (isDevEnvironment) {
       alert(123);
       console.log('[小红书发布] ⚠️ 开发环境确认，跳过点击发布按钮');
       return;
-    }
+    } */
 
     const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
 
@@ -861,8 +873,11 @@ async function fillFormData(dataObj) {
             });
 
             // 单独处理话题（添加防重复标记）
-            if (topicList.length > 0 && !window.__TOPIC_FILLED__) {
-              window.__TOPIC_FILLED__ = true; // 标记话题已处理
+            // 🔑 使用窗口专属标记，避免多窗口并发时冲突
+            const topicWindowId = await window.browserAPI.getWindowId();
+            const topicFilledKey = `__TOPIC_FILLED_${topicWindowId || 'default'}__`;
+            if (topicList.length > 0 && !window[topicFilledKey]) {
+              window[topicFilledKey] = true; // 标记话题已处理
 
               const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
               for (let topicListElement of topicList) {

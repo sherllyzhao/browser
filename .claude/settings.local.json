@@ -33,7 +33,10 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" checkout injected-scripts/shipinhao-publish.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff content-preload.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" checkout content-preload.js)",
-      "Bash(cmd /c \"dir /b D:\\浏览器\\运营助手\\injected-scripts\\*-publish.js\")"
+      "Bash(cmd /c \"dir /b D:\\浏览器\\运营助手\\injected-scripts\\*-publish.js\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:blog.csdn.net)"
     ],
     "deny": [],
     "ask": []
