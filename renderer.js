@@ -49,7 +49,7 @@ const AIGC_URL = isProduction
   ? 'https://dev.china9.cn/aigc_browser2/'
   : 'http://localhost:5173/';
 const GEO_URL = isProduction
-  ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+  ? 'https://zhjzt.china9.cn/jzt_geo/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
   //: 'http://172.16.6.17:8080/#/geo/index';
 

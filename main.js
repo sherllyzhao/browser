@@ -94,7 +94,9 @@ const HOME_URLS = [
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
+  'https://jzt_dev_1.china9.cn/jzt_geo/#/geo/index',
   'https://zhjzt.china9.cn/jzt_all/#/geo/index',
+  'https://zhjzt.china9.cn/jzt_geo/#/geo/index',
   LOGIN_URL  // 登录页也作为首页处理
 ];
 
