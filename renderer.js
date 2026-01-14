@@ -46,10 +46,10 @@ const tabGeo = document.getElementById('__tab_geo__');
 // AIGC 和 GEO 的 URL（根据环境）
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 const AIGC_URL = isProduction
-  ? 'https://dev.china9.cn/aigc_browser2/'
+  ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const GEO_URL = isProduction
-  ? 'https://zhjzt.china9.cn/jzt_geo/#/geo/index'
+  ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
   //: 'http://172.16.6.17:8080/#/geo/index';
 
@@ -81,7 +81,7 @@ function getCurrentSystem(url) {
 
   // AIGC 系统特征
   if (urlLower.includes(':5173') ||
-      urlLower.includes('/aigc_browser2/') ||
+      urlLower.includes('/aigc_browser/') ||
       urlLower.includes('aigc')) {
     return 'aigc';
   }

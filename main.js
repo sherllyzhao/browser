@@ -90,13 +90,11 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
   'http://localhost:5173/',
-  'https://dev.china9.cn/aigc_browser2/',
+  'https://dev.china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
-  'https://jzt_dev_1.china9.cn/jzt_geo/#/geo/index',
   'https://zhjzt.china9.cn/jzt_all/#/geo/index',
-  'https://zhjzt.china9.cn/jzt_geo/#/geo/index',
   LOGIN_URL  // 登录页也作为首页处理
 ];
 
@@ -203,7 +201,7 @@ function createWindow() {
           const currentUrl = browserView.webContents.getURL();
           if (currentUrl && !currentUrl.includes('login.html')) {
             // 判断是哪个项目
-            if (currentUrl.includes('aigc_browser2') || currentUrl.includes('localhost:5173')) {
+            if (currentUrl.includes('aigc_browser') || currentUrl.includes('localhost:5173')) {
               globalStorage.last_project = 'aigc';
               console.log('[Window Close] 💾 记录项目类型: aigc');
             } else if (currentUrl.includes('jzt_all') || currentUrl.includes('geo') ||
@@ -493,7 +491,7 @@ function createWindow() {
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser2/'
+            ? 'https://dev.china9.cn/aigc_browser/'
             : 'http://localhost:5173/';
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
@@ -748,8 +746,8 @@ function createWindow() {
       'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser2/#/login',
-      'china9.cn/aigc_browser2/#/login',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
@@ -816,8 +814,8 @@ function createWindow() {
       'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser2/#/login',
-      'china9.cn/aigc_browser2/#/login',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
@@ -946,7 +944,7 @@ function createWindow() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);
@@ -987,7 +985,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);

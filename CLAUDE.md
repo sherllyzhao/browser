@@ -228,7 +228,7 @@ console.log(mainInfo);
 // 返回值示例:
 // {
 //   success: true,
-//   url: "https://dev.china9.cn/aigc_browser2/#/xxx",
+//   url: "https://dev.china9.cn/aigc_browser/#/xxx",
 //   origin: "https://dev.china9.cn",     // 协议+域名，用于构建 API 地址
 //   host: "dev.china9.cn",               // 仅域名
 //   protocol: "https:"                   // 仅协议
