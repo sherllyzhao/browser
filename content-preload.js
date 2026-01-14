@@ -6,20 +6,23 @@ const config = {
     dy: 'https://creator.douyin.com/creator-micro/content/upload',
     xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
     sph: 'https://channels.weixin.qq.com/platform/post/create',
-    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
+    wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
     4: 'bjh',   // 百家号
     6: 'xhs',   // 小红书
-    7: 'sph'    // 视频号
+    7: 'sph',   // 视频号
+    8: 'wyh',   // 网易号
   },
   platformNameMap: {
     'dy': 'douyin',
     'xhs': 'xiaohongshu',
     'sph': 'shipinhao',
     'bjh': 'baijiahao',
-    'wx': 'weixin'
+    'wx': 'weixin',
+    'wyh': 'wangyihao'
   }
 };
 

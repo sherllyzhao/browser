@@ -217,6 +217,7 @@ let hasProcessed = false;
               console.error('[抖音发布] ❌ 保存发布页URL失败:', e);
             } */
 
+            console.log("🚀 ~  ~ messageData: ", messageData);
             await uploadVideo(messageData);
             try {
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
@@ -299,6 +300,7 @@ let hasProcessed = false;
           receivedAt: Date.now()
         };
 
+        console.log("🚀 ~  ~ publishData: ", publishData);
         await uploadVideo(publishData);
         try {
           await retryOperation(async () => await fillFormData(publishData), 3, 2000);
