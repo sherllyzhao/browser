@@ -813,7 +813,7 @@ function createWindow() {
           console.log('[Navigation] 系统类型:', systemParam);
 
           // 加载占位页，带上 system 参数
-          browserView.webContents.loadURL(`file://${__dirname}/not-available.html?system=${systemParam}`);
+          browserView.webContents.loadURL(`file://${__dirname}/not-auth.html?system=${systemParam}`);
 
           // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
           if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
@@ -828,7 +828,7 @@ function createWindow() {
     }
 
     // 记录有效的 URL（排除本地文件和特殊页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes('not-available')) {
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes('not-available') && !url.includes('not-auth'))) {
       lastValidUrl = url;
     }
     // 清空 pendingNavigationUrl（导航成功开始）
