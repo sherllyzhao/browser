@@ -271,15 +271,27 @@ function createWindow() {
     }
   });
 
-  // 获取或创建持久化 session
-  const persistentSession = session.fromPartition('persist:browserview', { cache: true });
+  // 获取或创建持久化 session（禁用 HTTP 缓存，只保留 cookies 和 storage）
+  const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
-  // 启动时清理可能损坏的缓存（解决 CSS 渲染成文字的问题）
-  persistentSession.clearCache().then(() => {
-    console.log('[Session] ✅ 已清理缓存');
-  }).catch(err => {
-    console.error('[Session] ⚠️ 清理缓存失败:', err);
-  });
+  // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
+  let cacheCleared = false;
+  const clearCachePromise = (async () => {
+    try {
+      // 清理 HTTP 缓存
+      await persistentSession.clearCache();
+      console.log('[Session] ✅ HTTP 缓存已清理');
+
+      // 清理 Code Cache（JavaScript 编译缓存）
+      await persistentSession.clearCodeCaches({});
+      console.log('[Session] ✅ Code Cache 已清理');
+
+      cacheCleared = true;
+    } catch (err) {
+      console.error('[Session] ⚠️ 清理缓存失败:', err);
+      cacheCleared = true; // 即使失败也继续
+    }
+  })();
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -400,6 +412,11 @@ function createWindow() {
   process.nextTick(async () => {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
+
+    // 🔑 等待缓存清理完成
+    console.log('[BrowserView] 等待缓存清理完成...');
+    await clearCachePromise;
+    console.log('[BrowserView] ✅ 缓存清理完成，开始加载页面');
 
     // 检查是否有保存的登录 token
     const savedToken = globalStorage.login_token;
@@ -557,17 +574,31 @@ function createWindow() {
       (function() {
         if (!document.body) return { ready: false, reason: 'no body' };
 
-        // 跳过包含富文本编辑器的页面（TinyMCE, CKEditor 等）
-        const hasRichEditor = document.querySelector('.tiny-textarea, .tox, .tox-tinymce, .mce-container, .ck-editor, [data-tiny-editor]');
-        if (hasRichEditor) {
-          console.log('[Page Check] 检测到富文本编辑器，跳过CSS检测');
+        // 🔑 跳过包含富文本编辑器的页面（TinyMCE, CKEditor, Quill, wangEditor 等）
+        const richEditorSelectors = [
+          '.tiny-textarea', '.tox', '.tox-tinymce', '.mce-container', '.mce-content-body',
+          '.ck-editor', '.ck-content', '[data-tiny-editor]',
+          '.ql-editor', '.ql-container', '.quill',
+          '.w-e-text', '.w-e-toolbar', '[data-wangeditor]',
+          '.CodeMirror', '.monaco-editor',
+          '[contenteditable="true"]',
+          'iframe[id*="editor"]', 'iframe[id*="tinymce"]'
+        ];
+        const hasRichEditor = richEditorSelectors.some(sel => document.querySelector(sel));
+
+        // 🔑 检查 URL 路径，跳过可能包含编辑器的页面
+        const editorPaths = ['/edit', '/editor', '/publish', '/create', '/write', '/article', '/content'];
+        const isEditorPage = editorPaths.some(p => window.location.pathname.includes(p) || window.location.hash.includes(p));
+
+        if (hasRichEditor || isEditorPage) {
+          console.log('[Page Check] 检测到富文本编辑器或编辑页面，跳过CSS检测');
           const preHideStyle = document.getElementById('__pre_hide_style__');
           if (preHideStyle) preHideStyle.remove();
           if (document.body) {
             document.body.style.visibility = '';
             document.body.style.opacity = '';
           }
-          return { ready: true, reason: 'rich-editor-detected' };
+          return { ready: true, reason: 'editor-detected' };
         }
 
         const bodyText = document.body.innerText || '';
@@ -612,41 +643,47 @@ function createWindow() {
       })()
     `;
 
-    // 【临时禁用】页面状态检测
-    /*
-    try {
-      // 先检查页面状态
-      const pageState = await webContents.executeJavaScript(pageCheckScript);
+    // 🔑 页面状态检测 - 只在登录页和首页检测 CSS 渲染异常
+    // 其他页面（可能包含富文本编辑器）跳过检测，避免白屏问题
+    const safeCheckUrls = ['login.html', '/#/', '/aigc_browser/', '/jzt_all/', 'localhost:5173/', 'localhost:8080/'];
+    const shouldCheckPage = safeCheckUrls.some(pattern => url.includes(pattern)) &&
+                            !url.includes('/edit') && !url.includes('/publish') &&
+                            !url.includes('/create') && !url.includes('/article');
 
-      if (!pageState.ready) {
-        console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+    if (shouldCheckPage) {
+      try {
+        // 先检查页面状态
+        const pageState = await webContents.executeJavaScript(pageCheckScript);
 
-        // 最多重试2次，每次间隔1.5秒，然后刷新
-        if (retryCount < 2) {
-          console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
-          setTimeout(() => {
-            injectScriptForUrl(webContents, url, retryCount + 1);
-          }, 1500);
-          return;
-        } else {
-          console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
-          webContents.reload();
-          return;
+        if (!pageState.ready) {
+          console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+          // 最多重试2次，每次间隔1.5秒，然后刷新
+          if (retryCount < 2) {
+            console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
+            setTimeout(() => {
+              injectScriptForUrl(webContents, url, retryCount + 1);
+            }, 1500);
+            return;
+          } else {
+            console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
+            webContents.reload();
+            return;
+          }
         }
-      }
-    } catch (checkErr) {
-      // 检查脚本执行失败，可能页面还没准备好
-      if (!checkErr.message.includes('destroyed')) {
-        console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
-        if (retryCount < 2) {
-          setTimeout(() => {
-            injectScriptForUrl(webContents, url, retryCount + 1);
-          }, 1000);
-          return;
+      } catch (checkErr) {
+        // 检查脚本执行失败，可能页面还没准备好
+        if (!checkErr.message.includes('destroyed')) {
+          console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
+          if (retryCount < 2) {
+            setTimeout(() => {
+              injectScriptForUrl(webContents, url, retryCount + 1);
+            }, 1000);
+            return;
+          }
         }
       }
     }
-    */
 
     // 注入公共头（已移至浏览器级别 index.html，不再每页注入）
     // 保留此注释以便将来参考，公共头现在固定在 index.html 中，不会随页面切换而闪烁
@@ -724,10 +761,80 @@ function createWindow() {
     })()
   `;
 
+  // 🔑 记录跳转到无权限页面前的 URL（用于保持 header 选中状态）
+  let lastValidUrl = null;
+  let pendingNavigationUrl = null;  // 记录用户点击的原始目标 URL
+
+  // 监听用户点击链接（在导航开始前触发，可捕获原始目标 URL）
+  browserView.webContents.on('will-navigate', (event, url) => {
+    console.log(`[Navigation] 用户点击链接 → ${url}`);
+    // 记录用户点击的目标 URL（即使会被重定向）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://')) {
+      pendingNavigationUrl = url;
+    }
+  });
+
+  // 监听 hash 路由变化（Vue 前端路由跳转）
+  browserView.webContents.on('did-navigate-in-page', (event, url) => {
+    console.log(`[Navigation] Hash 路由变化 → ${url}`);
+    // 记录 hash 路由变化的 URL（前端路由跳转到的目标页面）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes('not-available')) {
+      pendingNavigationUrl = url;
+      lastValidUrl = url;
+    }
+  });
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
-    // 不在这里发送 url-changed，避免重复触发
+
+    // 🔑 提前拦截 account.china9.cn/login，阻止页面显示
+    if (url.includes('account.china9.cn/login')) {
+      console.log('[Navigation] ⚠️ 检测到统一登录页，停止导航');
+      console.log('[Navigation] pendingNavigationUrl:', pendingNavigationUrl);
+      console.log('[Navigation] lastValidUrl:', lastValidUrl);
+
+      // 延迟执行，避免在导航事件中直接触发新导航导致浏览器崩溃
+      setImmediate(() => {
+        if (browserView && !browserView.webContents.isDestroyed()) {
+          // 优先使用 pendingNavigationUrl（用户点击的原始目标），其次使用 lastValidUrl
+          const urlToSend = pendingNavigationUrl || lastValidUrl;
+
+          // 根据目标 URL 判断系统类型，传递给 not-available.html
+          let systemParam = 'aigc';
+          if (urlToSend) {
+            const urlLower = urlToSend.toLowerCase();
+            if (urlLower.includes(':8080') ||
+                urlLower.includes('/geo/') ||
+                urlLower.includes('/jzt_all/') ||
+                urlLower.includes('jzt_dev') ||
+                urlLower.includes('zhjzt')) {
+              systemParam = 'geo';
+            }
+          }
+          console.log('[Navigation] 系统类型:', systemParam);
+
+          // 加载占位页，带上 system 参数
+          browserView.webContents.loadURL(`file://${__dirname}/not-auth.html?system=${systemParam}`);
+
+          // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
+          if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
+            console.log('[Navigation] 发送 URL 到 renderer:', urlToSend);
+            mainWindow.webContents.send('url-changed', urlToSend);
+          }
+        }
+        // 清空 pendingNavigationUrl
+        pendingNavigationUrl = null;
+      });
+      return;
+    }
+
+    // 记录有效的 URL（排除本地文件和特殊页面）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes('not-available') && !url.includes('not-auth'))) {
+      lastValidUrl = url;
+    }
+    // 清空 pendingNavigationUrl（导航成功开始）
+    pendingNavigationUrl = null;
 
     // 【已禁用】预防性隐藏脚本 - 会导致 TinyMCE 白屏且对 CSS 渲染异常无效
     // if (browserView && !browserView.webContents.isDestroyed()) {
@@ -745,7 +852,6 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
       'dev.china9.cn/aigc_browser/#/login',
@@ -755,6 +861,8 @@ function createWindow() {
       'localhost:8080/#/home',
       'localhost:8080/#/login'
     ];
+
+    // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
@@ -813,7 +921,6 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
       'dev.china9.cn/aigc_browser/#/login',
@@ -823,6 +930,8 @@ function createWindow() {
       'localhost:8080/#/home',
       'localhost:8080/#/login'
     ];
+
+    // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
@@ -2847,7 +2956,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
       const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      windowSession = session.fromPartition(tempSessionId, { cache: true }); // 启用缓存，避免脚本加载异常
+      windowSession = session.fromPartition(tempSessionId, { cache: false }); // 禁用缓存，避免 CSS 渲染异常
       sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
@@ -3834,8 +3943,8 @@ function getAccountSession(platform, accountId) {
     return accountSessions.get(partitionName);
   }
 
-  // 创建新的持久化 session
-  const accountSession = session.fromPartition(partitionName, { cache: true });
+  // 创建新的持久化 session（禁用 HTTP 缓存，避免 CSS 渲染异常）
+  const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';

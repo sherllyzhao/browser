@@ -59,7 +59,7 @@ function getCurrentSystem(url) {
   const urlLower = url.toLowerCase();
 
   // 检查 not-available.html 的查询参数（用于占位页保持正确的 Tab 选中状态）
-  if (urlLower.includes('not-available.html')) {
+  if (urlLower.includes('not-available.html') || urlLower.includes('not-auth.html?')) {
     try {
       const urlObj = new URL(url);
       const systemParam = urlObj.searchParams.get('system');

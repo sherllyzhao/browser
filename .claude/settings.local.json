@@ -37,7 +37,7 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:blog.csdn.net)",
-      "Bash(cmd /c \"dir /b D:\\浏览器\\运营助手分支\")"
+      "Bash(cmd /c \"dir D:\\浏览器\\运营助手\\not-available.html\")"
     ],
     "deny": [],
     "ask": []
