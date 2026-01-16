@@ -634,7 +634,6 @@
       // 禁用按钮，显示加载状态
       loginBtn.disabled = true;
       loginBtn.classList.add('loading');
-      const originalText = loginBtn.textContent;
 
       try {
         console.log('[Login] 开始登录:', { username, type: activeTab });
@@ -647,7 +646,10 @@
 
         // 显示成功提示
         if(!successMsg.includes('成功')){
+          loginBtn.disabled = false;
+          loginBtn.classList.remove('loading');
           alert(successMsg);
+          return;
         }
 
         // 🔑 把 token 存到全局存储（解决 file:// 和 http:// 跨域 Cookie 问题）
@@ -885,6 +887,7 @@
         }
       } catch (error) {
         console.error('[Login] 登录失败:', error);
+        alert(error);
         // 不弹窗提示，只在控制台输出错误
         loginBtn.disabled = false;
         loginBtn.classList.remove('loading');
