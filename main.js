@@ -761,6 +761,22 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
+
+      // 🔑 如果是 account.china9.cn/login，先显示"暂无权限"提示
+      if (url.includes('account.china9.cn/login')) {
+        console.log('[Auth Check] 检测到统一登录页，显示暂无权限提示');
+        dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: '暂无权限',
+          message: '暂无权限访问此功能',
+          detail: '请重新登录后再试',
+          buttons: ['确定']
+        }).then(() => {
+          browserView.webContents.loadURL(LOGIN_URL);
+        });
+        return;
+      }
+
       browserView.webContents.loadURL(LOGIN_URL);
       return;
     }
@@ -829,6 +845,22 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
+
+      // 🔑 如果是 account.china9.cn/login，先显示"暂无权限"提示
+      if (url.includes('account.china9.cn/login')) {
+        console.log('[Auth Check - DOM Ready] 检测到统一登录页，显示暂无权限提示');
+        dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: '暂无权限',
+          message: '暂无权限访问此功能',
+          detail: '请重新登录后再试',
+          buttons: ['确定']
+        }).then(() => {
+          browserView.webContents.loadURL(LOGIN_URL);
+        });
+        return;
+      }
+
       browserView.webContents.loadURL(LOGIN_URL);
       return;
     }
