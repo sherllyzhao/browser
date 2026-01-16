@@ -510,7 +510,7 @@
                   }
 
                   try {
-                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 80));
+                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 200));
 
                     // 调用百家号图片代理接口
                     const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
