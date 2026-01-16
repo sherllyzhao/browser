@@ -566,6 +566,7 @@
     // ========== Tab 切换 ==========
     const tabs = document.querySelectorAll('.tab-item');
     let activeTab = localStorage.getItem('loginActiveTab') || 'aigc';
+    console.log("🚀 ~  ~ activeTab: ", activeTab);
 
     // 初始化 Tab 状态
     tabs.forEach(tab => {

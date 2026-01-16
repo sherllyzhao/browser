@@ -36,7 +36,8 @@
       "Bash(cmd /c \"dir /b D:\\浏览器\\运营助手\\injected-scripts\\*-publish.js\")",
       "WebSearch",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:blog.csdn.net)"
+      "WebFetch(domain:blog.csdn.net)",
+      "Bash(cmd /c \"dir D:\\浏览器\\运营助手\\not-available.html\")"
     ],
     "deny": [],
     "ask": []
