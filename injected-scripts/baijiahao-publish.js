@@ -339,7 +339,7 @@
 
       setTimeout(async () => {
         await retryOperation (async () => {
-          const tourBtn = await waitForElement('.cheetah-tour-close', 5, 1000);
+          const tourBtn = await waitForElement('.cheetah-tour-close', 5000, 1000);
           if (tourBtn) {
             tourBtn.click()
           }
