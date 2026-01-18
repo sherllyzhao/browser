@@ -426,7 +426,7 @@
                                             method: 'POST',
                                             body: new URLSearchParams({
                                                 from: 'neteasecode_mp',
-                                                url: originalSrc
+                                                file
                                             }),
                                             credentials: 'include' // 带上 cookies
                                         });
