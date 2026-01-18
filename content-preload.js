@@ -373,6 +373,9 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 视频下载 API（通过主进程绕过跨域限制）
   downloadVideo: (url) => ipcRenderer.invoke('download-video', url),
 
+  // 图片下载 API（通过主进程绕过跨域限制）
+  downloadImage: (url) => ipcRenderer.invoke('download-image', url),
+
   // 触发文件下载（会弹出保存对话框）
   triggerDownload: (url) => ipcRenderer.invoke('trigger-download', url),
 

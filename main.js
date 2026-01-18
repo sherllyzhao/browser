@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const ScriptManager = require('./script-manager');
 const config = require('./config');
+const https = require("https");
+const http = require("http");
 
 let mainWindow;
 let browserView;
@@ -3682,14 +3684,14 @@ ipcMain.handle('download-video', async (event, url) => {
   console.log('[Video Download] 开始下载:', url);
 
   if (!url) {
-    return { success: false, error: 'No URL provided' };
+    return { success: false, error: '没有提供URL' };
   }
 
   // 内部下载函数，支持重定向
   const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
     return new Promise((resolve) => {
       if (redirectCount > 5) {
-        resolve({ success: false, error: 'Too many redirects' });
+        resolve({ success: false, error: '重定向次数过多' });
         return;
       }
 
@@ -3724,7 +3726,7 @@ ipcMain.handle('download-video', async (event, url) => {
         const contentLength = parseInt(response.headers['content-length'], 10);
         if (contentLength && contentLength > MAX_VIDEO_SIZE) {
           response.destroy();
-          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_VIDEO_SIZE / 1024 / 1024}MB)` });
+          resolve({ success: false, error: `图片太大了: ${Math.round(contentLength / 1024 / 1024)}MB (最大 ${MAX_VIDEO_SIZE / 1024 / 1024}MB)` });
           return;
         }
 
@@ -3737,7 +3739,7 @@ ipcMain.handle('download-video', async (event, url) => {
           // 优化：实时检查大小，防止超限
           if (totalSize > MAX_VIDEO_SIZE) {
             response.destroy();
-            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+            resolve({ success: false, error: `图片太大了: ${Math.round(totalSize / 1024 / 1024)}MB` });
             return;
           }
           chunks.push(chunk);
@@ -3786,12 +3788,125 @@ ipcMain.handle('download-video', async (event, url) => {
   }
 });
 
+// ========== 图片下载功能（通过主进程绕过跨域限制） ==========
+const MAX_IMAGE_SIZE = 200 * 1024 * 1024;
+ipcMain.handle('download-image', async (event, url) => {
+  console.log('[Image Download] 开始下载:', url);
+
+  if (!url) {
+    return {success: false, error: '没有提供URL'};
+  }
+
+  // 内部下载函数，支持重定向
+  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
+    return new Promise((resolve) => {
+      if (redirectCount > 5) {
+        resolve({success: false, error: '重定向次数过多'});
+        return;
+      }
+
+      const https = require('https');
+      const http = require('http');
+      const protocol = downloadUrl.startsWith('https') ? https : http;
+
+      const request = protocol.get(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      }, (response) => {
+        // 处理重定向
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          let redirectUrl = response.headers.location;
+          // 处理相对路径重定向
+          if (!redirectUrl.startsWith('http')) {
+            const urlObj = new URL(downloadUrl);
+            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+          }
+          console.log('[Video Download] 重定向到:', redirectUrl);
+          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          resolve({success: false, error: `HTTP error: ${response.statusCode}`});
+          return;
+        }
+
+        // 优化：检查文件大小
+        const contentLength = parseInt(response.headers['content-length'], 10);
+        if (contentLength && contentLength > MAX_IMAGE_SIZE) {
+          response.destroy();
+          resolve({
+            success: false,
+            error: `图片太大了: ${Math.round(contentLength / 1024 / 1024)}MB (最大 ${MAX_IMAGE_SIZE / 1024 / 1024}MB)`
+          });
+          return;
+        }
+
+        const chunks = [];
+        let totalSize = 0;
+        const contentType = response.headers['content-type'] || 'image/*';
+
+        response.on('data', (chunk) => {
+          totalSize += chunk.length;
+          // 优化：实时检查大小，防止超限
+          if (totalSize > MAX_IMAGE_SIZE) {
+            response.destroy();
+            resolve({success: false, error: `图片太大了: ${Math.round(totalSize / 1024 / 1024)}MB`});
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const base64Data = buffer.toString('base64');
+          console.log('[Video Download] 下载完成，大小:', buffer.length, 'bytes');
+
+          // 优化：立即清理 chunks 数组释放内存
+          chunks.length = 0;
+
+          resolve({
+            success: true,
+            data: base64Data,
+            contentType: contentType,
+            size: buffer.length
+          });
+        });
+
+        response.on('error', (err) => {
+          console.error('[Video Download] 响应错误:', err);
+          resolve({success: false, error: err.message});
+        });
+      });
+
+      request.on('error', (err) => {
+        console.error('[Video Download] 请求错误:', err);
+        resolve({success: false, error: err.message});
+      });
+
+      // 优化：增加超时时间到 120 秒
+      request.setTimeout(120000, () => {
+        request.destroy();
+        resolve({success: false, error: 'Download timeout (120s)'});
+      });
+    });
+  };
+
+  try {
+    return await downloadWithRedirect(url);
+  } catch (err) {
+    console.error('[Video Download] 异常:', err);
+    return {success: false, error: err.message};
+  }
+});
+
 // ========== 文件下载功能（从内容页面触发） ==========
 ipcMain.handle('trigger-download', async (event, url) => {
   console.log('[Trigger Download] 收到下载请求:', url);
 
   if (!url) {
-    return { success: false, error: 'No URL provided' };
+    return { success: false, error: '没有提供URL' };
   }
 
   try {

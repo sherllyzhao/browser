@@ -219,14 +219,6 @@
         notifySuccess: () => {
             sendMessageToParent('发布成功');
         },
-
-        // 发送自定义消息
-        sendMessage: (message) => {
-            sendMessageToParent(message);
-        },
-
-        // 获取发布数据
-        getAuthData: () => window.__AUTH_DATA__,
     };
 
     // ===========================
@@ -409,14 +401,32 @@
                                     }
 
                                     try {
-                                        console.log('[网易号发布] 📤 上传图片:', originalSrc.substring(0, 80));
+                                        console.log('[网易号发布] 📤 上传图片:', originalSrc.substring(0, 200));
+                                        // 下载图片到本地转为二进制格式
+                                        const imgRes = await window.browserAPI.downloadImage(originalSrc);
+                                        console.log("🚀 ~  ~ imgRes: ", imgRes);
+                                        if (!imgRes.success) {
+                                            console.error('[网易号发布] ❌ 图片下载失败:', imgRes.error);
+                                            continue;
+                                        }
+                                        // 将 base64 转换为 Blob
+                                        const byteString = atob(imgRes.data);
+                                        const ab = new ArrayBuffer(byteString.length);
+                                        const ia = new Uint8Array(ab);
+                                        for (let i = 0; i < byteString.length; i++) {
+                                            ia[i] = byteString.charCodeAt(i);
+                                        }
+                                        const blob = new Blob([ab], { type: imgRes.contentType });
+                                        console.log("🚀 ~  ~ blob: ", blob);
+                                        const file = new File([blob], getImageType(originalSrc), { type: imgRes.contentType });
+                                        console.log("🚀 ~  ~ getImageType(originalSrc): ", getImageType(originalSrc));
 
                                         // 调用网易号图片代理接口
                                         const response = await fetch('https://mp.163.com/api/v3/upload/picupload', {
                                             method: 'POST',
                                             body: new URLSearchParams({
                                                 from: 'neteasecode_mp',
-                                                file: originalSrc
+                                                url: originalSrc
                                             }),
                                             credentials: 'include' // 带上 cookies
                                         });
@@ -467,9 +477,6 @@
                             setNativeValue(radioInput, false);
                         }
                     }
-
-                    /* setNativeValue(singleRadioEle, true);
-                    setNativeValue(threeRadioEle, false); */
 
                     // ===========================
                     // 🔴 全局错误监听器 - 在上传图片之前就开始监听
@@ -939,3 +946,8 @@
         // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
     }
 })(); // IIFE 结束
+
+function getImageType(src){
+    const imageType = src.split(';')[0].split('/')[1];
+    return imageType;
+}
