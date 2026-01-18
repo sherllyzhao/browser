@@ -403,7 +403,7 @@
                                     }
 
                                     // 如果已经是网易号的图片，跳过
-                                    if (originalSrc.includes('baijiahao.baidu.com') || originalSrc.includes('mmbiz.qpic.cn')) {
+                                    if (originalSrc.includes('mp.163.com') || originalSrc.includes('dingyue.ws.')) {
                                         console.log('[网易号发布] ⏭️ 跳过已有图片:', originalSrc.substring(0, 50));
                                         continue;
                                     }
@@ -412,13 +412,11 @@
                                         console.log('[网易号发布] 📤 上传图片:', originalSrc.substring(0, 80));
 
                                         // 调用网易号图片代理接口
-                                        const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
+                                        const response = await fetch('https://mp.163.com/api/v3/upload/picupload', {
                                             method: 'POST',
                                             body: new URLSearchParams({
-                                                usage: 'content',
-                                                article_type: 'news',
-                                                is_waterlog: '1',
-                                                url: originalSrc
+                                                from: 'neteasecode_mp',
+                                                file: originalSrc
                                             }),
                                             credentials: 'include' // 带上 cookies
                                         });
