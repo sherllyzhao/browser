@@ -4,6 +4,7 @@
 // 防止重复加载（检查关键函数是否已存在）
 
 if (typeof window.uploadVideo === 'function' &&
+    typeof window.uploadImage === 'function' &&
     typeof window.waitForElement === 'function' &&
     typeof window.setNativeValue === 'function') {
     console.log('[common.js] ⚠️ common.js 已加载，跳过重复定义');
@@ -546,6 +547,106 @@ window.uploadVideo = async function(dataObj, shadowRoot = undefined) {
         }, 30, 2000);  // 最多重试30次，每次间隔2秒，总共最多60秒
     }
     console.log('[uploadVideo] ✅ 找到上传 input 元素:', uploadInput ? 'success' : 'failed');
+
+    // 执行文件上传
+    //alert('Uploading file: ' + file.name);
+    await uploadFileToInput(uploadInput, file);
+
+    // 等待上传完成并填写表单
+    await new Promise(resolve => setTimeout(resolve, 3000));
+};
+
+// 上传图片到input元素
+window.uploadImage = async function(dataObj, shadowRoot = undefined) {
+    const pathImage = dataObj?.image?.image?.url;
+    console.log("🚀 ~ uploadImage ~ pathImage: ", pathImage);
+    if (!pathImage) {
+        //alert('No image URL found');
+        return;
+    }
+
+    console.log('[uploadImage] 开始下载图片:', pathImage);
+
+    let blob;
+    let contentType = 'image/jpeg';
+
+    // 优先使用主进程下载（绕过跨域限制），添加重试机制防止并发下载时连接被重置
+    const downloadResult = await retryOperation(async () => {
+        if (window.browserAPI?.downloadVideo) {
+            console.log('[uploadImage] 使用主进程下载...');
+            const result = await window.browserAPI.downloadVideo(pathImage);
+
+            if (!result.success) {
+                throw new Error('Image download failed: ' + result.error);
+            }
+
+            // 将 base64 转换为 Blob
+            const binaryString = atob(result.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            const downloadedBlob = new Blob([bytes], { type: result.contentType });
+            console.log('[uploadImage] 主进程下载成功，大小:', result.size, 'bytes');
+            return { blob: downloadedBlob, contentType: result.contentType };
+        } else {
+            // 回退到 fetch（可能有跨域问题）
+            console.log('[uploadImage] browserAPI.downloadVideo 不可用，使用 fetch...');
+            const response = await fetch(pathImage);
+            if (!response.ok) {
+                throw new Error('HTTP error! status: ' + response.status);
+            }
+            const downloadedBlob = await response.blob();
+            const type = response.headers.get('Content-Type') || downloadedBlob.type || 'image/jpeg';
+            return { blob: downloadedBlob, contentType: type };
+        }
+    }, 5, 3000);  // 最多重试5次，每次间隔3秒（处理并发下载时的 ECONNRESET 错误）
+
+    blob = downloadResult.blob;
+    contentType = downloadResult.contentType;
+
+    // 从 URL 或 Content-Type 中提取文件扩展名
+    let extension = '.jpg'; // 默认扩展名
+    if (pathImage.includes('.')) {
+        const urlExt = pathImage.split('.').pop().split('?')[0].toLowerCase();
+        if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'].includes(urlExt)) {
+            extension = '.' + urlExt;
+        }
+    } else if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+        extension = '.jpg';
+    } else if (contentType.includes('png')) {
+        extension = '.png';
+    } else if (contentType.includes('gif')) {
+        extension = '.gif';
+    } else if (contentType.includes('webp')) {
+        extension = '.webp';
+    } else if (contentType.includes('bmp')) {
+        extension = '.bmp';
+    } else if (contentType.includes('svg')) {
+        extension = '.svg';
+    }
+
+    // 构建文件名，确保有扩展名
+    let fileName = dataObj?.image?.formData?.title || 'image';
+    if (!fileName.toLowerCase().endsWith(extension.toLowerCase())) {
+        fileName = fileName + extension;
+    }
+
+    const file = new File([blob], fileName, {type: contentType});
+
+    // 等待上传按钮（使用重试机制，最多等待60秒）
+    console.log('[uploadImage] 开始查找上传 input 元素...');
+    let uploadInput;
+    if (!shadowRoot) {
+        // 如果没有Shadow DOM，尝试直接查找
+        uploadInput = await waitForElement('input[type="file"]', 30000);
+    } else {
+        // 深入Shadow DOM查找，使用重试机制（deepShadowSearch 超时时间短，需要多次重试）
+        uploadInput = await retryOperation(async () => {
+            return await deepShadowSearch(shadowRoot, 'input[type="file"]', 5);
+        }, 30, 2000);  // 最多重试30次，每次间隔2秒，总共最多60秒
+    }
+    console.log('[uploadImage] ✅ 找到上传 input 元素:', uploadInput ? 'success' : 'failed');
 
     // 执行文件上传
     //alert('Uploading file: ' + file.name);
@@ -1122,7 +1223,7 @@ window.delay = function(ms) {
 };
 
 console.log('[common.js] ✅ common.js 加载完成');
-console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
+console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
 
 } // 结束 if-else 块，所有函数在 else 块内定义
 
@@ -1189,6 +1290,7 @@ if (typeof sendMessageToParent === 'undefined') window.sendMessageToParent && (s
 if (typeof uploadFileToInput === 'undefined') window.uploadFileToInput && (uploadFileToInput = window.uploadFileToInput);
 if (typeof downloadFile === 'undefined') window.downloadFile && (downloadFile = window.downloadFile);
 if (typeof uploadVideo === 'undefined') window.uploadVideo && (uploadVideo = window.uploadVideo);
+if (typeof uploadImage === 'undefined') window.uploadImage && (uploadImage = window.uploadImage);
 if (typeof setNativeValue === 'undefined') window.setNativeValue && (setNativeValue = window.setNativeValue);
 if (typeof waitForShadowElement === 'undefined') window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);
 if (typeof deepShadowSearch === 'undefined') window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
