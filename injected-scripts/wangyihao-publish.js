@@ -937,8 +937,61 @@
                                                     break;
                                                 }
                                             }
-                                            //  点击发布按钮
-                                            if (publishBtn) {
+
+                                            // 🔑 检查是否需要定时发布
+                                            const publishTime = dataObj.video?.publishTime;
+                                            const sendTime = dataObj.video?.send_time;
+
+                                            if (publishTime === 2 && sendTime && scheduledReleasesBtn) {
+                                                console.log('[网易号发布] ⏰ 检测到需要定时发布，时间:', sendTime);
+
+                                                // 解析定时时间
+                                                const timeConfig = parseSendTime(sendTime);
+                                                if (!timeConfig) {
+                                                    console.error('[网易号发布] ❌ 解析定时时间失败');
+                                                    stopErrorListener();
+                                                    await closeWindowWithMessage('定时时间解析失败', 1000);
+                                                    return;
+                                                }
+
+                                                // 点击定时发布按钮
+                                                console.log('[网易号发布] 🖱️ 点击定时发布按钮');
+                                                scheduledReleasesBtn.click();
+                                                await delay(1000);
+
+                                                // 等待弹窗出现并选择时间
+                                                const scheduledModal = await waitForElement('.cheetah-modal-wrap', 5000);
+                                                if (scheduledModal) {
+                                                    console.log('[网易号发布] ✅ 定时发布弹窗已打开');
+
+                                                    // 调用选择时间函数
+                                                    const timeSelectSuccess = await selectScheduledTime(
+                                                        timeConfig.dateIndex,
+                                                        timeConfig.hour,
+                                                        timeConfig.minute
+                                                    );
+
+                                                    if (!timeSelectSuccess) {
+                                                        console.error('[网易号发布] ❌ 时间选择失败');
+                                                        stopErrorListener();
+                                                        await closeWindowWithMessage('定时时间选择失败', 1000);
+                                                        return;
+                                                    }
+
+                                                    // 点击确定发布按钮
+                                                    const confirmBtn = await waitForElement('.ne-button-color-primary', 5000);
+                                                    if (confirmBtn && confirmBtn.textContent.trim() === '定时发布') {
+                                                        console.log('[网易号发布] ✅ 点击确定定时发布');
+                                                        confirmBtn.click();
+                                                    }
+                                                } else {
+                                                    console.error('[网易号发布] ❌ 定时发布弹窗未打开');
+                                                    stopErrorListener();
+                                                    await closeWindowWithMessage('定时发布弹窗未打开', 1000);
+                                                    return;
+                                                }
+                                            } else if (publishBtn) {
+                                                // 直接发布流程
                                                 // 🔑 检查发布按钮是否 disabled - 支持网易号的禁用类名
                                                 const isDisabled = publishBtn.disabled === true ||
                                                                    publishBtn.hasAttribute('disabled') ||
@@ -1160,81 +1213,135 @@ function getImageType(src){
 }
 
 /**
+ * 解析定时发布时间
+ * @param {string} sendTimeStr - 时间字符串，格式："2026-01-21 00:00:00"
+ * @returns {object} { dateIndex, hour, minute } 或 null
+ */
+function parseSendTime(sendTimeStr) {
+    try {
+        // 解析时间字符串
+        const [dateStr, timeStr] = sendTimeStr.split(' ');
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const [hour, minute] = timeStr.split(':').map(Number);
+
+        // 计算相对于今天的天数差
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const sendDate = new Date(year, month - 1, day);
+        sendDate.setHours(0, 0, 0, 0);
+
+        const dayDiff = Math.floor((sendDate - today) / (1000 * 60 * 60 * 24));
+
+        console.log('[网易号发布] 📅 解析定时时间:', {
+            原始时间: sendTimeStr,
+            日期: `${year}-${month}-${day}`,
+            时间: `${hour}:${minute}`,
+            相对天数: dayDiff
+        });
+
+        return {
+            dateIndex: dayDiff,
+            hour: hour,
+            minute: minute
+        };
+    } catch (error) {
+        console.error('[网易号发布] ❌ 解析定时时间失败:', error);
+        return null;
+    }
+}
+
+/**
  * 选择虚拟列表中的选项
  * @param {HTMLElement} selectElement - select 组件的容器
  * @param {string|number} targetValue - 要选择的值（显示文本）
  * @param {number} timeout - 超时时间（毫秒）
  */
 async function selectFromVirtualList(selectElement, targetValue, timeout = 10000) {
-    return new Promise((resolve) => {
-        try {
-            // 1. 点击 select 打开下拉列表
-            const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
-            if (!selectTrigger) {
-                console.error('[网易号发布] ❌ 找不到 select 触发器');
-                resolve(false);
-                return;
+    try {
+        console.log('[网易号发布] 🔍 准备选择:', targetValue);
+
+        // 1. 找到触发器并点击打开下拉
+        const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
+        if (!selectTrigger) {
+            console.error('[网易号发布] ❌ 找不到 select 触发器');
+            return false;
+        }
+
+        console.log('[网易号发布] ✅ 找到触发器，点击打开下拉列表');
+        selectTrigger.click();
+
+        // 等待下拉出现
+        await new Promise(r => setTimeout(r, 500));
+
+        // 2. 查找虚拟列表容器（可能有多个位置）
+        const startTime = Date.now();
+        let virtualList = null;
+        let options = [];
+
+        while (Date.now() - startTime < timeout) {
+            // 尝试多种选择器找虚拟列表
+            virtualList = document.querySelector('.rc-virtual-list-holder') ||
+                         document.querySelector('.cheetah-select-dropdown .rc-virtual-list') ||
+                         document.querySelector('[role="listbox"]');
+
+            if (virtualList) {
+                // 查找所有可见的选项
+                options = Array.from(virtualList.querySelectorAll('[role="option"], .cheetah-select-item-option'))
+                    .filter(el => el.offsetParent !== null); // 过滤隐藏的元素
+
+                if (options.length > 0) {
+                    console.log('[网易号发布] ✅ 找到虚拟列表，有', options.length, '个选项');
+                    break;
+                }
             }
 
-            selectTrigger.click();
-            console.log('[网易号发布] ✅ 已点击 select 打开下拉列表');
-
-            // 2. 等待下拉列表出现
-            const startTime = Date.now();
-            const checkInterval = 100;
-
-            const checkList = setInterval(async () => {
-                const elapsed = Date.now() - startTime;
-
-                // 2.1 查找虚拟列表容器
-                const virtualList = document.querySelector('.rc-virtual-list-holder');
-                if (!virtualList) {
-                    if (elapsed > timeout) {
-                        clearInterval(checkList);
-                        console.error('[网易号发布] ❌ 超时：未找到虚拟列表');
-                        resolve(false);
-                    }
-                    return;
-                }
-
-                // 2.2 查找所有选项（会包括虚拟渲染的选项）
-                const options = virtualList.querySelectorAll('.cheetah-select-item-option');
-                let found = false;
-
-                for (const option of options) {
-                    const optionText = option.textContent.trim();
-                    if (optionText === String(targetValue).trim()) {
-                        console.log('[网易号发布] ✅ 找到选项:', optionText);
-
-                        // 确保选项可见（滚动到视图中）
-                        option.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        await new Promise(r => setTimeout(r, 200));
-
-                        // 点击选项
-                        option.click();
-                        console.log('[网易号发布] ✅ 已点击选项:', optionText);
-
-                        clearInterval(checkList);
-                        found = true;
-                        resolve(true);
-                        break;
-                    }
-                }
-
-                if (found) return;
-
-                if (elapsed > timeout) {
-                    clearInterval(checkList);
-                    console.error('[网易号发布] ❌ 超时：未找到选项', targetValue);
-                    resolve(false);
-                }
-            }, checkInterval);
-
-        } catch (error) {
-            console.error('[网易号发布] ❌ selectFromVirtualList 错误:', error);
-            resolve(false);
+            await new Promise(r => setTimeout(r, 100));
         }
-    });
+
+        if (options.length === 0) {
+            console.error('[网易号发布] ❌ 未找到任何选项');
+            return false;
+        }
+
+        // 3. 在所有选项中查找匹配的
+        const targetStr = String(targetValue).trim();
+        let foundOption = null;
+
+        for (const option of options) {
+            const optionText = option.textContent.trim();
+            console.log('[网易号发布] 🔎 检查选项:', optionText);
+
+            if (optionText === targetStr) {
+                foundOption = option;
+                console.log('[网易号发布] ✅ 找到匹配的选项:', optionText);
+                break;
+            }
+        }
+
+        if (!foundOption) {
+            console.error('[网易号发布] ❌ 未找到目标选项:', targetStr);
+            console.log('[网易号发布] 📋 所有选项:', options.map(o => o.textContent.trim()).join(', '));
+            return false;
+        }
+
+        // 4. 滚动到视图并点击
+        foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        await new Promise(r => setTimeout(r, 200));
+
+        console.log('[网易号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
+        foundOption.click();
+
+        // 等待下拉关闭
+        await new Promise(r => setTimeout(r, 300));
+
+        console.log('[网易号发布] ✅ 选项选择完成');
+        return true;
+
+    } catch (error) {
+        console.error('[网易号发布] ❌ selectFromVirtualList 错误:', error);
+        return false;
+    }
 }
 
 /**
