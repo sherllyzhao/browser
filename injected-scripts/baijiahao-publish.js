@@ -829,91 +829,122 @@
                               return;
                             }
                             await delay(2000);
-                          //  点击发布按钮
-                            if(publishBtn){
-                              // 🔑 检查发布按钮是否 disabled
-                              if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
-                                console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
-                                stopErrorListener();
-                                const publishIdForError = dataObj.video?.dyPlatform?.id;
-                                if (publishIdForError) {
-                                  await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
-                                }
-                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                return;
-                              }
-                              // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
-                              const publishId = dataObj.video?.dyPlatform?.id;
-                              if (publishId) {
-                                try {
-                                  localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                  console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
-                                } catch (e) {
-                                  console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
-                                }
-                              } else {
-                                console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
-                              }
+                            const publishTime = dataObj.video.formData.send_set;
+                            if (+publishTime === 2) {
+                              const outlineFootBtns = document.querySelectorAll('.op-list-wrap-news .cheetah-btn-outlined');
+                              let scheduledReleasesBtn = null;
 
-                              const clickEvent = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true
-                              });
-                              publishBtn.dispatchEvent(clickEvent);
-                              console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
-
-                              // 🔴 点击发布后，等待并检测是否有错误信息
-                              console.log('[百家号发布] ⏳ 等待 5 秒检测发布结果...');
-                              await delay(1000);
-                              try{
-                                const transferDynamic = document.querySelectorAll('.cheetah-btn-default');
-                                if(transferDynamic && transferDynamic.length){
-                                  for(const btn of transferDynamic){
-                                    if(btn.textContent.trim().includes('保持图文发布')){
-                                      btn.click();
-                                    }
+                              if (outlineFootBtns.length) {
+                                for (const btn of outlineFootBtns) {
+                                  if (btn.textContent.trim().includes('定时发布')) {
+                                    scheduledReleasesBtn = btn;
                                   }
                                 }
-                                const continueBtn = document.querySelectorAll('.cheetah-btn-primary');
-                                if(continueBtn && continueBtn.length){
-                                  for(const btn of continueBtn){
-                                    if(btn.textContent.trim().includes('确定')){
-                                      btn.click();
-                                    }
+                                console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
+                                if (scheduledReleasesBtn) {
+                                  const clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                  });
+                                  scheduledReleasesBtn.dispatchEvent(clickEvent);
+                                  console.log('[百家号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                  await delay(2000);
+                                //  检测有没有定时发布弹窗
+                                  const scheduledReleasesModal = document.querySelector('.cheetah-modal-content');
+                                  if (scheduledReleasesModal) {
+                                    console.log('[百家号发布] ✅ 检测到定时发布弹窗');
+
                                   }
                                 }
-                              }catch (e){
-                                console.log(e);
                               }
+                            }else{
+                              //  点击发布按钮
+                              if(publishBtn){
+                                // 🔑 检查发布按钮是否 disabled
+                                if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
+                                  console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
+                                  stopErrorListener();
+                                  const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                  if (publishIdForError) {
+                                    await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
+                                  }
+                                  await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                  return;
+                                }
+                                // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                  try {
+                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                    console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+                                  } catch (e) {
+                                    console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                  }
+                                } else {
+                                  console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
+                                }
 
-                              await delay(5000);
-
-                              // 检查是否有错误信息
-                              const publishErrorMsg = getLatestError();
-                              if (publishErrorMsg) {
-                                console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
+                                const clickEvent = new MouseEvent('click', {
+                                  view: window,
+                                  bubbles: true,
+                                  cancelable: true
+                                });
+                                publishBtn.dispatchEvent(clickEvent);
+                                console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+                              }else{
+                                console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                                 stopErrorListener();
                                 const publishId = dataObj.video?.dyPlatform?.id;
                                 if (publishId) {
-                                  console.log('[百家号发布] 📤 调用失败接口...');
-                                  await sendStatisticsError(publishId, publishErrorMsg, '百家号发布');
+                                  await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
                                 }
                                 await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                 return;
-                              } else {
-                                console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
-                                stopErrorListener();
                               }
-                            }else{
-                              console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
+                            }
+
+                            // 🔴 点击发布后，等待并检测是否有错误信息
+                            console.log('[百家号发布] ⏳ 等待 5 秒检测发布结果...');
+                            await delay(1000);
+                            try{
+                              const transferDynamic = document.querySelectorAll('.cheetah-btn-default');
+                              if(transferDynamic && transferDynamic.length){
+                                for(const btn of transferDynamic){
+                                  if(btn.textContent.trim().includes('保持图文发布')){
+                                    btn.click();
+                                  }
+                                }
+                              }
+                              const continueBtn = document.querySelectorAll('.cheetah-btn-primary');
+                              if(continueBtn && continueBtn.length){
+                                for(const btn of continueBtn){
+                                  if(btn.textContent.trim().includes('确定')){
+                                    btn.click();
+                                  }
+                                }
+                              }
+                            }catch (e){
+                              console.log(e);
+                            }
+
+                            await delay(5000);
+
+                            // 检查是否有错误信息
+                            const publishErrorMsg = getLatestError();
+                            if (publishErrorMsg) {
+                              console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
                               stopErrorListener();
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
-                                await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
+                                console.log('[百家号发布] 📤 调用失败接口...');
+                                await sendStatisticsError(publishId, publishErrorMsg, '百家号发布');
                               }
                               await closeWindowWithMessage('发布失败，刷新数据', 1000);
                               return;
+                            } else {
+                              console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
+                              stopErrorListener();
                             }
                           } else {
                             // 图片上传失败（timeout），检查是否有错误信息

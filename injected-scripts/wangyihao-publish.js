@@ -470,24 +470,30 @@
                                 // 获取处理后的 HTML 并通过粘贴事件插入
                                 htmlContent = tempDiv.innerHTML;
 
-                                // 📝 先处理标题：将所有 h2、h3 转换为 h5
+                                // 📝 只将最大的标题标签转换为 h5，其他保持不变
                                 const headingsInfo = [];
-                                tempDiv.querySelectorAll('h2, h3').forEach(el => {
-                                    const text = el.textContent.trim();
-                                    headingsInfo.push({ text });
+                                let largestHeadingTag = null;
+                                for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5']) {
+                                    if (tempDiv.querySelector(tag)) {
+                                        largestHeadingTag = tag;
+                                        break;
+                                    }
+                                }
 
-                                    // 将 h2、h3 都转换为 h5
-                                    const h5 = document.createElement('h5');
-                                    h5.textContent = text;
-                                    el.replaceWith(h5);
+                                if (largestHeadingTag) {
+                                    tempDiv.querySelectorAll(largestHeadingTag).forEach(el => {
+                                        const text = el.textContent.trim();
+                                        headingsInfo.push({ text });
 
-                                    console.log(`[网易号发布] 📝 将 ${el.tagName} 转换为 H5`);
-                                });
+                                        const h5 = document.createElement('h5');
+                                        h5.textContent = text;
+                                        el.replaceWith(h5);
+                                    });
+                                    console.log(`[网易号发布] 📝 将 ${largestHeadingTag.toUpperCase()} 转换为 H5，共 ${headingsInfo.length} 个`);
+                                }
 
                                 // 获取转换后的 HTML
                                 htmlContent = tempDiv.innerHTML;
-                                console.log('[网易号发布] 📋 发现标题数:', headingsInfo.length);
-                                console.log('[网易号发布] 📄 已将所有 H2/H3 转换为 H5');
 
                                 // 🔴 清理开头的空白 - 直接删除文字内容之前的所有HTML
                                 const tempCleaner = document.createElement('div');
@@ -557,87 +563,6 @@
                                 // 等待编辑器处理粘贴事件
                                 await new Promise(resolve => setTimeout(resolve, 800));
 
-                                // 🎯 处理标题格式 - 获取标题按钮并点击
-                                console.log('[网易号发布] 🔧 开始处理标题格式...');
-
-                                // 获取标题按钮（第10个按钮 = 索引9）
-                                const allPanelItems = document.querySelectorAll('.rich-editor-panel-item');
-                                const titleButton = allPanelItems[9];
-
-                                console.log('[网易号发布] 📌 标题按钮信息:');
-                                console.log('  - 按钮元素:', titleButton);
-                                console.log('  - 按钮 className:', titleButton?.className);
-                                console.log('  - 按钮 disabled:', titleButton?.disabled);
-
-                                if (!titleButton) {
-                                    console.warn('[网易号发布] ⚠️ 找不到标题按钮');
-                                } else {
-                                    // 等待编辑器完全渲染
-                                    await new Promise(r => setTimeout(r, 500));
-
-                                    // 先让编辑器获得焦点
-                                    editorEle.focus();
-                                    await new Promise(r => setTimeout(r, 100));
-
-                                    for (const info of headingsInfo) {
-                                        try {
-                                            // 在编辑器中查找该标题文本
-                                            const allTextNodes = [];
-                                            const walker = document.createTreeWalker(
-                                                editorEle,
-                                                NodeFilter.SHOW_TEXT,
-                                                null,
-                                                false
-                                            );
-
-                                            let node;
-                                            while (node = walker.nextNode()) {
-                                                allTextNodes.push(node);
-                                            }
-
-                                            console.log(`[网易号发布] 搜索标题文本: "${info.text.substring(0, 30)}..." (${allTextNodes.length} 个文本节点)`);
-
-                                            // 逐个检查找到精确匹配的文本节点
-                                            let found = false;
-                                            for (const textNode of allTextNodes) {
-                                                const nodeText = textNode.textContent.trim();
-                                                if (nodeText === info.text) {
-                                                    // 构建精确的 Range
-                                                    const range = document.createRange();
-                                                    range.selectNodeContents(textNode);
-
-                                                    // 设置选中
-                                                    const sel = window.getSelection();
-                                                    sel.removeAllRanges();
-                                                    sel.addRange(range);
-
-                                                    console.log(`[网易号发布] 🎯 已选中标题文本：${info.text.substring(0, 40)}`);
-
-                                                    // 🔴 关键：选中后立即点击，不要再做其他操作
-                                                    // 点击 1 次：将正文转换为 H5
-                                                    titleButton.click();
-                                                    console.log(`[网易号发布] 📌 已点击标题按钮（正文 → H5）`);
-
-                                                    // 点击完成后等待 Draft.js 处理
-                                                    await new Promise(r => setTimeout(r, 500));
-
-                                                    console.log(`[网易号发布] ✅ 标题已设置为 H5`);
-                                                    found = true;
-                                                    break;
-                                                }
-                                            }
-
-                                            if (!found) {
-                                                console.warn(`[网易号发布] ⚠️ 未找到标题文本：${info.text.substring(0, 40)}`);
-                                            }
-                                        } catch (e) {
-                                            console.error(`[网易号发布] ❌ 处理标题失败：${e.message}`);
-                                        }
-                                    }
-
-                                    console.log('[网易号发布] ✅ 标题格式处理完成');
-                                }
-
                                 console.log('[网易号发布] ✅ 内容填写完成');
                             }, 3, 1000);
                         } catch (e) {
@@ -679,55 +604,15 @@
                                         const classList = element.classList ? Array.from(element.classList).join(' ') : '';
                                         const textContent = element.textContent || '';
 
-                                        // 1. 检测网易号的标准错误提示（cheetah-message）
-                                        if (classList.includes('cheetah-message')) {
-                                            const errorSpan = element.querySelector('.cheetah-message-error span:last-child') ||
-                                                element.querySelector('.cheetah-message-custom-content span:last-child') ||
-                                                element.querySelector('[class*="content"] span:last-child');
+                                        // 检测网易 snackbar 提示框（新结构）
+                                        if (classList.includes('ne-snackbar-item-description')) {
+                                            const errorSpan = element.querySelector('span:last-child');
                                             if (errorSpan) {
                                                 const text = (errorSpan.textContent || '').trim();
                                                 if (text && !capturedErrors.includes(text)) {
                                                     capturedErrors.push(text);
-                                                    console.log('[网易号发布] 📨 捕获到错误信息（标准消息框）:', text);
+                                                    console.log('[网易号发布] 📨 捕获到错误信息:', text);
                                                 }
-                                            }
-                                        }
-
-                                        // 2. 检测所有 cheetah-message 类中的所有 span
-                                        if (classList.includes('cheetah-message')) {
-                                            const allSpans = element.querySelectorAll('span');
-                                            for (const span of allSpans) {
-                                                const spanText = (span.textContent || '').trim();
-                                                // 过滤空白和纯图标文本
-                                                if (spanText && spanText.length > 1 && !capturedErrors.includes(spanText) &&
-                                                    !['✕', '✓', '!', '?', '×'].includes(spanText)) {
-                                                    capturedErrors.push(spanText);
-                                                    console.log('[网易号发布] 📨 捕获到错误信息（span）:', spanText);
-                                                }
-                                            }
-                                        }
-
-                                        // 3. 检测对话框中的错误信息（ne-modal）
-                                        if (classList.includes('ne-modal') || classList.includes('modal')) {
-                                            const dialogContent = element.querySelector('.custom-confirm-content') ||
-                                                element.querySelector('[class*="content"]');
-                                            if (dialogContent) {
-                                                const dialogText = (dialogContent.textContent || '').trim();
-                                                if (dialogText && dialogText.length > 1 && !capturedErrors.includes(dialogText)) {
-                                                    capturedErrors.push(dialogText);
-                                                    console.log('[网易号发布] 📨 捕获到对话框信息:', dialogText);
-                                                }
-                                            }
-                                        }
-
-                                        // 4. 递归检查所有子元素中的错误类
-                                        const errorElements = element.querySelectorAll('[class*="error"], [class*="message"], [class*="warning"], [class*="alert"]');
-                                        for (const el of errorElements) {
-                                            const elText = (el.textContent || '').trim();
-                                            if (elText && elText.length > 2 && !capturedErrors.includes(elText) &&
-                                                el.children.length === 0) { // 只取最后一层文本
-                                                capturedErrors.push(elText);
-                                                console.log('[网易号发布] 📨 捕获到错误信息（其他容器）:', elText);
                                             }
                                         }
                                     }
@@ -761,6 +646,7 @@
                             const msg = capturedErrors[i];
                             const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
                             if (!isIgnored) {
+                                console.log("🚀 ~ getLatestError ~ msg: ", msg);
                                 return msg;
                             }
                         }
@@ -781,7 +667,7 @@
                             setTimeout(async () => {
                                 // 查找并点击"选择封面"按钮
                                 const coverBtn = await waitForElement('.cover-pic__single__content__choose');
-                                const coverEle = await waitForElement('.cover-pic__single__content__choose > img');
+                                const coverEle = coverBtn.querySelector('img');
                                 console.log("🚀 ~  ~ coverBtn: ", coverBtn);
                                 if (coverBtn) {
                                     //检查是否已经有图片
@@ -801,102 +687,168 @@
                                     }else{
                                         coverBtn.click();
                                         console.log('[网易号发布] ✅ 已点击"选择封面"按钮');
-
-                                        await retryOperation(async () => {
-                                            // 有弹窗先关闭弹窗
-                                            const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                                            console.log("🚀 ~  ~ tipDialogEle: ", tipDialogEle);
-                                            if (tipDialogEle) {
-                                                const dialogTextEle = await waitForElement('.custom-confirm-content', 5000, 1000, tipDialogEle);
-                                                if (dialogTextEle) {
-                                                    const dialogText = dialogTextEle.textContent.trim();
-                                                    if (dialogText.includes('正文中至少上传一张图片')) {
-                                                        // 需要在正文中插入图片
-                                                        console.log('[网易号发布] 📝 检测到需要在正文中插入图片');
-
-                                                        try {
-                                                            // 等待编辑器加载
-                                                            const editorIframeEle = await waitForElement("#editor_wyh", 5000);
-                                                            if (editorIframeEle) {
-                                                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
-                                                                if (editorEle && pathImage) {
-                                                                    // 使用和内容插入相同的粘贴事件方式
-                                                                    const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
-
-                                                                    // 让编辑器获得焦点
-                                                                    editorEle.focus();
-
-                                                                    // 通过粘贴事件插入图片HTML
-                                                                    const pasteEvent = new ClipboardEvent('paste', {
-                                                                        clipboardData: new DataTransfer(),
-                                                                        bubbles: true,
-                                                                        cancelable: true
-                                                                    });
-
-                                                                    pasteEvent.clipboardData.setData('text/html', imgHtml);
-                                                                    pasteEvent.clipboardData.setData('text/plain', '[图片]');
-
-                                                                    editorEle.dispatchEvent(pasteEvent);
-
-                                                                    // 等待编辑器处理
-                                                                    await new Promise(resolve => setTimeout(resolve, 500));
-
-                                                                    console.log('[网易号发布] ✅ 已在正文中插入封面图片');
-                                                                }
-                                                            }
-                                                        } catch (e) {
-                                                            console.error('[网易号发布] ❌ 在正文中插入图片失败:', e);
-                                                        }
-                                                    }
-                                                }
-                                                const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                                                tipBtnEle.click();
-                                                await delay(1000);
-                                                coverBtn.click();
-                                            }
-
-                                            const uploadListDialog = await waitForElement('.ne-modal-body', 5000, 1000);
-                                            if(uploadListDialog){
-                                                //    找到图片列表
-                                                const imgListEle = await waitForElement('.cover-picture__list', 5000, 1000);
-                                                console.log("🚀 ~  ~ imgListEle: ", imgListEle);
-                                                if (imgListEle) {
-                                                    const imgItemEle = imgListEle.querySelectorAll('.cover-picture__item')[0];
-                                                    console.log("🚀 ~  ~ imgItemEle: ", imgItemEle);
-                                                    if(imgItemEle){
-                                                        const imgEle = imgItemEle.querySelector('img');
-                                                        console.log("🚀 ~  ~ imgEle: ", imgEle);
-                                                        if (imgEle) {
-                                                            await delay(1000);
-                                                            imgEle.click();
-                                                            await delay(1000);
-                                                            const coverConfirmBtn = await waitForElement('.cover-picture__footer', 5000, 1000);
-                                                            if (coverConfirmBtn) {
-                                                                // 寻找coverConfirmBtn下含"确认"的元素
-                                                                const allBtns = coverConfirmBtn.querySelectorAll('div, button, span');
-                                                                console.log("🚀 ~  ~ allBtns: ", allBtns);
-                                                                let confirmBtnEle = null;
-                                                                for (const btn of allBtns) {
-                                                                    if (btn.textContent.trim() === '确认' && btn.children.length === 0) {
-                                                                        confirmBtnEle = btn || btn;
-                                                                        break;
-                                                                    }
-                                                                }
-                                                                console.log("🚀 ~  ~ confirmBtnEle: ", confirmBtnEle);
-                                                                if (confirmBtnEle) {
-                                                                    confirmBtnEle.click();
-                                                                    console.log('[网易号发布] ✅ 已点击封面图片确认按钮');
-                                                                } else {
-                                                                    console.warn('[网易号发布] ⚠️ 找不到确认按钮，尝试直接点击footer');
-                                                                    coverConfirmBtn.click();
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }, 5, 1000)
                                     }
+
+                                    await retryOperation(async () => {
+                                        // 有弹窗先关闭弹窗
+                                        const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
+                                        console.log("🚀 ~  ~ tipDialogEle: ", tipDialogEle);
+                                        if (tipDialogEle) {
+                                            const dialogTextEle = await waitForElement('.custom-confirm-content', 5000, 1000, tipDialogEle);
+                                            if (dialogTextEle) {
+                                                const dialogText = dialogTextEle.textContent.trim();
+                                                if (dialogText.includes('正文中至少上传一张图片')) {
+                                                    // 需要在正文中插入图片
+                                                    console.log('[网易号发布] 📝 检测到需要在正文中插入图片');
+
+                                                    try {
+                                                        // 等待编辑器加载
+                                                        const editorIframeEle = await waitForElement("#editor_wyh", 5000);
+                                                        if (editorIframeEle) {
+                                                            const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
+                                                            if (editorEle && pathImage) {
+                                                                // 使用和内容插入相同的粘贴事件方式
+                                                                const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
+
+                                                                // 让编辑器获得焦点
+                                                                editorEle.focus();
+
+                                                                // 通过粘贴事件插入图片HTML
+                                                                const pasteEvent = new ClipboardEvent('paste', {
+                                                                    clipboardData: new DataTransfer(),
+                                                                    bubbles: true,
+                                                                    cancelable: true
+                                                                });
+
+                                                                pasteEvent.clipboardData.setData('text/html', imgHtml);
+                                                                pasteEvent.clipboardData.setData('text/plain', '[图片]');
+
+                                                                editorEle.dispatchEvent(pasteEvent);
+
+                                                                // 等待编辑器处理
+                                                                await new Promise(resolve => setTimeout(resolve, 500));
+
+                                                                console.log('[网易号发布] ✅ 已在正文中插入封面图片');
+                                                            }
+                                                        }
+                                                    } catch (e) {
+                                                        console.error('[网易号发布] ❌ 在正文中插入图片失败:', e);
+                                                    }
+                                                }
+                                            }
+                                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
+                                            tipBtnEle.click();
+                                            await delay(1000);
+                                        }
+
+
+                                        // 检查刚刚上传的图片是否已经显示在编辑器中，并且域名包括dingyue.ws
+                                        console.log('[网易号发布] 🔍 检查编辑器中的图片是否已上传...');
+                                        let editorImageValid = false;
+                                        const checkEditorStartTime = Date.now();
+                                        const checkEditorTimeout = 60000; // 1分钟超时
+                                        const checkEditorInterval = 300; // 每300ms检查一次
+
+                                        while (Date.now() - checkEditorStartTime < checkEditorTimeout) {
+                                            await delay(checkEditorInterval);
+                                            const editorImageContainer = document.querySelector('.cover-pic__single__content__choose');
+                                            if (editorImageContainer) {
+                                                const editorImg = editorImageContainer.querySelector('img');
+                                                if (editorImg) {
+                                                    const editorImgSrc = editorImg.getAttribute('src');
+                                                    console.log('[网易号发布] 📸 编辑器中的图片src:', editorImgSrc);
+                                                    if (editorImgSrc && editorImgSrc.includes('dingyue.ws')) {
+                                                        console.log('[网易号发布] ✅ 编辑器中的图片已完成上传:', editorImgSrc);
+                                                        editorImageValid = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (!editorImageValid) {
+                                            console.warn('[网易号发布] ⚠️ 1分钟内编辑器中的图片未完成上传，继续执行后续流程');
+                                        }
+
+                                        // ✅ 编辑器图片检测完毕后，再点击上传封面
+                                        console.log('[网易号发布] ✅ 编辑器图片检测完成，现在点击上传封面');
+                                        coverBtn.click();
+                                        await delay(1000);
+
+                                        const uploadListDialog = await waitForElement('.ne-modal-body', 5000, 5000);
+                                        if(uploadListDialog){
+                                            //    找到图片列表
+                                            const imgListEle = await waitForElement('.cover-picture__list', 5000, 1000);
+                                            console.log("🚀 ~  ~ imgListEle: ", imgListEle);
+                                            if (imgListEle) {
+                                                const imgItemEle = imgListEle.querySelectorAll('.cover-picture__item')[0];
+                                                console.log("🚀 ~  ~ imgItemEle: ", imgItemEle);
+                                                if(imgItemEle){
+                                                    const imgEle = imgItemEle.querySelector('img');
+                                                    console.log("🚀 ~  ~ imgEle: ", imgEle);
+                                                    if (imgEle) {
+                                                        await delay(1000);
+                                                        imgEle.click();
+                                                        await delay(1000);
+                                                        const src = imgEle.getAttribute('src');
+                                                        console.log("🚀 ~  ~ src: ", src);
+
+                                                        // 有src就等待链接变化（等待变成dingyue.ws的链接），最多等1分钟
+                                                        if(!src){
+                                                            console.warn('[网易号发布] ⚠️ 图片未获取到src，返回');
+                                                            return;
+                                                        }
+
+                                                        // 定时检测src是否有变化，等待变成dingyue.ws的链接
+                                                        console.log('[网易号发布] ⏳ 等待图片链接变化（等待dingyue.ws的链接）...');
+                                                        let finalSrc = src;
+                                                        let srcChanged = false;
+                                                        const waitSrcChangeStartTime = Date.now();
+                                                        const waitSrcChangeTimeout = 60000; // 1分钟超时
+                                                        const checkSrcChangeInterval = 500; // 每500ms检查一次
+
+                                                        while (Date.now() - waitSrcChangeStartTime < waitSrcChangeTimeout) {
+                                                            await delay(checkSrcChangeInterval);
+                                                            const currentSrc = imgEle.getAttribute('src');
+
+                                                            // 检查src是否有变化或变成了dingyue.ws
+                                                            if (currentSrc !== finalSrc || (currentSrc && currentSrc.includes('dingyue.ws'))) {
+                                                                console.log('[网易号发布] ✅ 检测到链接变化或已是有效链接:', currentSrc);
+                                                                finalSrc = currentSrc;
+                                                                srcChanged = true;
+                                                                break;
+                                                            }
+                                                        }
+
+                                                        if (!srcChanged) {
+                                                            console.warn('[网易号发布] ⚠️ 1分钟内链接未变化，继续执行');
+                                                        }
+                                                        const coverConfirmBtn = await waitForElement('.cover-picture__footer', 5000, 1000);
+                                                        if (coverConfirmBtn) {
+                                                            // 寻找coverConfirmBtn下含"确认"的元素
+                                                            const allBtns = coverConfirmBtn.querySelectorAll('div, button, span');
+                                                            console.log("🚀 ~  ~ allBtns: ", allBtns);
+                                                            let confirmBtnEle = null;
+                                                            for (const btn of allBtns) {
+                                                                if (btn.textContent.trim() === '确认' && btn.children.length === 0) {
+                                                                    confirmBtnEle = btn || btn;
+                                                                    break;
+                                                                }
+                                                            }
+                                                            console.log("🚀 ~  ~ confirmBtnEle: ", confirmBtnEle);
+                                                            if (confirmBtnEle) {
+                                                                confirmBtnEle.click();
+                                                                console.log('[网易号发布] ✅ 已点击封面图片确认按钮');
+                                                            } else {
+                                                                console.warn('[网易号发布] ⚠️ 找不到确认按钮，尝试直接点击footer');
+                                                                coverConfirmBtn.click();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }, 5, 1000)
                                 }
                                 await delay(1000); // 等待渲染完成
 
@@ -906,7 +858,7 @@
                                         const maxRetries = 3;
 
                                         // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                        const waitForImageOrError = async (timeout = 10000) => {
+                                        const waitForImageOrError = async (timeout = 60000) => {
                                             const startTime = Date.now();
                                             const checkInterval = 300; // 每300ms检查一次
 
@@ -917,26 +869,25 @@
                                                     return {type: 'error', message: errorMsg};
                                                 }
 
-                                                // 2. 再检查图片元素是否出现
-                                                const imageEle = document.querySelector("[class*='-imglist'] [class*='-selectedItem']");
-                                                console.log("🚀 ~ waitForImageOrError ~ imageEle: ", imageEle);
-                                                if (imageEle) {
-                                                    const imgEle = imageEle.querySelector('img');
-                                                    if (imgEle && imgEle.getAttribute('src')) {
-                                                        // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
-                                                        // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                                        console.log('[网易号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
-                                                        await delay(500);
-                                                        const confirmError = getLatestError();
-                                                        if (confirmError) {
-                                                            console.log('[网易号发布] ⚠️ 确认期间检测到错误:', confirmError);
-                                                            return {type: 'error', message: confirmError};
+                                                // 2. 再检查图片元素是否出现，且 src 包含 dingyue.ws
+                                                const imageContainer = document.querySelector(".cover-pic__single__content__choose");
+                                                if (imageContainer) {
+                                                    const imgEle = imageContainer.querySelector('img');
+                                                    if (imgEle) {
+                                                        const src = imgEle.getAttribute('src');
+                                                        console.log("🚀 ~ waitForImageOrError ~ src: ", src);
+                                                        if (src && src.includes('dingyue.ws')) {
+                                                            // 🔑 检测到有效图片（dingyue.ws 域名），再等待 500ms 确认是否有错误
+                                                            console.log('[网易号发布] 🔍 检测到有效图片（dingyue.ws），等待 500ms 确认是否有错误...');
+                                                            await delay(500);
+                                                            const confirmError = getLatestError();
+                                                            if (confirmError) {
+                                                                console.log('[网易号发布] ⚠️ 确认期间检测到错误:', confirmError);
+                                                                return {type: 'error', message: confirmError};
+                                                            }
+                                                            return {type: 'success', element: imageContainer};
                                                         }
-                                                        return {type: 'success', element: imageEle};
                                                     }
-
-                                                    // 等待下一次检查
-                                                    await delay(checkInterval);
                                                 }
 
                                                 // 等待下一次检查
@@ -952,7 +903,8 @@
                                             return {type: 'timeout'};
                                         };
 
-                                        const result = await waitForImageOrError(10000);
+                                        const result = await waitForImageOrError(); // 使用默认 60 秒超时
+                                        console.log("🚀 ~ tryUploadImage ~ result: ", result);
                                         const myWindowId = await window.browserAPI.getWindowId();
 
                                         // 🔴 检测到错误信息，直接上报失败
@@ -970,12 +922,18 @@
                                         if (result.type === 'success') {
                                             console.log('[网易号发布] ✅ 图片上传成功');
 
-                                            await delay(2000); // 等待渲染完成
+                                            await delay(5000); // 等待渲染完成
+
                                             const publishBtns = document.querySelectorAll(".ne-button-color-primary");
                                             let publishBtn = null;
+                                            let scheduledReleasesBtn = null;
                                             for (let publishBtnEle of publishBtns) {
                                                 if(publishBtnEle.textContent.trim() === '发布'){
                                                     publishBtn = publishBtnEle;
+                                                    break;
+                                                }
+                                                if(publishBtnEle.textContent.trim() === '定时发布'){
+                                                    scheduledReleasesBtn = publishBtnEle;
                                                     break;
                                                 }
                                             }
@@ -1030,9 +988,24 @@
                                                 console.log('[网易号发布] ⏳ 等待 5 秒检测发布结果...');
                                                 await delay(5000);
 
+                                                let publishDialogErrorMsg = null;
+                                                // 检查是否有弹窗类型的错误信息
+                                                await retryOperation(async () => {
+                                                    // 有弹窗先关闭弹窗
+                                                    const errorDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
+                                                    if (errorDialogEle) {
+                                                        const errorDialogContentEle = waitForElement('.custom-confirm-content', 5000, 1000, errorDialogEle).textContent.trim();
+                                                        if (errorDialogContentEle) {
+                                                            publishDialogErrorMsg = errorDialogContentEle.textContent.trim();
+                                                        }
+                                                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, errorDialogEle);
+                                                        tipBtnEle.click()
+                                                    }
+                                                }, 5, 1000)
+
                                                 // 检查是否有错误信息
                                                 const publishErrorMsg = getLatestError();
-                                                if (publishErrorMsg) {
+                                                if (publishErrorMsg || publishDialogErrorMsg) {
                                                     console.log('[网易号发布] ❌ 检测到发布错误:', publishErrorMsg);
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
@@ -1086,26 +1059,44 @@
 
                                             // 没有错误信息才重试
                                             if (retryCount < maxRetries) {
-                                                console.log(`[网易号发布] 🔄 ${2}秒后重新上传图片...`);
+                                                console.log(`[网易号发布] 🔄 ${2}秒后重新点击上传封面按钮...`);
                                                 await delay(2000);
 
-                                                // 重新触发文件上传
-                                                const input = document.querySelector(".cheetah-upload input");
-                                                if (input) {
-                                                    input.files = dataTransfer.files;
-                                                    const event = new Event("change", {bubbles: true});
-                                                    input.dispatchEvent(event);
-                                                    console.log('[网易号发布] 🔄 已重新触发上传');
+                                                // 重新点击封面上传按钮
+                                                const coverBtn = document.querySelector('.cover-pic__single__content__choose');
+                                                if (coverBtn) {
+                                                    coverBtn.click();
+                                                    console.log('[网易号发布] 🔄 已重新点击封面按钮');
 
-                                                    // 递归重试
-                                                    await delay(2000);
-                                                    await tryUploadImage(retryCount + 1);
+                                                    // 等待上传对话框出现
+                                                    await delay(1000);
+
+                                                    // 重新触发文件上传
+                                                    const input = document.querySelector(".cheetah-upload input");
+                                                    if (input) {
+                                                        input.files = dataTransfer.files;
+                                                        const event = new Event("change", {bubbles: true});
+                                                        input.dispatchEvent(event);
+                                                        console.log('[网易号发布] 🔄 已重新触发上传');
+
+                                                        // 递归重试
+                                                        await delay(2000);
+                                                        await tryUploadImage(retryCount + 1);
+                                                    } else {
+                                                        console.error('[网易号发布] ❌ 无法找到上传输入框，无法重试');
+                                                        stopErrorListener();
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        if (publishId) {
+                                                            await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '网易号发布');
+                                                        }
+                                                        await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
+                                                    }
                                                 } else {
-                                                    console.error('[网易号发布] ❌ 无法找到上传输入框，无法重试');
+                                                    console.error('[网易号发布] ❌ 无法找到封面按钮，无法重试');
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
-                                                        await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '网易号发布');
+                                                        await sendStatisticsError(publishId, '图片上传失败，无法找到封面按钮', '网易号发布');
                                                     }
                                                     await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                 }
@@ -1166,4 +1157,150 @@
 function getImageType(src){
     const imageType = src.split(';')[0].split('/')[1];
     return imageType;
+}
+
+/**
+ * 选择虚拟列表中的选项
+ * @param {HTMLElement} selectElement - select 组件的容器
+ * @param {string|number} targetValue - 要选择的值（显示文本）
+ * @param {number} timeout - 超时时间（毫秒）
+ */
+async function selectFromVirtualList(selectElement, targetValue, timeout = 10000) {
+    return new Promise((resolve) => {
+        try {
+            // 1. 点击 select 打开下拉列表
+            const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
+            if (!selectTrigger) {
+                console.error('[网易号发布] ❌ 找不到 select 触发器');
+                resolve(false);
+                return;
+            }
+
+            selectTrigger.click();
+            console.log('[网易号发布] ✅ 已点击 select 打开下拉列表');
+
+            // 2. 等待下拉列表出现
+            const startTime = Date.now();
+            const checkInterval = 100;
+
+            const checkList = setInterval(async () => {
+                const elapsed = Date.now() - startTime;
+
+                // 2.1 查找虚拟列表容器
+                const virtualList = document.querySelector('.rc-virtual-list-holder');
+                if (!virtualList) {
+                    if (elapsed > timeout) {
+                        clearInterval(checkList);
+                        console.error('[网易号发布] ❌ 超时：未找到虚拟列表');
+                        resolve(false);
+                    }
+                    return;
+                }
+
+                // 2.2 查找所有选项（会包括虚拟渲染的选项）
+                const options = virtualList.querySelectorAll('.cheetah-select-item-option');
+                let found = false;
+
+                for (const option of options) {
+                    const optionText = option.textContent.trim();
+                    if (optionText === String(targetValue).trim()) {
+                        console.log('[网易号发布] ✅ 找到选项:', optionText);
+
+                        // 确保选项可见（滚动到视图中）
+                        option.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        await new Promise(r => setTimeout(r, 200));
+
+                        // 点击选项
+                        option.click();
+                        console.log('[网易号发布] ✅ 已点击选项:', optionText);
+
+                        clearInterval(checkList);
+                        found = true;
+                        resolve(true);
+                        break;
+                    }
+                }
+
+                if (found) return;
+
+                if (elapsed > timeout) {
+                    clearInterval(checkList);
+                    console.error('[网易号发布] ❌ 超时：未找到选项', targetValue);
+                    resolve(false);
+                }
+            }, checkInterval);
+
+        } catch (error) {
+            console.error('[网易号发布] ❌ selectFromVirtualList 错误:', error);
+            resolve(false);
+        }
+    });
+}
+
+/**
+ * 选择定时发布的日期和时间
+ * @param {number} dateIndex - 日期索引（0=今天, 1=明天等）
+ * @param {number} hour - 小时（0-23）
+ * @param {number} minute - 分钟（0-59）
+ */
+async function selectScheduledTime(dateIndex, hour, minute) {
+    try {
+        // 1. 找到定时发布弹窗的三个 select 组件
+        const modal = document.querySelector('.cheetah-modal-wrap');
+        if (!modal) {
+            console.error('[网易号发布] ❌ 找不到定时发布弹窗');
+            return false;
+        }
+
+        const selectElements = modal.querySelectorAll('.select-wrap');
+        if (selectElements.length < 3) {
+            console.error('[网易号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
+            return false;
+        }
+
+        const dateSelect = selectElements[0]; // 日期
+        const hourSelect = selectElements[1]; // 小时
+        const minuteSelect = selectElements[2]; // 分钟
+
+        console.log('[网易号发布] 🔧 开始选择定时发布时间...');
+
+        // 2. 获取日期选项的显示文本
+        let dateText = '';
+        const date = new Date();
+        date.setDate(date.getDate() + dateIndex);
+
+        // 格式：M月D日 或 MM月DD日
+        const month = date.getMonth() + 1; // getMonth() 返回 0-11
+        const day = date.getDate();
+        dateText = `${month}月${day}日`;
+
+        // 3. 依次选择日期、小时、分钟
+        console.log('[网易号发布] 📅 选择日期:', dateText);
+        if (!await selectFromVirtualList(dateSelect, dateText)) {
+            return false;
+        }
+
+        await new Promise(r => setTimeout(r, 300));
+
+        const hourText = `${hour}点`;
+        console.log('[网易号发布] 🕐 选择小时:', hourText);
+        if (!await selectFromVirtualList(hourSelect, hourText)) {
+            return false;
+        }
+
+        await new Promise(r => setTimeout(r, 300));
+
+        const minuteText = `${minute}分`;
+        console.log('[网易号发布] ⏱️ 选择分钟:', minuteText);
+        if (!await selectFromVirtualList(minuteSelect, minuteText)) {
+            return false;
+        }
+
+        console.log('[网易号发布] ✅ 定时发布时间选择完成');
+        return true;
+
+    } catch (error) {
+        console.error('[网易号发布] ❌ selectScheduledTime 错误:', error);
+        return false;
+    }
 }
