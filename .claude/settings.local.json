@@ -43,7 +43,8 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -5 -- injected-scripts/wangyihao-publish.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" show HEAD:injected-scripts/wangyihao-publish.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/wangyihao-publish.js)",
-      "WebFetch(domain:nextui.org)"
+      "WebFetch(domain:nextui.org)",
+      "Bash(cmd:*)"
     ],
     "deny": [],
     "ask": []
