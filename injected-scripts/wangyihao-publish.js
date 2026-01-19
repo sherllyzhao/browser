@@ -960,7 +960,7 @@
                                                 await delay(1000);
 
                                                 // 等待弹窗出现并选择时间
-                                                const scheduledModal = await waitForElement('.cheetah-modal-wrap', 5000);
+                                                const scheduledModal = await waitForElement('.ne-modal-wrap', 5000);
                                                 if (scheduledModal) {
                                                     console.log('[网易号发布] ✅ 定时发布弹窗已打开');
 
