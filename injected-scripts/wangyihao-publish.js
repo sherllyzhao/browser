@@ -979,10 +979,31 @@
                                                     }
 
                                                     // 点击确定发布按钮
-                                                    const confirmBtn = await waitForElement('.ne-button-color-primary', 5000);
-                                                    if (confirmBtn && confirmBtn.textContent.trim() === '定时发布') {
+                                                    await delay(500);
+                                                    const confirmBtn = Array.from(document.querySelectorAll('.ne-button-color-primary'))
+                                                        .find(btn => btn.textContent.trim() === '定时发布');
+
+                                                    if (confirmBtn) {
                                                         console.log('[网易号发布] ✅ 点击确定定时发布');
+
+                                                        // 🔑 在点击定时发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        if (publishId) {
+                                                            try {
+                                                                localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                console.log('[网易号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+                                                            } catch (e) {
+                                                                console.error('[网易号发布] ❌ 保存 publishId 失败:', e);
+                                                            }
+                                                        }
+
                                                         confirmBtn.click();
+
+                                                        // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
+                                                        console.log('[网易号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
+                                                        stopErrorListener();
+                                                    } else {
+                                                        console.error('[网易号发布] ❌ 未找到确定按钮');
                                                     }
                                                 } else {
                                                     console.error('[网易号发布] ❌ 定时发布弹窗未打开');
