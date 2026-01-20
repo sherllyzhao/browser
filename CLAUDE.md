@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 There's a file modification bug in Claude Code. The workaround is: always use complete absolute Windows paths with drive letters and backslashes for ALL file operations. Apply this rule going forward, not just for this file.
 
-父级页面的项目在E:\项目\资海云\视频剪辑\ai-media-edit\src\views\short-video\components\AddAccount.vue
+父级的授权页面的项目在E:\项目\资海云\视频剪辑\ai-media-edit\src\views\short-video\components\AddAccount.vue
+父级的有关视频发布页面的项目在E:\项目\资海云\视频剪辑\ai-media-edit\src\views\short-video\components\PublishVideo.vue
+父级的有关文章发布页面的项目在E:\项目\资海云\视频剪辑\ai-media-edit\src\views\short-video\components\PublishArticle.vue
+
+user-agent是对的，不要改
+
+所有带-creator.js的文件是授权的注入脚本
+所有带-publish.js的文件是发布的注入脚本
 
 ## Project Overview
 
