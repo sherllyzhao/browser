@@ -187,7 +187,6 @@
                                         cookiesData = JSON.stringify(sessionResult.data);
                                         console.
 
-
                                         log(`[腾讯号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                                     } else {
                                         console.warn('[腾讯号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
