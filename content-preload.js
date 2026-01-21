@@ -7,7 +7,8 @@ const config = {
     xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
     sph: 'https://channels.weixin.qq.com/platform/post/create',
     bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
-    wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
+    wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+    shh: ' https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
@@ -15,6 +16,7 @@ const config = {
     6: 'xhs',   // 小红书
     7: 'sph',   // 视频号
     8: 'wyh',   // 网易号
+    9: 'shh'    // 搜狐号
   },
   platformNameMap: {
     'dy': 'douyin',
@@ -22,7 +24,8 @@ const config = {
     'sph': 'shipinhao',
     'bjh': 'baijiahao',
     'wx': 'weixin',
-    'wyh': 'wangyihao'
+    'wyh': 'wangyihao',
+    'shh': 'sohuhao'
   }
 };
 

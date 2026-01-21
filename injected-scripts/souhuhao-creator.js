@@ -181,10 +181,11 @@
                                 cookiesData = document.cookie;
                             }
 
-                            const statisticsResult = await fetch(`https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${currentAccount.id}&_=${Date.now() + 1200}`, {
+                            /* const statisticsResult = await fetch(`https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${currentAccount.id}&_=${Date.now() + 1200}`, {
                                 method: 'GET',
                                 credentials: 'include',  // 自动携带 Cookie
                             });
+                            console.log("🚀 ~  ~ statisticsResult: ", statisticsResult);
 
                             if (!statisticsResult.ok) {
                                 throw new Error(`HTTP error! status: ${statisticsResult.status}`);
@@ -193,7 +194,18 @@
                             const statisticsRes = await statisticsResult.json();
                             console.log("🚀 ~  ~ statisticsRes: ", statisticsRes);
                             const statisticsData = statisticsRes.data;
-                            console.log("🚀 ~  ~ statisticsData: ", statisticsData);
+                            console.log("🚀 ~  ~ statisticsData: ", statisticsData); */
+
+                            await delay(1000);
+                            const eleClass = await waitForElement('.read-info-info-item:nth-of-type(2) .number-icon');
+                            console.log("🚀 ~  ~ eleClass: ", eleClass);
+                            const eleClassList = eleClass.classList;
+                            let videoCount = 0;
+                            eleClassList.forEach(item => {
+                                if (item.startsWith('mp-iconnumber_')) {
+                                    videoCount = parseInt(item.replace('mp-iconnumber_', ''));
+                                }
+                            });
 
                             const scanData = {
                                 data: JSON.stringify({
@@ -201,7 +213,7 @@
                                     avatar: currentAccount.avatar,
                                     follow: 0,
                                     follower_count: 0, //粉丝
-                                    video: statisticsData.news_pass_cnt, // 作品数
+                                    video: videoCount, // 作品数
                                     uid: currentAccount.id,
                                     favoriting_count: 0, // 收藏数
                                     total_favorited: 0, // 总收藏数
@@ -210,8 +222,9 @@
                                     cookies: cookiesData
                                 })
                             };
-                            alert(JSON.stringify(cookiesData));
+                            console.log(JSON.stringify(cookiesData));
                             console.log("🚀 ~  ~ scanData: ", scanData);
+                            return;
 
                             console.log('[搜狐号授权] 📤 准备发送数据到接口...');
                             // 发送数据到服务器
