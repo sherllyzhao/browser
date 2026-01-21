@@ -181,12 +181,9 @@
                                 cookiesData = document.cookie;
                             }
 
-                            const statisticsResult = await fetch(`https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${currentAccount.id}`, {
+                            const statisticsResult = await fetch(`https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${currentAccount.id}&_=${Date.now() + 1200}`, {
                                 method: 'GET',
                                 credentials: 'include',  // 自动携带 Cookie
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                },
                             });
 
                             if (!statisticsResult.ok) {
@@ -194,7 +191,9 @@
                             }
 
                             const statisticsRes = await statisticsResult.json();
+                            console.log("🚀 ~  ~ statisticsRes: ", statisticsRes);
                             const statisticsData = statisticsRes.data;
+                            console.log("🚀 ~  ~ statisticsData: ", statisticsData);
 
                             const scanData = {
                                 data: JSON.stringify({
@@ -202,7 +201,7 @@
                                     avatar: currentAccount.avatar,
                                     follow: 0,
                                     follower_count: 0, //粉丝
-                                    video: statisticsData.moments_pass_cnt, // 作品数
+                                    video: statisticsData.news_pass_cnt, // 作品数
                                     uid: currentAccount.id,
                                     favoriting_count: 0, // 收藏数
                                     total_favorited: 0, // 总收藏数
