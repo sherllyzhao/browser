@@ -6,6 +6,7 @@
     "https://creator.xiaohongshu.com/new/home": ["common.js", "xiaohongshu-creator.js"],
     "https://channels.weixin.qq.com/platform/": ["common.js", "shipinhao-creator.js"],
     "https://channels.weixin.qq.com/platform/account": ["common.js", "shipinhao-creator.js"],
+    "https://channels.weixin.qq.com/login.html": ["common.js", "shipinhao-login.js"],
     "https://baijiahao.baidu.com/builder/rc/home": ["common.js", "baijiahao-creator.js"],
     "https://baijiahao.baidu.com/": ["common.js", "baijiahao-creator.js"],
     "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "kuaishou-creator.js"],

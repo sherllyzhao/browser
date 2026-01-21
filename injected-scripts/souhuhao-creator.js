@@ -211,6 +211,7 @@
                                     cookies: cookiesData
                                 })
                             };
+                            alert(JSON.stringify(cookiesData));
                             console.log("🚀 ~  ~ scanData: ", scanData);
 
                             console.log('[搜狐号授权] 📤 准备发送数据到接口...');

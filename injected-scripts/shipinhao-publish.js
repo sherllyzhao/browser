@@ -156,10 +156,25 @@ let hasProcessed = false;
             }
 
             // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-            // ✅ Cookies 已由 main.js 在窗口打开时自动恢复（通过 openNewWindow 的 sessionData 参数）
-            // 不需要在页面脚本中再次恢复，避免页面刷新导致状态丢失
             if (messageData.cookies) {
-              console.log('[视频号发布] ℹ️ 检测到 cookies 数据（已由浏览器自动恢复，无需处理）');
+              console.log('[视频号发布] 📦 检测到 cookies 数据，开始恢复会话...');
+              try {
+                const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+                const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+                if (restoreResult.success) {
+                  console.log('[视频号发布] ✅ 会话数据恢复成功:', restoreResult.results);
+                  // 恢复 cookies 后需要刷新页面才能生效
+                  console.log('[视频号发布] 🔄 刷新页面以应用 cookies...');
+                  // 保存消息数据到全局存储，刷新后继续使用
+                  await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
+                  window.location.reload();
+                  return; // 刷新后脚本会重新注入
+                } else {
+                  console.warn('[视频号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
+                }
+              } catch (restoreError) {
+                console.error('[视频号发布] ⚠️ 会话数据恢复异常:', restoreError);
+              }
             }
 
             // 防重复检查
@@ -416,8 +431,6 @@ let hasProcessed = false;
       console.log('[视频号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
 
       if (publishData && !isProcessing && !hasProcessed) {
-          console.log("🚀 ~  ~ publishData: ", JSON.stringify(publishData));
-          alert(123)
         console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
 
         // 清除已使用的数据，避免重复处理
