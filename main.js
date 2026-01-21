@@ -920,6 +920,82 @@ function createWindow() {
     const url = browserView.webContents.getURL();
     console.log(`[DOM Ready] 页面准备完成 → ${url}`);
 
+    // 🔑 在 DOM ready 时尽早清空登录页的 localStorage（比 did-finish-load 更早）
+    const loginPagePatterns = [
+      '/login.html',
+      '/login',
+      'https://creator.douyin.com/',
+      'https://creator.douyin.com/#/',
+      'https://creator.xiaohongshu.com/',
+      'https://creator.xiaohongshu.com/login',
+      'https://channels.weixin.qq.com/login.html',
+      'https://baijiahao.baidu.com/',
+      'https://baijiahao.baidu.com/builder/rc/login',
+      'http://mp.163.com/login',
+      'https://mp.163.com/login',
+    ];
+
+    const isLoginPageEarly = loginPagePatterns.some(pattern => {
+      if (pattern.startsWith('http')) {
+        const normalizedUrl = url.replace(/\/$/, '');
+        const normalizedPattern = pattern.replace(/\/$/, '');
+        return normalizedUrl === normalizedPattern ||
+               url.startsWith(pattern + '?') ||
+               url.startsWith(normalizedPattern + '?');
+      } else {
+        return url.includes(pattern);
+      }
+    });
+
+    if (isLoginPageEarly) {
+      console.log('>>> DOM_READY: 检测到登录页，启动持续清空 localStorage');
+      try {
+        // 立即清空一次
+        await browserView.webContents.executeJavaScript(`
+          (function() {
+            const keys = Object.keys(localStorage);
+            console.log('[DOM Ready] 清空 localStorage，共', keys.length, '项');
+            localStorage.clear();
+            return { cleared: keys.length };
+          })()
+        `);
+        console.log('>>> DOM_READY: localStorage 已清空');
+
+        // 🔑 持续监控并清空 localStorage（每隔 500ms 检查一次，持续 30 秒）
+        let clearCount = 0;
+        const clearInterval = setInterval(async () => {
+          clearCount++;
+          try {
+            const result = await browserView.webContents.executeJavaScript(`
+              (function() {
+                const keys = Object.keys(localStorage);
+                if (keys.length > 0) {
+                  console.log('[持续清空] localStorage 又有数据了，清空', keys.length, '项');
+                  localStorage.clear();
+                  return { hadData: true, cleared: keys.length };
+                }
+                return { hadData: false };
+              })()
+            `);
+
+            if (result.hadData) {
+              console.log(`>>> CONTINUOUS_CLEAR #${clearCount}: 清空了 ${result.cleared} 项 localStorage`);
+            }
+          } catch (err) {
+            console.error(`>>> CONTINUOUS_CLEAR #${clearCount} 失败:`, err.message);
+          }
+
+          // 持续 30 秒后停止
+          if (clearCount >= 60) {
+            clearInterval(clearInterval);
+            console.log('>>> CONTINUOUS_CLEAR_STOPPED: 持续清空已停止');
+          }
+        }, 500);
+      } catch (err) {
+        console.error('>>> DOM_READY: localStorage 清空失败:', err.message);
+      }
+    }
+
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
       'china9.cn/#/home',
@@ -2757,30 +2833,18 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         }
       }
 
-      // 如果提供了 sessionData，先清空旧的 cookies，再恢复新的会话数据
+      // 🔑 恢复 sessionData，但要检查 cookies 是否有效
       if (options.sessionData) {
-        console.log('[Window Manager] ========== 检测到 sessionData，开始自动清空并恢复会话数据 ==========');
+        console.log('\n>>> RESTORE_START platform=' + (options.platform || 'unknown'));
+        console.log('    accountId=' + (options.accountId || 'unknown'));
+        console.log('    sessionData_size=' + (typeof options.sessionData === 'string' ? options.sessionData.length : JSON.stringify(options.sessionData).length));
 
         try {
-          // 1. 清空该账号的所有 cookies
-          const cookies = await windowSession.cookies.get({});
-          console.log(`[Window Manager] 找到 ${cookies.length} 个旧 cookies，开始清空...`);
+          // 不清空旧 cookies，直接覆盖
+          const existingCookies = await windowSession.cookies.get({});
+          console.log('    existing_cookies=' + existingCookies.length + ' (will be kept and merged)');
 
-          let deletedCount = 0;
-          for (const cookie of cookies) {
-            try {
-              const protocol = cookie.secure ? 'https' : 'http';
-              const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-              const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
-              await windowSession.cookies.remove(cookieUrl, cookie.name);
-              deletedCount++;
-            } catch (err) {
-              console.error(`[Window Manager] 删除 cookie 失败 (${cookie.name}):`, err.message);
-            }
-          }
-          console.log(`[Window Manager] ✅ 清空完成，删除了 ${deletedCount} 个 cookies`);
-
-          // 2. 恢复新的会话数据
+          // 恢复新的会话数据
           // 支持多种数据格式：
           // - 格式1: {cookies: [{...}, ...]} - getFullSessionData 返回的格式
           // - 格式2: [{...}, ...] - 直接的 cookies 数组
@@ -2822,6 +2886,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
           if (Array.isArray(sessionData)) {
             console.log('[Window Manager] sessionData 是数组，长度:', sessionData.length);
+            console.log(`>>> SESSIONDATA_FORMAT=array length=${sessionData.length}`);
 
             // 检查数组第一个元素来判断格式
             if (sessionData.length > 0) {
@@ -2880,14 +2945,23 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             // 格式1：包含 cookies 字段
             cookiesArray = sessionData.cookies;
             console.log('[Window Manager] 检测到数据格式: {cookies: [...]}');
+            console.log('[Window Manager] sessionData.cookies 总数:', sessionData.cookies.length);
+
+            // 详细检查每个 cookie 的结构
+            for (let i = 0; i < Math.min(5, sessionData.cookies.length); i++) {
+              const c = sessionData.cookies[i];
+              console.log(`[Window Manager] cookie[${i}] keys:`, Object.keys(c), 'name:', c.name, 'domain:', c.domain);
+            }
           } else {
             console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式');
           }
 
           if (cookiesArray.length > 0) {
             console.log(`[Window Manager] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
+            console.log(`>>> SESSIONDATA_TOTAL=${cookiesArray.length}`);
 
             let restoredCount = 0;
+            let skippedCount = 0;
             for (let cookieItem of cookiesArray) {
               try {
                 // 如果是字符串，需要先解析（格式3）
@@ -2897,13 +2971,15 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
                     cookie = JSON.parse(cookieItem);
                   } catch (e) {
                     console.error('[Window Manager] Cookie 解析失败:', cookieItem.substring(0, 50));
+                    skippedCount++;
                     continue;
                   }
                 }
 
                 // 检查必要字段
                 if (!cookie.name || !cookie.domain) {
-                  console.warn('[Window Manager] Cookie 缺少必要字段:', cookie);
+                  console.warn('[Window Manager] Cookie 缺少必要字段 - name:', cookie.name, 'domain:', cookie.domain);
+                  skippedCount++;
                   continue;
                 }
 
@@ -2931,46 +3007,18 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
                 await windowSession.cookies.set(cookieDetails);
                 restoredCount++;
+                // Enhanced diagnostic logging for cookie domain/path configuration
+                console.log(`[Diagnostic] Cookie restored: name=${cookie.name} domain=${cookie.domain} path=${cookie.path || '/'} secure=${cookie.secure} httpOnly=${cookie.httpOnly} sameSite=${cookie.sameSite}`);
+                if (restoredCount <= 5) {
+                  console.log(`[Window Manager] ✓ restored: ${cookie.name} @ ${cookie.domain}`);
+                }
               } catch (cookieErr) {
-                console.error(`[Window Manager] Cookie 恢复失败:`, cookieErr.message);
+                console.error(`[Window Manager] Cookie 恢复失败 (${cookie.name}):`, cookieErr.message);
+                skippedCount++;
               }
             }
-            console.log(`[Window Manager] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
-
-            // 🔑 视频号专用调试：检查恢复的视频号 cookies
-            if (options.platform === 'shipinhao' || url.includes('channels.weixin.qq.com')) {
-              console.log('[视频号调试] ========== 检查恢复的 cookies ==========');
-              const shipinhaoCookies = cookiesArray.filter(c => {
-                const domain = typeof c === 'string' ? JSON.parse(c).domain : c.domain;
-                return domain && domain.includes('weixin.qq.com');
-              });
-              console.log(`[视频号调试] 视频号 cookies 总数: ${shipinhaoCookies.length}`);
-
-              const keyCookieNames = ['wxuin', 'pass_ticket', 'ua_id', 'fingerprint'];
-              const keyCookies = cookiesArray.filter(c => {
-                const cookie = typeof c === 'string' ? JSON.parse(c) : c;
-                return keyCookieNames.includes(cookie.name);
-              });
-              console.log('[视频号调试] 关键 cookies:', keyCookies.map(c => {
-                const cookie = typeof c === 'string' ? JSON.parse(c) : c;
-                return {
-                  name: cookie.name,
-                  hasValue: !!cookie.value,
-                  valueLength: cookie.value ? cookie.value.length : 0,
-                  expirationDate: cookie.expirationDate,
-                  expired: cookie.expirationDate ? (cookie.expirationDate < Date.now() / 1000) : false
-                };
-              }));
-
-              // 验证恢复后的实际 session cookies
-              setTimeout(async () => {
-                const actualCookies = await windowSession.cookies.get({ domain: 'channels.weixin.qq.com' });
-                console.log(`[视频号调试] 实际恢复到 session 的 cookies 数量: ${actualCookies.length}`);
-                console.log('[视频号调试] 实际关键 cookies:', actualCookies.filter(c =>
-                  keyCookieNames.includes(c.name)
-                ).map(c => ({ name: c.name, valueLength: c.value.length })));
-              }, 100);
-            }
+            console.log(`[Window Manager] 恢复统计 - 成功: ${restoredCount}, 失败/跳过: ${skippedCount}, 总计: ${cookiesArray.length}`);
+            console.log('>>> RESTORE_END\n');
           }
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
@@ -3035,7 +3083,12 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
+    console.log('\n\n========== 🔑 NEW WINDOW CREATED 🔑 ==========');
     console.log('[Window Manager] 新窗口已添加，当前窗口数量:', childWindows.length);
+    console.log('[Window Manager] windowId:', newWindow.id);
+    console.log('[Window Manager] URL:', options.url);
+    console.log('[Window Manager] sessionType:', sessionType);
+    console.log('==========================================\n');
 
     // 如果是多账号模式，记录窗口和账号的映射关系
     if (sessionType === 'account' && options.platform && options.accountId) {
@@ -3058,10 +3111,11 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     // 🔑 监听页面加载完成事件，检测登录页并清空 cookies
     newWindow.webContents.on('did-finish-load', async () => {
       const currentUrl = newWindow.webContents.getURL();
-      console.log('[Window Manager] ========== 页面加载完成 ==========');
+      console.log('\n\n========== 🔑 PAGE LOAD COMPLETE 🔑 ==========');
       console.log('[Window Manager] windowId:', windowId);
       console.log('[Window Manager] URL:', currentUrl);
       console.log('[Window Manager] sessionType:', sessionType);
+      console.log('==========================================\n');
 
       // 🔑 特殊处理：视频号调试日志
       if (currentUrl.includes('channels.weixin.qq.com')) {
@@ -3085,8 +3139,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         // 小红书登录页
         'https://creator.xiaohongshu.com/',
         'https://creator.xiaohongshu.com/login',
-        // 视频号登录页（只匹配真正的登录页，不匹配 platform 路径）
+        // 视频号登录页（更宽泛的匹配）
         'https://channels.weixin.qq.com/login.html',
+        'https://channels.weixin.qq.com/login',
         // 百家号登录页
         'https://baijiahao.baidu.com/',
         'https://baijiahao.baidu.com/builder/rc/login',
@@ -3095,65 +3150,171 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         'https://mp.163.com/login',
       ];
 
-      const isLoginPage = loginPagePatterns.some(pattern => {
-        if (pattern.startsWith('http')) {
-          // 精确匹配完整 URL（兼容有无尾斜杠的情况）
-          // 去掉 URL 末尾的斜杠后再比较
-          const normalizedUrl = currentUrl.replace(/\/$/, '');
-          const normalizedPattern = pattern.replace(/\/$/, '');
-          return normalizedUrl === normalizedPattern ||
-                 currentUrl.startsWith(pattern + '?') ||
-                 currentUrl.startsWith(normalizedPattern + '?');
-        } else {
-          // 包含匹配
-          return currentUrl.includes(pattern);
-        }
-      });
+      // 🔑 特殊处理：视频号登录页检测
+      let isLoginPage = false;
 
-      console.log('[Window Manager] 是否是登录页:', isLoginPage);
+      if (currentUrl.includes('channels.weixin.qq.com')) {
+        // 视频号特殊判断：不是 platform 路径就认为是登录页
+        const isNotPlatformPage = !currentUrl.includes('/platform/');
+        const hasLoginInUrl = currentUrl.includes('login');
+        const isRootOrLogin = currentUrl === 'https://channels.weixin.qq.com/' ||
+                             currentUrl === 'https://channels.weixin.qq.com' ||
+                             hasLoginInUrl;
+
+        isLoginPage = isNotPlatformPage || hasLoginInUrl || isRootOrLogin;
+        console.log('>>> 视频号登录页判断:');
+        console.log('    - isNotPlatformPage:', isNotPlatformPage);
+        console.log('    - hasLoginInUrl:', hasLoginInUrl);
+        console.log('    - isRootOrLogin:', isRootOrLogin);
+        console.log('    - 最终判断 isLoginPage:', isLoginPage);
+      } else {
+        // 其他平台使用原有逻辑
+        isLoginPage = loginPagePatterns.some(pattern => {
+          if (pattern.startsWith('http')) {
+            // 精确匹配完整 URL（兼容有无尾斜杠的情况）
+            // 去掉 URL 末尾的斜杠后再比较
+            const normalizedUrl = currentUrl.replace(/\/$/, '');
+            const normalizedPattern = pattern.replace(/\/$/, '');
+            return normalizedUrl === normalizedPattern ||
+                   currentUrl.startsWith(pattern + '?') ||
+                   currentUrl.startsWith(normalizedPattern + '?');
+          } else {
+            // 包含匹配（用于路径片段）
+            return currentUrl.includes(pattern);
+          }
+        });
+      }
+
+      console.log('>>> PAGE_LOADED isLoginPage=' + isLoginPage + ' URL=' + currentUrl);
+      console.log('>>> 详细 URL 分析:');
+      console.log('    - 完整 URL:', currentUrl);
+      console.log('    - 是否包含 login:', currentUrl.includes('login'));
+      console.log('    - 是否包含 channels.weixin.qq.com:', currentUrl.includes('channels.weixin.qq.com'));
+      console.log('    - URL 路径:', new URL(currentUrl).pathname);
 
       if (isLoginPage) {
-        console.log('[Window Manager] ⚠️ 检测到登录页');
+        // ✅ 登录页：检测是否从发布页跳转而来，如果是则清空所有存储并刷新
+        console.log('>>> LOGIN_PAGE_DETECTED - 检查是否需要清空存储并刷新');
 
-        // 🔑 只有在非多账号模式下才清空 cookies
-        // 多账号模式（sessionType === 'account'）的 session 是持久化的，
-        // 用户扫码后的新 cookies 会自动保存，不需要清空
-        if (sessionType !== 'account') {
-          console.log('[Window Manager] 非多账号模式，清空该 session 的所有 cookies，让用户重新登录');
+        try {
+          // 检查 localStorage 中是否有发布页的跳转标记
+          const redirectInfo = await webContents.executeJavaScript(`
+            (function() {
+              const redirectPath = localStorage.getItem('FINDER_HELPER_REDIRECT_PATH');
+              const routeMeta = localStorage.getItem('finder_route_meta');
+              const localStorageKeys = Object.keys(localStorage);
 
-          // 清空该 session 的所有 cookies
-          // 原因：如果跳转到登录页，说明之前恢复的 cookies 已过期或无效
-          // 需要清空旧 cookies，让用户重新扫码登录
-          try {
-            const cookies = await windowSession.cookies.get({});
-            console.log(`[Window Manager] 登录页清空：找到 ${cookies.length} 个旧 cookies，开始清空...`);
+              console.log('[登录页检测] FINDER_HELPER_REDIRECT_PATH:', redirectPath);
+              console.log('[登录页检测] finder_route_meta:', routeMeta);
+              console.log('[登录页检测] localStorage 项目数:', localStorageKeys.length);
 
-            let deletedCount = 0;
-            for (const cookie of cookies) {
+              // 判断是否从发布页跳转而来
+              const isFromPublishPage = redirectPath === '/platform/post/create' ||
+                                      routeMeta?.includes('platform') ||
+                                      localStorageKeys.length > 0;
+
+              return {
+                isFromPublishPage: isFromPublishPage,
+                redirectPath: redirectPath,
+                routeMeta: routeMeta,
+                localStorageCount: localStorageKeys.length,
+                keys: localStorageKeys
+              };
+            })()
+          `);
+
+          console.log('>>> 登录页跳转检测结果:', redirectInfo);
+
+          if (redirectInfo.isFromPublishPage) {
+            console.log('>>> 检测到从发布页跳转到登录页，清空所有存储并刷新页面');
+
+            // 🔑 清空所有存储数据（localStorage + sessionStorage + IndexedDB）
+            await webContents.executeJavaScript(`
+              (function() {
+                console.log('[清空存储] 开始清空所有存储数据...');
+
+                // 清空 localStorage
+                const localKeys = Object.keys(localStorage);
+                console.log('[清空存储] localStorage 项目:', localKeys);
+                localStorage.clear();
+
+                // 清空 sessionStorage
+                const sessionKeys = Object.keys(sessionStorage);
+                console.log('[清空存储] sessionStorage 项目:', sessionKeys);
+                sessionStorage.clear();
+
+                console.log('[清空存储] 存储数据已清空');
+                return {
+                  clearedLocalStorage: localKeys.length,
+                  clearedSessionStorage: sessionKeys.length
+                };
+              })()
+            `);
+
+            // 🔑 清空该域名的所有 cookies
+            console.log('>>> 清空登录页 cookies');
+            const loginCookies = await windowSession.cookies.get({ domain: 'channels.weixin.qq.com' });
+            console.log('>>> 登录页当前 cookies 数量:', loginCookies.length);
+
+            for (const cookie of loginCookies) {
               try {
-                const protocol = cookie.secure ? 'https' : 'http';
-                const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-                const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
-                await windowSession.cookies.remove(cookieUrl, cookie.name);
-                deletedCount++;
+                await windowSession.cookies.remove(`https://channels.weixin.qq.com`, cookie.name);
               } catch (err) {
-                console.error(`[Window Manager] 删除 cookie 失败 (${cookie.name}):`, err.message);
+                console.error('>>> 删除 cookie 失败:', cookie.name, err.message);
               }
             }
-            console.log(`[Window Manager] ✅ 登录页清空完成，删除了 ${deletedCount} 个 cookies`);
+            console.log('>>> 登录页 cookies 已清空');
 
-            // 刷新到磁盘
-            await windowSession.flushStorageData();
-            console.log('[Window Manager] ✅ Session 数据已刷新到磁盘');
-          } catch (err) {
-            console.error('[Window Manager] ❌ 清空登录页 cookies 失败:', err);
+            // 🔑 刷新页面（让登录页从完全干净的状态重新加载）
+            console.log('>>> 刷新登录页，从干净状态重新开始');
+            setTimeout(() => {
+              webContents.reload();
+            }, 500); // 延迟 500ms 确保清空操作完成
+
+            return; // 不执行后续的监控逻辑
+          } else {
+            console.log('>>> 登录页已经是干净状态，无需清空');
           }
-        } else {
-          console.log('[Window Manager] 多账号模式，保留 session cookies，用户扫码后会自动更新');
+        } catch (err) {
+          console.error('>>> 登录页存储检测失败:', err.message);
+        }
+
+        // 🔑 监控 cookies 变化（用于诊断扫码登录过程）
+        console.log('>>> LOGIN_PAGE_DETECTED - 监控 cookies 变化');
+        try {
+          const allCookies = await windowSession.cookies.get({});
+          console.log('    current_cookies=' + allCookies.length);
+
+          // 每隔 2 秒检查一次 cookies 变化（持续 30 秒）
+          let checkCount = 0;
+          const checkInterval = setInterval(async () => {
+            checkCount++;
+            try {
+              const currentCookies = await windowSession.cookies.get({});
+              if (currentCookies.length > allCookies.length) {
+                console.log(`>>> LOGIN_COOKIE_CHECK #${checkCount}: NEW COOKIES! ${allCookies.length} -> ${currentCookies.length}`);
+                for (const c of currentCookies) {
+                  const existed = allCookies.find(old => old.name === c.name && old.domain === c.domain);
+                  if (!existed) {
+                    console.log(`    NEW: ${c.name} @ ${c.domain}`);
+                  }
+                }
+                allCookies.length = currentCookies.length; // 更新计数
+              }
+            } catch (err) {
+              console.error('>>> LOGIN_COOKIE_CHECK_ERROR:', err.message);
+            }
+
+            if (checkCount >= 15) {
+              clearInterval(checkInterval);
+              console.log('>>> LOGIN_COOKIE_CHECK_STOPPED');
+            }
+          }, 2000);
+        } catch (err) {
+          console.error('ERROR: ' + err.message);
         }
       }
     });
-
 
     // 🔑 监听窗口关闭前事件，保存最新会话数据到后台
     newWindow.on('close', async (e) => {
