@@ -183,16 +183,41 @@
                                 console.log('[网易号授权] 📦 正在获取完整会话数据...');
                                 let cookiesData = '';
                                 try {
-                                    const sessionResult = await window.browserAPI.getFullSessionData('mp.163.com');
-                                    if (sessionResult.success) {
-                                        cookiesData = JSON.stringify(sessionResult.data);
-                                        console.log(`[网易号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                                    // 同时获取两个域名的会话数据
+                                    const domains = ['.163.com', 'mp.163.com'];
+                                    const sessionResults = {};
+
+                                    for (const domain of domains) {
+                                        try {
+                                            const sessionResult = await window.browserAPI.getFullSessionData(domain);
+                                            if (sessionResult.success) {
+                                                sessionResults[domain] = sessionResult.data;
+                                                console.log(`[网易号授权] ✅ ${domain} 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                                            } else {
+                                                console.warn(`[网易号授权] ⚠️ ${domain} 获取完整会话数据失败:`, sessionResult.error);
+                                            }
+                                        } catch (domainError) {
+                                            console.error(`[网易号授权] ⚠️ ${domain} 获取会话数据异常:`, domainError);
+                                        }
+                                    }
+
+                                    // 如果有成功的结果，合并后转为 JSON
+                                    if (Object.keys(sessionResults).length > 0) {
+                                        cookiesData = JSON.stringify(sessionResults);
                                     } else {
-                                        console.warn('[网易号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
                                         // 降级为简单 cookie 字符串
-                                        const cookieResult = await window.browserAPI.getDomainCookies('mp.163.com');
-                                        if (cookieResult.success && cookieResult.cookies) {
-                                            cookiesData = cookieResult.cookies;
+                                        console.warn('[网易号授权] ⚠️ 所有域名的完整会话数据获取失败，尝试获取简单 cookies');
+                                        const cookieResults = {};
+                                        for (const domain of domains) {
+                                            const cookieResult = await window.browserAPI.getDomainCookies(domain);
+                                            if (cookieResult.success && cookieResult.cookies) {
+                                                cookieResults[domain] = cookieResult.cookies;
+                                            }
+                                        }
+                                        if (Object.keys(cookieResults).length > 0) {
+                                            cookiesData = JSON.stringify(cookieResults);
+                                        } else {
+                                            cookiesData = document.cookie;
                                         }
                                     }
                                 } catch (sessionError) {
@@ -278,11 +303,30 @@
                                         // 这样发布时才能用新授权的账号
                                         try {
                                             console.log('[网易号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent('baidu.com');
-                                            if (migrateResult.success) {
-                                                console.log(`[网易号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                                            const domainsToMigrate = ['.163.com', 'mp.163.com'];
+                                            const migrateResults = {};
+
+                                            for (const domain of domainsToMigrate) {
+                                                try {
+                                                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                                                    migrateResults[domain] = migrateResult;
+                                                    if (migrateResult.success) {
+                                                        console.log(`[网易号授权] ✅ ${domain} Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                                                    } else {
+                                                        console.error(`[网易号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                                                    }
+                                                } catch (domainMigrateError) {
+                                                    console.error(`[网易号授权] ⚠️ ${domain} Cookies 迁移异常:`, domainMigrateError);
+                                                    migrateResults[domain] = { success: false, error: domainMigrateError.message };
+                                                }
+                                            }
+
+                                            // 检查是否至少有一个域名迁移成功
+                                            const anySuccess = Object.values(migrateResults).some(r => r.success);
+                                            if (anySuccess) {
+                                                console.log('[网易号授权] ✅ 至少一个域名的 Cookies 迁移成功');
                                             } else {
-                                                console.error('[网易号授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                                                console.warn('[网易号授权] ⚠️ 所有域名的 Cookies 迁移都失败了');
                                             }
                                         } catch (migrateError) {
                                             console.error('[网易号授权] ⚠️ Cookies 迁移异常:', migrateError);

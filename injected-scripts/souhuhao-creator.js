@@ -27,19 +27,6 @@
 
     window.__SOUHUHAO_SCRIPT_LOADED__ = true;
 
-    // ===========================
-    // 清除 localStorage 的 toPath，防止发布页面自动跳转
-    // ===========================
-    try {
-        if (localStorage.getItem('toPath')) {
-            console.log('[搜狐号授权] 🗑️ 清除 localStorage.toPath:', localStorage.getItem('toPath'));
-            localStorage.removeItem('toPath');
-            console.log('[搜狐号授权] ✅ toPath 已清除');
-        }
-    } catch (e) {
-        console.warn('[搜狐号授权] ⚠️ 清除 toPath 失败:', e);
-    }
-
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
@@ -280,6 +267,9 @@
 
                                 // API 成功后通知父页面刷新
                                 sendMessageToParent('授权成功，刷新数据');
+
+                                // 修改localStorage的toPath，让他跳转到发布页面
+                                localStorage.setItem('toPath', '/contentManagement/news/addarticle');
 
                                 // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
                                 const isDev = window.browserAPI && window.browserAPI.isProduction === false;

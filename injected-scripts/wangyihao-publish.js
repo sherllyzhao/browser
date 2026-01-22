@@ -114,7 +114,48 @@
                     if (messageData.cookies) {
                         console.log('[网易号发布] 📦 检测到 cookies 数据，开始恢复会话...');
                         try {
-                            const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
+                            let cookiesData = messageData.cookies;
+
+                            // 处理多域名会话数据格式
+                            // 如果是对象格式（多域名），需要合并处理
+                            if (typeof cookiesData === 'object' && !Array.isArray(cookiesData)) {
+                                console.log('[网易号发布] 🔄 检测到多域名会话数据，开始合并...');
+                                const mergedData = {
+                                    cookies: [],
+                                    localStorage: {},
+                                    sessionStorage: {},
+                                    indexedDB: {}
+                                };
+
+                                // 遍历每个域名的数据
+                                for (const [domain, domainData] of Object.entries(cookiesData)) {
+                                    console.log(`[网易号发布] 📦 处理域名 ${domain} 的会话数据...`);
+
+                                    if (domainData.cookies && Array.isArray(domainData.cookies)) {
+                                        mergedData.cookies.push(...domainData.cookies);
+                                        console.log(`[网易号发布] ✅ ${domain} 的 ${domainData.cookies.length} 个 cookies 已合并`);
+                                    }
+
+                                    if (domainData.localStorage) {
+                                        Object.assign(mergedData.localStorage, domainData.localStorage);
+                                    }
+
+                                    if (domainData.sessionStorage) {
+                                        Object.assign(mergedData.sessionStorage, domainData.sessionStorage);
+                                    }
+
+                                    if (domainData.indexedDB) {
+                                        Object.assign(mergedData.indexedDB, domainData.indexedDB);
+                                    }
+                                }
+
+                                cookiesData = JSON.stringify(mergedData);
+                                console.log(`[网易号发布] ✅ 会话数据合并完成，共 ${mergedData.cookies.length} 个 cookies`);
+                            } else {
+                                // 单域名或字符串格式，直接转换
+                                cookiesData = typeof cookiesData === 'string' ? cookiesData : JSON.stringify(cookiesData);
+                            }
+
                             const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
                             if (restoreResult.success) {
                                 console.log('[网易号发布] ✅ 会话数据恢复成功:', restoreResult.results);
