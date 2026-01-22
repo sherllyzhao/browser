@@ -14,6 +14,19 @@
     console.log('🕐 注入时间:', new Date().toLocaleString());
     console.log('═══════════════════════════════════════');
 
+    // 🔑 检查是否是授权窗口（通过 URL 参数判断）
+    const urlParams = new URLSearchParams(window.location.search);
+    const transferId = urlParams.get('transfer_id');
+    const authType = urlParams.get('auth_type');
+
+    console.log('[搜狐号重定向] URL 参数:', { transferId, authType });
+
+    // 如果有 transfer_id 或 auth_type，说明是授权窗口，不要重定向
+    if (transferId || authType) {
+        console.log('[搜狐号重定向] ✅ 检测到授权窗口（有 transfer_id 或 auth_type），保持在 firstPage');
+        return;
+    }
+
     // 🔑 检查是否是发布窗口（通过 windowId 判断）
     try {
         const windowId = await window.browserAPI.getWindowId();
