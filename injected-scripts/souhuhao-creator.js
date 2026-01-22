@@ -158,16 +158,27 @@
                             console.log('[搜狐号授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
 
                             const currentAccount = localStorage.getItem('currentAccount') ? JSON.parse(localStorage.getItem('currentAccount')) : null;
+
+                            // 🔑 在获取会话数据之前，先清除 localStorage 中的 toPath
+                            // 防止保存到后台的数据包含 toPath，导致发布页自动跳转
+                            console.log('[搜狐号授权] 🧹 清除 localStorage.toPath，防止发布页自动跳转');
+                            try {
+                                localStorage.removeItem('toPath');
+                                console.log('[搜狐号授权] ✅ localStorage.toPath 已清除');
+                            } catch (e) {
+                                console.warn('[搜狐号授权] ⚠️ 清除 toPath 失败:', e);
+                            }
+
                             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
                             console.log('[搜狐号授权] 📦 正在获取完整会话数据...');
                             let cookiesData = '';
                             try {
                                 const sessionResult = await window.browserAPI.getFullSessionData('mp.sohu.com');
                                 if (sessionResult.success) {
+                                    console.log("🚀 ~  ~ sessionResult.data: ", sessionResult.data);
+                                    // 不需要再设置 toPath，因为已经在获取前清除了
                                     cookiesData = JSON.stringify(sessionResult.data);
-                                    console.
-
-                                    log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                                    console.log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                                 } else {
                                     console.warn('[搜狐号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
                                     // 降级为简单 cookie 字符串
@@ -267,9 +278,6 @@
 
                                 // API 成功后通知父页面刷新
                                 sendMessageToParent('授权成功，刷新数据');
-
-                                // 修改localStorage的toPath，让他跳转到发布页面
-                                localStorage.setItem('toPath', '/contentManagement/news/addarticle');
 
                                 // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
                                 const isDev = window.browserAPI && window.browserAPI.isProduction === false;

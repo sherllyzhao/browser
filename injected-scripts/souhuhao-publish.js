@@ -27,6 +27,16 @@
 
     window.__SH_SCRIPT_LOADED__ = true;
 
+    // 🔑 立即清除 localStorage.toPath，防止页面自动跳转
+    // 这是双重保险，即使后台数据中有 toPath，也会在脚本注入时立即清除
+    console.log('[搜狐号发布] 🧹 立即清除 localStorage.toPath，防止自动跳转');
+    try {
+        localStorage.removeItem('toPath');
+        console.log('[搜狐号发布] ✅ localStorage.toPath 已清除');
+    } catch (e) {
+        console.warn('[搜狐号发布] ⚠️ 清除 toPath 失败:', e);
+    }
+
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
