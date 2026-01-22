@@ -14,20 +14,7 @@
     console.log('🕐 注入时间:', new Date().toLocaleString());
     console.log('═══════════════════════════════════════');
 
-    // 🔑 检查是否是授权窗口（通过 URL 参数判断）
-    const urlParams = new URLSearchParams(window.location.search);
-    const transferId = urlParams.get('transfer_id');
-    const authType = urlParams.get('auth_type');
-
-    console.log('[搜狐号重定向] URL 参数:', { transferId, authType });
-
-    // 如果有 transfer_id 或 auth_type，说明是授权窗口，不要重定向
-    if (transferId || authType) {
-        console.log('[搜狐号重定向] ✅ 检测到授权窗口（有 transfer_id 或 auth_type），保持在 firstPage');
-        return;
-    }
-
-    // 🔑 检查是否是发布窗口（通过 windowId 判断）
+    // 🔑 通过检查父页面传来的数据判断窗口类型
     try {
         const windowId = await window.browserAPI.getWindowId();
         console.log('[搜狐号重定向] 当前窗口 ID:', windowId);
@@ -38,7 +25,18 @@
             return;
         }
 
-        // 如果是新窗口，检查是否有发布数据
+        // 检查是否有授权数据（auth_data）
+        const authData = await window.browserAPI.getGlobalData(`auth_data_window_${windowId}`);
+        console.log('[搜狐号重定向] 授权数据:', authData ? '存在' : '不存在');
+
+        if (authData) {
+            // 有授权数据，说明是授权窗口
+            const authType = authData.auth_type || (typeof authData === 'string' ? JSON.parse(authData).auth_type : null);
+            console.log('[搜狐号重定向] ✅ 检测到授权窗口（auth_type:', authType, '），保持在 firstPage');
+            return;
+        }
+
+        // 检查是否有发布数据（publish_data）
         const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
         console.log('[搜狐号重定向] 发布数据:', publishData ? '存在' : '不存在');
 
@@ -59,7 +57,7 @@
             console.log('[搜狐号重定向] 🚀 跳转到:', publishUrl);
             window.location.href = publishUrl;
         } else {
-            console.log('[搜狐号重定向] 这不是发布窗口，保持在 firstPage');
+            console.log('[搜狐号重定向] 没有授权或发布数据，保持在 firstPage');
         }
     } catch (error) {
         console.error('[搜狐号重定向] ❌ 检测窗口类型失败:', error);
