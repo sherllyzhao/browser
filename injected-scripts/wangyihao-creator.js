@@ -173,6 +173,7 @@
                             console.log("🚀 ~  ~ result: ", result);
                             if(result.code === 1){
                                 const {data} = result;
+                                console.log("🚀 ~  ~ data: ", data);
 
                                 if (!data) {
                                     throw new Error('User data not found in response');
@@ -207,9 +208,9 @@
                                     },
                                 })
                                 const userInfoRes = await userInfoResult.json();
-                                console.log("🚀 ~  ~ userInfoRes: ", userInfoRes);
                                 if(userInfoRes.code === 1){
                                     const userInfo = userInfoRes.data;
+                                    console.log("🚀 ~  ~ userInfo: ", userInfo);
                                     const publishArticleCountResult = await fetch('http://mp.163.com/wemedia/content/manage/list.do', {
                                         method: 'POST',
                                         body: new URLSearchParams({
@@ -235,12 +236,12 @@
                                         data: JSON.stringify({
                                             nickname: userInfo.tname,
                                             avatar: userInfo.icon,
-                                            follow: userInfo.yesterdaySubscribeCount,
-                                            follower_count: userInfo.totalSubscribeCount, //粉丝
+                                            follow: data.yesterdaySubscribeCount,
+                                            follower_count: data.totalSubscribeCount, //粉丝
                                             video: publishArticleCount, // 作品数
                                             uid: userInfo.tid,
-                                            favoriting_count: userInfo.yesterdaySubscribeCount, // 收藏数
-                                            total_favorited: userInfo.totalSubscribeCount, // 总收藏数
+                                            favoriting_count: data.yesterdayRecommendCount, // 收藏数
+                                            total_favorited: data.totalRecommendCount, // 总收藏数
                                             company_id: companyId,
                                             auth_type: messageData.auth_type,
                                             cookies: cookiesData
@@ -250,7 +251,7 @@
 
                                     console.log('[网易号授权] 📤 准备发送数据到接口...');
                                     // 发送数据到服务器
-                                    const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/wyhinfo', {
+                                    const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/wyinfo', {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json'

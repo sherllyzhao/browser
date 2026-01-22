@@ -95,6 +95,33 @@
           console.warn('[Shipinhao Login] ⚠️ browserAPI.clearDomainCookies 不可用，将使用原生方法清空');
         }
 
+        // 3.5. 尝试通过原生 document.cookie 清空（作为备用方案）
+        console.log('[Shipinhao Login] 尝试通过 document.cookie 清空...');
+        try {
+          const cookiesBefore = document.cookie.split(';').length;
+          console.log(`[Shipinhao Login] 当前页面可见的 cookies 数量: ${cookiesBefore}`);
+
+          // 获取所有可见的 cookie 并清空
+          const cookies = document.cookie.split(';');
+          for (let cookie of cookies) {
+            const eqPos = cookie.indexOf('=');
+            const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
+            if (name) {
+              // 尝试多种方式删除
+              document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+              document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.channels.weixin.qq.com`;
+              document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.weixin.qq.com`;
+              document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.qq.com`;
+              console.log(`[Shipinhao Login] 尝试删除 cookie: ${name}`);
+            }
+          }
+
+          const cookiesAfter = document.cookie.split(';').filter(c => c.trim()).length;
+          console.log(`[Shipinhao Login] 清空后页面可见的 cookies 数量: ${cookiesAfter}`);
+        } catch (e) {
+          console.error('[Shipinhao Login] document.cookie 清空失败:', e);
+        }
+
         // 额外的强力清空方法：通过 browserAPI 清空所有 session cookies
         if (window.browserAPI && window.browserAPI.clearAllCookies) {
           try {
@@ -245,6 +272,12 @@
 
   // 恢复会话数据
   async function restoreSessionData() {
+    // 如果是登录页面，不恢复会话数据（因为我们刚刚清空了）
+    if (window.location.href.includes('/login.html')) {
+      console.log('[Shipinhao Login] 登录页面，跳过会话数据恢复');
+      return false;
+    }
+
     try {
       if (window.browserAPI && window.browserAPI.getGlobalData) {
         const sessionData = await window.browserAPI.getGlobalData('shipinhao_session');

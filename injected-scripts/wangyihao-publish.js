@@ -590,49 +590,60 @@
                     // 🔴 全局错误监听器 - 在上传图片之前就开始监听
                     // ===========================
                     const capturedErrors = []; // 收集所有捕获的错误信息
-                    let errorObserver = null;
+                    let errorScanInterval = null;
 
                     // 启动错误监听
                     const startErrorListener = () => {
                         console.log('[网易号发布] 🔍 启动全局错误监听器...');
 
-                        errorObserver = new MutationObserver((mutations) => {
-                            for (const mutation of mutations) {
-                                for (const node of mutation.addedNodes) {
-                                    if (node.nodeType === 1) {
-                                        const element = node;
-                                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-                                        const textContent = element.textContent || '';
+                        let scanCount = 0;
+                        // 定期扫描 DOM 中的错误提示
+                        errorScanInterval = setInterval(() => {
+                            scanCount++;
+                            if (scanCount % 10 === 1) {
+                                console.log('[网易号发布] 🔄 错误扫描器运行中...', scanCount);
+                            }
 
-                                        // 检测网易 snackbar 提示框（新结构）
-                                        if (classList.includes('ne-snackbar-item-description')) {
-                                            const errorSpan = element.querySelector('span:last-child');
-                                            if (errorSpan) {
-                                                const text = (errorSpan.textContent || '').trim();
-                                                if (text && !capturedErrors.includes(text)) {
-                                                    capturedErrors.push(text);
-                                                    console.log('[网易号发布] 📨 捕获到错误信息:', text);
-                                                }
-                                            }
-                                        }
+                            // 扫描 snackbar 错误提示
+                            const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
+                            if (snackbars.length > 0 && scanCount % 10 === 1) {
+                                console.log('[网易号发布] 📍 找到', snackbars.length, '个 snackbar');
+                            }
+
+                            for (const snackbar of snackbars) {
+                                const spans = snackbar.querySelectorAll('span');
+                                if (spans.length >= 2) {
+                                    const textSpan = spans[spans.length - 1];
+                                    const text = (textSpan.textContent || '').trim();
+                                    if (text && !capturedErrors.includes(text)) {
+                                        capturedErrors.push(text);
+                                        console.log('[网易号发布] 📨 捕获到错误信息:', text);
                                     }
                                 }
                             }
-                        });
 
-                        errorObserver.observe(document.body, {
-                            childList: true,
-                            subtree: true
-                        });
+                            // 扫描表单错误提示
+                            const formErrors = document.querySelectorAll('.ne-easy-form-field-content-container');
+                            for (const formError of formErrors) {
+                                const errorSpan = formError.querySelector('span:last-child');
+                                if (errorSpan) {
+                                    const text = (errorSpan.textContent || '').trim();
+                                    if (text && !capturedErrors.includes(text)) {
+                                        capturedErrors.push(text);
+                                        console.log('[网易号发布] 📨 捕获到错误信息:', text);
+                                    }
+                                }
+                            }
+                        }, 300); // 每 300ms 扫描一次
 
                         console.log('[网易号发布] ✅ 全局错误监听器已启动');
                     };
 
                     // 停止错误监听
                     const stopErrorListener = () => {
-                        if (errorObserver) {
-                            errorObserver.disconnect();
-                            errorObserver = null;
+                        if (errorScanInterval) {
+                            clearInterval(errorScanInterval);
+                            errorScanInterval = null;
                             console.log('[网易号发布] 🛑 全局错误监听器已停止');
                         }
                     };
@@ -884,10 +895,18 @@
                                             const checkInterval = 300; // 每300ms检查一次
 
                                             while (Date.now() - startTime < timeout) {
-                                                // 1. 先检查是否有错误信息（优先级更高）
-                                                const errorMsg = getLatestError();
-                                                if (errorMsg) {
-                                                    return {type: 'error', message: errorMsg};
+                                                // 1. 先检查是否有错误信息（优先级更高）- 直接扫描 DOM
+                                                const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
+                                                for (const snackbar of snackbars) {
+                                                    const spans = snackbar.querySelectorAll('span');
+                                                    if (spans.length >= 2) {
+                                                        const textSpan = spans[spans.length - 1];
+                                                        const text = (textSpan.textContent || '').trim();
+                                                        if (text) {
+                                                            console.log('[网易号发布] 📨 实时捕获到错误信息:', text);
+                                                            return {type: 'error', message: text};
+                                                        }
+                                                    }
                                                 }
 
                                                 // 2. 再检查图片元素是否出现，且 src 包含 dingyue.ws
@@ -896,16 +915,25 @@
                                                     const imgEle = imageContainer.querySelector('img');
                                                     if (imgEle) {
                                                         const src = imgEle.getAttribute('src');
-                                                        console.log("🚀 ~ waitForImageOrError ~ src: ", src);
                                                         if (src && src.includes('dingyue.ws')) {
                                                             // 🔑 检测到有效图片（dingyue.ws 域名），再等待 500ms 确认是否有错误
                                                             console.log('[网易号发布] 🔍 检测到有效图片（dingyue.ws），等待 500ms 确认是否有错误...');
                                                             await delay(500);
-                                                            const confirmError = getLatestError();
-                                                            if (confirmError) {
-                                                                console.log('[网易号发布] ⚠️ 确认期间检测到错误:', confirmError);
-                                                                return {type: 'error', message: confirmError};
+
+                                                            // 再次检查错误
+                                                            const snackbarsConfirm = document.querySelectorAll('.ne-snackbar-item-description');
+                                                            for (const snackbar of snackbarsConfirm) {
+                                                                const spans = snackbar.querySelectorAll('span');
+                                                                if (spans.length >= 2) {
+                                                                    const textSpan = spans[spans.length - 1];
+                                                                    const text = (textSpan.textContent || '').trim();
+                                                                    if (text) {
+                                                                        console.log('[网易号发布] ⚠️ 确认期间检测到错误:', text);
+                                                                        return {type: 'error', message: text};
+                                                                    }
+                                                                }
                                                             }
+
                                                             return {type: 'success', element: imageContainer};
                                                         }
                                                     }
@@ -916,9 +944,16 @@
                                             }
 
                                             // 超时，再检查一次错误信息
-                                            const finalError = getLatestError();
-                                            if (finalError) {
-                                                return {type: 'error', message: finalError};
+                                            const snackbarsFinal = document.querySelectorAll('.ne-snackbar-item-description');
+                                            for (const snackbar of snackbarsFinal) {
+                                                const spans = snackbar.querySelectorAll('span');
+                                                if (spans.length >= 2) {
+                                                    const textSpan = spans[spans.length - 1];
+                                                    const text = (textSpan.textContent || '').trim();
+                                                    if (text) {
+                                                        return {type: 'error', message: text};
+                                                    }
+                                                }
                                             }
 
                                             return {type: 'timeout'};
@@ -1080,31 +1115,36 @@
                                                 console.log('[网易号发布] ✅ 已点击发布（模拟鼠标事件）');
 
                                                 // 🔴 点击发布后，等待并检测是否有错误信息
-                                                console.log('[网易号发布] ⏳ 等待 5 秒检测发布结果...');
-                                                await delay(5000);
+                                                console.log('[网易号发布] ⏳ 等待 1 秒检测发布结果...');
+                                                await delay(1000);
 
                                                 let publishDialogErrorMsg = null;
                                                 // 检查是否有弹窗类型的错误信息
-                                                await retryOperation(async () => {
-                                                    // 有弹窗先关闭弹窗
-                                                    const errorDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                                                    console.log("🚀 ~  ~ errorDialogEle: ", errorDialogEle);
-                                                    if (errorDialogEle) {
-                                                        publishDialogErrorMsg = errorDialogEle.querySelector('.custom-confirm-content').textContent.trim();
-                                                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, errorDialogEle);
-                                                        tipBtnEle.click()
-                                                    }
-                                                }, 5, 1000)
+                                                try{
+                                                    await retryOperation(async () => {
+                                                        // 有弹窗先关闭弹窗
+                                                        const errorDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
+                                                        console.log("🚀 ~  ~ errorDialogEle: ", errorDialogEle);
+                                                        if (errorDialogEle) {
+                                                            publishDialogErrorMsg = errorDialogEle.querySelector('.custom-confirm-content').textContent.trim();
+                                                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, errorDialogEle);
+                                                            tipBtnEle.click()
+                                                        }
+                                                    }, 5, 1000)
+                                                } catch (error) {
+                                                    console.log("🚀 ~ ~ error: ", error);
+                                                }
 
                                                 // 检查是否有错误信息
                                                 const publishErrorMsg = getLatestError();
                                                 if (publishErrorMsg || publishDialogErrorMsg) {
-                                                    console.log('[网易号发布] ❌ 检测到发布错误:', publishErrorMsg);
+                                                    const errorMsg = publishErrorMsg || publishDialogErrorMsg;
+                                                    console.log('[网易号发布] ❌ 检测到发布错误:', errorMsg);
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
                                                         console.log('[网易号发布] 📤 调用失败接口...');
-                                                        await sendStatisticsError(publishId, publishErrorMsg, '网易号发布');
+                                                        await sendStatisticsError(publishId, errorMsg, '网易号发布');
                                                     }
                                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                     return;

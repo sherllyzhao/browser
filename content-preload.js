@@ -8,7 +8,7 @@ const config = {
     sph: 'https://channels.weixin.qq.com/platform/post/create',
     bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
     wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
-    shh: ' https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle'
+    shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle'
   },
   platformIdMap: {
     1: 'dy',    // 抖音

@@ -3598,41 +3598,104 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
     return { success: false, error: '域名不能为空' };
   }
 
-  if (browserView && !browserView.webContents.isDestroyed()) {
-    try {
-      const ses = browserView.webContents.session;
-      const cookies = await ses.cookies.get({});
-      console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+  try {
+    // 获取调用者的 session（可能是 BrowserView 或子窗口）
+    let ses = null;
+    let sessionSource = '';
 
-      let deletedCount = 0;
-      for (const cookie of cookies) {
-        // 匹配域名（包括子域名）
-        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-        const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      ses = browserView.webContents.session;
+      sessionSource = 'BrowserView';
+    } else {
+      // 检查是否来自子窗口
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      if (senderWindow) {
+        ses = senderWindow.webContents.session;
+        sessionSource = `子窗口 (ID: ${senderWindow.id})`;
+      }
+    }
 
-        if (shouldDelete) {
-          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
-          try {
-            await ses.cookies.remove(cookieUrl, cookie.name);
-            deletedCount++;
-            console.log(`[Clear Cookies] ✓ 删除: ${cookie.name} @ ${cookie.domain}`);
-          } catch (err) {
-            console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+    if (!ses) {
+      console.error('[Clear Cookies] 无法获取 session');
+      return { success: false, error: '无法获取 session' };
+    }
+
+    console.log(`[Clear Cookies] Session 来源: ${sessionSource}`);
+    const cookies = await ses.cookies.get({});
+    console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+
+    let deletedCount = 0;
+    for (const cookie of cookies) {
+      // 匹配域名（包括子域名）
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+
+      // 调试：显示所有 Cookie 的匹配情况
+      if (cookie.domain.includes('weixin') || cookie.domain.includes('channels')) {
+        console.log(`[Clear Cookies] 检查: ${cookie.name} @ ${cookie.domain}, 匹配: ${shouldDelete}`);
+      }
+
+      if (shouldDelete) {
+        // 使用原始域名（保留点）构建 URL
+        // 对于 .channels.weixin.qq.com，需要使用去掉点的域名作为 host
+        const urlHost = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${urlHost}${cookie.path}`;
+
+        console.log(`[Clear Cookies] 尝试删除: ${cookie.name} @ ${cookie.domain}`);
+        console.log(`[Clear Cookies] Cookie 详情:`, {
+          name: cookie.name,
+          domain: cookie.domain,
+          path: cookie.path,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          sameSite: cookie.sameSite
+        });
+        console.log(`[Clear Cookies] 使用 URL: ${cookieUrl}`);
+
+        try {
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          deletedCount++;
+          console.log(`[Clear Cookies] ✓ 删除成功: ${cookie.name} @ ${cookie.domain}`);
+        } catch (err) {
+          console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+
+          // 如果删除失败，尝试多种 URL 格式
+          const urlsToTry = [
+            `${cookie.secure ? 'https' : 'http'}://${cookie.domain}${cookie.path}`, // 带点的域名
+            `${cookie.secure ? 'https' : 'http'}://${urlHost}/`, // 根路径
+            `${cookie.secure ? 'https' : 'http'}://${cookie.domain}/`, // 带点的域名 + 根路径
+          ];
+
+          let retrySuccess = false;
+          for (const tryUrl of urlsToTry) {
+            try {
+              console.log(`[Clear Cookies] 重试 URL: ${tryUrl}`);
+              await ses.cookies.remove(tryUrl, cookie.name);
+              deletedCount++;
+              retrySuccess = true;
+              console.log(`[Clear Cookies] ✓ 重试成功: ${cookie.name} @ ${cookie.domain} (URL: ${tryUrl})`);
+              break;
+            } catch (retryErr) {
+              console.error(`[Clear Cookies] ✗ 重试失败 (${tryUrl}):`, retryErr.message);
+            }
+          }
+
+          if (!retrySuccess) {
+            console.error(`[Clear Cookies] ❌ 所有重试都失败了: ${cookie.name} @ ${cookie.domain}`);
           }
         }
       }
-
-      console.log(`[Clear Cookies] ========== 清除完成 ==========`);
-      console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
-
-      return { success: true, deletedCount };
-    } catch (err) {
-      console.error('[Clear Cookies] 清除失败:', err);
-      return { success: false, error: err.message };
     }
-  }
 
-  return { success: false, error: 'BrowserView 不可用' };
+    console.log(`[Clear Cookies] ========== 清除完成 ==========`);
+    console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+    return { success: true, deletedCount };
+  } catch (err) {
+    console.error('[Clear Cookies] 清除失败:', err);
+    return { success: false, error: err.message };
+  }
 });
 
 // ========== 全局数据存储（用于跨页面数据传递） ==========
