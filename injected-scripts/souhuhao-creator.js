@@ -27,6 +27,19 @@
 
     window.__SOUHUHAO_SCRIPT_LOADED__ = true;
 
+    // ===========================
+    // 清除 localStorage 的 toPath，防止发布页面自动跳转
+    // ===========================
+    try {
+        if (localStorage.getItem('toPath')) {
+            console.log('[搜狐号授权] 🗑️ 清除 localStorage.toPath:', localStorage.getItem('toPath'));
+            localStorage.removeItem('toPath');
+            console.log('[搜狐号授权] ✅ toPath 已清除');
+        }
+    } catch (e) {
+        console.warn('[搜狐号授权] ⚠️ 清除 toPath 失败:', e);
+    }
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
@@ -224,11 +237,11 @@
                             };
                             console.log(JSON.stringify(cookiesData));
                             console.log("🚀 ~  ~ scanData: ", scanData);
-                            return;
+                            //return;
 
                             console.log('[搜狐号授权] 📤 准备发送数据到接口...');
                             // 发送数据到服务器
-                            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/shhinfo', {
+                            const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/shinfo', {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json'
@@ -255,7 +268,7 @@
                                 // 这样发布时才能用新授权的账号
                                 try {
                                     console.log('[搜狐号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent('baidu.com');
+                                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent('mp.sohu.com');
                                     if (migrateResult.success) {
                                         console.log(`[搜狐号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
                                     } else {
@@ -268,10 +281,17 @@
                                 // API 成功后通知父页面刷新
                                 sendMessageToParent('授权成功，刷新数据');
 
-                                // 统计接口成功后关闭弹窗
-                                setTimeout(() => {
-                                    window.browserAPI.closeCurrentWindow();
-                                }, 1000);
+                                // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
+                                const isDev = window.browserAPI && window.browserAPI.isProduction === false;
+                                if (isDev) {
+                                    console.log('[发布成功] 🔧 开发模式：跳过关闭窗口，可查看控制台');
+                                    return;
+                                }else{
+                                    // 统计接口成功后关闭弹窗
+                                    setTimeout(() => {
+                                        window.browserAPI.closeCurrentWindow();
+                                    }, 1000);
+                                }
                             } else {
                                 throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                             }
