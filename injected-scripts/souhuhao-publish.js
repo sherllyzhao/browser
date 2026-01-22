@@ -27,14 +27,36 @@
 
     window.__SH_SCRIPT_LOADED__ = true;
 
-    // 🔑 立即清除 localStorage.toPath，防止页面自动跳转
-    // 这是双重保险，即使后台数据中有 toPath，也会在脚本注入时立即清除
-    console.log('[搜狐号发布] 🧹 立即清除 localStorage.toPath，防止自动跳转');
+    // 🔑 劫持 localStorage，阻止 toPath 被设置或读取
+    console.log('[搜狐号发布] 🛡️ 劫持 localStorage，阻止 toPath 操作');
     try {
-        localStorage.removeItem('toPath');
-        console.log('[搜狐号发布] ✅ localStorage.toPath 已清除');
+        const originalSetItem = localStorage.setItem.bind(localStorage);
+        const originalGetItem = localStorage.getItem.bind(localStorage);
+        const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+
+        // 劫持 setItem，阻止设置 toPath
+        localStorage.setItem = function(key, value) {
+            if (key === 'toPath') {
+                console.log('[搜狐号发布] 🚫 阻止设置 toPath:', value);
+                return; // 直接返回，不执行设置
+            }
+            return originalSetItem(key, value);
+        };
+
+        // 劫持 getItem，toPath 永远返回我们想要的值
+        localStorage.getItem = function(key) {
+            if (key === 'toPath') {
+                console.log('[搜狐号发布] 🔄 拦截读取 toPath，返回发布页路径');
+                return '/contentManagement/news/addarticle'; // 返回发布页路径
+            }
+            return originalGetItem(key);
+        };
+
+        // 先清除现有的 toPath
+        originalRemoveItem('toPath');
+        console.log('[搜狐号发布] ✅ localStorage 劫持完成，toPath 已被控制');
     } catch (e) {
-        console.warn('[搜狐号发布] ⚠️ 清除 toPath 失败:', e);
+        console.error('[搜狐号发布] ❌ localStorage 劫持失败:', e);
     }
 
     // 变量声明（放在防重复检查之后）
