@@ -159,16 +159,6 @@
 
                             const currentAccount = localStorage.getItem('currentAccount') ? JSON.parse(localStorage.getItem('currentAccount')) : null;
 
-                            // 🔑 在获取会话数据之前，先清除 localStorage 中的 toPath
-                            // 防止保存到后台的数据包含 toPath，导致发布页自动跳转
-                            console.log('[搜狐号授权] 🧹 清除 localStorage.toPath，防止发布页自动跳转');
-                            try {
-                                localStorage.removeItem('toPath');
-                                console.log('[搜狐号授权] ✅ localStorage.toPath 已清除');
-                            } catch (e) {
-                                console.warn('[搜狐号授权] ⚠️ 清除 toPath 失败:', e);
-                            }
-
                             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
                             console.log('[搜狐号授权] 📦 正在获取完整会话数据...');
                             let cookiesData = '';
@@ -176,7 +166,14 @@
                                 const sessionResult = await window.browserAPI.getFullSessionData('mp.sohu.com');
                                 if (sessionResult.success) {
                                     console.log("🚀 ~  ~ sessionResult.data: ", sessionResult.data);
-                                    // 不需要再设置 toPath，因为已经在获取前清除了
+
+                                    // 🔑 手动删除 localStorage 中的 toPath，防止发布页自动跳转
+                                    if (sessionResult.data.localStorage && sessionResult.data.localStorage.toPath) {
+                                        console.log('[搜狐号授权] 🧹 检测到 toPath:', sessionResult.data.localStorage.toPath);
+                                        delete sessionResult.data.localStorage.toPath;
+                                        console.log('[搜狐号授权] ✅ 已从会话数据中删除 toPath');
+                                    }
+
                                     cookiesData = JSON.stringify(sessionResult.data);
                                     console.log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                                 } else {
