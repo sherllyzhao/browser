@@ -141,11 +141,13 @@ const PLATFORM_CONFIG = {
             checkCount++;
             const currentToPath = originalGetItem('toPath');
             if (currentToPath !== PLATFORM_CONFIG.publishPagePath) {
-                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，重新设置为', PLATFORM_CONFIG.publishPagePath);
+                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，当前值:', currentToPath, '重新设置为', PLATFORM_CONFIG.publishPagePath);
+                // 打印调用栈，看看是谁修改了 toPath
+                console.log('[搜狐号发布] 📍 调用栈:', new Error().stack);
                 originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
             }
-            // 只检查 30 次（约 3 秒），之后停止检查
-            if (checkCount >= 30) {
+            // 只检查 60 次（约 6 秒），之后停止检查
+            if (checkCount >= 60) {
                 clearInterval(checkInterval);
                 console.log('[搜狐号发布] ✅ toPath 检查完成');
             }
