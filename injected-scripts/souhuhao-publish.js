@@ -169,6 +169,17 @@ const PLATFORM_CONFIG = {
 
     window.__SH_SCRIPT_LOADED__ = true;
 
+    // 🔑 再次检查和设置 toPath，确保它是正确的值
+    console.log('[搜狐号发布] 🔍 再次检查 toPath...');
+    const currentToPath = localStorage.getItem('toPath');
+    if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+        console.log('[搜狐号发布] ⚠️ 检测到 toPath 不正确，重新设置');
+        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        console.log('[搜狐号发布] ✅ 已重新设置 toPath =', PLATFORM_CONFIG.publishPagePath);
+    } else {
+        console.log('[搜狐号发布] ✅ toPath 已正确设置');
+    }
+
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
