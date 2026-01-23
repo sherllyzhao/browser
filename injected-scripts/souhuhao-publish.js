@@ -77,6 +77,28 @@ const PLATFORM_CONFIG = {
             }
         });
 
+        // 🔑 劫持 history.pushState 和 history.replaceState，防止通过 history API 跳转
+        const originalPushState = window.history.pushState.bind(window.history);
+        const originalReplaceState = window.history.replaceState.bind(window.history);
+
+        window.history.pushState = function(state, title, url) {
+            console.log('[搜狐号发布] 🚫 检测到 history.pushState:', url);
+            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
+                console.log('[搜狐号发布] 🚫 阻止通过 history.pushState 跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalPushState(state, title, url);
+        };
+
+        window.history.replaceState = function(state, title, url) {
+            console.log('[搜狐号发布] 🚫 检测到 history.replaceState:', url);
+            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
+                console.log('[搜狐号发布] 🚫 阻止通过 history.replaceState 跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalReplaceState(state, title, url);
+        };
+
         // 劫持 setItem，阻止设置 toPath
         localStorage.setItem = function(key, value) {
             if (key === 'toPath') {
