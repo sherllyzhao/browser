@@ -182,7 +182,7 @@
                                 console.log('[腾讯号授权] 📦 正在获取完整会话数据...');
                                 let cookiesData = '';
                                 try {
-                                    const sessionResult = await window.browserAPI.getFullSessionData('mp.163.com');
+                                    const sessionResult = await window.browserAPI.getFullSessionData('om.qq.com');
                                     if (sessionResult.success) {
                                         cookiesData = JSON.stringify(sessionResult.data);
                                         console.
@@ -191,7 +191,7 @@
                                     } else {
                                         console.warn('[腾讯号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
                                         // 降级为简单 cookie 字符串
-                                        const cookieResult = await window.browserAPI.getDomainCookies('mp.163.com');
+                                        const cookieResult = await window.browserAPI.getDomainCookies('om.qq.com');
                                         if (cookieResult.success && cookieResult.cookies) {
                                             cookiesData = cookieResult.cookies;
                                         }
@@ -201,18 +201,15 @@
                                     cookiesData = document.cookie;
                                 }
 
-                                const userInfoResult = await fetch('http://mp.163.com/wemedia/navinfo.do', {
+                                const userInfoResult = await fetch('https://om.qq.com/maccountsetting/basicinfo/?relogin=1', {
                                     method: 'GET',
-                                    credentials: 'include',
-                                    headers: {
-                                        'Content-Type': 'application/json',
-                                    },
+                                    credentials: 'include'
                                 })
                                 const userInfoRes = await userInfoResult.json();
                                 console.log("🚀 ~  ~ userInfoRes: ", userInfoRes);
-                                if(userInfoRes.code === 1){
+                                if(userInfoRes.data && userInfoRes.data.cpInfo){
                                     const userInfo = userInfoRes.data;
-                                    const publishArticleCountResult = await fetch('http://mp.163.com/wemedia/content/manage/list.do', {
+                                    const publishArticleCountResult = await fetch('http://om.qq.com/wemedia/content/manage/list.do', {
                                         method: 'POST',
                                         body: new URLSearchParams({
                                             pageNo: 1,
