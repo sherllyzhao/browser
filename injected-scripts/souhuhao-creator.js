@@ -5,25 +5,27 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-// 🔑 平台配置（从 platform-config.json 中提取）
-const PLATFORM_CONFIG = {
-    name: '搜狐号',
-    publishPagePath: '/contentManagement/news/addarticle',
-    publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
-    firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
-    domain: 'mp.sohu.com',
-    cookiesDomain: 'mp.sohu.com'
-};
-
 // 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
 (function() {
     'use strict';
+
+    // 🔑 在 IIFE 内部定义平台配置，避免与发布脚本的 PLATFORM_CONFIG 冲突
+    const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
 
     console.log('[搜狐号授权] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location');
     try {
         const originalSetItem = localStorage.setItem.bind(localStorage);
         const originalGetItem = localStorage.getItem.bind(localStorage);
         const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+
+        // 🔑 首先清除 toPath，然后设置为发布页路径
+        console.log('[搜狐号授权] 🧹 清除旧的 toPath');
+        originalRemoveItem('toPath');
+
+        // 立即设置为发布页路径
+        console.log('[搜狐号授权] ✅ 设置 toPath 为发布页路径');
+        originalSetItem('toPath', PUBLISH_PAGE_PATH);
+        console.log('[搜狐号授权] ✅ 已设置 localStorage.toPath =', PUBLISH_PAGE_PATH);
 
         // 劫持 setItem，阻止设置 toPath
         localStorage.setItem = function(key, value) {
@@ -38,7 +40,7 @@ const PLATFORM_CONFIG = {
         localStorage.getItem = function(key) {
             if (key === 'toPath') {
                 console.log('[搜狐号授权] 🔄 拦截读取 toPath，返回发布页路径');
-                return PLATFORM_CONFIG.publishPagePath; // 返回发布页路径
+                return PUBLISH_PAGE_PATH; // 返回发布页路径
             }
             return originalGetItem(key);
         };
@@ -83,6 +85,16 @@ const PLATFORM_CONFIG = {
 (async function () {
     'use strict';
 
+    // 🔑 平台配置（在 IIFE 内部定义，避免与发布脚本冲突）
+    const PLATFORM_CONFIG = {
+        name: '搜狐号',
+        publishPagePath: '/contentManagement/news/addarticle',
+        publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+        firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+        domain: 'mp.sohu.com',
+        cookiesDomain: 'mp.sohu.com'
+    };
+
     // ===========================
     // 防止脚本重复注入
     // ===========================
@@ -101,54 +113,6 @@ const PLATFORM_CONFIG = {
     }
 
     window.__SOUHUHAO_SCRIPT_LOADED__ = true;
-
-    // 🔑 再次检查和设置 toPath，确保它是正确的值
-    console.log('[搜狐号授权] 🔍 再次检查 toPath...');
-    const currentToPath = localStorage.getItem('toPath');
-    if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
-        console.log('[搜狐号授权] ⚠️ 检测到 toPath 不正确，重新设置');
-        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        console.log('[搜狐号授权] ✅ 已重新设置 toPath =', PLATFORM_CONFIG.publishPagePath);
-    } else {
-        console.log('[搜狐号授权] ✅ toPath 已正确设置');
-    }
-
-    // 🔑 在页面加载完成后继续检查 toPath
-    // 延迟 1 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter1s = localStorage.getItem('toPath');
-        if (toPathAfter1s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号授权] ⚠️ 1秒后检测到 toPath 被修改，当前值:', toPathAfter1s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 1000);
-
-    // 延迟 3 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter3s = localStorage.getItem('toPath');
-        if (toPathAfter3s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号授权] ⚠️ 3秒后检测到 toPath 被修改，当前值:', toPathAfter3s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 3000);
-
-    // 延迟 5 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter5s = localStorage.getItem('toPath');
-        if (toPathAfter5s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号授权] ⚠️ 5秒后检测到 toPath 被修改，当前值:', toPathAfter5s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 5000);
-
-    // 延迟 10 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter10s = localStorage.getItem('toPath');
-        if (toPathAfter10s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号授权] ⚠️ 10秒后检测到 toPath 被修改，当前值:', toPathAfter10s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 10000);
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');

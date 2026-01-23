@@ -5,20 +5,13 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-// 🔑 平台配置（从 platform-config.json 中提取）
-const PLATFORM_CONFIG = {
-    name: '搜狐号',
-    publishPagePath: '/contentManagement/news/addarticle',
-    publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
-    firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
-    domain: 'mp.sohu.com',
-    cookiesDomain: 'mp.sohu.com'
-};
-
 // 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
 // 这必须在任何其他代码执行之前进行
 (function() {
     'use strict';
+
+    // 🔑 在 IIFE 内部定义平台配置，避免与授权脚本的 PLATFORM_CONFIG 冲突
+    const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
 
     console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location，阻止页面跳转');
     try {
@@ -26,15 +19,14 @@ const PLATFORM_CONFIG = {
         const originalGetItem = localStorage.getItem.bind(localStorage);
         const originalRemoveItem = localStorage.removeItem.bind(localStorage);
 
-        // 🔑 首先检查 toPath 是否存在，如果不存在就设置它
-        const currentToPath = originalGetItem('toPath');
-        if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 检测到 toPath 不存在或值不对，立即设置');
-            originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
-            console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
-        } else {
-            console.log('[搜狐号发布] ✅ toPath 已正确设置');
-        }
+        // 🔑 首先清除 toPath，然后设置为发布页路径
+        console.log('[搜狐号发布] 🧹 清除旧的 toPath');
+        originalRemoveItem('toPath');
+
+        // 立即设置为发布页路径
+        console.log('[搜狐号发布] ✅ 设置 toPath 为发布页路径');
+        originalSetItem('toPath', PUBLISH_PAGE_PATH);
+        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PUBLISH_PAGE_PATH);
 
         // 🔑 劫持 window.location.href，防止跳转到首页
         let originalLocationHref = window.location.href;
@@ -80,7 +72,7 @@ const PLATFORM_CONFIG = {
         // 劫持 setItem，阻止设置 toPath
         localStorage.setItem = function(key, value) {
             if (key === 'toPath') {
-                console.log('[搜狐号发布] 🚫 阻止修改 toPath:', value, '-> 保持为', PLATFORM_CONFIG.publishPagePath);
+                console.log('[搜狐号发布] 🚫 阻止修改 toPath:', value, '-> 保持为', PUBLISH_PAGE_PATH);
                 return; // 直接返回，不执行设置
             }
             return originalSetItem(key, value);
@@ -90,7 +82,7 @@ const PLATFORM_CONFIG = {
         localStorage.getItem = function(key) {
             if (key === 'toPath') {
                 console.log('[搜狐号发布] 🔄 拦截读取 toPath，返回发布页路径');
-                return PLATFORM_CONFIG.publishPagePath; // 返回发布页路径
+                return PUBLISH_PAGE_PATH; // 返回发布页路径
             }
             return originalGetItem(key);
         };
@@ -104,25 +96,17 @@ const PLATFORM_CONFIG = {
             return originalRemoveItem(key);
         };
 
-        // 先清除现有的 toPath
-        originalRemoveItem('toPath');
-
-        // 🔑 主动设置 toPath 为发布页路径，这样搜狐号的代码就能读取到它
-        // 防止页面跳转到其他地方
-        originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
-
         // 🔑 定期检查 toPath 是否被修改，如果被修改就重新设置
         // 这样可以防止搜狐号的代码修改 toPath 导致页面跳转
         let checkCount = 0;
         const checkInterval = setInterval(() => {
             checkCount++;
             const currentToPath = originalGetItem('toPath');
-            if (currentToPath !== PLATFORM_CONFIG.publishPagePath) {
-                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，当前值:', currentToPath, '重新设置为', PLATFORM_CONFIG.publishPagePath);
+            if (currentToPath !== PUBLISH_PAGE_PATH) {
+                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，当前值:', currentToPath, '重新设置为', PUBLISH_PAGE_PATH);
                 // 打印调用栈，看看是谁修改了 toPath
                 console.log('[搜狐号发布] 📍 调用栈:', new Error().stack);
-                originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
+                originalSetItem('toPath', PUBLISH_PAGE_PATH);
             }
             // 只检查 60 次（约 6 秒），之后停止检查
             if (checkCount >= 60) {
@@ -150,6 +134,16 @@ const PLATFORM_CONFIG = {
 (async function () {
     'use strict';
 
+    // 🔑 平台配置（在 IIFE 内部定义，避免与授权脚本冲突）
+    const PLATFORM_CONFIG = {
+        name: '搜狐号',
+        publishPagePath: '/contentManagement/news/addarticle',
+        publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+        firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+        domain: 'mp.sohu.com',
+        cookiesDomain: 'mp.sohu.com'
+    };
+
     // ===========================
     // 防止脚本重复注入
     // ===========================
@@ -168,72 +162,6 @@ const PLATFORM_CONFIG = {
     }
 
     window.__SH_SCRIPT_LOADED__ = true;
-
-    // 🔑 再次检查和设置 toPath，确保它是正确的值
-    console.log('[搜狐号发布] 🔍 再次检查 toPath...');
-    const currentToPath = localStorage.getItem('toPath');
-    if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
-        console.log('[搜狐号发布] ⚠️ 检测到 toPath 不正确，重新设置');
-        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        console.log('[搜狐号发布] ✅ 已重新设置 toPath =', PLATFORM_CONFIG.publishPagePath);
-    } else {
-        console.log('[搜狐号发布] ✅ toPath 已正确设置');
-    }
-
-    // 🔑 在页面加载完成后继续检查 toPath
-    // 延迟 1 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter1s = localStorage.getItem('toPath');
-        if (toPathAfter1s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 1秒后检测到 toPath 被修改，当前值:', toPathAfter1s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 1000);
-
-    // 延迟 3 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter3s = localStorage.getItem('toPath');
-        if (toPathAfter3s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 3秒后检测到 toPath 被修改，当前值:', toPathAfter3s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 3000);
-
-    // 延迟 5 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter5s = localStorage.getItem('toPath');
-        if (toPathAfter5s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 5秒后检测到 toPath 被修改，当前值:', toPathAfter5s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 5000);
-
-    // 延迟 10 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter10s = localStorage.getItem('toPath');
-        if (toPathAfter10s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 10秒后检测到 toPath 被修改，当前值:', toPathAfter10s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 10000);
-
-    // 延迟 15 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter15s = localStorage.getItem('toPath');
-        if (toPathAfter15s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 15秒后检测到 toPath 被修改，当前值:', toPathAfter15s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 15000);
-
-    // 延迟 20 秒后再检查一次
-    setTimeout(() => {
-        const toPathAfter20s = localStorage.getItem('toPath');
-        if (toPathAfter20s !== PLATFORM_CONFIG.publishPagePath) {
-            console.log('[搜狐号发布] ⚠️ 20秒后检测到 toPath 被修改，当前值:', toPathAfter20s, '重新设置');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-        }
-    }, 20000);
 
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
