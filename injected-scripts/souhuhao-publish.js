@@ -34,8 +34,28 @@
             return originalGetItem(key);
         };
 
+        // 劫持 removeItem，阻止删除 toPath
+        localStorage.removeItem = function(key) {
+            if (key === 'toPath') {
+                console.log('[搜狐号发布] 🚫 阻止删除 toPath');
+                return; // 直接返回，不执行删除
+            }
+            return originalRemoveItem(key);
+        };
+
         // 先清除现有的 toPath
         originalRemoveItem('toPath');
+
+        // 🔑 也劫持 Object.defineProperty，防止通过属性访问器设置 toPath
+        const originalDefineProperty = Object.defineProperty;
+        Object.defineProperty = function(obj, prop, descriptor) {
+            if (obj === localStorage && prop === 'toPath') {
+                console.log('[搜狐号发布] 🚫 阻止通过 defineProperty 设置 toPath');
+                return obj; // 直接返回，不执行定义
+            }
+            return originalDefineProperty.call(this, obj, prop, descriptor);
+        };
+
         console.log('[搜狐号发布] ✅ localStorage 劫持完成，toPath 已被控制');
     } catch (e) {
         console.error('[搜狐号发布] ❌ localStorage 劫持失败:', e);
