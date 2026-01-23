@@ -46,6 +46,11 @@
         // 先清除现有的 toPath
         originalRemoveItem('toPath');
 
+        // 🔑 主动设置 toPath 为发布页路径，这样搜狐号的代码就能读取到它
+        // 防止页面跳转到其他地方
+        originalSetItem('toPath', '/contentManagement/news/addarticle');
+        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath = /contentManagement/news/addarticle');
+
         // 🔑 也劫持 Object.defineProperty，防止通过属性访问器设置 toPath
         const originalDefineProperty = Object.defineProperty;
         Object.defineProperty = function(obj, prop, descriptor) {
