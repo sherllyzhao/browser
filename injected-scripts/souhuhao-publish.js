@@ -217,6 +217,24 @@ const PLATFORM_CONFIG = {
         }
     }, 10000);
 
+    // 延迟 15 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter15s = localStorage.getItem('toPath');
+        if (toPathAfter15s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 15秒后检测到 toPath 被修改，当前值:', toPathAfter15s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 15000);
+
+    // 延迟 20 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter20s = localStorage.getItem('toPath');
+        if (toPathAfter20s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 20秒后检测到 toPath 被修改，当前值:', toPathAfter20s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 20000);
+
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
