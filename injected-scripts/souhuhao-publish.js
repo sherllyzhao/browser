@@ -180,6 +180,34 @@ const PLATFORM_CONFIG = {
         console.log('[搜狐号发布] ✅ toPath 已正确设置');
     }
 
+    // 🔑 在页面加载完成后继续检查 toPath
+    // 延迟 1 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter1s = localStorage.getItem('toPath');
+        if (toPathAfter1s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 1秒后检测到 toPath 被修改，当前值:', toPathAfter1s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 1000);
+
+    // 延迟 3 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter3s = localStorage.getItem('toPath');
+        if (toPathAfter3s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 3秒后检测到 toPath 被修改，当前值:', toPathAfter3s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 3000);
+
+    // 延迟 5 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter5s = localStorage.getItem('toPath');
+        if (toPathAfter5s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 5秒后检测到 toPath 被修改，当前值:', toPathAfter5s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 5000);
+
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
