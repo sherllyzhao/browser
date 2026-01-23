@@ -15,16 +15,45 @@ const PLATFORM_CONFIG = {
     cookiesDomain: 'mp.sohu.com'
 };
 
-// 🔑 最优先：在脚本最顶部劫持 localStorage，防止 toPath 导致页面跳转
+// 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
 // 这必须在任何其他代码执行之前进行
 (function() {
     'use strict';
 
-    console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage，阻止 toPath 操作');
+    console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location，阻止页面跳转');
     try {
         const originalSetItem = localStorage.setItem.bind(localStorage);
         const originalGetItem = localStorage.getItem.bind(localStorage);
         const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+
+        // 🔑 首先检查 toPath 是否存在，如果不存在就设置它
+        const currentToPath = originalGetItem('toPath');
+        if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号发布] ⚠️ 检测到 toPath 不存在或值不对，立即设置');
+            originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
+            console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
+        } else {
+            console.log('[搜狐号发布] ✅ toPath 已正确设置');
+        }
+
+        // 🔑 劫持 window.location.href，防止跳转到首页
+        let originalLocationHref = window.location.href;
+        Object.defineProperty(window.location, 'href', {
+            get: function() {
+                return originalLocationHref;
+            },
+            set: function(value) {
+                console.log('[搜狐号发布] 🚫 检测到页面跳转:', value);
+                // 如果要跳转到首页，就阻止跳转
+                if (value.includes('firstPage') || value.includes('first/page')) {
+                    console.log('[搜狐号发布] 🚫 阻止跳转到首页');
+                    return; // 阻止跳转
+                }
+                // 其他跳转允许
+                originalLocationHref = value;
+                window.location.href = value;
+            }
+        });
 
         // 劫持 setItem，阻止设置 toPath
         localStorage.setItem = function(key, value) {
@@ -88,9 +117,9 @@ const PLATFORM_CONFIG = {
             return originalDefineProperty.call(this, obj, prop, descriptor);
         };
 
-        console.log('[搜狐号发布] ✅ localStorage 劫持完成，toPath 已被控制');
+        console.log('[搜狐号发布] ✅ localStorage 和 window.location 劫持完成，toPath 已被控制');
     } catch (e) {
-        console.error('[搜狐号发布] ❌ localStorage 劫持失败:', e);
+        console.error('[搜狐号发布] ❌ 劫持失败:', e);
     }
 })();
 
