@@ -361,69 +361,128 @@
                 return;
             }
 
-            const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
+            /* const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
                 method: 'GET',
                 credentials: 'include',
                 headers: {
                     'Content-Type': 'application/json',
                 },
             })
-            const userInfoRes = await userInfoResult.json();
+            const userInfoRes = await userInfoResult.json(); */
             let userInfo = {};
-            if(userInfoRes.code === 1){
+            /* if(userInfoRes.code === 1){
                 userInfo = userInfoRes.data;
-            }
+            } */
 
             setTimeout(async () => {
-                await retryOperation(async () => {
-                    // 有弹窗先关闭弹窗
-                    const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                    if (tipDialogEle) {
-                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                        tipBtnEle.click()
-                    }
-                }, 5, 1000)
-
                 // 标题（带重试和验证）
-                await retryOperation(async () => {
-                    const titleEle = await waitForElement(".newtitle-container .netease-textarea", 5000);
+                try {
+                    await retryOperation(async () => {
+                        const titleEle = await waitForElement(".publish-title input", 5000);
 
-                    // 先触发focus事件
-                    if (typeof titleEle.focus === 'function') {
-                        titleEle.focus();
-                    } else {
-                        titleEle.dispatchEvent(new Event('focus', {bubbles: true}));
-                    }
+                        // 先触发focus事件
+                        if (typeof titleEle.focus === 'function') {
+                            titleEle.focus();
+                        } else {
+                            titleEle.dispatchEvent(new Event('focus', {bubbles: true}));
+                        }
 
-                    // 延迟执行，让React状态稳定
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                        // 延迟执行，让React状态稳定
+                        await new Promise(resolve => setTimeout(resolve, 300));
 
-                    const targetTitle = dataObj.video.video.title || '';
-                    setNativeValue(titleEle, targetTitle);
+                        const targetTitle = dataObj.video.video.title || '';
+                        setNativeValue(titleEle, targetTitle);
 
-                    // 额外触发input事件
-                    titleEle.dispatchEvent(new Event('input', {bubbles: true}));
+                        // 额外触发input事件
+                        titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
-                    // 等待 React 更新
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                        // 等待 React 更新
+                        await new Promise(resolve => setTimeout(resolve, 200));
 
-                    // 🔑 验证是否成功设置
-                    const currentValue = (titleEle.value || '').trim();
-                    const expectedValue = targetTitle.trim();
-                    if (currentValue !== expectedValue) {
-                        throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
-                    }
+                        // 🔑 验证是否成功设置
+                        const currentValue = (titleEle.value || '').trim();
+                        const expectedValue = targetTitle.trim();
+                        if (currentValue !== expectedValue) {
+                            throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+                        }
 
-                    console.log('[搜狐号发布] ✅ 标题设置成功:', currentValue);
-                }, 5, 1000);
+                        console.log('[搜狐号发布] ✅ 标题设置成功:', currentValue);
+                    }, 5, 1000);
+                } catch (error) {
+                    console.log('[搜狐号发布] ❌ 标题填写失败:', error.message);
+                }
+
+                //设置简介（带重试）
+                try {
+                    await retryOperation(async () => {
+                        // 首先检查是否已经填写过（通过全局标记）
+                        if (introFilled) {
+                            console.log('[搜狐号发布] 简介已填写过，跳过');
+                            return; // 跳过重试
+                        }
+
+                        console.log('[搜狐号发布] 开始填写简介...');
+                        const introEle = await waitForElement(".abstract textarea", 5000);
+                        console.log('[搜狐号发布] 简介输入框元素:', introEle);
+
+                        const targetIntro = dataObj.video.video.intro || '';
+                        const targetContent = targetIntro.trim();
+                        console.log('[搜狐号发布] 目标简介内容:', targetContent);
+
+                        // 检查实际内容
+                        const currentContent = (introEle?.value || '').trim();
+                        console.log('[搜狐号发布] 当前简介内容:', currentContent);
+
+                        // 只有在标记未设置且内容不同时才填写
+                        if (introEle && currentContent !== targetContent) {
+                            // 立即标记为已填写（在任何操作之前，防止并发）
+                            introFilled = true;
+                            console.log('[搜狐号发布] 正在填写简介...');
+
+                            // 先触发focus事件
+                            if (typeof introEle.focus === 'function') {
+                                introEle.focus();
+                            } else {
+                                introEle.dispatchEvent(new Event('focus', { bubbles: true }));
+                            }
+
+                            // 延迟执行，让React状态稳定
+                            await new Promise(resolve => setTimeout(resolve, 300));
+
+                            setNativeValue(introEle, dataObj.video.video.intro);
+
+                            // 额外触发input事件
+                            introEle.dispatchEvent(new Event('input', { bubbles: true }));
+
+                            // 等待 React 更新
+                            await new Promise(resolve => setTimeout(resolve, 200));
+
+                            // 🔑 验证是否成功设置
+                            const updatedValue = (introEle.value || '').trim();
+                            if (updatedValue !== targetContent) {
+                                throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedValue.substring(0, 50)}..."`);
+                            }
+
+                            console.log('[搜狐号发布] ✅ 简介填写完成');
+                        } else if (!introEle) {
+                            throw new Error('简介输入框元素为空');
+                        } else {
+                            // 内容已经正确，也标记为已填写
+                            introFilled = true;
+                            console.log('[搜狐号发布] 简介内容已正确，无需修改');
+                        }
+                    }, 5, 1000);
+                } catch (error) {
+                    console.log('[搜狐号发布] ❌ 简介填写失败:', error.message);
+                }
 
                 try {
                     // 内容（带重试）
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor_SH", 10000);
-                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
+                                const editorIframeEle = await waitForElement("#editor", 10000);
+                                const editorEle = editorIframeEle.querySelector('.ql-editor ')
                                 let htmlContent = dataObj.video.video.content;
 
                                 // 解析 HTML 中的图片，通过搜狐号 dumpproxy 接口上传
@@ -440,7 +499,7 @@
                                     }
 
                                     // 如果已经是搜狐号的图片，跳过
-                                    if (originalSrc.includes('mp.163.com') || originalSrc.includes('dingyue.ws.')) {
+                                    if (originalSrc.includes('mp.sohu.com') || originalSrc.includes('dingyue.ws.')) {
                                         console.log('[搜狐号发布] ⏭️ 跳过已有图片:', originalSrc.substring(0, 50));
                                         continue;
                                     }
@@ -454,33 +513,18 @@
                                             console.error('[搜狐号发布] ❌ 图片下载失败:', imgRes.error);
                                             continue;
                                         }
-                                        // 将 base64 转换为二进制 File 对象
-                                        const byteString = atob(imgRes.data);
-                                        const ab = new ArrayBuffer(byteString.length);
-                                        const ia = new Uint8Array(ab);
-                                        for (let i = 0; i < byteString.length; i++) {
-                                            ia[i] = byteString.charCodeAt(i);
-                                        }
-
-                                        // 创建 File 对象（直接用 ArrayBuffer，不用 Blob 包装）
-                                        const imageType = getImageType(originalSrc);
-                                        const fileName = `image.${imageType}`;
-                                        const file = new File([ab], fileName, { type: imgRes.contentType });
-                                        console.log("🚀 ~  ~ 文件信息 - 名称:", fileName, "类型:", imgRes.contentType, "大小:", file.size);
-
-                                        // 调用搜狐号图片代理接口
-                                        const formData = new FormData();
-                                        formData.append('from', 'neteasecode_mp');
-                                        formData.append('file', file);
 
                                         // 使用 URL 和 URLSearchParams 自动处理编码
-                                        const url = new URL('https://mp.163.com/api/v3/upload/picupload');
-                                        url.searchParams.append('wemediaId', userInfo.wemediaId);
-                                        url.searchParams.append('realUserId', userInfo.loginUser);
+                                        const url = new URL('https://mp.sohu.com/commons/front/outerUpload/v2/url');
 
                                         const response = await fetch(url.toString(), {
                                             method: 'POST',
-                                            body: formData,
+                                            headers: {
+                                                'Content-Type': 'application/json',
+                                            },
+                                            body: {
+                                                url: imgRes.data
+                                            },
                                             credentials: 'include' // 带上 cookies
                                         });
 
@@ -672,8 +716,11 @@
                     // 获取最新的错误信息
                     const getLatestError = () => {
                         // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息和中间状态消息
-                        const ignoredMessages = ['正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功'];
+                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
+                        const ignoredMessages = [
+                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+                        ];
                         for (let i = capturedErrors.length - 1; i >= 0; i--) {
                             const msg = capturedErrors[i];
                             const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));

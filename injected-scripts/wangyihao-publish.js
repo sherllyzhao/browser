@@ -394,37 +394,41 @@
                 }, 5, 1000)
 
                 // 标题（带重试和验证）
-                await retryOperation(async () => {
-                    const titleEle = await waitForElement(".newtitle-container .netease-textarea", 5000);
+                try{
+                    await retryOperation(async () => {
+                        const titleEle = await waitForElement(".newtitle-container .netease-textarea", 5000);
 
-                    // 先触发focus事件
-                    if (typeof titleEle.focus === 'function') {
-                        titleEle.focus();
-                    } else {
-                        titleEle.dispatchEvent(new Event('focus', {bubbles: true}));
-                    }
+                        // 先触发focus事件
+                        if (typeof titleEle.focus === 'function') {
+                            titleEle.focus();
+                        } else {
+                            titleEle.dispatchEvent(new Event('focus', {bubbles: true}));
+                        }
 
-                    // 延迟执行，让React状态稳定
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                        // 延迟执行，让React状态稳定
+                        await new Promise(resolve => setTimeout(resolve, 300));
 
-                    const targetTitle = dataObj.video.video.title || '';
-                    setNativeValue(titleEle, targetTitle);
+                        const targetTitle = dataObj.video.video.title || '';
+                        setNativeValue(titleEle, targetTitle);
 
-                    // 额外触发input事件
-                    titleEle.dispatchEvent(new Event('input', {bubbles: true}));
+                        // 额外触发input事件
+                        titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
-                    // 等待 React 更新
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                        // 等待 React 更新
+                        await new Promise(resolve => setTimeout(resolve, 200));
 
-                    // 🔑 验证是否成功设置
-                    const currentValue = (titleEle.value || '').trim();
-                    const expectedValue = targetTitle.trim();
-                    if (currentValue !== expectedValue) {
-                        throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
-                    }
+                        // 🔑 验证是否成功设置
+                        const currentValue = (titleEle.value || '').trim();
+                        const expectedValue = targetTitle.trim();
+                        if (currentValue !== expectedValue) {
+                            throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+                        }
 
-                    console.log('[网易号发布] ✅ 标题设置成功:', currentValue);
-                }, 5, 1000);
+                        console.log('[网易号发布] ✅ 标题设置成功:', currentValue);
+                    }, 5, 1000);
+                }catch(e){
+                    console.log('[网易号发布] ❌ 标题设置失败:', e);
+                }
 
                 try {
                     // 内容（带重试）
@@ -692,8 +696,11 @@
                     // 获取最新的错误信息
                     const getLatestError = () => {
                         // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息和中间状态消息
-                        const ignoredMessages = ['正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功'];
+                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
+                        const ignoredMessages = [
+                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+                        ];
                         for (let i = capturedErrors.length - 1; i >= 0; i--) {
                             const msg = capturedErrors[i];
                             const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
@@ -746,51 +753,54 @@
                                         const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
                                         console.log("🚀 ~  ~ tipDialogEle: ", tipDialogEle);
                                         if (tipDialogEle) {
-                                            const dialogTextEle = await waitForElement('.custom-confirm-content', 5000, 1000, tipDialogEle);
-                                            if (dialogTextEle) {
-                                                const dialogText = dialogTextEle.textContent.trim();
-                                                if (dialogText.includes('正文中至少上传一张图片')) {
-                                                    // 需要在正文中插入图片
-                                                    console.log('[网易号发布] 📝 检测到需要在正文中插入图片');
+                                            const imgListEle = tipDialogEle.querySelector('.cover-picture__list')
+                                            if(!imgListEle){
+                                                const dialogTextEle = await waitForElement('.custom-confirm-content', 5000, 1000, tipDialogEle);
+                                                if (dialogTextEle) {
+                                                    const dialogText = dialogTextEle.textContent.trim();
+                                                    if (dialogText.includes('正文中至少上传一张图片')) {
+                                                        // 需要在正文中插入图片
+                                                        console.log('[网易号发布] 📝 检测到需要在正文中插入图片');
 
-                                                    try {
-                                                        // 等待编辑器加载
-                                                        const editorIframeEle = await waitForElement("#editor_wyh", 5000);
-                                                        if (editorIframeEle) {
-                                                            const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
-                                                            if (editorEle && pathImage) {
-                                                                // 使用和内容插入相同的粘贴事件方式
-                                                                const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
+                                                        try {
+                                                            // 等待编辑器加载
+                                                            const editorIframeEle = await waitForElement("#editor_wyh", 5000);
+                                                            if (editorIframeEle) {
+                                                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
+                                                                if (editorEle && pathImage) {
+                                                                    // 使用和内容插入相同的粘贴事件方式
+                                                                    const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
 
-                                                                // 让编辑器获得焦点
-                                                                editorEle.focus();
+                                                                    // 让编辑器获得焦点
+                                                                    editorEle.focus();
 
-                                                                // 通过粘贴事件插入图片HTML
-                                                                const pasteEvent = new ClipboardEvent('paste', {
-                                                                    clipboardData: new DataTransfer(),
-                                                                    bubbles: true,
-                                                                    cancelable: true
-                                                                });
+                                                                    // 通过粘贴事件插入图片HTML
+                                                                    const pasteEvent = new ClipboardEvent('paste', {
+                                                                        clipboardData: new DataTransfer(),
+                                                                        bubbles: true,
+                                                                        cancelable: true
+                                                                    });
 
-                                                                pasteEvent.clipboardData.setData('text/html', imgHtml);
-                                                                pasteEvent.clipboardData.setData('text/plain', '[图片]');
+                                                                    pasteEvent.clipboardData.setData('text/html', imgHtml);
+                                                                    pasteEvent.clipboardData.setData('text/plain', '[图片]');
 
-                                                                editorEle.dispatchEvent(pasteEvent);
+                                                                    editorEle.dispatchEvent(pasteEvent);
 
-                                                                // 等待编辑器处理
-                                                                await new Promise(resolve => setTimeout(resolve, 500));
+                                                                    // 等待编辑器处理
+                                                                    await new Promise(resolve => setTimeout(resolve, 500));
 
-                                                                console.log('[网易号发布] ✅ 已在正文中插入封面图片');
+                                                                    console.log('[网易号发布] ✅ 已在正文中插入封面图片');
+                                                                }
                                                             }
+                                                        } catch (e) {
+                                                            console.error('[网易号发布] ❌ 在正文中插入图片失败:', e);
                                                         }
-                                                    } catch (e) {
-                                                        console.error('[网易号发布] ❌ 在正文中插入图片失败:', e);
                                                     }
                                                 }
+                                                const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
+                                                tipBtnEle.click();
+                                                await delay(1000);
                                             }
-                                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                                            tipBtnEle.click();
-                                            await delay(1000);
                                         }
 
 
