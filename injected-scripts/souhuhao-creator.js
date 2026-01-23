@@ -102,6 +102,17 @@ const PLATFORM_CONFIG = {
 
     window.__SOUHUHAO_SCRIPT_LOADED__ = true;
 
+    // 🔑 再次检查和设置 toPath，确保它是正确的值
+    console.log('[搜狐号授权] 🔍 再次检查 toPath...');
+    const currentToPath = localStorage.getItem('toPath');
+    if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+        console.log('[搜狐号授权] ⚠️ 检测到 toPath 不正确，重新设置');
+        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        console.log('[搜狐号授权] ✅ 已重新设置 toPath =', PLATFORM_CONFIG.publishPagePath);
+    } else {
+        console.log('[搜狐号授权] ✅ toPath 已正确设置');
+    }
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
