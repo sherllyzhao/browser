@@ -42,21 +42,31 @@ const PLATFORM_CONFIG = {
         }, 100);
 
         // 🔑 劫持 window.location.href，防止跳转到首页
-        let originalLocationHref = window.location.href;
-        Object.defineProperty(window.location, 'href', {
-            get: function() {
-                return originalLocationHref;
-            },
-            set: function(value) {
-                console.log('[搜狐号重定向] 🚫 检测到页面跳转:', value);
-                if (value.includes('firstPage') || value.includes('first/page')) {
-                    console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
-                    return; // 阻止跳转
-                }
-                originalLocationHref = value;
-                window.location.href = value;
+        // 注意：window.location.href 在现代浏览器中不可配置，尝试劫持可能失败
+        if (!window.__sohuRedirectLocationHrefHijacked) {
+            window.__sohuRedirectLocationHrefHijacked = true;
+            try {
+                let originalLocationHref = window.location.href;
+                Object.defineProperty(window.location, 'href', {
+                    configurable: true,
+                    get: function() {
+                        return originalLocationHref;
+                    },
+                    set: function(value) {
+                        console.log('[搜狐号重定向] 🚫 检测到页面跳转:', value);
+                        if (value.includes('firstPage') || value.includes('first/page')) {
+                            console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
+                            return; // 阻止跳转
+                        }
+                        originalLocationHref = value;
+                        window.location.assign(value);
+                    }
+                });
+                console.log('[搜狐号重定向] ✅ 成功劫持 window.location.href');
+            } catch (e) {
+                console.log('[搜狐号重定向] ⚠️ 无法劫持 window.location.href（浏览器限制）');
             }
-        });
+        }
 
         // 🔑 劫持 history.pushState 和 history.replaceState，防止通过 history API 跳转
         const originalPushState = window.history.pushState.bind(window.history);
@@ -94,6 +104,58 @@ const PLATFORM_CONFIG = {
     console.log('📍 当前 URL:', window.location.href);
     console.log('🕐 注入时间:', new Date().toLocaleString());
     console.log('═══════════════════════════════════════');
+
+    // 🔑 【最优先】检测是否是发布成功后的跳转
+    // 通过 localStorage 中的标志来区分：发布页点击发布按钮前会设置这个标志
+    const PUBLISH_SUCCESS_KEY = 'sohu_publish_success_data';
+    try {
+        const publishSuccessData = localStorage.getItem(PUBLISH_SUCCESS_KEY);
+        if (publishSuccessData) {
+            console.log('[搜狐号重定向] 🎉 检测到发布成功标志，准备上报成功...');
+            const data = JSON.parse(publishSuccessData);
+            const publishId = data.publishId;
+
+            // 立即清除标志，防止重复上报
+            localStorage.removeItem(PUBLISH_SUCCESS_KEY);
+            console.log('[搜狐号重定向] 🧹 已清除发布成功标志');
+
+            if (publishId && typeof sendStatisticsSuccess === 'function') {
+                console.log('[搜狐号重定向] 📤 调用 sendStatisticsSuccess, publishId:', publishId);
+                await sendStatisticsSuccess(publishId, '搜狐号发布');
+                console.log('[搜狐号重定向] ✅ 发布成功上报完成');
+            } else if (publishId) {
+                // sendStatisticsSuccess 可能在 common.js 中，如果不存在就手动调用
+                console.log('[搜狐号重定向] ⚠️ sendStatisticsSuccess 函数不存在，尝试手动上报');
+                try {
+                    const mainInfo = await window.browserAPI.getMainUrl();
+                    if (mainInfo.success) {
+                        const apiUrl = `${mainInfo.origin}/api/mediaauth/tjlog`;
+                        const response = await fetch(apiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                id: publishId,
+                                status: 1,
+                                remark: '搜狐号发布成功'
+                            })
+                        });
+                        console.log('[搜狐号重定向] ✅ 手动上报成功，响应:', await response.text());
+                    }
+                } catch (apiError) {
+                    console.error('[搜狐号重定向] ❌ 手动上报失败:', apiError);
+                }
+            }
+
+            // 上报完成后关闭窗口
+            console.log('[搜狐号重定向] 🚪 准备关闭窗口...');
+            await closeWindowWithMessage('发布成功，刷新数据', 1000);
+            return; // 不再执行后续逻辑
+        } else {
+            console.log('[搜狐号重定向] ℹ️ 没有发布成功标志，继续正常流程');
+        }
+    } catch (e) {
+        console.error('[搜狐号重定向] ❌ 检测发布成功标志失败:', e);
+    }
 
     // 🔑 再次检查和设置 toPath，确保它是正确的值
     console.log('[搜狐号重定向] 🔍 再次检查 toPath...');

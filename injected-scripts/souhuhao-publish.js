@@ -12,6 +12,7 @@
 
     // 🔑 在 IIFE 内部定义平台配置，避免与授权脚本的 PLATFORM_CONFIG 冲突
     const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
+    const PUBLISH_SUCCESS_KEY = 'sohu_publish_success_data';
 
     console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location，阻止页面跳转');
     try {
@@ -28,24 +29,61 @@
         originalSetItem('toPath', PUBLISH_PAGE_PATH);
         console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PUBLISH_PAGE_PATH);
 
-        // 🔑 劫持 window.location.href，防止跳转到首页
-        let originalLocationHref = window.location.href;
-        Object.defineProperty(window.location, 'href', {
-            get: function() {
-                return originalLocationHref;
-            },
-            set: function(value) {
-                console.log('[搜狐号发布] 🚫 检测到页面跳转:', value);
-                // 如果要跳转到首页，就阻止跳转
-                if (value.includes('firstPage') || value.includes('first/page')) {
-                    console.log('[搜狐号发布] 🚫 阻止跳转到首页');
-                    return; // 阻止跳转
-                }
-                // 其他跳转允许
-                originalLocationHref = value;
-                window.location.href = value;
+        // 🔑 检查发布成功标志的辅助函数（使用 originalGetItem 避免劫持问题）
+        function hasPublishSuccessFlag() {
+            // 优先检查全局变量（更可靠）
+            if (window.__sohuPublishSuccessFlag) {
+                console.log('[搜狐号发布] ✅ 检测到全局变量标志');
+                return true;
             }
-        });
+            // 其次检查 localStorage
+            try {
+                const data = originalGetItem(PUBLISH_SUCCESS_KEY);
+                if (data) {
+                    console.log('[搜狐号发布] ✅ 检测到 localStorage 标志');
+                    return true;
+                }
+            } catch (e) {
+                console.error('[搜狐号发布] ❌ 读取 localStorage 标志失败:', e);
+            }
+            return false;
+        }
+
+        // 🔑 劫持 window.location.href，防止跳转到首页
+        // 注意：window.location.href 在现代浏览器中不可配置，尝试劫持可能失败
+        if (!window.__sohuLocationHrefHijacked) {
+            window.__sohuLocationHrefHijacked = true;
+            try {
+                let originalLocationHref = window.location.href;
+                Object.defineProperty(window.location, 'href', {
+                    configurable: true,
+                    get: function() {
+                        return originalLocationHref;
+                    },
+                    set: function(value) {
+                        console.log('[搜狐号发布] 🚫 检测到页面跳转:', value);
+                        // 如果要跳转到首页，检查是否是发布成功后的跳转
+                        if (value.includes('firstPage') || value.includes('first/page')) {
+                            // 🔑 使用辅助函数检查发布成功标志
+                            if (hasPublishSuccessFlag()) {
+                                console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许跳转到首页');
+                                originalLocationHref = value;
+                                window.location.assign(value);
+                                return;
+                            }
+                            console.log('[搜狐号发布] 🚫 阻止跳转到首页（无发布成功标志）');
+                            return; // 阻止跳转
+                        }
+                        // 其他跳转允许
+                        originalLocationHref = value;
+                        window.location.assign(value); // 使用 assign 代替直接赋值，避免递归
+                    }
+                });
+                console.log('[搜狐号发布] ✅ 成功劫持 window.location.href');
+            } catch (e) {
+                console.log('[搜狐号发布] ⚠️ 无法劫持 window.location.href（浏览器限制），使用其他方式拦截');
+            }
+        }
 
         // 🔑 劫持 history.pushState 和 history.replaceState，防止通过 history API 跳转
         const originalPushState = window.history.pushState.bind(window.history);
@@ -54,6 +92,11 @@
         window.history.pushState = function(state, title, url) {
             console.log('[搜狐号发布] 🚫 检测到 history.pushState:', url);
             if (url && (url.includes('firstPage') || url.includes('first/page'))) {
+                // 🔑 使用辅助函数检查发布成功标志
+                if (hasPublishSuccessFlag()) {
+                    console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许 pushState 到首页');
+                    return originalPushState(state, title, url);
+                }
                 console.log('[搜狐号发布] 🚫 阻止通过 history.pushState 跳转到首页');
                 return; // 阻止跳转
             }
@@ -63,6 +106,11 @@
         window.history.replaceState = function(state, title, url) {
             console.log('[搜狐号发布] 🚫 检测到 history.replaceState:', url);
             if (url && (url.includes('firstPage') || url.includes('first/page'))) {
+                // 🔑 使用辅助函数检查发布成功标志
+                if (hasPublishSuccessFlag()) {
+                    console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许 replaceState 到首页');
+                    return originalReplaceState(state, title, url);
+                }
                 console.log('[搜狐号发布] 🚫 阻止通过 history.replaceState 跳转到首页');
                 return; // 阻止跳转
             }
@@ -177,6 +225,98 @@
 
     // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
     let currentWindowId = null;
+
+    // ===========================
+    // 🔴 全局错误监听器（提升到 IIFE 顶层，让 checkPublishResult 可以访问）
+    // ===========================
+    const capturedErrors = []; // 收集所有捕获的错误信息
+    let errorObserver = null;
+
+    // 启动错误监听
+    const startErrorListener = () => {
+        console.log('[搜狐号发布] 🔍 启动全局错误监听器...');
+
+        errorObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType === 1) {
+                        const element = node;
+                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
+
+                        // 检测搜狐 snackbar 提示框（新结构）
+                        if (classList.includes('ne-snackbar-item-description')) {
+                            const errorSpan = element.querySelector('span:last-child');
+                            if (errorSpan) {
+                                const text = (errorSpan.textContent || '').trim();
+                                if (text && !capturedErrors.includes(text)) {
+                                    capturedErrors.push(text);
+                                    console.log('[搜狐号发布] 📨 捕获到错误信息（snackbar）:', text);
+                                }
+                            }
+                        }
+
+                        // 🔑 检测 Element UI 错误消息（el-message）
+                        if (classList.includes('el-message') && classList.includes('el-message--error')) {
+                            const contentEl = element.querySelector('.el-message__content');
+                            if (contentEl) {
+                                const text = (contentEl.textContent || '').trim();
+                                if (text && !capturedErrors.includes(text)) {
+                                    capturedErrors.push(text);
+                                    console.log('[搜狐号发布] 📨 捕获到错误信息（el-message）:', text);
+                                }
+                            }
+                        }
+
+                        // 🔑 递归检查子元素中的 el-message
+                        const elMessages = element.querySelectorAll('.el-message.el-message--error');
+                        for (const elMsg of elMessages) {
+                            const contentEl = elMsg.querySelector('.el-message__content');
+                            if (contentEl) {
+                                const text = (contentEl.textContent || '').trim();
+                                if (text && !capturedErrors.includes(text)) {
+                                    capturedErrors.push(text);
+                                    console.log('[搜狐号发布] 📨 捕获到错误信息（el-message 子元素）:', text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        errorObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        console.log('[搜狐号发布] ✅ 全局错误监听器已启动');
+    };
+
+    // 停止错误监听
+    const stopErrorListener = () => {
+        if (errorObserver) {
+            errorObserver.disconnect();
+            errorObserver = null;
+            console.log('[搜狐号发布] 🛑 全局错误监听器已停止');
+        }
+    };
+
+    // 获取最新的错误信息
+    const getLatestError = () => {
+        const ignoredMessages = [
+            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+        ];
+        for (let i = capturedErrors.length - 1; i >= 0; i--) {
+            const msg = capturedErrors[i];
+            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
+            if (!isIgnored) {
+                console.log('[搜狐号发布] 🔍 getLatestError 返回:', msg);
+                return msg;
+            }
+        }
+        return null;
+    };
 
     // 获取窗口专属的发布成功数据 key
     const getPublishSuccessKey = () => {
@@ -671,81 +811,10 @@
                     console.log('[搜狐号发布] ❌ 内容填写失败:', e.message)
                 }
 
-                // 设置封面为单图模式
+                // 设置
                 const hasSettingsWrapEle = await waitForElement(".cover-button");
                 if (hasSettingsWrapEle) {
-                    // ===========================
-                    // 🔴 全局错误监听器 - 在上传图片之前就开始监听
-                    // ===========================
-                    const capturedErrors = []; // 收集所有捕获的错误信息
-                    let errorObserver = null;
-
-                    // 启动错误监听
-                    const startErrorListener = () => {
-                        console.log('[搜狐号发布] 🔍 启动全局错误监听器...');
-
-                        errorObserver = new MutationObserver((mutations) => {
-                            for (const mutation of mutations) {
-                                for (const node of mutation.addedNodes) {
-                                    if (node.nodeType === 1) {
-                                        const element = node;
-                                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-                                        const textContent = element.textContent || '';
-
-                                        // 检测搜狐 snackbar 提示框（新结构）
-                                        if (classList.includes('ne-snackbar-item-description')) {
-                                            const errorSpan = element.querySelector('span:last-child');
-                                            if (errorSpan) {
-                                                const text = (errorSpan.textContent || '').trim();
-                                                if (text && !capturedErrors.includes(text)) {
-                                                    capturedErrors.push(text);
-                                                    console.log('[搜狐号发布] 📨 捕获到错误信息:', text);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-
-                        errorObserver.observe(document.body, {
-                            childList: true,
-                            subtree: true
-                        });
-
-                        console.log('[搜狐号发布] ✅ 全局错误监听器已启动');
-                    };
-
-                    // 停止错误监听
-                    const stopErrorListener = () => {
-                        if (errorObserver) {
-                            errorObserver.disconnect();
-                            errorObserver = null;
-                            console.log('[搜狐号发布] 🛑 全局错误监听器已停止');
-                        }
-                    };
-
-                    // 获取最新的错误信息
-                    const getLatestError = () => {
-                        // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
-                        const ignoredMessages = [
-                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
-                        ];
-                        for (let i = capturedErrors.length - 1; i >= 0; i--) {
-                            const msg = capturedErrors[i];
-                            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-                            if (!isIgnored) {
-                                console.log("🚀 ~ getLatestError ~ msg: ", msg);
-                                return msg;
-                            }
-                        }
-                        // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
-                        return null;
-                    };
-
-                    // 立即启动错误监听
+                    // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
                     startErrorListener();
 
                     // 设置封面（使用主进程下载绕过跨域）
@@ -757,22 +826,6 @@
                             setTimeout(async () => {
                                 // 选中本地上传（点击"选择封面"按钮）
                                 setTimeout(async () => {
-                                    // 通过文字内容查找"选择封面"按钮
-                                    const findElementByText = (text, el = document, isIncludes = false) => {
-                                        const allElements = el.querySelectorAll('div, span');
-                                        for (const el of allElements) {
-                                            console.log("🚀 ~ findElementByText ~ el.textContent: ", el.textContent);
-                                            // 精确匹配文字内容
-                                            const check = isIncludes ? el.textContent.trim().includes(text) : el.textContent.trim() === text;
-                                            if (check && el.children.length === 0) {
-                                                console.log("🚀 ~ findElementByText ~ el: ", el);
-                                                // 返回可点击的父级容器
-                                                return el.parentElement || el;
-                                            }
-                                        }
-                                        return null;
-                                    };
-
                                     // 等待封面选择区域出现
                                     await waitForElement(".cover-button");
                                     await delay(500); // 等待渲染完成
@@ -788,11 +841,11 @@
                                             if(coverBg){
                                                 // 检查是否有图片
                                                 if(coverBg.includes('url')){
-                                                    console.log('[百家号发布] ✅ 已经有图片');
+                                                    console.log('[搜狐号发布] ✅ 已经有图片');
                                                     const closeBtn = coverWrapperEle.querySelector('.mp-icon-close');
                                                     closeBtn && closeBtn.click();
                                                 }else{
-                                                    console.log('[百家号发布] ❌ 没有图片');
+                                                    console.log('[搜狐号发布] ❌ 没有图片');
                                                 }
                                             }
                                         }
@@ -821,9 +874,9 @@
 
                                     setTimeout(async () => {
                                         // 使用原生选择器获取元素
-                                        const hasInputEle = await waitForElement(".cheetah-upload input");
+                                        const hasInputEle = await waitForElement("#new-file");
                                         if (hasInputEle) {
-                                            const input = document.querySelector(".cheetah-upload input");
+                                            const input = document.querySelector("#new-file");
                                             const dataTransfer = new DataTransfer();
                                             // 创建 DataTransfer 对象模拟文件上传
                                             dataTransfer.items.add(file);
@@ -848,18 +901,37 @@
                                                         }
 
                                                         // 2. 再检查图片元素是否出现
-                                                        const imageEle = document.querySelector("[class*='-imglist'] [class*='-selectedItem']");
+                                                        const imageEle = document.querySelector(".img-wrapper");
                                                         console.log("🚀 ~ waitForImageOrError ~ imageEle: ", imageEle);
                                                         if (imageEle) {
                                                             const imgEle = imageEle.querySelector('img');
                                                             if(imgEle && imgEle.getAttribute('src')){
                                                                 // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
                                                                 // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                                                console.log('[百家号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
+                                                                console.log('[搜狐号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
                                                                 await delay(500);
+                                                                // 检查是否有符合条件的图片
+                                                                const successCountEle = document.querySelector('.success-number');
+                                                                if(successCountEle){
+                                                                    const successCount = parseInt(successCountEle.textContent.trim());
+                                                                    if(successCount){
+                                                                        return { type: 'success', element: imageEle };
+                                                                    }else{
+                                                                        // 检查图片上的错误信息
+                                                                        const errorMsgEle = imageEle.querySelector('.error-bar');
+                                                                        if (errorMsgEle){
+                                                                            const errorMsg = errorMsgEle.textContent.trim();
+                                                                            if(errorMsg){
+                                                                                return { type: 'error', message: errorMsgEle.textContent.trim() };
+                                                                            }else{
+                                                                                return { type: 'error', message: '上传失败或图片不符合要求' };
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 const confirmError = getLatestError();
                                                                 if (confirmError) {
-                                                                    console.log('[百家号发布] ⚠️ 确认期间检测到错误:', confirmError);
+                                                                    console.log('[搜狐号发布] ⚠️ 确认期间检测到错误:', confirmError);
                                                                     return { type: 'error', message: confirmError };
                                                                 }
                                                                 return { type: 'success', element: imageEle };
@@ -887,35 +959,41 @@
 
                                                 // 🔴 检测到错误信息，直接上报失败
                                                 if (result.type === 'error') {
-                                                    console.log(`[百家号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
+                                                    console.log(`[搜狐号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
-                                                        await sendStatisticsError(publishId, result.message, '百家号发布');
+                                                        await sendStatisticsError(publishId, result.message, '搜狐号发布');
                                                     }
                                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                     return; // 不再继续
                                                 }
 
                                                 if (result.type === 'success') {
-                                                    console.log('[百家号发布] ✅ 图片上传成功');
+                                                    console.log('[搜狐号发布] ✅ 图片上传成功');
 
                                                     await delay(2000); // 等待渲染完成
-                                                    const submitCoverBtns = document.querySelectorAll('.cheetah-btn-primary');
+                                                    const uploadBoards = document.querySelectorAll(`.select-dialog .board`);
+                                                    let visibleBoard = null;
+                                                    for (let board of uploadBoards) {
+                                                        // 检查行内样式是否有 display: none
+                                                        if (board.style.display !== 'none') {
+                                                            visibleBoard = board;
+                                                            break;
+                                                        }
+                                                    }
+                                                    console.log("🚀 ~ visibleBoard: ", visibleBoard);
+                                                    const submitCoverBtns = visibleBoard ? visibleBoard.querySelectorAll('.bottom-buttons p.button') : [];
                                                     console.log("🚀 ~ tryUploadImage ~ submitCoverBtns: ", submitCoverBtns);
                                                     let submitCoverBtn = null;
-                                                    let publishBtn = null;
                                                     // 点击确定按钮
                                                     if (submitCoverBtns.length) {
                                                         for (const btn of submitCoverBtns) {
                                                             if (btn.textContent.trim().includes('确定')) {
                                                                 submitCoverBtn = btn;
-                                                            }else if(btn.textContent.trim().includes('发布')){
-                                                                publishBtn = btn;
                                                             }
                                                         }
                                                         console.log("🚀 ~ tryUploadImage ~ submitCoverBtn: ", submitCoverBtn);
-                                                        console.log("🚀 ~ tryUploadImage ~ publishBtn: ", publishBtn);
                                                         // 使用模拟真实鼠标事件，确保点击生效
                                                         const clickEvent = new MouseEvent('click', {
                                                             view: window,
@@ -923,15 +1001,15 @@
                                                             cancelable: true
                                                         });
                                                         submitCoverBtn.dispatchEvent(clickEvent);
-                                                        console.log('[百家号发布] ✅ 已点击确定（模拟鼠标事件）');
+                                                        console.log('[搜狐号发布] ✅ 已点击确定（模拟鼠标事件）');
                                                         // 等待编辑器关闭和图片保存
                                                         await delay(2000);
                                                     } else {
-                                                        console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
+                                                        console.error('[搜狐号发布] ❌ 找不到提交图片按钮，上报失败');
                                                         stopErrorListener();
                                                         const publishId = dataObj.video?.dyPlatform?.id;
                                                         if (publishId) {
-                                                            await sendStatisticsError(publishId, '找不到提交图片按钮', '百家号发布');
+                                                            await sendStatisticsError(publishId, '找不到提交图片按钮', '搜狐号发布');
                                                         }
                                                         await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                         return;
@@ -939,15 +1017,9 @@
                                                     await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
                                                     if (+publishTime === 2) {
-                                                        const outlineFootBtns = document.querySelectorAll('.op-list-wrap-news .cheetah-btn-outlined');
-                                                        let scheduledReleasesBtn = null;
+                                                        let scheduledReleasesBtn = document.querySelector('.publish-report-btn');
 
-                                                        if (outlineFootBtns.length) {
-                                                            for (const btn of outlineFootBtns) {
-                                                                if (btn.textContent.trim().includes('定时发布')) {
-                                                                    scheduledReleasesBtn = btn;
-                                                                }
-                                                            }
+                                                        if (scheduledReleasesBtn) {
                                                             console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
                                                             if (scheduledReleasesBtn) {
                                                                 const clickEvent = new MouseEvent('click', {
@@ -956,21 +1028,24 @@
                                                                     cancelable: true
                                                                 });
                                                                 scheduledReleasesBtn.dispatchEvent(clickEvent);
-                                                                console.log('[百家号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                                                console.log('[搜狐号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                                                await delay(2000);
+                                                                // 检测有没有动态发布
+                                                                await checkPublishResult(dataObj, true);
                                                                 await delay(2000);
                                                                 //  检测有没有定时发布弹窗
-                                                                const scheduledReleasesModal = document.querySelector('.cheetah-modal-content');
+                                                                const scheduledReleasesModal = document.querySelector('.pushtimeout-dialog');
                                                                 if (scheduledReleasesModal) {
-                                                                    console.log('[百家号发布] ✅ 检测到定时发布弹窗');
+                                                                    console.log('[搜狐号发布] ✅ 检测到定时发布弹窗');
 
                                                                     // 解析定时发布时间
                                                                     const sendTime = dataObj.video?.formData?.send_time;
                                                                     if (sendTime) {
-                                                                        console.log('[百家号发布] ⏰ 开始选择定时发布时间:', sendTime);
+                                                                        console.log('[搜狐号发布] ⏰ 开始选择定时发布时间:', sendTime);
 
                                                                         const timeConfig = parseSendTime(sendTime);
                                                                         if (!timeConfig) {
-                                                                            console.error('[百家号发布] ❌ 解析定时时间失败');
+                                                                            console.error('[搜狐号发布] ❌ 解析定时时间失败');
                                                                             stopErrorListener();
                                                                             await closeWindowWithMessage('定时时间解析失败', 1000);
                                                                             return;
@@ -984,7 +1059,7 @@
                                                                         );
 
                                                                         if (!timeSelectSuccess) {
-                                                                            console.error('[百家号发布] ❌ 时间选择失败');
+                                                                            console.error('[搜狐号发布] ❌ 时间选择失败');
                                                                             stopErrorListener();
                                                                             await closeWindowWithMessage('定时时间选择失败', 1000);
                                                                             return;
@@ -996,58 +1071,69 @@
                                                                             .find(btn => btn.textContent.trim() === '定时发布');
 
                                                                         if (confirmBtn) {
-                                                                            console.log('[百家号发布] ✅ 点击确定定时发布');
+                                                                            console.log('[搜狐号发布] ✅ 点击确定定时发布');
 
-                                                                            // 🔑 在点击定时发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                                                            // 🔑 在点击定时发布前保存 publishId，让首页可以调用统计接口
                                                                             const publishId = dataObj.video?.dyPlatform?.id;
                                                                             if (publishId) {
                                                                                 try {
+                                                                                    // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                                                                    window.__sohuPublishSuccessFlag = true;
                                                                                     localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                                                                    console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+                                                                                    console.log('[搜狐号发布] 💾 已保存 publishId（全局变量 + localStorage）:', publishId);
                                                                                 } catch (e) {
-                                                                                    console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                                                                    console.error('[搜狐号发布] ❌ 保存 publishId 失败:', e);
                                                                                 }
+                                                                            } else {
+                                                                                // 即使没有 publishId，也要设置全局变量允许跳转
+                                                                                window.__sohuPublishSuccessFlag = true;
+                                                                                console.log('[搜狐号发布] ℹ️ 没有 publishId，但已设置跳转标志');
                                                                             }
 
                                                                             confirmBtn.click();
 
-                                                                            // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
-                                                                            console.log('[百家号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
+                                                                            // 定时发布点击后会立即跳转到成功页
+                                                                            console.log('[搜狐号发布] ✅ 等待页面跳转到首页');
                                                                             stopErrorListener();
                                                                         } else {
-                                                                            console.error('[百家号发布] ❌ 未找到确定按钮');
+                                                                            console.error('[搜狐号发布] ❌ 未找到确定按钮');
                                                                         }
                                                                     } else {
-                                                                        console.warn('[百家号发布] ⚠️ 未传入定时发布时间');
+                                                                        console.warn('[搜狐号发布] ⚠️ 未传入定时发布时间');
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }else{
+                                                        let publishBtn = await waitForElement('.publish-report-btn.active');
                                                         //  点击发布按钮
                                                         if(publishBtn){
                                                             // 🔑 检查发布按钮是否 disabled
                                                             if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
-                                                                console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
+                                                                console.error('[搜狐号发布] ❌ 发布按钮不可用(disabled)');
                                                                 stopErrorListener();
                                                                 const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                                 if (publishIdForError) {
-                                                                    await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
+                                                                    await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '搜狐号发布');
                                                                 }
                                                                 await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                                 return;
                                                             }
-                                                            // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                                            // 🔑 在点击发布前保存 publishId，让首页可以调用统计接口
                                                             const publishId = dataObj.video?.dyPlatform?.id;
                                                             if (publishId) {
                                                                 try {
+                                                                    // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                                                    window.__sohuPublishSuccessFlag = true;
                                                                     localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                                                    console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+                                                                    console.log('[搜狐号发布] 💾 已保存 publishId（全局变量 + localStorage）:', publishId);
                                                                 } catch (e) {
-                                                                    console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                                                    console.error('[搜狐号发布] ❌ 保存 publishId 失败:', e);
                                                                 }
                                                             } else {
-                                                                console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
+                                                                // 即使没有 publishId，也要设置全局变量允许跳转
+                                                                window.__sohuPublishSuccessFlag = true;
+                                                                console.log('[搜狐号发布] ℹ️ 没有 publishId，但已设置跳转标志');
                                                             }
 
                                                             const clickEvent = new MouseEvent('click', {
@@ -1056,14 +1142,14 @@
                                                                 cancelable: true
                                                             });
                                                             publishBtn.dispatchEvent(clickEvent);
-                                                            console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
                                                             await checkPublishResult(dataObj, true);
+                                                            console.log('[搜狐号发布] ✅ 已点击发布（模拟鼠标事件）');
                                                         }else{
-                                                            console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
+                                                            console.error('[搜狐号发布] ❌ 找不到发布按钮，上报失败');
                                                             stopErrorListener();
                                                             const publishId = dataObj.video?.dyPlatform?.id;
                                                             if (publishId) {
-                                                                await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
+                                                                await sendStatisticsError(publishId, '发布按钮不可用', '搜狐号发布');
                                                             }
                                                             await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                             return;
@@ -1073,26 +1159,26 @@
                                                 } else {
                                                     // 图片上传失败（timeout），检查是否有错误信息
                                                     const myWindowId = await window.browserAPI.getWindowId();
-                                                    console.log(`[百家号发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
+                                                    console.log(`[搜狐号发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
 
                                                     // 优先使用全局错误监听器捕获的错误
                                                     const errorMessage = getLatestError();
-                                                    console.log(`[百家号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
-                                                    console.log(`[百家号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
+                                                    console.log(`[搜狐号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
+                                                    console.log(`[搜狐号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
 
                                                     // 🔴 有错误信息就直接走失败接口，不再重试
                                                     if (errorMessage) {
-                                                        console.log(`[百家号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
+                                                        console.log(`[搜狐号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
                                                         stopErrorListener(); // 停止监听
                                                         const publishId = dataObj.video?.dyPlatform?.id;
-                                                        console.log(`[百家号发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
-                                                        console.log(`[百家号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
+                                                        console.log(`[搜狐号发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
+                                                        console.log(`[搜狐号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
                                                         if (publishId) {
-                                                            console.log(`[百家号发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
-                                                            await sendStatisticsError(publishId, errorMessage, '百家号发布');
-                                                            console.log(`[百家号发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
+                                                            console.log(`[搜狐号发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
+                                                            await sendStatisticsError(publishId, errorMessage, '搜狐号发布');
+                                                            console.log(`[搜狐号发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
                                                         } else {
-                                                            console.error(`[百家号发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
+                                                            console.error(`[搜狐号发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
                                                         }
                                                         await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                         return; // 不再继续
@@ -1100,7 +1186,7 @@
 
                                                     // 没有错误信息才重试
                                                     if (retryCount < maxRetries) {
-                                                        console.log(`[百家号发布] 🔄 ${2}秒后重新上传图片...`);
+                                                        console.log(`[搜狐号发布] 🔄 ${2}秒后重新上传图片...`);
                                                         await delay(2000);
 
                                                         // 重新触发文件上传
@@ -1109,27 +1195,27 @@
                                                             input.files = dataTransfer.files;
                                                             const event = new Event("change", {bubbles: true});
                                                             input.dispatchEvent(event);
-                                                            console.log('[百家号发布] 🔄 已重新触发上传');
+                                                            console.log('[搜狐号发布] 🔄 已重新触发上传');
 
                                                             // 递归重试
                                                             await delay(2000);
                                                             await tryUploadImage(retryCount + 1);
                                                         } else {
-                                                            console.error('[百家号发布] ❌ 无法找到上传输入框，无法重试');
+                                                            console.error('[搜狐号发布] ❌ 无法找到上传输入框，无法重试');
                                                             stopErrorListener();
                                                             const publishId = dataObj.video?.dyPlatform?.id;
                                                             if (publishId) {
-                                                                await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '百家号发布');
+                                                                await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '搜狐号发布');
                                                             }
                                                             await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                         }
                                                     } else {
                                                         // 超过最大重试次数
-                                                        console.error('[百家号发布] ❌ 图片上传重试次数已用尽');
+                                                        console.error('[搜狐号发布] ❌ 图片上传重试次数已用尽');
                                                         stopErrorListener();
                                                         const publishId = dataObj.video?.dyPlatform?.id;
                                                         if (publishId) {
-                                                            await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '百家号发布');
+                                                            await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '搜狐号发布');
                                                         }
                                                         await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                     }
@@ -1145,11 +1231,11 @@
                                 }, 2000);
                             }, 1000);
                         } catch (error) {
-                            console.log('[百家号发布] ❌ 封面下载失败:', error);
+                            console.log('[搜狐号发布] ❌ 封面下载失败:', error);
                             stopErrorListener();
                             const publishId = dataObj?.video?.dyPlatform?.id;
                             if (publishId) {
-                                await sendStatisticsError(publishId, error.message || '封面下载失败', '百家号发布');
+                                await sendStatisticsError(publishId, error.message || '封面下载失败', '搜狐号发布');
                             }
                             await closeWindowWithMessage('封面下载失败，刷新数据', 1000);
                         }
@@ -1177,267 +1263,66 @@
         // 因为 setTimeout 是异步的，finally 会立即执行
         // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
     }
+
+    /**
+     * 检查发布结果（通用方法）
+     * @param {object} dataObj - 发布数据对象
+     * @param {boolean} handleExtraButtons - 是否处理额外的确认按钮（立即发布需要，定时发布不需要）
+     * @returns {Promise<boolean>} 是否成功（无错误）
+     */
+    async function checkPublishResult(dataObj, handleExtraButtons = true) {
+        console.log('[搜狐号发布] ⏳ 等待检测发布结果...');
+        await delay(1000);
+
+        if (handleExtraButtons) {
+            try {
+                const transferDialogEle = await waitForElement('.alert-dialog', 10000, 1000);
+                if(transferDialogEle){
+                    const dialogContent = transferDialogEle.querySelector('.alert-desc');
+                    if(dialogContent){
+                        const dialogText = dialogContent.textContent.trim();
+                        if(dialogText.includes('建议以动态形式发布')){
+                            transferDialogEle.querySelector('.sure-btn').click();
+                        }
+                    }
+                }
+            } catch (e) {
+                console.log(e);
+            }
+        }
+
+        await delay(5000);
+
+        const publishErrorMsg = getLatestError();
+        if (publishErrorMsg) {
+            console.log('[搜狐号发布] ❌ 检测到发布错误:', publishErrorMsg);
+            stopErrorListener();
+            const publishId = dataObj.video?.dyPlatform?.id;
+            if (publishId) {
+                console.log('[搜狐号发布] 📤 调用失败接口...');
+                await sendStatisticsError(publishId, publishErrorMsg, '搜狐号发布');
+            }
+            await closeWindowWithMessage('发布失败，刷新数据', 1000);
+            return false;
+        } else {
+            console.log('[搜狐号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
+            stopErrorListener();
+            return true;
+        }
+    }
 })(); // IIFE 结束
+
+/**
+ * 获取发布成功标志的 localStorage key
+ * 用于发布页和首页之间的通信：发布页设置标志，首页检测到后上报成功
+ */
+function getPublishSuccessKey() {
+    return 'sohu_publish_success_data';
+}
 
 function getImageType(src){
     const imageType = src.split(';')[0].split('/')[1];
     return imageType;
-}
-
-/**
- * 解析定时发布时间
- * @param {string} sendTimeStr - 时间字符串，格式："2026-01-21 00:00:00"
- * @returns {object} { dateIndex, hour, minute } 或 null
- */
-function parseSendTime(sendTimeStr) {
-    try {
-        // 解析时间字符串
-        const [dateStr, timeStr] = sendTimeStr.split(' ');
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const [hour, minute] = timeStr.split(':').map(Number);
-
-        // 计算相对于今天的天数差
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const sendDate = new Date(year, month - 1, day);
-        sendDate.setHours(0, 0, 0, 0);
-
-        const dayDiff = Math.floor((sendDate - today) / (1000 * 60 * 60 * 24));
-
-        console.log('[搜狐号发布] 📅 解析定时时间:', {
-            原始时间: sendTimeStr,
-            日期: `${year}-${month}-${day}`,
-            时间: `${hour}:${minute}`,
-            相对天数: dayDiff
-        });
-
-        return {
-            dateIndex: dayDiff,
-            hour: hour,
-            minute: minute
-        };
-    } catch (error) {
-        console.error('[搜狐号发布] ❌ 解析定时时间失败:', error);
-        return null;
-    }
-}
-
-/**
- * 选择虚拟列表中的选项
- * @param {HTMLElement} selectElement - select 组件的容器
- * @param {string|number} targetValue - 要选择的值（显示文本）
- * @param targetIndex - 要选择的索引（默认0）
- * @param {number} timeout - 超时时间（毫秒）
- */
-async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0, timeout = 10000) {
-    try {
-        console.log('[搜狐号发布] 🔍 准备选择:', targetValue);
-
-        // 1. 找到触发器并点击打开下拉
-        // 尝试多种可能的触发器选择器
-        let selectTrigger = selectElement.querySelector('.ne-select-selector') ||
-                           selectElement.querySelector('.ne-select') ||
-                           selectElement;
-        console.log("🚀 ~ selectFromVirtualList ~ selectTrigger: ", selectTrigger);
-        if (!selectTrigger) {
-            console.error('[搜狐号发布] ❌ 找不到 select 触发器');
-            return false;
-        }
-
-        console.log('[搜狐号发布] ✅ 找到触发器，点击打开下拉列表');
-        selectTrigger.dispatchEvent(new Event('mousedown', { bubbles: true }));
-
-        // 等待下拉出现 - 增加等待时间到 1000ms
-        await new Promise(r => setTimeout(r, 1000));
-
-        // 2. 查找虚拟列表容器（可能有多个位置）
-        const startTime = Date.now();
-        let virtualList = null;
-        let options = [];
-
-        while (Date.now() - startTime < timeout) {
-            // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelectorAll('.rc-virtual-list-holder') ||
-                         document.querySelectorAll('.ne-select-dropdown .rc-virtual-list') ||
-                         document.querySelectorAll('[role="listbox"]') ||
-                         document.querySelectorAll('.ne-select-dropdown');
-
-            if (virtualList && virtualList.length > 0) {
-                console.log('[搜狐号发布] 📍 找到虚拟列表容器:', virtualList[targetIndex].className);
-
-                // 查找所有可见的选项 - 尝试多种选择器
-                let allOptions = Array.from(
-                    virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
-                );
-
-                // 如果还是没找到，尝试所有 div
-                if (allOptions.length === 0) {
-                    allOptions = Array.from(virtualList[targetIndex].querySelectorAll('div')).filter(el => {
-                        const text = el.textContent.trim();
-                        // 过滤掉空的和太长的（可能是容器）
-                        return text && text.length < 20 && el.children.length === 0;
-                    });
-                }
-
-              // 滚动到最顶部
-              virtualList[targetIndex].scrollTo(0, 0);
-              await new Promise(r => setTimeout(r, 300));
-
-                options = allOptions.filter(el => el.offsetParent !== null);
-
-                if (options.length > 0) {
-                    console.log('[搜狐号发布] ✅ 找到虚拟列表，有', options.length, '个选项');
-                    break;
-                } else {
-                    console.log('[搜狐号发布] ⏳ 虚拟列表已打开但选项还未渲染，等待中...');
-                }
-            } else {
-                console.log('[搜狐号发布] ⏳ 虚拟列表还未出现，等待中...');
-            }
-
-            await new Promise(r => setTimeout(r, 200));
-        }
-
-        if (options.length === 0) {
-            console.error('[搜狐号发布] ❌ 未找到任何选项');
-            return false;
-        }
-
-        // 3. 滚动搜索匹配项
-        const targetStr = String(targetValue).trim();
-        let foundOption = null;
-        const seenTexts = new Set();
-        const scrollStep = 100;
-        let currentScroll = 0;
-
-        while (true) {
-            // 获取当前可见选项
-            const currentOptions = Array.from(
-                virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
-            ).filter(el => el.offsetParent !== null);
-
-            // 检查当前可见选项
-            for (const option of currentOptions) {
-                const optionText = option.textContent.trim();
-                seenTexts.add(optionText);
-
-                if (optionText === targetStr) {
-                    foundOption = option;
-                    console.log('[搜狐号发布] ✅ 找到匹配的选项:', optionText);
-                    break;
-                }
-            }
-
-            if (foundOption) break;
-
-            // 检查是否到底
-            const scrollHeight = virtualList[targetIndex].scrollHeight;
-            const clientHeight = virtualList[targetIndex].clientHeight;
-            currentScroll += scrollStep;
-
-            if (currentScroll >= scrollHeight - clientHeight) {
-                console.log('[搜狐号发布] 📍 已滚动到底部');
-                break;
-            }
-
-            // 向下滚动
-            virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 200));
-        }
-
-        if (!foundOption) {
-            console.error('[搜狐号发布] ❌ 未找到目标选项:', targetStr);
-            console.log('[搜狐号发布] 📋 已扫描选项数:', seenTexts.size);
-            return false;
-        }
-
-        // 4. 滚动到视图并点击
-        foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 300));
-
-        console.log('[搜狐号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
-        console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
-        foundOption.querySelector('.ne-select-item-option-content').dispatchEvent(new Event('click', { bubbles: true }));
-
-        // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 500));
-
-        console.log('[搜狐号发布] ✅ 选项选择完成');
-        return true;
-
-    } catch (error) {
-        console.error('[搜狐号发布] ❌ selectFromVirtualList 错误:', error);
-        return false;
-    }
-}
-
-/**
- * 选择定时发布的日期和时间
- * @param {number} dateIndex - 日期索引（0=今天, 1=明天等）
- * @param {number} hour - 小时（0-23）
- * @param {number} minute - 分钟（0-59）
- */
-async function selectScheduledTime(dateIndex, hour, minute) {
-    try {
-        // 1. 找到定时发布弹窗的三个 select 组件
-        const modal = document.querySelector('.ne-modal-wrap');
-        if (!modal) {
-            console.error('[搜狐号发布] ❌ 找不到定时发布弹窗');
-            return false;
-        }
-
-        const selectElements = modal.querySelectorAll('.select-wrap');
-        if (selectElements.length < 3) {
-            console.error('[搜狐号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
-            return false;
-        }
-
-        const dateSelect = selectElements[0]; // 日期
-        const hourSelect = selectElements[1]; // 小时
-        const minuteSelect = selectElements[2]; // 分钟
-
-        console.log('[搜狐号发布] 🔧 开始选择定时发布时间...');
-
-        // 2. 获取日期选项的显示文本
-        let dateText = '';
-        const date = new Date();
-        date.setDate(date.getDate() + dateIndex);
-
-        // 格式：M月D日 或 MM月DD日
-        const month = date.getMonth() + 1; // getMonth() 返回 0-11
-        const day = date.getDate();
-        dateText = `${month}月${day}日`;
-
-        // 3. 依次选择日期、小时、分钟
-        console.log('[搜狐号发布] 📅 选择日期:', dateText);
-        if (!await selectFromVirtualList(dateSelect, dateText, 0)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const hourText = `${hour}点`;
-        console.log('[搜狐号发布] 🕐 选择小时:', hourText);
-        if (!await selectFromVirtualList(hourSelect, hourText, 1)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const minuteText = `${minute}分`;
-        console.log('[搜狐号发布] ⏱️ 选择分钟:', minuteText);
-        if (!await selectFromVirtualList(minuteSelect, minuteText, 2)) {
-            return false;
-        }
-
-        console.log('[搜狐号发布] ✅ 定时发布时间选择完成');
-        return true;
-
-    } catch (error) {
-        console.error('[搜狐号发布] ❌ selectScheduledTime 错误:', error);
-        return false;
-    }
 }
 
 /**
@@ -1509,13 +1394,11 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
 
         while (Date.now() - startTime < timeout) {
             // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelector('.rc-virtual-list-holder') ||
-                         document.querySelector('.cheetah-select-dropdown .rc-virtual-list') ||
-                         document.querySelector('[role="listbox"]');
+            virtualList = document.querySelector('.select ul');
 
             if (virtualList) {
                 // 查找所有可见的选项
-                options = Array.from(virtualList.querySelectorAll('[role="option"], .cheetah-select-item-option'))
+                options = Array.from(virtualList.querySelectorAll('li'))
                     .filter(el => el.offsetParent !== null); // 过滤隐藏的元素
 
                 if (options.length > 0) {
@@ -1581,13 +1464,13 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
 async function selectScheduledTime(dateIndex, hour, minute) {
     try {
         // 1. 找到定时发布弹窗的三个 select 组件
-        const modal = document.querySelector('.cheetah-modal-wrap');
+        const modal = document.querySelector('.pushtimeout-dialog');
         if (!modal) {
             console.error('[搜狐号发布] ❌ 找不到定时发布弹窗');
             return false;
         }
 
-        const selectElements = modal.querySelectorAll('.select-wrap');
+        const selectElements = modal.querySelectorAll('.select');
         if (selectElements.length < 3) {
             console.error('[搜狐号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
             return false;

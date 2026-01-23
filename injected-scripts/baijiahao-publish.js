@@ -42,6 +42,88 @@
   // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
   let currentWindowId = null;
 
+  // ===========================
+  // 🔴 全局错误监听器（提升到 IIFE 顶层，让 checkPublishResult 可以访问）
+  // ===========================
+  const capturedErrors = []; // 收集所有捕获的错误信息
+  let errorObserver = null;
+
+  // 启动错误监听
+  const startErrorListener = () => {
+    console.log('[百家号发布] 🔍 启动全局错误监听器...');
+
+    errorObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === 1) {
+            const element = node;
+            const classList = element.classList ? Array.from(element.classList).join(' ') : '';
+
+            // 检测百家号的错误提示
+            if (classList.includes('cheetah-message') || classList.includes('message')) {
+              // 百家号错误提示结构：<span>图标</span><span>错误文本</span>
+              const errorSpan = element.querySelector('.cheetah-message-error span:last-child') ||
+                                element.querySelector('.cheetah-message-custom-content span:last-child');
+              if (errorSpan) {
+                const text = (errorSpan.textContent || '').trim();
+                if (text && !capturedErrors.includes(text)) {
+                  capturedErrors.push(text);
+                  console.log('[百家号发布] 📨 捕获到错误信息:', text);
+                }
+              }
+            }
+
+            // 递归检查子元素
+            const errorElements = element.querySelectorAll('.cheetah-message-error span:last-child, .cheetah-message-custom-content span:last-child');
+            for (const el of errorElements) {
+              const text = (el.textContent || '').trim();
+              if (text && !capturedErrors.includes(text)) {
+                capturedErrors.push(text);
+                console.log('[百家号发布] 📨 捕获到错误信息（子元素）:', text);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    errorObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    console.log('[百家号发布] ✅ 全局错误监听器已启动');
+  };
+
+  // 停止错误监听
+  const stopErrorListener = () => {
+    if (errorObserver) {
+      errorObserver.disconnect();
+      errorObserver = null;
+      console.log('[百家号发布] 🛑 全局错误监听器已停止');
+    }
+  };
+
+  // 获取最新的错误信息
+  const getLatestError = () => {
+    // 优先返回最后一条非中间状态的错误
+    // 🔑 过滤掉成功消息、中间状态消息和非错误提示
+    const ignoredMessages = [
+      '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+      '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+    ];
+    for (let i = capturedErrors.length - 1; i >= 0; i--) {
+      const msg = capturedErrors[i];
+      const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
+      if (!isIgnored) {
+        console.log('[百家号发布] 🔍 getLatestError 返回:', msg);
+        return msg;
+      }
+    }
+    // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
+    return null;
+  };
+
   // 获取窗口专属的发布成功数据 key
   const getPublishSuccessKey = () => {
     const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
@@ -557,88 +639,7 @@
             }
           }, 200);
 
-          // ===========================
-          // 🔴 全局错误监听器 - 在上传图片之前就开始监听
-          // ===========================
-          const capturedErrors = []; // 收集所有捕获的错误信息
-          let errorObserver = null;
-
-          // 启动错误监听
-          const startErrorListener = () => {
-            console.log('[百家号发布] 🔍 启动全局错误监听器...');
-
-            errorObserver = new MutationObserver((mutations) => {
-              for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                  if (node.nodeType === 1) {
-                    const element = node;
-                    const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-
-                    // 检测百家号的错误提示
-                    if (classList.includes('cheetah-message') || classList.includes('message')) {
-                      // 百家号错误提示结构：<span>图标</span><span>错误文本</span>
-                      const errorSpan = element.querySelector('.cheetah-message-error span:last-child') ||
-                                        element.querySelector('.cheetah-message-custom-content span:last-child');
-                      if (errorSpan) {
-                        const text = (errorSpan.textContent || '').trim();
-                        if (text && !capturedErrors.includes(text)) {
-                          capturedErrors.push(text);
-                          console.log('[百家号发布] 📨 捕获到错误信息:', text);
-                        }
-                      }
-                    }
-
-                    // 递归检查子元素
-                    const errorElements = element.querySelectorAll('.cheetah-message-error span:last-child, .cheetah-message-custom-content span:last-child');
-                    for (const el of errorElements) {
-                      const text = (el.textContent || '').trim();
-                      if (text && !capturedErrors.includes(text)) {
-                        capturedErrors.push(text);
-                        console.log('[百家号发布] 📨 捕获到错误信息（子元素）:', text);
-                      }
-                    }
-                  }
-                }
-              }
-            });
-
-            errorObserver.observe(document.body, {
-              childList: true,
-              subtree: true
-            });
-
-            console.log('[百家号发布] ✅ 全局错误监听器已启动');
-          };
-
-          // 停止错误监听
-          const stopErrorListener = () => {
-            if (errorObserver) {
-              errorObserver.disconnect();
-              errorObserver = null;
-              console.log('[百家号发布] 🛑 全局错误监听器已停止');
-            }
-          };
-
-          // 获取最新的错误信息
-          const getLatestError = () => {
-            // 优先返回最后一条非中间状态的错误
-            // 🔑 过滤掉成功消息、中间状态消息和非错误提示
-            const ignoredMessages = [
-              '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-              '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
-            ];
-            for (let i = capturedErrors.length - 1; i >= 0; i--) {
-              const msg = capturedErrors[i];
-              const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-              if (!isIgnored) {
-                return msg;
-              }
-            }
-            // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
-            return null;
-          };
-
-          // 立即启动错误监听
+          // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
           startErrorListener();
 
           // 设置封面（使用主进程下载绕过跨域）
@@ -854,6 +855,9 @@
                                   });
                                   scheduledReleasesBtn.dispatchEvent(clickEvent);
                                   console.log('[百家号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                  await delay(2000);
+                                  // 检测有没有动态发布
+                                  await checkPublishResult(dataObj, true);
                                   await delay(2000);
                                 //  检测有没有定时发布弹窗
                                   const scheduledReleasesModal = document.querySelector('.cheetah-modal-content');

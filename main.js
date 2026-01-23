@@ -3220,6 +3220,78 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       }
     });
 
+    // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
+    // 问题原因：页面脚本在 dom-ready 前就执行，读取了旧的 localStorage 值
+    // 解决方案：先加载 about:blank，设置 localStorage，再导航到目标 URL
+    let localStorageData = null;
+
+    if (options.sessionData) {
+      let sessionData = options.sessionData;
+      // 解析 sessionData
+      if (typeof sessionData === 'string') {
+        try {
+          sessionData = JSON.parse(sessionData);
+          if (typeof sessionData === 'string') {
+            sessionData = JSON.parse(sessionData);
+          }
+        } catch (e) {
+          // 忽略解析错误
+        }
+      }
+
+      // 检查是否有 localStorage 数据
+      if (sessionData && typeof sessionData === 'object' && sessionData.localStorage) {
+        localStorageData = sessionData.localStorage;
+        console.log('[Window Manager] 🔑 检测到 localStorage 数据:', Object.keys(localStorageData));
+      }
+    }
+
+    // 如果有 localStorage 数据需要预设，先加载 about:blank
+    if (localStorageData && Object.keys(localStorageData).length > 0) {
+      console.log('[Window Manager] 🔄 预设 localStorage，先加载 about:blank...');
+
+      // 获取目标域名（用于设置 localStorage）
+      const targetUrl = new URL(url);
+      const targetOrigin = targetUrl.origin;
+
+      // 先加载一个同域的空白页（about:blank 不能设置 localStorage，需要用目标域）
+      // 使用一个简单的 data URL 或者目标域的任意页面
+      await newWindow.loadURL(`${targetOrigin}/favicon.ico`).catch(() => {
+        // favicon 可能不存在，忽略错误
+      });
+
+      // 等待页面加载
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // 设置 localStorage
+      const localStorageScript = `
+        (function() {
+          const data = ${JSON.stringify(localStorageData)};
+          console.log('[预设 localStorage] 开始设置...', Object.keys(data));
+          for (const key in data) {
+            try {
+              localStorage.setItem(key, data[key]);
+              console.log('[预设 localStorage] 已设置:', key, '=', data[key]);
+            } catch (e) {
+              console.error('[预设 localStorage] 设置失败:', key, e);
+            }
+          }
+          console.log('[预设 localStorage] 完成');
+        })();
+      `;
+
+      try {
+        await newWindow.webContents.executeJavaScript(localStorageScript);
+        console.log('[Window Manager] ✅ localStorage 预设完成');
+      } catch (err) {
+        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+      }
+
+      // 等待一下确保 localStorage 写入
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // 加载目标 URL
     newWindow.loadURL(url);
     return { success: true, windowId: newWindow.id };
   } catch (err) {
