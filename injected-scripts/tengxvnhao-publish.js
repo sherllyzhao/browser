@@ -640,8 +640,11 @@
                     // 获取最新的错误信息
                     const getLatestError = () => {
                         // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息和中间状态消息
-                        const ignoredMessages = ['正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功'];
+                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
+                        const ignoredMessages = [
+                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+                        ];
                         for (let i = capturedErrors.length - 1; i >= 0; i--) {
                             const msg = capturedErrors[i];
                             const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
