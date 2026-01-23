@@ -5,6 +5,30 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
+// 🔑 平台配置（从 platform-config.json 中提取）
+const PLATFORM_CONFIG = {
+    name: '搜狐号',
+    publishPagePath: '/contentManagement/news/addarticle',
+    publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+    firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+    domain: 'mp.sohu.com',
+    cookiesDomain: 'mp.sohu.com'
+};
+
+// 🔑 最优先：在首页就设置 toPath，防止页面跳转到其他地方
+(function() {
+    'use strict';
+
+    console.log('[搜狐号重定向] 🛡️ 在首页设置 localStorage.toPath，防止页面跳转');
+    try {
+        // 主动设置 toPath 为发布页路径
+        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        console.log('[搜狐号重定向] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
+    } catch (e) {
+        console.error('[搜狐号重定向] ❌ 设置 toPath 失败:', e);
+    }
+})();
+
 (async function () {
     'use strict';
 
@@ -44,16 +68,8 @@
             // 有发布数据，说明是发布窗口，需要重定向到发布页
             console.log('[搜狐号重定向] 🔄 检测到发布窗口，立即重定向到发布页...');
 
-            // 清除 localStorage 中的 toPath，防止再次跳转
-            try {
-                localStorage.removeItem('toPath');
-                console.log('[搜狐号重定向] ✅ 已清除 localStorage.toPath');
-            } catch (e) {
-                console.warn('[搜狐号重定向] ⚠️ 清除 toPath 失败:', e);
-            }
-
             // 立即跳转到发布页
-            const publishUrl = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=1';
+            const publishUrl = PLATFORM_CONFIG.publishPageUrl;
             console.log('[搜狐号重定向] 🚀 跳转到:', publishUrl);
             window.location.href = publishUrl;
         } else {
