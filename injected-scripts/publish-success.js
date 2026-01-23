@@ -143,6 +143,11 @@
       localStorage.removeItem('XHS_PUBLISH_DATA');
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
       localStorage.removeItem('BJH_PUBLISH_DATA');
+
+      // 🔑 清除搜狐号的 toPath，防止下次打开发布页时跳转到首页
+      localStorage.removeItem('toPath');
+      console.log('[发布成功] 🗑️ 已清除 toPath（搜狐号）');
+
       console.log('[发布成功] 🗑️ 已清除临时数据');
     } catch (e) {
       // 忽略清除失败
