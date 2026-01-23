@@ -132,6 +132,15 @@ const PLATFORM_CONFIG = {
         }
     }, 3000);
 
+    // 延迟 5 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter5s = localStorage.getItem('toPath');
+        if (toPathAfter5s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号授权] ⚠️ 5秒后检测到 toPath 被修改，当前值:', toPathAfter5s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 5000);
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
