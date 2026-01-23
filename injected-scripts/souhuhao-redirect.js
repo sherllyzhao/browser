@@ -25,6 +25,22 @@ const PLATFORM_CONFIG = {
         localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
         console.log('[搜狐号重定向] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
 
+        // 🔑 定期检查 toPath 是否被修改，如果被修改就重新设置
+        let checkCount = 0;
+        const checkInterval = setInterval(() => {
+            checkCount++;
+            const currentToPath = localStorage.getItem('toPath');
+            if (currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+                console.log('[搜狐号重定向] ⚠️ 检测到 toPath 被修改，当前值:', currentToPath, '重新设置为', PLATFORM_CONFIG.publishPagePath);
+                localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+            }
+            // 只检查 120 次（约 12 秒），之后停止检查
+            if (checkCount >= 120) {
+                clearInterval(checkInterval);
+                console.log('[搜狐号重定向] ✅ toPath 检查完成');
+            }
+        }, 100);
+
         // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
         const originalReplace = window.location.replace.bind(window.location);
         const originalAssign = window.location.assign.bind(window.location);
