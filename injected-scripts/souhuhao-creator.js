@@ -5,6 +5,81 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
+// 🔑 平台配置（从 platform-config.json 中提取）
+const PLATFORM_CONFIG = {
+    name: '搜狐号',
+    publishPagePath: '/contentManagement/news/addarticle',
+    publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+    firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+    domain: 'mp.sohu.com',
+    cookiesDomain: 'mp.sohu.com'
+};
+
+// 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
+(function() {
+    'use strict';
+
+    console.log('[搜狐号授权] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location');
+    try {
+        const originalSetItem = localStorage.setItem.bind(localStorage);
+        const originalGetItem = localStorage.getItem.bind(localStorage);
+        const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+
+        // 劫持 setItem，阻止设置 toPath
+        localStorage.setItem = function(key, value) {
+            if (key === 'toPath') {
+                console.log('[搜狐号授权] 🚫 阻止修改 toPath:', value);
+                return; // 直接返回，不执行设置
+            }
+            return originalSetItem(key, value);
+        };
+
+        // 劫持 getItem，toPath 永远返回发布页路径
+        localStorage.getItem = function(key) {
+            if (key === 'toPath') {
+                console.log('[搜狐号授权] 🔄 拦截读取 toPath，返回发布页路径');
+                return PLATFORM_CONFIG.publishPagePath; // 返回发布页路径
+            }
+            return originalGetItem(key);
+        };
+
+        // 劫持 removeItem，阻止删除 toPath
+        localStorage.removeItem = function(key) {
+            if (key === 'toPath') {
+                console.log('[搜狐号授权] 🚫 阻止删除 toPath');
+                return; // 直接返回，不执行删除
+            }
+            return originalRemoveItem(key);
+        };
+
+        // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
+        const originalReplace = window.location.replace.bind(window.location);
+        const originalAssign = window.location.assign.bind(window.location);
+
+        window.location.replace = function(url) {
+            console.log('[搜狐号授权] 🚫 检测到 location.replace:', url);
+            if (url.includes('firstPage') || url.includes('first/page')) {
+                console.log('[搜狐号授权] 🚫 阻止跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalReplace(url);
+        };
+
+        window.location.assign = function(url) {
+            console.log('[搜狐号授权] 🚫 检测到 location.assign:', url);
+            if (url.includes('firstPage') || url.includes('first/page')) {
+                console.log('[搜狐号授权] 🚫 阻止跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalAssign(url);
+        };
+
+        console.log('[搜狐号授权] ✅ localStorage 和 window.location 劫持完成');
+    } catch (e) {
+        console.error('[搜狐号授权] ❌ 劫持失败:', e);
+    }
+})();
+
 (async function () {
     'use strict';
 
