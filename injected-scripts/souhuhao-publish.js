@@ -61,6 +61,23 @@ const PLATFORM_CONFIG = {
         originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
         console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
 
+        // 🔑 定期检查 toPath 是否被修改，如果被修改就重新设置
+        // 这样可以防止搜狐号的代码修改 toPath 导致页面跳转
+        let checkCount = 0;
+        const checkInterval = setInterval(() => {
+            checkCount++;
+            const currentToPath = originalGetItem('toPath');
+            if (currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，重新设置为', PLATFORM_CONFIG.publishPagePath);
+                originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
+            }
+            // 只检查 30 次（约 3 秒），之后停止检查
+            if (checkCount >= 30) {
+                clearInterval(checkInterval);
+                console.log('[搜狐号发布] ✅ toPath 检查完成');
+            }
+        }, 100);
+
         // 🔑 也劫持 Object.defineProperty，防止通过属性访问器设置 toPath
         const originalDefineProperty = Object.defineProperty;
         Object.defineProperty = function(obj, prop, descriptor) {
