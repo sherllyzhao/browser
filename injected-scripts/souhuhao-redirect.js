@@ -95,6 +95,17 @@ const PLATFORM_CONFIG = {
     console.log('🕐 注入时间:', new Date().toLocaleString());
     console.log('═══════════════════════════════════════');
 
+    // 🔑 再次检查和设置 toPath，确保它是正确的值
+    console.log('[搜狐号重定向] 🔍 再次检查 toPath...');
+    const currentToPath = localStorage.getItem('toPath');
+    if (!currentToPath || currentToPath !== PLATFORM_CONFIG.publishPagePath) {
+        console.log('[搜狐号重定向] ⚠️ 检测到 toPath 不正确，重新设置');
+        localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        console.log('[搜狐号重定向] ✅ 已重新设置 toPath =', PLATFORM_CONFIG.publishPagePath);
+    } else {
+        console.log('[搜狐号重定向] ✅ toPath 已正确设置');
+    }
+
     // 🔑 通过检查父页面传来的数据判断窗口类型
     try {
         const windowId = await window.browserAPI.getWindowId();
