@@ -106,6 +106,25 @@ const PLATFORM_CONFIG = {
         console.log('[搜狐号重定向] ✅ toPath 已正确设置');
     }
 
+    // 🔑 在页面加载完成后继续检查 toPath
+    // 延迟 1 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter1s = localStorage.getItem('toPath');
+        if (toPathAfter1s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号重定向] ⚠️ 1秒后检测到 toPath 被修改，当前值:', toPathAfter1s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 1000);
+
+    // 延迟 3 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter3s = localStorage.getItem('toPath');
+        if (toPathAfter3s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号重定向] ⚠️ 3秒后检测到 toPath 被修改，当前值:', toPathAfter3s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 3000);
+
     // 🔑 通过检查父页面传来的数据判断窗口类型
     try {
         const windowId = await window.browserAPI.getWindowId();
