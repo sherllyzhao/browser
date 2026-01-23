@@ -144,9 +144,9 @@
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
       localStorage.removeItem('BJH_PUBLISH_DATA');
 
-      // 🔑 清除搜狐号的 toPath，防止下次打开发布页时跳转到首页
-      localStorage.removeItem('toPath');
-      console.log('[发布成功] 🗑️ 已清除 toPath（搜狐号）');
+      // 🔑 不要清除 toPath，保持它为发布页路径
+      // 这样下次打开发布页时，搜狐号会根据 toPath 跳转到发布页，而不是首页
+      console.log('[发布成功] 💡 保留 toPath，防止下次打开发布页时跳转到首页');
 
       console.log('[发布成功] 🗑️ 已清除临时数据');
     } catch (e) {
