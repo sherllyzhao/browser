@@ -1,4 +1,53 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
+
+// 🔑 搜狐号 toPath 处理 - 在页面脚本执行之前注入
+// 这必须在最开始执行，因为搜狐号的页面代码会在加载时读取 toPath
+(function injectSohuToPathFix() {
+  try {
+    // 检查当前 URL 是否是搜狐号
+    // 注意：preload 脚本执行时 window.location 可能还不可用，所以我们无条件注入
+    // 脚本内部会检查域名
+    const sohuToPathScript = `
+      (function() {
+        'use strict';
+        // 只在搜狐号域名下执行
+        if (!window.location.href.includes('mp.sohu.com')) {
+          return;
+        }
+
+        console.log('[搜狐号-preload] 🛡️ 在页面脚本执行之前清除 toPath');
+
+        try {
+          // 立即清除 toPath
+          const currentToPath = localStorage.getItem('toPath');
+          console.log('[搜狐号-preload] 当前 toPath:', currentToPath);
+
+          // 如果 toPath 是首页路径，立即清除并设置为发布页路径
+          const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
+          const FIRST_PAGE_PATH = '/contentManagement/first/page';
+
+          if (currentToPath && currentToPath.includes('first/page')) {
+            console.log('[搜狐号-preload] ⚠️ 检测到 toPath 是首页路径，立即清除');
+            localStorage.removeItem('toPath');
+            localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
+            console.log('[搜狐号-preload] ✅ 已设置 toPath 为发布页路径:', PUBLISH_PAGE_PATH);
+          } else if (!currentToPath) {
+            localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
+            console.log('[搜狐号-preload] ✅ toPath 为空，已设置为发布页路径:', PUBLISH_PAGE_PATH);
+          }
+        } catch (e) {
+          console.error('[搜狐号-preload] ❌ 处理 toPath 失败:', e);
+        }
+      })();
+    `;
+
+    // 使用 webFrame 在主世界中执行脚本（在页面脚本之前）
+    webFrame.executeJavaScript(sohuToPathScript);
+    console.log('[content-preload] ✅ 已注入搜狐号 toPath 修复脚本');
+  } catch (e) {
+    console.error('[content-preload] ❌ 注入搜狐号 toPath 修复脚本失败:', e);
+  }
+})();
 
 // 配置（内联，因为 preload 脚本沙盒环境不能使用 path 模块）
 const config = {
