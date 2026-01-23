@@ -53,28 +53,6 @@ const PLATFORM_CONFIG = {
         };
 
         // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
-        const originalReplace = window.location.replace.bind(window.location);
-        const originalAssign = window.location.assign.bind(window.location);
-
-        window.location.replace = function(url) {
-            console.log('[搜狐号授权] 🚫 检测到 location.replace:', url);
-            if (url.includes('firstPage') || url.includes('first/page')) {
-                console.log('[搜狐号授权] 🚫 阻止跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalReplace(url);
-        };
-
-        window.location.assign = function(url) {
-            console.log('[搜狐号授权] 🚫 检测到 location.assign:', url);
-            if (url.includes('firstPage') || url.includes('first/page')) {
-                console.log('[搜狐号授权] 🚫 阻止跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalAssign(url);
-        };
-
-        // 🔑 劫持 history.pushState 和 history.replaceState，防止通过 history API 跳转
         const originalPushState = window.history.pushState.bind(window.history);
         const originalReplaceState = window.history.replaceState.bind(window.history);
 
