@@ -41,28 +41,6 @@ const PLATFORM_CONFIG = {
             }
         }, 100);
 
-        // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
-        const originalReplace = window.location.replace.bind(window.location);
-        const originalAssign = window.location.assign.bind(window.location);
-
-        window.location.replace = function(url) {
-            console.log('[搜狐号重定向] 🚫 检测到 location.replace:', url);
-            if (url.includes('firstPage') || url.includes('first/page')) {
-                console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalReplace(url);
-        };
-
-        window.location.assign = function(url) {
-            console.log('[搜狐号重定向] 🚫 检测到 location.assign:', url);
-            if (url.includes('firstPage') || url.includes('first/page')) {
-                console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalAssign(url);
-        };
-
         // 🔑 劫持 window.location.href，防止跳转到首页
         let originalLocationHref = window.location.href;
         Object.defineProperty(window.location, 'href', {
