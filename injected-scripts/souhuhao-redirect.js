@@ -143,6 +143,15 @@ const PLATFORM_CONFIG = {
         }
     }, 10000);
 
+    // 延迟 15 秒后再检查一次
+    setTimeout(() => {
+        const toPathAfter15s = localStorage.getItem('toPath');
+        if (toPathAfter15s !== PLATFORM_CONFIG.publishPagePath) {
+            console.log('[搜狐号重定向] ⚠️ 15秒后检测到 toPath 被修改，当前值:', toPathAfter15s, '重新设置');
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        }
+    }, 15000);
+
     // 🔑 通过检查父页面传来的数据判断窗口类型
     try {
         const windowId = await window.browserAPI.getWindowId();
