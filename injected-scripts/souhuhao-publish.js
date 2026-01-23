@@ -5,30 +5,12 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-(async function () {
+// 🔑 最优先：在脚本最顶部劫持 localStorage，防止 toPath 导致页面跳转
+// 这必须在任何其他代码执行之前进行
+(function() {
     'use strict';
 
-    // ===========================
-    // 防止脚本重复注入
-    // ===========================
-    if (window.__SH_SCRIPT_LOADED__) {
-        console.log('[搜狐号发布] ⚠️ 脚本已经加载过，跳过重复注入');
-        return;
-    }
-
-    // ===========================
-    // 页面状态检查 - 防止异常渲染
-    // ===========================
-    if (typeof window.checkPageStateAndReload === 'function') {
-        if (!window.checkPageStateAndReload('搜狐号发布')) {
-            return;
-        }
-    }
-
-    window.__SH_SCRIPT_LOADED__ = true;
-
-    // 🔑 劫持 localStorage，阻止 toPath 被设置或读取
-    console.log('[搜狐号发布] 🛡️ 劫持 localStorage，阻止 toPath 操作');
+    console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage，阻止 toPath 操作');
     try {
         const originalSetItem = localStorage.setItem.bind(localStorage);
         const originalGetItem = localStorage.getItem.bind(localStorage);
@@ -58,6 +40,29 @@
     } catch (e) {
         console.error('[搜狐号发布] ❌ localStorage 劫持失败:', e);
     }
+})();
+
+(async function () {
+    'use strict';
+
+    // ===========================
+    // 防止脚本重复注入
+    // ===========================
+    if (window.__SH_SCRIPT_LOADED__) {
+        console.log('[搜狐号发布] ⚠️ 脚本已经加载过，跳过重复注入');
+        return;
+    }
+
+    // ===========================
+    // 页面状态检查 - 防止异常渲染
+    // ===========================
+    if (typeof window.checkPageStateAndReload === 'function') {
+        if (!window.checkPageStateAndReload('搜狐号发布')) {
+            return;
+        }
+    }
+
+    window.__SH_SCRIPT_LOADED__ = true;
 
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
