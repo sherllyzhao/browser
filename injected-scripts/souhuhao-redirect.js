@@ -24,8 +24,49 @@ const PLATFORM_CONFIG = {
         // 主动设置 toPath 为发布页路径
         localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
         console.log('[搜狐号重定向] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
+
+        // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
+        const originalReplace = window.location.replace.bind(window.location);
+        const originalAssign = window.location.assign.bind(window.location);
+
+        window.location.replace = function(url) {
+            console.log('[搜狐号重定向] 🚫 检测到 location.replace:', url);
+            if (url.includes('firstPage') || url.includes('first/page')) {
+                console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalReplace(url);
+        };
+
+        window.location.assign = function(url) {
+            console.log('[搜狐号重定向] 🚫 检测到 location.assign:', url);
+            if (url.includes('firstPage') || url.includes('first/page')) {
+                console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
+                return; // 阻止跳转
+            }
+            return originalAssign(url);
+        };
+
+        // 🔑 劫持 window.location.href，防止跳转到首页
+        let originalLocationHref = window.location.href;
+        Object.defineProperty(window.location, 'href', {
+            get: function() {
+                return originalLocationHref;
+            },
+            set: function(value) {
+                console.log('[搜狐号重定向] 🚫 检测到页面跳转:', value);
+                if (value.includes('firstPage') || value.includes('first/page')) {
+                    console.log('[搜狐号重定向] 🚫 阻止跳转到首页');
+                    return; // 阻止跳转
+                }
+                originalLocationHref = value;
+                window.location.href = value;
+            }
+        });
+
+        console.log('[搜狐号重定向] ✅ localStorage 和 window.location 劫持完成');
     } catch (e) {
-        console.error('[搜狐号重定向] ❌ 设置 toPath 失败:', e);
+        console.error('[搜狐号重定向] ❌ 劫持失败:', e);
     }
 })();
 
