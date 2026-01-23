@@ -15,26 +15,33 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
           return;
         }
 
-        console.log('[搜狐号-preload] 🛡️ 在页面脚本执行之前清除 toPath');
+        console.log('[搜狐号-preload] 🛡️ 在页面脚本执行之前设置 toPath');
 
         try {
-          // 立即清除 toPath
+          const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
           const currentToPath = localStorage.getItem('toPath');
           console.log('[搜狐号-preload] 当前 toPath:', currentToPath);
 
-          // 如果 toPath 是首页路径，立即清除并设置为发布页路径
-          const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
-          const FIRST_PAGE_PATH = '/contentManagement/first/page';
-
-          if (currentToPath && currentToPath.includes('first/page')) {
-            console.log('[搜狐号-preload] ⚠️ 检测到 toPath 是首页路径，立即清除');
-            localStorage.removeItem('toPath');
+          // 🔑 关键修复：无论当前 toPath 是什么值，都强制设置为发布页路径
+          // 这样可以确保第一次打开发布窗口时直接进入发布页
+          if (currentToPath !== PUBLISH_PAGE_PATH) {
+            console.log('[搜狐号-preload] ⚠️ toPath 不是发布页路径，强制设置');
             localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
             console.log('[搜狐号-preload] ✅ 已设置 toPath 为发布页路径:', PUBLISH_PAGE_PATH);
-          } else if (!currentToPath) {
-            localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
-            console.log('[搜狐号-preload] ✅ toPath 为空，已设置为发布页路径:', PUBLISH_PAGE_PATH);
+          } else {
+            console.log('[搜狐号-preload] ✅ toPath 已经是发布页路径，无需修改');
           }
+
+          // 🔑 劫持 localStorage.getItem，确保读取 toPath 时始终返回发布页路径
+          const originalGetItem = localStorage.getItem.bind(localStorage);
+          localStorage.getItem = function(key) {
+            if (key === 'toPath') {
+              console.log('[搜狐号-preload] 🔄 拦截读取 toPath，返回发布页路径');
+              return PUBLISH_PAGE_PATH;
+            }
+            return originalGetItem(key);
+          };
+          console.log('[搜狐号-preload] ✅ 已劫持 localStorage.getItem');
         } catch (e) {
           console.error('[搜狐号-preload] ❌ 处理 toPath 失败:', e);
         }

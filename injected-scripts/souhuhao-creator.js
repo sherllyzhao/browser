@@ -254,12 +254,12 @@
                                 if (sessionResult.success) {
                                     console.log("🚀 ~  ~ sessionResult.data: ", sessionResult.data);
 
-                                    // 🔑 手动删除 localStorage 中的 toPath，防止发布页自动跳转
-                                    if (sessionResult.data.localStorage && sessionResult.data.localStorage.toPath) {
-                                        console.log('[搜狐号授权] 🧹 检测到 toPath:', sessionResult.data.localStorage.toPath);
-                                        delete sessionResult.data.localStorage.toPath;
-                                        console.log('[搜狐号授权] ✅ 已从会话数据中删除 toPath');
+                                    // 🔑 设置 localStorage 中的 toPath 为发布页路径，确保发布窗口直接打开发布页
+                                    if (!sessionResult.data.localStorage) {
+                                        sessionResult.data.localStorage = {};
                                     }
+                                    sessionResult.data.localStorage.toPath = PLATFORM_CONFIG.publishPagePath;
+                                    console.log('[搜狐号授权] ✅ 已设置 toPath 为发布页路径:', PLATFORM_CONFIG.publishPagePath);
 
                                     cookiesData = JSON.stringify(sessionResult.data);
                                     console.log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);

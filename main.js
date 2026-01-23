@@ -3170,7 +3170,27 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       newWindow.webContents.openDevTools();
     }
 
-    // 为新窗口添加脚本注入
+    // 🔑 为新窗口添加脚本注入（使用 dom-ready 而不是 did-finish-load，更早注入）
+    // dom-ready 在 DOM 准备好但在 DOMContentLoaded 之前触发，可以更早执行脚本
+    newWindow.webContents.on('dom-ready', async () => {
+      const currentURL = newWindow.webContents.getURL();
+      console.log('[New Window API] DOM ready:', currentURL);
+
+      // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
+      await scriptManager.getScript(currentURL).then(async (script) => {
+        if (script) {
+          console.log('[New Window API] Injecting script on dom-ready...');
+          try {
+            await newWindow.webContents.executeJavaScript(script);
+            console.log('[New Window API] Script injected successfully');
+          } catch (err) {
+            console.error('[New Window API] Script injection error:', err);
+          }
+        }
+      });
+    });
+
+    // 页面完全加载后通知首页
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
@@ -3184,18 +3204,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         });
         console.log('[New Window API] 已通知首页窗口加载完成');
       }
-
-      await scriptManager.getScript(currentURL).then(async (script) => {
-        if (script) {
-          console.log('[New Window API] Injecting script...');
-          try {
-            await newWindow.webContents.executeJavaScript(script);
-            console.log('[New Window API] Script injected successfully');
-          } catch (err) {
-            console.error('[New Window API] Script injection error:', err);
-          }
-        }
-      });
     });
 
     // 监听新窗口内的导航（SPA 路由）

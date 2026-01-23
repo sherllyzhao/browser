@@ -48,7 +48,8 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline --since=\"2 days ago\" --all)",
       "Bash(git add:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nfix: 搜狐号授权脚本清除 localStorage toPath，防止发布页面自动跳转\n\n在授权脚本加载时立即清除 localStorage 中的 toPath 值，这样发布页面打开时就不会有这个值，不会自动跳转到其他页面。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(md5sum \"D:/浏览器/运营助手/main.js\")"
     ],
     "deny": [],
     "ask": []
