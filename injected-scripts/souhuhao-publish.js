@@ -5,6 +5,16 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
+// 🔑 平台配置（从 platform-config.json 中提取）
+const PLATFORM_CONFIG = {
+    name: '搜狐号',
+    publishPagePath: '/contentManagement/news/addarticle',
+    publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+    firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+    domain: 'mp.sohu.com',
+    cookiesDomain: 'mp.sohu.com'
+};
+
 // 🔑 最优先：在脚本最顶部劫持 localStorage，防止 toPath 导致页面跳转
 // 这必须在任何其他代码执行之前进行
 (function() {
@@ -19,17 +29,17 @@
         // 劫持 setItem，阻止设置 toPath
         localStorage.setItem = function(key, value) {
             if (key === 'toPath') {
-                console.log('[搜狐号发布] 🚫 阻止设置 toPath:', value);
+                console.log('[搜狐号发布] 🚫 阻止修改 toPath:', value, '-> 保持为', PLATFORM_CONFIG.publishPagePath);
                 return; // 直接返回，不执行设置
             }
             return originalSetItem(key, value);
         };
 
-        // 劫持 getItem，toPath 永远返回我们想要的值
+        // 劫持 getItem，toPath 永远返回发布页路径
         localStorage.getItem = function(key) {
             if (key === 'toPath') {
                 console.log('[搜狐号发布] 🔄 拦截读取 toPath，返回发布页路径');
-                return '/contentManagement/news/addarticle'; // 返回发布页路径
+                return PLATFORM_CONFIG.publishPagePath; // 返回发布页路径
             }
             return originalGetItem(key);
         };
@@ -48,8 +58,8 @@
 
         // 🔑 主动设置 toPath 为发布页路径，这样搜狐号的代码就能读取到它
         // 防止页面跳转到其他地方
-        originalSetItem('toPath', '/contentManagement/news/addarticle');
-        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath = /contentManagement/news/addarticle');
+        originalSetItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PLATFORM_CONFIG.publishPagePath);
 
         // 🔑 也劫持 Object.defineProperty，防止通过属性访问器设置 toPath
         const originalDefineProperty = Object.defineProperty;
