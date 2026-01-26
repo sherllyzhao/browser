@@ -208,38 +208,44 @@
                                 const userInfoRes = await userInfoResult.json();
                                 console.log("🚀 ~  ~ userInfoRes: ", userInfoRes);
                                 if(userInfoRes.data && userInfoRes.data.cpInfo){
-                                    const userInfo = userInfoRes.data;
-                                    const publishArticleCountResult = await fetch('http://om.qq.com/wemedia/content/manage/list.do', {
-                                        method: 'POST',
-                                        body: new URLSearchParams({
-                                            pageNo: 1,
-                                            size: 10,
-                                            contentState: 3,
-                                            contentType: 0,
-                                            mergeUnPassed: false,
-                                            filterState: 0
-                                        }),
+                                    const userInfo = userInfoRes.data.cpInfo;
+                                    const fansCountResult = await fetch('https://om.qq.com/mstatistic/ommixin/getFansTotalStatistic?app=&relogin=1', {
+                                        method: 'GET',
+                                        credentials: 'include' // 带上 cookies
+                                    });
+
+                                    const fansCountRes = await fansCountResult.json();
+                                    let fansCount = 0;
+                                    if(fansCountRes.data){
+                                        fansCount = fansCountRes.data.data ? JSON.parse(fansCountRes.data.data) ? JSON.parse(fansCountRes.data.data).fans : 0 : 0;
+                                        console.log('[腾讯号授权] ✅ 发布文章数量:', fansCount);
+                                    }else{
+                                        console.error('[腾讯号授权] ⚠️ 获取发布文章数量失败:', fansCountRes.msg);
+                                    }
+
+                                    const publishArticleCountResult = await fetch('https://om.qq.com/marticle/article/list?category=&search=&source=&startDate=&endDate=&num=10&ftype=&readChannel=all&dstChannel=&isPartDst=0&isQBQA=false&refreshField=&relogin=1', {
+                                        method: 'GET',
                                         credentials: 'include' // 带上 cookies
                                     });
 
                                     const publishArticleCountRes = await publishArticleCountResult.json();
                                     let publishArticleCount = 0;
-                                    if(publishArticleCountRes.code === 1){
-                                        publishArticleCount = publishArticleCountRes.data.total;
+                                    if(publishArticleCountRes.data){
+                                        publishArticleCount = fansCountRes.data.totalNumber ?? 0;
                                         console.log('[腾讯号授权] ✅ 发布文章数量:', publishArticleCount);
                                     }else{
                                         console.error('[腾讯号授权] ⚠️ 获取发布文章数量失败:', publishArticleCountRes.msg);
                                     }
                                     const scanData = {
                                         data: JSON.stringify({
-                                            nickname: userInfo.tname,
-                                            avatar: userInfo.icon,
-                                            follow: userInfo.yesterdaySubscribeCount,
-                                            follower_count: userInfo.totalSubscribeCount, //粉丝
+                                            nickname: userInfo.mediaName,
+                                            avatar: userInfo.header,
+                                            follow: 0,
+                                            follower_count: fansCount, //粉丝
                                             video: publishArticleCount, // 作品数
-                                            uid: userInfo.tid,
-                                            favoriting_count: userInfo.yesterdaySubscribeCount, // 收藏数
-                                            total_favorited: userInfo.totalSubscribeCount, // 总收藏数
+                                            uid: userInfo.mediaId,
+                                            favoriting_count: 0, // 收藏数
+                                            total_favorited: 0, // 总收藏数
                                             company_id: companyId,
                                             auth_type: messageData.auth_type,
                                             cookies: cookiesData
@@ -249,7 +255,7 @@
 
                                     console.log('[腾讯号授权] 📤 准备发送数据到接口...');
                                     // 发送数据到服务器
-                                    const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/wyhinfo', {
+                                    const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/txinfo', {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json'
@@ -276,7 +282,7 @@
                                         // 这样发布时才能用新授权的账号
                                         try {
                                             console.log('[腾讯号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent('baidu.com');
+                                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent('om.qq.com');
                                             if (migrateResult.success) {
                                                 console.log(`[腾讯号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
                                             } else {
