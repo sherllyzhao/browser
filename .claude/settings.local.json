@@ -49,7 +49,11 @@
       "Bash(git add:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nfix: 搜狐号授权脚本清除 localStorage toPath，防止发布页面自动跳转\n\n在授权脚本加载时立即清除 localStorage 中的 toPath 值，这样发布页面打开时就不会有这个值，不会自动跳转到其他页面。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git commit:*)",
-      "Bash(md5sum \"D:/浏览器/运营助手/main.js\")"
+      "Bash(md5sum \"D:/浏览器/运营助手/main.js\")",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -5)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" add injected-scripts/scripts-config.json injected-scripts/souhuhao-publish.js injected-scripts/souhuhao-redirect.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" commit -m \"$(cat <<''EOF''\nfix: 修复搜狐号发布成功上报逻辑并添加网易号草稿管理配置\n\n- 搜狐号重定向脚本使用 sendStatistics 和 getStatisticsUrl 替代硬编码 API\n- 搜狐号发布脚本改用全局 getPublishSuccessKey 函数\n- 添加网易号草稿管理页面 (#/draft-manage) 的脚本配置\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
