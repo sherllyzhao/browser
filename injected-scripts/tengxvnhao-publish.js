@@ -736,7 +736,22 @@
                                                     }
 
                                                     // 自主声明
+                                                    const declarationBtns = document.querySelectorAll('.omui-button--dashed');
+                                                    console.log("🚀 ~ tryUploadImage ~ declarationBtns: ", declarationBtns);
+                                                    for (let declarationBtn of declarationBtns) {
+                                                        if(declarationBtn.textContent.includes("自主声明")){
+                                                            declarationBtn.click();
+                                                            break;
+                                                        }
+                                                    }
+                                                    await delay(1000);
+                                                    const declarationDialog = await waitForElement('.omui-dialog');
+                                                    if(declarationDialog){
+                                                        const dialogTitle = declarationDialog.querySelector('.omui-dialog-header');
+                                                        if(dialogTitle && dialogTitle.textContent.includes("自主声明")){
 
+                                                        }
+                                                    }
 
                                                     await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
