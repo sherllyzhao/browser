@@ -119,28 +119,31 @@ const PLATFORM_CONFIG = {
             localStorage.removeItem(PUBLISH_SUCCESS_KEY);
             console.log('[搜狐号重定向] 🧹 已清除发布成功标志');
 
-            if (publishId && typeof sendStatisticsSuccess === 'function') {
-                console.log('[搜狐号重定向] 📤 调用 sendStatisticsSuccess, publishId:', publishId);
-                await sendStatisticsSuccess(publishId, '搜狐号发布');
+            if (publishId && typeof sendStatistics === 'function') {
+                // 使用 common.js 中的 sendStatistics 函数（会自动使用 getStatisticsUrl 获取正确的 API 地址）
+                console.log('[搜狐号重定向] 📤 调用 sendStatistics, publishId:', publishId);
+                await sendStatistics(publishId, '搜狐号发布');
                 console.log('[搜狐号重定向] ✅ 发布成功上报完成');
             } else if (publishId) {
-                // sendStatisticsSuccess 可能在 common.js 中，如果不存在就手动调用
-                console.log('[搜狐号重定向] ⚠️ sendStatisticsSuccess 函数不存在，尝试手动上报');
+                // sendStatistics 不存在，使用 getStatisticsUrl 获取正确的 API 地址
+                console.log('[搜狐号重定向] ⚠️ sendStatistics 函数不存在，尝试手动上报');
                 try {
-                    const mainInfo = await window.browserAPI.getMainUrl();
-                    if (mainInfo.success) {
-                        const apiUrl = `${mainInfo.origin}/api/mediaauth/tjlog`;
-                        const response = await fetch(apiUrl, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                id: publishId,
-                                status: 1,
-                                remark: '搜狐号发布成功'
-                            })
-                        });
-                        console.log('[搜狐号重定向] ✅ 手动上报成功，响应:', await response.text());
+                    // 使用 getStatisticsUrl 获取正确的 API 地址（处理本地开发环境）
+                    let apiUrl;
+                    if (typeof getStatisticsUrl === 'function') {
+                        apiUrl = await getStatisticsUrl(false);
+                    } else {
+                        // 如果 getStatisticsUrl 也不存在，使用默认地址
+                        apiUrl = 'https://apidev.china9.cn/api/mediaauth/tjlog';
                     }
+                    console.log('[搜狐号重定向] 📤 API 地址:', apiUrl);
+                    const scanData = { data: JSON.stringify({ id: publishId }) };
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(scanData)
+                    });
+                    console.log('[搜狐号重定向] ✅ 手动上报成功');
                 } catch (apiError) {
                     console.error('[搜狐号重定向] ❌ 手动上报失败:', apiError);
                 }

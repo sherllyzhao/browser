@@ -318,12 +318,8 @@
         return null;
     };
 
-    // 获取窗口专属的发布成功数据 key
-    const getPublishSuccessKey = () => {
-        const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
-        console.log('[搜狐号发布] 🔑 使用 localStorage key:', key);
-        return key;
-    };
+    // 🔑 注意：getPublishSuccessKey() 使用 IIFE 外部定义的全局函数
+    // 返回固定的 'sohu_publish_success_data'，与 souhuhao-redirect.js 保持一致
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号发布脚本已注入');
