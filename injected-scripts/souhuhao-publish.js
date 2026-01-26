@@ -1012,8 +1012,10 @@
                                                     }
                                                     await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
+                                                    console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
+                                                    //return
                                                     if (+publishTime === 2) {
-                                                        let scheduledReleasesBtn = document.querySelector('.publish-report-btn');
+                                                        let scheduledReleasesBtn = document.querySelector('.publish-report-btn.timeout-pub');
 
                                                         if (scheduledReleasesBtn) {
                                                             console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
@@ -1025,9 +1027,6 @@
                                                                 });
                                                                 scheduledReleasesBtn.dispatchEvent(clickEvent);
                                                                 console.log('[搜狐号发布] ✅ 已点击定时发布（模拟鼠标事件）');
-                                                                await delay(2000);
-                                                                // 检测有没有动态发布
-                                                                await checkPublishResult(dataObj, true);
                                                                 await delay(2000);
                                                                 //  检测有没有定时发布弹窗
                                                                 const scheduledReleasesModal = document.querySelector('.pushtimeout-dialog');
@@ -1063,8 +1062,7 @@
 
                                                                         // 点击确定发布按钮
                                                                         await delay(500);
-                                                                        const confirmBtn = Array.from(document.querySelectorAll('.cheetah-btn-primary'))
-                                                                            .find(btn => btn.textContent.trim() === '定时发布');
+                                                                        const confirmBtn = document.querySelector('.pushtimeout-btn .sure-btn');
 
                                                                         if (confirmBtn) {
                                                                             console.log('[搜狐号发布] ✅ 点击确定定时发布');
@@ -1371,7 +1369,7 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
         console.log('[搜狐号发布] 🔍 准备选择:', targetValue);
 
         // 1. 找到触发器并点击打开下拉
-        const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
+        const selectTrigger = selectElement.querySelector('i');
         if (!selectTrigger) {
             console.error('[搜狐号发布] ❌ 找不到 select 触发器');
             return false;
@@ -1390,7 +1388,7 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
 
         while (Date.now() - startTime < timeout) {
             // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelector('.select ul');
+            virtualList = selectElement.querySelector('ul');
 
             if (virtualList) {
                 // 查找所有可见的选项
@@ -1496,7 +1494,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
 
         await new Promise(r => setTimeout(r, 300));
 
-        const hourText = `${hour}点`;
+        const hourText = `${hour}`;
         console.log('[搜狐号发布] 🕐 选择小时:', hourText);
         if (!await selectFromVirtualList(hourSelect, hourText)) {
             return false;
@@ -1504,7 +1502,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
 
         await new Promise(r => setTimeout(r, 300));
 
-        const minuteText = `${minute}分`;
+        const minuteText = `${minute}`;
         console.log('[搜狐号发布] ⏱️ 选择分钟:', minuteText);
         if (!await selectFromVirtualList(minuteSelect, minuteText)) {
             return false;
