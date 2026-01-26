@@ -122,48 +122,17 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
         if (message.type === 'publish-data') {
           console.log('[小红书发布] ✅ 收到发布数据:', message.data);
 
-          // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
-          if (message.windowId) {
-            const myWindowId = await window.browserAPI.getWindowId();
-            console.log('[小红书发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-            if (myWindowId !== message.windowId) {
-              console.log('[小红书发布] ⏭️ 消息不是发给我的，跳过');
-              return;
-            }
-            console.log('[小红书发布] ✅ windowId 匹配，处理消息');
-          }
+          // 使用公共方法检查 windowId 是否匹配
+          const isMatch = await checkWindowIdMatch(message, '[小红书发布]');
+          if (!isMatch) return;
 
-          // 解析数据获取视频 ID（兼容字符串和对象）
-          let messageData;
-          try {
-            messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-          } catch (parseError) {
-            console.error('[小红书发布] ❌ 解析消息数据失败:', parseError);
-            console.error('[小红书发布] 原始数据:', message.data);
-            return;
-          }
+          // 使用公共方法解析消息数据
+          const messageData = parseMessageData(message.data, '[小红书发布]');
+          if (!messageData) return;
 
-          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-          if (messageData.cookies) {
-            console.log('[小红书发布] 📦 检测到 cookies 数据，开始恢复会话...');
-            try {
-              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
-              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
-              if (restoreResult.success) {
-                console.log('[小红书发布] ✅ 会话数据恢复成功:', restoreResult.results);
-                // 恢复 cookies 后需要刷新页面才能生效
-                console.log('[小红书发布] 🔄 刷新页面以应用 cookies...');
-                // 保存消息数据到全局存储，刷新后继续使用
-                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
-                window.location.reload();
-                return; // 刷新后脚本会重新注入
-              } else {
-                console.warn('[小红书发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
-              }
-            } catch (restoreError) {
-              console.error('[小红书发布] ⚠️ 会话数据恢复异常:', restoreError);
-            }
-          }
+          // 使用公共方法恢复会话数据
+          const needReload = await restoreSessionAndReload(messageData, '[小红书发布]');
+          if (needReload) return; // 已触发刷新，脚本会重新注入
 
           // 防重复检查
           if (isProcessing) {

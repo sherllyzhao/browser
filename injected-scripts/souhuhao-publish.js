@@ -227,96 +227,35 @@
     let currentWindowId = null;
 
     // ===========================
-    // 🔴 全局错误监听器（提升到 IIFE 顶层，让 checkPublishResult 可以访问）
+    // 🔴 使用公共错误监听器（来自 common.js）
     // ===========================
-    const capturedErrors = []; // 收集所有捕获的错误信息
-    let errorObserver = null;
+    let errorListener = null;
 
-    // 启动错误监听
+    // 初始化错误监听器
+    const initErrorListener = () => {
+        if (typeof createErrorListener === 'function' && ERROR_LISTENER_CONFIGS?.sohu) {
+            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.sohu);
+            console.log('[搜狐号发布] ✅ 使用公共错误监听器配置');
+        } else {
+            // 回退方案：使用本地配置
+            errorListener = createErrorListener({
+                logPrefix: '[搜狐号发布]',
+                selectors: [
+                    { containerClass: 'ne-snackbar-item-description', textSelector: 'span:last-child' },
+                    { containerClass: 'el-message--error', textSelector: '.el-message__content', recursiveSelector: '.el-message.el-message--error' }
+                ]
+            });
+            console.log('[搜狐号发布] ⚠️ 使用本地错误监听器配置');
+        }
+    };
+
+    // 兼容旧代码的函数别名
     const startErrorListener = () => {
-        console.log('[搜狐号发布] 🔍 启动全局错误监听器...');
-
-        errorObserver = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType === 1) {
-                        const element = node;
-                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-
-                        // 检测搜狐 snackbar 提示框（新结构）
-                        if (classList.includes('ne-snackbar-item-description')) {
-                            const errorSpan = element.querySelector('span:last-child');
-                            if (errorSpan) {
-                                const text = (errorSpan.textContent || '').trim();
-                                if (text && !capturedErrors.includes(text)) {
-                                    capturedErrors.push(text);
-                                    console.log('[搜狐号发布] 📨 捕获到错误信息（snackbar）:', text);
-                                }
-                            }
-                        }
-
-                        // 🔑 检测 Element UI 错误消息（el-message）
-                        if (classList.includes('el-message') && classList.includes('el-message--error')) {
-                            const contentEl = element.querySelector('.el-message__content');
-                            if (contentEl) {
-                                const text = (contentEl.textContent || '').trim();
-                                if (text && !capturedErrors.includes(text)) {
-                                    capturedErrors.push(text);
-                                    console.log('[搜狐号发布] 📨 捕获到错误信息（el-message）:', text);
-                                }
-                            }
-                        }
-
-                        // 🔑 递归检查子元素中的 el-message
-                        const elMessages = element.querySelectorAll('.el-message.el-message--error');
-                        for (const elMsg of elMessages) {
-                            const contentEl = elMsg.querySelector('.el-message__content');
-                            if (contentEl) {
-                                const text = (contentEl.textContent || '').trim();
-                                if (text && !capturedErrors.includes(text)) {
-                                    capturedErrors.push(text);
-                                    console.log('[搜狐号发布] 📨 捕获到错误信息（el-message 子元素）:', text);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        errorObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        console.log('[搜狐号发布] ✅ 全局错误监听器已启动');
+        if (!errorListener) initErrorListener();
+        errorListener.start();
     };
-
-    // 停止错误监听
-    const stopErrorListener = () => {
-        if (errorObserver) {
-            errorObserver.disconnect();
-            errorObserver = null;
-            console.log('[搜狐号发布] 🛑 全局错误监听器已停止');
-        }
-    };
-
-    // 获取最新的错误信息
-    const getLatestError = () => {
-        const ignoredMessages = [
-            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
-        ];
-        for (let i = capturedErrors.length - 1; i >= 0; i--) {
-            const msg = capturedErrors[i];
-            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-            if (!isIgnored) {
-                console.log('[搜狐号发布] 🔍 getLatestError 返回:', msg);
-                return msg;
-            }
-        }
-        return null;
-    };
+    const stopErrorListener = () => errorListener?.stop();
+    const getLatestError = () => errorListener?.getLatestError() || null;
 
     // 🔑 注意：getPublishSuccessKey() 使用 IIFE 外部定义的全局函数
     // 返回固定的 'sohu_publish_success_data'，与 souhuhao-redirect.js 保持一致
@@ -362,47 +301,17 @@
                 // 接收完整的发布数据（直接传递，不使用 IndexedDB）
                 // 兼容 publish-data 和 auth-data 两种消息类型
                 if (message.type === 'publish-data') {
-                    let messageData;
-                    try {
-                        messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-                    } catch (parseError) {
-                        console.error('[搜狐号发布] ❌ 解析消息数据失败:', parseError);
-                        console.error('[搜狐号发布] 原始数据:', message.data);
-                        return;
-                    }
+                    // 使用公共方法解析消息数据
+                    const messageData = parseMessageData(message.data, '[搜狐号发布]');
+                    if (!messageData) return;
 
-                    // 🔑 先检查 windowId 是否匹配（在保存数据之前！避免串数据）
-                    if (message.windowId) {
-                        const myWindowId = await window.browserAPI.getWindowId();
-                        console.log('[搜狐号发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-                        if (myWindowId !== message.windowId) {
-                            console.log('[搜狐号发布] ⏭️ 消息不是发给我的，跳过（不保存数据）');
-                            return;
-                        }
-                        console.log('[搜狐号发布] ✅ windowId 匹配，处理消息');
-                    }
+                    // 使用公共方法检查 windowId 是否匹配
+                    const isMatch = await checkWindowIdMatch(message, '[搜狐号发布]');
+                    if (!isMatch) return;
 
-                    // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-                    if (messageData.cookies) {
-                        console.log('[搜狐号发布] 📦 检测到 cookies 数据，开始恢复会话...');
-                        try {
-                            const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
-                            const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
-                            if (restoreResult.success) {
-                                console.log('[搜狐号发布] ✅ 会话数据恢复成功:', restoreResult.results);
-                                // 恢复 cookies 后需要刷新页面才能生效
-                                console.log('[搜狐号发布] 🔄 刷新页面以应用 cookies...');
-                                // 保存消息数据到全局存储，刷新后继续使用
-                                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
-                                window.location.reload();
-                                return; // 刷新后脚本会重新注入
-                            } else {
-                                console.warn('[搜狐号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
-                            }
-                        } catch (restoreError) {
-                            console.error('[搜狐号发布] ⚠️ 会话数据恢复异常:', restoreError);
-                        }
-                    }
+                    // 使用公共方法恢复会话数据
+                    const needReload = await restoreSessionAndReload(messageData, '[搜狐号发布]');
+                    if (needReload) return; // 已触发刷新，脚本会重新注入
 
                     // windowId 匹配后才保存消息数据
                     receivedMessageData = messageData;

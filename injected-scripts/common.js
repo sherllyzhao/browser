@@ -294,16 +294,78 @@ window.checkPageStateAndReload = function(scriptName = '脚本', reloadDelay = 2
 };
 
 // 等待元素出现的通用函数
+// 支持特殊语法：
+//   - class^=prefix  匹配 class 中以 prefix 开头的元素（用于 CSS Modules 等随机后缀类名）
+//   - class*=substr  匹配 class 中包含 substr 的元素
+//   - class$=suffix  匹配 class 中以 suffix 结尾的元素
+// 示例：waitForElement('class^=editor_container') 匹配 class="editor_container-abc123" 的元素
 window.waitForElement = function(selector, timeout = 30000, checkInterval = 200, ele = document) {
     return new Promise((resolve, reject) => {
         const startTime = Date.now();
         let timeoutId;
 
+        // 解析特殊的类名匹配语法
+        function parseClassSelector(sel) {
+            // class^=prefix (前缀匹配)
+            const prefixMatch = sel.match(/^class\^=(.+)$/);
+            if (prefixMatch) {
+                const prefix = prefixMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.startsWith(prefix))) {
+                            return el;
+                        }
+                    }
+                    return null;
+                };
+            }
+
+            // class*=substr (包含匹配)
+            const containsMatch = sel.match(/^class\*=(.+)$/);
+            if (containsMatch) {
+                const substr = containsMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.includes(substr))) {
+                            return el;
+                        }
+                    }
+                    return null;
+                };
+            }
+
+            // class$=suffix (后缀匹配)
+            const suffixMatch = sel.match(/^class\$=(.+)$/);
+            if (suffixMatch) {
+                const suffix = suffixMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.endsWith(suffix))) {
+                            return el;
+                        }
+                    }
+                    return null;
+                };
+            }
+
+            // 不是特殊语法，返回 null
+            return null;
+        }
+
         function check() {
             try {
                 let el;
                 if (typeof selector === "string") {
-                    el = ele.querySelector(selector);
+                    // 检查是否是特殊的类名匹配语法
+                    const customFinder = parseClassSelector(selector);
+                    if (customFinder) {
+                        el = customFinder(ele);
+                    } else {
+                        el = ele.querySelector(selector);
+                    }
                 } else if (typeof selector === "function") {
                     // 如果是函数，调用它获取元素
                     el = selector();
@@ -321,6 +383,112 @@ window.waitForElement = function(selector, timeout = 30000, checkInterval = 200,
                 if (Date.now() - startTime > timeout) {
                     clearTimeout(timeoutId);
                     reject(new Error(`找不到元素: ${selector}`));
+                    return;
+                }
+
+                timeoutId = setTimeout(check, checkInterval);
+            } catch (error) {
+                clearTimeout(timeoutId);
+                reject(error);
+            }
+        }
+
+        check();
+    });
+};
+
+// 等待多个元素出现的通用函数（返回数组）
+// 支持特殊语法：
+//   - class^=prefix  匹配 class 中以 prefix 开头的所有元素
+//   - class*=substr  匹配 class 中包含 substr 的所有元素
+//   - class$=suffix  匹配 class 中以 suffix 结尾的所有元素
+// 示例：waitForElements('class^=editor_container') 返回所有 class 以 editor_container 开头的元素
+// minCount: 最少需要找到的元素数量，默认 1
+window.waitForElements = function(selector, timeout = 30000, checkInterval = 200, ele = document, minCount = 1) {
+    return new Promise((resolve, reject) => {
+        const startTime = Date.now();
+        let timeoutId;
+
+        // 解析特殊的类名匹配语法（返回所有匹配元素）
+        function parseClassSelectorAll(sel) {
+            // class^=prefix (前缀匹配)
+            const prefixMatch = sel.match(/^class\^=(.+)$/);
+            if (prefixMatch) {
+                const prefix = prefixMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    const results = [];
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.startsWith(prefix))) {
+                            results.push(el);
+                        }
+                    }
+                    return results;
+                };
+            }
+
+            // class*=substr (包含匹配)
+            const containsMatch = sel.match(/^class\*=(.+)$/);
+            if (containsMatch) {
+                const substr = containsMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    const results = [];
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.includes(substr))) {
+                            results.push(el);
+                        }
+                    }
+                    return results;
+                };
+            }
+
+            // class$=suffix (后缀匹配)
+            const suffixMatch = sel.match(/^class\$=(.+)$/);
+            if (suffixMatch) {
+                const suffix = suffixMatch[1];
+                return (root) => {
+                    const all = root.querySelectorAll('*');
+                    const results = [];
+                    for (const el of all) {
+                        if (el.classList && [...el.classList].some(cls => cls.endsWith(suffix))) {
+                            results.push(el);
+                        }
+                    }
+                    return results;
+                };
+            }
+
+            // 不是特殊语法，返回 null
+            return null;
+        }
+
+        function check() {
+            try {
+                let els = [];
+                if (typeof selector === "string") {
+                    // 检查是否是特殊的类名匹配语法
+                    const customFinder = parseClassSelectorAll(selector);
+                    if (customFinder) {
+                        els = customFinder(ele);
+                    } else {
+                        els = Array.from(ele.querySelectorAll(selector));
+                    }
+                } else if (typeof selector === "function") {
+                    // 如果是函数，调用它获取元素数组
+                    const result = selector();
+                    els = Array.isArray(result) ? result : (result ? [result] : []);
+                }
+
+                if (els.length >= minCount) {
+                    clearTimeout(timeoutId);
+                    resolve(els);
+                    return;
+                }
+
+                if (Date.now() - startTime > timeout) {
+                    clearTimeout(timeoutId);
+                    reject(new Error(`找不到足够的元素: ${selector} (需要 ${minCount} 个，找到 ${els.length} 个)`));
                     return;
                 }
 
@@ -939,6 +1107,141 @@ window.sendStatisticsError = async function(publishId, statusText, platform = ''
     }
 };
 
+// ===========================
+// 🔴 发布脚本公共方法（消息处理、会话恢复等）
+// ===========================
+
+/**
+ * 解析消息数据（字符串或对象均可）
+ * @param {Object|string} data - 消息数据
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Object|null} 解析后的数据，失败返回 null
+ */
+window.parseMessageData = function(data, logPrefix = '[发布]') {
+    try {
+        return typeof data === 'string' ? JSON.parse(data) : data;
+    } catch (parseError) {
+        console.error(`${logPrefix} ❌ 解析消息数据失败:`, parseError);
+        console.error(`${logPrefix} 原始数据:`, data);
+        return null;
+    }
+};
+
+/**
+ * 检查窗口 ID 是否匹配
+ * @param {Object} message - 消息对象，包含 windowId 字段
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Promise<boolean>} 是否匹配（无 windowId 时返回 true）
+ */
+window.checkWindowIdMatch = async function(message, logPrefix = '[发布]') {
+    if (!message.windowId) {
+        return true; // 没有 windowId 限制，认为匹配
+    }
+
+    try {
+        const myWindowId = await window.browserAPI.getWindowId();
+        console.log(`${logPrefix} 我的窗口 ID:`, myWindowId, '消息目标窗口 ID:', message.windowId);
+
+        if (myWindowId !== message.windowId) {
+            console.log(`${logPrefix} ⏭️ 消息不是发给我的，跳过`);
+            return false;
+        }
+
+        console.log(`${logPrefix} ✅ windowId 匹配，处理消息`);
+        return true;
+    } catch (e) {
+        console.error(`${logPrefix} ❌ 检查 windowId 失败:`, e);
+        return true; // 出错时默认处理
+    }
+};
+
+/**
+ * 恢复会话数据并刷新页面
+ * @param {Object} messageData - 发布数据（包含 cookies 字段）
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Promise<boolean>} 是否需要刷新（true 表示已触发刷新，调用方应 return）
+ */
+window.restoreSessionAndReload = async function(messageData, logPrefix = '[发布]') {
+    if (!messageData.cookies) {
+        return false; // 没有 cookies 数据，无需恢复
+    }
+
+    console.log(`${logPrefix} 📦 检测到 cookies 数据，开始恢复会话...`);
+
+    try {
+        const cookiesData = typeof messageData.cookies === 'string'
+            ? messageData.cookies
+            : JSON.stringify(messageData.cookies);
+
+        const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
+
+        if (restoreResult.success) {
+            console.log(`${logPrefix} ✅ 会话数据恢复成功:`, restoreResult.results);
+            console.log(`${logPrefix} 🔄 刷新页面以应用 cookies...`);
+
+            // 保存消息数据到全局存储，刷新后继续使用
+            const windowId = await window.browserAPI.getWindowId();
+            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+
+            window.location.reload();
+            return true; // 已触发刷新
+        } else {
+            console.warn(`${logPrefix} ⚠️ 会话数据恢复失败:`, restoreResult.error);
+            return false;
+        }
+    } catch (restoreError) {
+        console.error(`${logPrefix} ⚠️ 会话数据恢复异常:`, restoreError);
+        return false;
+    }
+};
+
+/**
+ * 从全局存储加载发布数据（刷新页面后使用）
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Promise<Object|null>} 发布数据，无数据返回 null
+ */
+window.loadPublishDataFromGlobalStorage = async function(logPrefix = '[发布]') {
+    try {
+        const windowId = await window.browserAPI.getWindowId();
+        console.log(`${logPrefix} 检查全局存储，窗口 ID:`, windowId);
+
+        if (!windowId) {
+            console.log(`${logPrefix} ❌ 无法获取窗口 ID`);
+            return null;
+        }
+
+        const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+        console.log(`${logPrefix} 📦 从全局存储读取 publish_data_window_${windowId}:`, publishData ? '有数据' : '无数据');
+
+        if (publishData) {
+            // 清除已使用的数据，避免重复处理
+            await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+            console.log(`${logPrefix} 🗑️ 已清除全局存储中的发布数据`);
+        }
+
+        return publishData;
+    } catch (e) {
+        console.error(`${logPrefix} ❌ 从全局存储加载数据失败:`, e);
+        return null;
+    }
+};
+
+/**
+ * 获取当前窗口 ID 并记录日志
+ * @param {string} logPrefix - 日志前缀
+ * @returns {Promise<number|string|null>} 窗口 ID
+ */
+window.getCurrentWindowId = async function(logPrefix = '[发布]') {
+    try {
+        const windowId = await window.browserAPI.getWindowId();
+        console.log(`${logPrefix} 当前窗口 ID:`, windowId);
+        return windowId;
+    } catch (e) {
+        console.error(`${logPrefix} ❌ 获取窗口 ID 失败:`, e);
+        return null;
+    }
+};
+
 // 带重试的点击按钮（改进版 - 等待按钮可用后再点击）
 // defaultMessage: 当没有捕获到平台提示时返回的默认消息（用于小红书等跳页面代表成功的平台）
 window.clickWithRetry = async function(element, maxRetries = 3, delay = 300, captureMessage = false, defaultMessage = '发布成功') {
@@ -1222,8 +1525,210 @@ window.delay = function(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 };
 
+// ===========================
+// 🔴 通用错误监听器工厂函数
+// ===========================
+/**
+ * 创建错误监听器实例
+ * @param {Object} options - 配置选项
+ * @param {string} options.logPrefix - 日志前缀，如 '[搜狐号发布]'
+ * @param {Array} options.selectors - 选择器配置数组，每项包含：
+ *   - {string} containerClass - 容器类名（用于 classList.includes 检测）
+ *   - {string} textSelector - 文本元素选择器
+ *   - {string} [recursiveSelector] - 可选，递归查找的选择器
+ * @param {Array} [options.ignoredMessages] - 要忽略的消息列表
+ * @returns {Object} 返回监听器实例，包含 start, stop, getLatestError, getErrors, clear 方法
+ *
+ * @example
+ * // 搜狐号用法
+ * const errorListener = createErrorListener({
+ *   logPrefix: '[搜狐号发布]',
+ *   selectors: [
+ *     { containerClass: 'ne-snackbar-item-description', textSelector: 'span:last-child' },
+ *     { containerClass: 'el-message--error', textSelector: '.el-message__content', recursiveSelector: '.el-message.el-message--error' }
+ *   ]
+ * });
+ * errorListener.start();
+ * // ... 执行操作 ...
+ * const error = errorListener.getLatestError();
+ * errorListener.stop();
+ *
+ * @example
+ * // 腾讯号用法
+ * const errorListener = createErrorListener({
+ *   logPrefix: '[腾讯号发布]',
+ *   selectors: [
+ *     { containerClass: 'omui-message', textSelector: '.omui-message__desc', recursiveSelector: '.omui-message' }
+ *   ]
+ * });
+ */
+window.createErrorListener = function(options = {}) {
+    const {
+        logPrefix = '[发布]',
+        selectors = [],
+        ignoredMessages = [
+            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+        ]
+    } = options;
+
+    // 内部状态
+    const capturedErrors = [];
+    let errorObserver = null;
+
+    // 启动错误监听
+    function start() {
+        if (errorObserver) {
+            console.log(`${logPrefix} ⚠️ 错误监听器已经在运行`);
+            return;
+        }
+
+        console.log(`${logPrefix} 🔍 启动全局错误监听器...`);
+
+        errorObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType === 1) {
+                        const element = node;
+                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
+
+                        // 遍历所有配置的选择器
+                        for (const selectorConfig of selectors) {
+                            const { containerClass, textSelector, recursiveSelector } = selectorConfig;
+
+                            // 检测容器类名
+                            if (containerClass && classList.includes(containerClass)) {
+                                const textEl = element.querySelector(textSelector);
+                                if (textEl) {
+                                    const text = (textEl.textContent || '').trim();
+                                    if (text && !capturedErrors.includes(text)) {
+                                        capturedErrors.push(text);
+                                        console.log(`${logPrefix} 📨 捕获到错误信息:`, text);
+                                    }
+                                }
+                            }
+
+                            // 递归检查子元素
+                            if (recursiveSelector) {
+                                const childElements = element.querySelectorAll(recursiveSelector);
+                                for (const childEl of childElements) {
+                                    const textEl = childEl.querySelector(textSelector);
+                                    if (textEl) {
+                                        const text = (textEl.textContent || '').trim();
+                                        if (text && !capturedErrors.includes(text)) {
+                                            capturedErrors.push(text);
+                                            console.log(`${logPrefix} 📨 捕获到错误信息（子元素）:`, text);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        errorObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        console.log(`${logPrefix} ✅ 全局错误监听器已启动`);
+    }
+
+    // 停止错误监听
+    function stop() {
+        if (errorObserver) {
+            errorObserver.disconnect();
+            errorObserver = null;
+            console.log(`${logPrefix} 🛑 全局错误监听器已停止`);
+        }
+    }
+
+    // 获取最新的错误信息（过滤掉忽略的消息）
+    function getLatestError() {
+        for (let i = capturedErrors.length - 1; i >= 0; i--) {
+            const msg = capturedErrors[i];
+            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
+            if (!isIgnored) {
+                console.log(`${logPrefix} 🔍 getLatestError 返回:`, msg);
+                return msg;
+            }
+        }
+        return null;
+    }
+
+    // 获取所有错误
+    function getErrors() {
+        return [...capturedErrors];
+    }
+
+    // 清空错误列表
+    function clear() {
+        capturedErrors.length = 0;
+        console.log(`${logPrefix} 🗑️ 错误列表已清空`);
+    }
+
+    // 返回监听器实例
+    return {
+        start,
+        stop,
+        getLatestError,
+        getErrors,
+        clear
+    };
+};
+
+// 预定义的平台错误监听器配置
+window.ERROR_LISTENER_CONFIGS = {
+    // 搜狐号
+    sohu: {
+        logPrefix: '[搜狐号发布]',
+        selectors: [
+            { containerClass: 'ne-snackbar-item-description', textSelector: 'span:last-child' },
+            { containerClass: 'el-message--error', textSelector: '.el-message__content', recursiveSelector: '.el-message.el-message--error' }
+        ]
+    },
+    // 腾讯号
+    tengxun: {
+        logPrefix: '[腾讯号发布]',
+        selectors: [
+            { containerClass: 'omui-message', textSelector: '.omui-message__desc', recursiveSelector: '.omui-message' }
+        ]
+    },
+    // 百家号
+    baijiahao: {
+        logPrefix: '[百家号发布]',
+        selectors: [
+            { containerClass: 'cheetah-message-error', textSelector: 'span:last-child', recursiveSelector: '.cheetah-message.cheetah-message-error' },
+            { containerClass: 'cheetah-message', textSelector: '.cheetah-message-custom-content span:last-child' }
+        ]
+    },
+    // 抖音
+    douyin: {
+        logPrefix: '[抖音发布]',
+        selectors: [
+            { containerClass: 'semi-toast', textSelector: '.semi-toast-content-text' }
+        ]
+    },
+    // 小红书
+    xiaohongshu: {
+        logPrefix: '[小红书发布]',
+        selectors: [
+            { containerClass: 'd-toast', textSelector: '.d-toast-description' }
+        ]
+    },
+    // 网易号
+    wangyi: {
+        logPrefix: '[网易号发布]',
+        selectors: [
+            { containerClass: 'el-message--error', textSelector: '.el-message__content', recursiveSelector: '.el-message.el-message--error' }
+        ]
+    }
+};
+
 console.log('[common.js] ✅ common.js 加载完成');
-console.log('[common.js] 已定义函数: waitForElement, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay');
+console.log('[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId');
 
 } // 结束 if-else 块，所有函数在 else 块内定义
 
@@ -1285,6 +1790,7 @@ window.removeHashTags = function(str) {
 
 // 定义全局别名，确保向后兼容
 if (typeof waitForElement === 'undefined') window.waitForElement && (waitForElement = window.waitForElement);
+if (typeof waitForElements === 'undefined') window.waitForElements && (waitForElements = window.waitForElements);
 if (typeof retryOperation === 'undefined') window.retryOperation && (retryOperation = window.retryOperation);
 if (typeof sendMessageToParent === 'undefined') window.sendMessageToParent && (sendMessageToParent = window.sendMessageToParent);
 if (typeof uploadFileToInput === 'undefined') window.uploadFileToInput && (uploadFileToInput = window.uploadFileToInput);
@@ -1300,6 +1806,13 @@ if (typeof getStatisticsUrl === 'undefined') window.getStatisticsUrl && (getStat
 if (typeof clickWithRetry === 'undefined') window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === 'undefined') window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof delay === 'undefined') window.delay && (delay = window.delay);
+if (typeof createErrorListener === 'undefined') window.createErrorListener && (createErrorListener = window.createErrorListener);
+if (typeof ERROR_LISTENER_CONFIGS === 'undefined') window.ERROR_LISTENER_CONFIGS && (ERROR_LISTENER_CONFIGS = window.ERROR_LISTENER_CONFIGS);
+if (typeof parseMessageData === 'undefined') window.parseMessageData && (parseMessageData = window.parseMessageData);
+if (typeof checkWindowIdMatch === 'undefined') window.checkWindowIdMatch && (checkWindowIdMatch = window.checkWindowIdMatch);
+if (typeof restoreSessionAndReload === 'undefined') window.restoreSessionAndReload && (restoreSessionAndReload = window.restoreSessionAndReload);
+if (typeof loadPublishDataFromGlobalStorage === 'undefined') window.loadPublishDataFromGlobalStorage && (loadPublishDataFromGlobalStorage = window.loadPublishDataFromGlobalStorage);
+if (typeof getCurrentWindowId === 'undefined') window.getCurrentWindowId && (getCurrentWindowId = window.getCurrentWindowId);
 if (typeof extractAfterHash === 'undefined') window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
 if (typeof removeHashTags === 'undefined') window.removeHashTags && (removeHashTags = window.removeHashTags);
 

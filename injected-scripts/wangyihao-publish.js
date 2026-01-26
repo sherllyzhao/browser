@@ -90,27 +90,16 @@
                 // 接收完整的发布数据（直接传递，不使用 IndexedDB）
                 // 兼容 publish-data 和 auth-data 两种消息类型
                 if (message.type === 'publish-data') {
-                    let messageData;
-                    try {
-                        messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-                    } catch (parseError) {
-                        console.error('[网易号发布] ❌ 解析消息数据失败:', parseError);
-                        console.error('[网易号发布] 原始数据:', message.data);
-                        return;
-                    }
+                    // 使用公共方法解析消息数据
+                    const messageData = parseMessageData(message.data, '[网易号发布]');
+                    if (!messageData) return;
 
-                    // 🔑 先检查 windowId 是否匹配（在保存数据之前！避免串数据）
-                    if (message.windowId) {
-                        const myWindowId = await window.browserAPI.getWindowId();
-                        console.log('[网易号发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-                        if (myWindowId !== message.windowId) {
-                            console.log('[网易号发布] ⏭️ 消息不是发给我的，跳过（不保存数据）');
-                            return;
-                        }
-                        console.log('[网易号发布] ✅ windowId 匹配，处理消息');
-                    }
+                    // 使用公共方法检查 windowId 是否匹配（在保存数据之前！避免串数据）
+                    const isMatch = await checkWindowIdMatch(message, '[网易号发布]');
+                    if (!isMatch) return;
 
                     // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
+                    // 注意：网易号有特殊的多域名 cookies 处理逻辑，不能直接使用 restoreSessionAndReload
                     if (messageData.cookies) {
                         console.log('[网易号发布] 📦 检测到 cookies 数据，开始恢复会话...');
                         try {

@@ -11,7 +11,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    if (window.__WYH_SCRIPT_LOADED__) {
+    if (window.__TXH_SCRIPT_LOADED__) {
         console.log('[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入');
         return;
     }
@@ -25,7 +25,7 @@
         }
     }
 
-    window.__WYH_SCRIPT_LOADED__ = true;
+    window.__TXH_SCRIPT_LOADED__ = true;
 
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
@@ -41,6 +41,36 @@
 
     // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
     let currentWindowId = null;
+
+    // ===========================
+    // 🔴 使用公共错误监听器（来自 common.js）
+    // ===========================
+    let errorListener = null;
+
+    // 初始化错误监听器
+    const initErrorListener = () => {
+        if (typeof createErrorListener === 'function' && ERROR_LISTENER_CONFIGS?.tengxun) {
+            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.tengxun);
+            console.log('[腾讯号发布] ✅ 使用公共错误监听器配置');
+        } else {
+            // 回退方案：使用本地配置
+            errorListener = createErrorListener({
+                logPrefix: '[腾讯号发布]',
+                selectors: [
+                    { containerClass: 'omui-message', textSelector: '.omui-message__desc', recursiveSelector: '.omui-message' }
+                ]
+            });
+            console.log('[腾讯号发布] ⚠️ 使用本地错误监听器配置');
+        }
+    };
+
+    // 兼容旧代码的函数别名
+    const startErrorListener = () => {
+        if (!errorListener) initErrorListener();
+        errorListener.start();
+    };
+    const stopErrorListener = () => errorListener?.stop();
+    const getLatestError = () => errorListener?.getLatestError() || null;
 
     // 获取窗口专属的发布成功数据 key
     const getPublishSuccessKey = () => {
@@ -90,47 +120,17 @@
                 // 接收完整的发布数据（直接传递，不使用 IndexedDB）
                 // 兼容 publish-data 和 auth-data 两种消息类型
                 if (message.type === 'publish-data') {
-                    let messageData;
-                    try {
-                        messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-                    } catch (parseError) {
-                        console.error('[腾讯号发布] ❌ 解析消息数据失败:', parseError);
-                        console.error('[腾讯号发布] 原始数据:', message.data);
-                        return;
-                    }
+                    // 使用公共方法解析消息数据
+                    const messageData = parseMessageData(message.data, '[腾讯号发布]');
+                    if (!messageData) return;
 
-                    // 🔑 先检查 windowId 是否匹配（在保存数据之前！避免串数据）
-                    if (message.windowId) {
-                        const myWindowId = await window.browserAPI.getWindowId();
-                        console.log('[腾讯号发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-                        if (myWindowId !== message.windowId) {
-                            console.log('[腾讯号发布] ⏭️ 消息不是发给我的，跳过（不保存数据）');
-                            return;
-                        }
-                        console.log('[腾讯号发布] ✅ windowId 匹配，处理消息');
-                    }
+                    // 使用公共方法检查 windowId 是否匹配
+                    const isMatch = await checkWindowIdMatch(message, '[腾讯号发布]');
+                    if (!isMatch) return;
 
-                    // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-                    if (messageData.cookies) {
-                        console.log('[腾讯号发布] 📦 检测到 cookies 数据，开始恢复会话...');
-                        try {
-                            const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
-                            const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
-                            if (restoreResult.success) {
-                                console.log('[腾讯号发布] ✅ 会话数据恢复成功:', restoreResult.results);
-                                // 恢复 cookies 后需要刷新页面才能生效
-                                console.log('[腾讯号发布] 🔄 刷新页面以应用 cookies...');
-                                // 保存消息数据到全局存储，刷新后继续使用
-                                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
-                                window.location.reload();
-                                return; // 刷新后脚本会重新注入
-                            } else {
-                                console.warn('[腾讯号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
-                            }
-                        } catch (restoreError) {
-                            console.error('[腾讯号发布] ⚠️ 会话数据恢复异常:', restoreError);
-                        }
-                    }
+                    // 使用公共方法恢复会话数据
+                    const needReload = await restoreSessionAndReload(messageData, '[腾讯号发布]');
+                    if (needReload) return; // 已触发刷新，脚本会重新注入
 
                     // windowId 匹配后才保存消息数据
                     receivedMessageData = messageData;
@@ -214,7 +214,7 @@
     // 2. 暴露全局方法供手动调用
     // ===========================
 
-    window.__WYH_AUTH__ = {
+    window.__TXH_AUTH__ = {
         // 发送发布成功消息
         notifySuccess: () => {
             sendMessageToParent('发布成功');
@@ -235,7 +235,7 @@
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 腾讯号发布脚本初始化完成');
-    console.log('📝 全局方法: window.__WYH_AUTH__');
+    console.log('📝 全局方法: window.__TXH_AUTH__');
     console.log('  - notifySuccess()  : 发送发布成功消息');
     console.log('  - sendMessage(msg) : 发送自定义消息');
     console.log('  - getAuthData()    : 获取发布数据');
@@ -329,32 +329,10 @@
                 return;
             }
 
-            const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
-                method: 'GET',
-                credentials: 'include',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            })
-            const userInfoRes = await userInfoResult.json();
-            let userInfo = {};
-            if(userInfoRes.code === 1){
-                userInfo = userInfoRes.data;
-            }
-
             setTimeout(async () => {
-                await retryOperation(async () => {
-                    // 有弹窗先关闭弹窗
-                    const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                    if (tipDialogEle) {
-                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                        tipBtnEle.click()
-                    }
-                }, 5, 1000)
-
                 // 标题（带重试和验证）
                 await retryOperation(async () => {
-                    const titleEle = await waitForElement(".newtitle-container .netease-textarea", 5000);
+                    const titleEle = await waitForElement(".omui-articletitle__input1 .omui-inputautogrowing__inner", 5000);
 
                     // 先触发focus事件
                     if (typeof titleEle.focus === 'function') {
@@ -390,8 +368,8 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor_wyh", 10000);
-                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
+                                const editorIframeEle = await waitForElement("class^=editor_container", 10000);
+                                const editorEle = editorIframeEle.querySelector('.ExEditor-basic')
                                 let htmlContent = dataObj.video.video.content;
 
                                 // 解析 HTML 中的图片，通过腾讯号 dumpproxy 接口上传
@@ -401,7 +379,7 @@
 
                                 console.log('[腾讯号发布] 🖼️ 发现', images.length, '张图片需要处理');
 
-                                for (const img of images) {
+                                /* for (const img of images) {
                                     const originalSrc = img.src;
                                     if (!originalSrc || originalSrc.startsWith('data:')) {
                                         continue; // 跳过空 src 或 base64 图片
@@ -490,7 +468,7 @@
                                         el.replaceWith(h5);
                                     });
                                     console.log(`[腾讯号发布] 📝 将 ${largestHeadingTag.toUpperCase()} 转换为 H5，共 ${headingsInfo.length} 个`);
-                                }
+                                } */
 
                                 // 获取转换后的 HTML
                                 htmlContent = tempDiv.innerHTML;
@@ -574,9 +552,9 @@
                 }
 
                 // 设置封面为单图模式
-                const hasSettingsWrapEle = await waitForElement(".cover-pic__cover");
+                const hasSettingsWrapEle = await waitForElement("class^=articleCoverWrap-");
                 if (hasSettingsWrapEle) {
-                    const coverRadioEle = hasSettingsWrapEle.querySelectorAll('.cover-pic__radio');
+                    const coverRadioEle = hasSettingsWrapEle.querySelectorAll('.omui-radio');
                     for (let coverRadioEleElement of coverRadioEle) {
                         const radioInput = coverRadioEleElement.querySelector('input');
                         if (coverRadioEleElement.innerText === '单图') {
@@ -586,78 +564,7 @@
                         }
                     }
 
-                    // ===========================
-                    // 🔴 全局错误监听器 - 在上传图片之前就开始监听
-                    // ===========================
-                    const capturedErrors = []; // 收集所有捕获的错误信息
-                    let errorObserver = null;
-
-                    // 启动错误监听
-                    const startErrorListener = () => {
-                        console.log('[腾讯号发布] 🔍 启动全局错误监听器...');
-
-                        errorObserver = new MutationObserver((mutations) => {
-                            for (const mutation of mutations) {
-                                for (const node of mutation.addedNodes) {
-                                    if (node.nodeType === 1) {
-                                        const element = node;
-                                        const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-                                        const textContent = element.textContent || '';
-
-                                        // 检测腾讯 snackbar 提示框（新结构）
-                                        if (classList.includes('ne-snackbar-item-description')) {
-                                            const errorSpan = element.querySelector('span:last-child');
-                                            if (errorSpan) {
-                                                const text = (errorSpan.textContent || '').trim();
-                                                if (text && !capturedErrors.includes(text)) {
-                                                    capturedErrors.push(text);
-                                                    console.log('[腾讯号发布] 📨 捕获到错误信息:', text);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-
-                        errorObserver.observe(document.body, {
-                            childList: true,
-                            subtree: true
-                        });
-
-                        console.log('[腾讯号发布] ✅ 全局错误监听器已启动');
-                    };
-
-                    // 停止错误监听
-                    const stopErrorListener = () => {
-                        if (errorObserver) {
-                            errorObserver.disconnect();
-                            errorObserver = null;
-                            console.log('[腾讯号发布] 🛑 全局错误监听器已停止');
-                        }
-                    };
-
-                    // 获取最新的错误信息
-                    const getLatestError = () => {
-                        // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
-                        const ignoredMessages = [
-                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
-                        ];
-                        for (let i = capturedErrors.length - 1; i >= 0; i--) {
-                            const msg = capturedErrors[i];
-                            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-                            if (!isIgnored) {
-                                console.log("🚀 ~ getLatestError ~ msg: ", msg);
-                                return msg;
-                            }
-                        }
-                        // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
-                        return null;
-                    };
-
-                    // 立即启动错误监听
+                    // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
                     startErrorListener();
 
                     // 设置封面（使用主进程下载绕过跨域）
@@ -666,555 +573,436 @@
                             const {blob, contentType} = await downloadFile(pathImage, 'image/png');
                             var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
 
-                            // 选中本地上传（点击"选择封面"按钮）
                             setTimeout(async () => {
-                                // 查找并点击"选择封面"按钮
-                                const coverBtn = await waitForElement('.cover-pic__single__content__choose');
-                                const coverEle = coverBtn.querySelector('img');
-                                console.log("🚀 ~  ~ coverBtn: ", coverBtn);
-                                if (coverBtn) {
-                                    //检查是否已经有图片
-                                    if(coverEle){
-                                        if (coverEle.getAttribute('src')) {
-                                            const changeBtnEles = await waitForElement('.cover-pic__operate', 5000, 1000, coverBtn);
-                                            let changeBtnEle = null;
-                                            if (changeBtnEles.length) {
-                                                for (const btn of changeBtnEles) {
-                                                    if (btn.textContent.trim().includes('换图')) {
-                                                        changeBtnEle = btn;
-                                                    }
+                                // 选中本地上传（点击"选择封面"按钮）
+                                setTimeout(async () => {
+                                    // 等待封面选择区域出现
+                                    await waitForElement("class^=articleCoverWrap-");
+                                    await delay(500); // 等待渲染完成
+
+                                    // 查找并点击"选择封面"按钮
+                                    const coverBtn = document.querySelector("[class*=addCoverBtn-]");
+                                    console.log("🚀 ~  ~ coverBtn: ", coverBtn);
+                                    if (coverBtn) {
+                                        //检查是否已经有图片
+                                        const coverWrapperEle = await waitForElement(".omui-thumb__figure");
+                                        if(coverWrapperEle){
+                                            const imgEle = coverWrapperEle.querySelector('img');
+                                            const coverBg = imgEle.getAttribute('src');
+                                            if(imgEle){
+                                                // 检查是否有图片
+                                                if(coverBg){
+                                                    console.log('[腾讯号发布] ✅ 已经有图片');
+                                                    const closeBtns = coverWrapperEle.querySelectorAll('.omui-thumb__action span');
+                                                    closeBtns.forEach(btn => {
+                                                        if (btn.textContent.trim() === '更换') {
+                                                            btn.click();
+                                                        }
+                                                    });
+                                                }else{
+                                                    console.log('[腾讯号发布] ❌ 没有图片');
                                                 }
                                             }
-                                            changeBtnEle && changeBtnEle.click();
                                         }
-                                    }else{
                                         coverBtn.click();
-                                        console.log('[腾讯号发布] ✅ 已点击"选择封面"按钮');
+                                    }
+                                    await delay(1000); // 等待渲染完成
+
+                                    // 封面上传弹窗弹出后选中还有本地上传的tab
+                                    const uploadTabs = document.querySelectorAll('.omui-dialog .omui-tab__nav .omui-tab__label');
+                                    console.log("🚀 ~  ~ uploadTabs: ", uploadTabs);
+                                    let uploadFromLocalTab = null;
+                                    if (uploadTabs.length) {
+                                        for (const tab of uploadTabs) {
+                                            if (tab.textContent.trim().includes('本地')) {
+                                                uploadFromLocalTab = tab;
+                                            }
+                                        }
+                                    }
+                                    await delay(1000); // 等待渲染完成
+                                    console.log("🚀 ~  ~ uploadFromLocalTab: ", uploadFromLocalTab);
+                                    if (uploadFromLocalTab) {
+                                        uploadFromLocalTab.click();
+                                    } else {
+                                        console.log('找不到本地上传tab');
                                     }
 
-                                    await retryOperation(async () => {
-                                        // 有弹窗先关闭弹窗
-                                        const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                                        console.log("🚀 ~  ~ tipDialogEle: ", tipDialogEle);
-                                        if (tipDialogEle) {
-                                            const dialogTextEle = await waitForElement('.custom-confirm-content', 5000, 1000, tipDialogEle);
-                                            if (dialogTextEle) {
-                                                const dialogText = dialogTextEle.textContent.trim();
-                                                if (dialogText.includes('正文中至少上传一张图片')) {
-                                                    // 需要在正文中插入图片
-                                                    console.log('[腾讯号发布] 📝 检测到需要在正文中插入图片');
+                                    setTimeout(async () => {
+                                        // 使用原生选择器获取元素
+                                        const hasInputEle = await waitForElement(".omui-upload-image-list");
+                                        if (hasInputEle) {
+                                            const input = document.querySelector("input[type='file']");
+                                            const dataTransfer = new DataTransfer();
+                                            // 创建 DataTransfer 对象模拟文件上传
+                                            dataTransfer.items.add(file);
+                                            input.files = dataTransfer.files;
+                                            const event = new Event("change", {bubbles: true});
+                                            input.dispatchEvent(event);
 
-                                                    try {
-                                                        // 等待编辑器加载
-                                                        const editorIframeEle = await waitForElement("#editor_wyh", 5000);
-                                                        if (editorIframeEle) {
-                                                            const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
-                                                            if (editorEle && pathImage) {
-                                                                // 使用和内容插入相同的粘贴事件方式
-                                                                const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
+                                            // 封装上传检测与重试逻辑
+                                            const tryUploadImage = async (retryCount = 0) => {
+                                                const maxRetries = 3;
 
-                                                                // 让编辑器获得焦点
-                                                                editorEle.focus();
+                                                // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
+                                                const waitForImageOrError = async (timeout = 10000) => {
+                                                    const startTime = Date.now();
+                                                    const checkInterval = 300; // 每300ms检查一次
 
-                                                                // 通过粘贴事件插入图片HTML
-                                                                const pasteEvent = new ClipboardEvent('paste', {
-                                                                    clipboardData: new DataTransfer(),
-                                                                    bubbles: true,
-                                                                    cancelable: true
-                                                                });
-
-                                                                pasteEvent.clipboardData.setData('text/html', imgHtml);
-                                                                pasteEvent.clipboardData.setData('text/plain', '[图片]');
-
-                                                                editorEle.dispatchEvent(pasteEvent);
-
-                                                                // 等待编辑器处理
-                                                                await new Promise(resolve => setTimeout(resolve, 500));
-
-                                                                console.log('[腾讯号发布] ✅ 已在正文中插入封面图片');
-                                                            }
-                                                        }
-                                                    } catch (e) {
-                                                        console.error('[腾讯号发布] ❌ 在正文中插入图片失败:', e);
-                                                    }
-                                                }
-                                            }
-                                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                                            tipBtnEle.click();
-                                            await delay(1000);
-                                        }
-
-
-                                        // 检查刚刚上传的图片是否已经显示在编辑器中，并且域名包括dingyue.ws
-                                        console.log('[腾讯号发布] 🔍 检查编辑器中的图片是否已上传...');
-                                        let editorImageValid = false;
-                                        const checkEditorStartTime = Date.now();
-                                        const checkEditorTimeout = 60000; // 1分钟超时
-                                        const checkEditorInterval = 300; // 每300ms检查一次
-                                        let checkCount = 0; // 检查次数计数
-
-                                        while (Date.now() - checkEditorStartTime < checkEditorTimeout) {
-                                            await delay(checkEditorInterval);
-                                            checkCount++;
-
-                                            // 每10次检查输出一次状态（避免日志过多）
-                                            if (checkCount % 10 === 1) {
-                                                console.log(`[腾讯号发布] 🔄 第 ${checkCount} 次检查编辑器图片...`);
-                                            }
-
-                                            const editorImageContainer = await waitForElement("#editor_wyh", 5000);
-                                            if (!editorImageContainer) {
-                                                if (checkCount === 1) {
-                                                    console.warn('[腾讯号发布] ⚠️ 找不到编辑器图片容器 .cover-pic__single__content__choose');
-                                                }
-                                                continue;
-                                            }
-
-                                            const editorImg = editorImageContainer.querySelector('img');
-                                            if (!editorImg) {
-                                                if (checkCount === 1) {
-                                                    console.warn('[腾讯号发布] ⚠️ 编辑器图片容器中找不到 img 元素');
-                                                }
-                                                continue;
-                                            }
-
-                                            const editorImgSrc = editorImg.getAttribute('src');
-                                            if (checkCount === 1 || checkCount % 10 === 1) {
-                                                console.log('[腾讯号发布] 📸 编辑器中的图片src:', editorImgSrc);
-                                            }
-
-                                            if (editorImgSrc && editorImgSrc.includes('dingyue.ws')) {
-                                                console.log('[腾讯号发布] ✅ 编辑器中的图片已完成上传:', editorImgSrc);
-                                                editorImageValid = true;
-                                                break;
-                                            }
-                                        }
-
-                                        if (!editorImageValid) {
-                                            console.warn(`[腾讯号发布] ⚠️ 检查了 ${checkCount} 次，1分钟内编辑器中的图片未完成上传，继续执行后续流程`);
-                                        }
-
-                                        // ✅ 编辑器图片检测完毕后，再点击上传封面
-                                        console.log('[腾讯号发布] ✅ 编辑器图片检测完成，现在点击上传封面');
-                                        coverBtn.click();
-                                        await delay(1000);
-
-                                        const uploadListDialog = await waitForElement('.ne-modal-body', 5000, 5000);
-                                        if(uploadListDialog){
-                                            //    找到图片列表
-                                            const imgListEle = await waitForElement('.cover-picture__list', 5000, 1000);
-                                            console.log("🚀 ~  ~ imgListEle: ", imgListEle);
-                                            if (imgListEle) {
-                                                const imgItemEle = imgListEle.querySelectorAll('.cover-picture__item')[0];
-                                                console.log("🚀 ~  ~ imgItemEle: ", imgItemEle);
-                                                if(imgItemEle){
-                                                    const imgEle = imgItemEle.querySelector('img');
-                                                    console.log("🚀 ~  ~ imgEle: ", imgEle);
-                                                    if (imgEle) {
-                                                        await delay(1000);
-                                                        imgEle.click();
-                                                        await delay(1000);
-                                                        const src = imgEle.getAttribute('src');
-                                                        console.log("🚀 ~  ~ src: ", src);
-
-                                                        // 有src就等待链接变化（等待变成dingyue.ws的链接），最多等1分钟
-                                                        if(!src){
-                                                            console.warn('[腾讯号发布] ⚠️ 图片未获取到src，返回');
-                                                            return;
+                                                    while (Date.now() - startTime < timeout) {
+                                                        // 1. 先检查是否有错误信息（优先级更高）
+                                                        const errorMsg = getLatestError();
+                                                        if (errorMsg) {
+                                                            return { type: 'error', message: errorMsg };
                                                         }
 
-                                                        // 定时检测src是否有变化，等待变成dingyue.ws的链接
-                                                        console.log('[腾讯号发布] ⏳ 等待图片链接变化（等待dingyue.ws的链接）...');
-                                                        let finalSrc = src;
-                                                        let srcChanged = false;
-                                                        const waitSrcChangeStartTime = Date.now();
-                                                        const waitSrcChangeTimeout = 60000; // 1分钟超时
-                                                        const checkSrcChangeInterval = 500; // 每500ms检查一次
-
-                                                        while (Date.now() - waitSrcChangeStartTime < waitSrcChangeTimeout) {
-                                                            await delay(checkSrcChangeInterval);
-                                                            const currentSrc = imgEle.getAttribute('src');
-
-                                                            // 检查src是否有变化或变成了dingyue.ws
-                                                            if (currentSrc !== finalSrc || (currentSrc && currentSrc.includes('dingyue.ws'))) {
-                                                                console.log('[腾讯号发布] ✅ 检测到链接变化或已是有效链接:', currentSrc);
-                                                                finalSrc = currentSrc;
-                                                                srcChanged = true;
-                                                                break;
-                                                            }
-                                                        }
-
-                                                        if (!srcChanged) {
-                                                            console.warn('[腾讯号发布] ⚠️ 1分钟内链接未变化，继续执行');
-                                                        }
-                                                        const coverConfirmBtn = await waitForElement('.cover-picture__footer', 5000, 1000);
-                                                        if (coverConfirmBtn) {
-                                                            // 寻找coverConfirmBtn下含"确认"的元素
-                                                            const allBtns = coverConfirmBtn.querySelectorAll('div, button, span');
-                                                            console.log("🚀 ~  ~ allBtns: ", allBtns);
-                                                            let confirmBtnEle = null;
-                                                            for (const btn of allBtns) {
-                                                                if (btn.textContent.trim() === '确认' && btn.children.length === 0) {
-                                                                    confirmBtnEle = btn || btn;
-                                                                    break;
+                                                        // 2. 再检查图片元素是否出现
+                                                        const imageEle = document.querySelector(".omui-upload-image-item:nth-of-type(1)");
+                                                        console.log("🚀 ~ waitForImageOrError ~ imageEle: ", imageEle);
+                                                        if (imageEle) {
+                                                            const imgEle = imageEle.querySelector('img');
+                                                            if(imgEle && imgEle.getAttribute('src')){
+                                                                // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
+                                                                // 因为 MutationObserver 是异步的，错误信息可能还在路上
+                                                                console.log('[腾讯号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
+                                                                await delay(500);
+                                                                const confirmError = getLatestError();
+                                                                if (confirmError) {
+                                                                    console.log('[腾讯号发布] ⚠️ 确认期间检测到错误:', confirmError);
+                                                                    return { type: 'error', message: confirmError };
                                                                 }
+                                                                return { type: 'success', element: imageEle };
                                                             }
-                                                            console.log("🚀 ~  ~ confirmBtnEle: ", confirmBtnEle);
-                                                            if (confirmBtnEle) {
-                                                                confirmBtnEle.click();
-                                                                console.log('[腾讯号发布] ✅ 已点击封面图片确认按钮');
-                                                            } else {
-                                                                console.warn('[腾讯号发布] ⚠️ 找不到确认按钮，尝试直接点击footer');
-                                                                coverConfirmBtn.click();
-                                                            }
+
+                                                            // 等待下一次检查
+                                                            await delay(checkInterval);
                                                         }
+
+                                                        // 等待下一次检查
+                                                        await delay(checkInterval);
                                                     }
-                                                }
-                                            }
-                                        }
-                                    }, 5, 1000)
-                                }
-                                await delay(1000); // 等待渲染完成
 
-                                setTimeout(async () => {
-                                    // 封装上传检测与重试逻辑
-                                    const tryUploadImage = async (retryCount = 0) => {
-                                        const maxRetries = 3;
-
-                                        // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                        const waitForImageOrError = async (timeout = 60000) => {
-                                            const startTime = Date.now();
-                                            const checkInterval = 300; // 每300ms检查一次
-
-                                            while (Date.now() - startTime < timeout) {
-                                                // 1. 先检查是否有错误信息（优先级更高）
-                                                const errorMsg = getLatestError();
-                                                if (errorMsg) {
-                                                    return {type: 'error', message: errorMsg};
-                                                }
-
-                                                // 2. 再检查图片元素是否出现，且 src 包含 dingyue.ws
-                                                const imageContainer = document.querySelector(".cover-pic__single__content__choose");
-                                                if (imageContainer) {
-                                                    const imgEle = imageContainer.querySelector('img');
-                                                    if (imgEle) {
-                                                        const src = imgEle.getAttribute('src');
-                                                        console.log("🚀 ~ waitForImageOrError ~ src: ", src);
-                                                        if (src && src.includes('dingyue.ws')) {
-                                                            // 🔑 检测到有效图片（dingyue.ws 域名），再等待 500ms 确认是否有错误
-                                                            console.log('[腾讯号发布] 🔍 检测到有效图片（dingyue.ws），等待 500ms 确认是否有错误...');
-                                                            await delay(500);
-                                                            const confirmError = getLatestError();
-                                                            if (confirmError) {
-                                                                console.log('[腾讯号发布] ⚠️ 确认期间检测到错误:', confirmError);
-                                                                return {type: 'error', message: confirmError};
-                                                            }
-                                                            return {type: 'success', element: imageContainer};
-                                                        }
+                                                    // 超时，再检查一次错误信息
+                                                    const finalError = getLatestError();
+                                                    if (finalError) {
+                                                        return { type: 'error', message: finalError };
                                                     }
-                                                }
 
-                                                // 等待下一次检查
-                                                await delay(checkInterval);
-                                            }
+                                                    return { type: 'timeout' };
+                                                };
 
-                                            // 超时，再检查一次错误信息
-                                            const finalError = getLatestError();
-                                            if (finalError) {
-                                                return {type: 'error', message: finalError};
-                                            }
+                                                const result = await waitForImageOrError(10000);
+                                                const myWindowId = await window.browserAPI.getWindowId();
 
-                                            return {type: 'timeout'};
-                                        };
-
-                                        const result = await waitForImageOrError(); // 使用默认 60 秒超时
-                                        console.log("🚀 ~ tryUploadImage ~ result: ", result);
-                                        const myWindowId = await window.browserAPI.getWindowId();
-
-                                        // 🔴 检测到错误信息，直接上报失败
-                                        if (result.type === 'error') {
-                                            console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
-                                            stopErrorListener();
-                                            const publishId = dataObj.video?.dyPlatform?.id;
-                                            if (publishId) {
-                                                await sendStatisticsError(publishId, result.message, '腾讯号发布');
-                                            }
-                                            await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                            return; // 不再继续
-                                        }
-
-                                        if (result.type === 'success') {
-                                            console.log('[腾讯号发布] ✅ 图片上传成功');
-
-                                            await delay(5000); // 等待渲染完成
-
-                                            const publishBtns = document.querySelectorAll(".ne-button-color-primary");
-                                            let publishBtn = null;
-                                            let scheduledReleasesBtn = null;
-                                            for (let publishBtnEle of publishBtns) {
-                                                if(publishBtnEle.textContent.trim() === '发布'){
-                                                    publishBtn = publishBtnEle;
-                                                    break;
-                                                }
-                                                if(publishBtnEle.textContent.trim() === '定时发布'){
-                                                    scheduledReleasesBtn = publishBtnEle;
-                                                    break;
-                                                }
-                                            }
-
-                                            // 🔑 检查是否需要定时发布
-                                            const publishTime = dataObj.video?.publishTime;
-                                            const sendTime = dataObj.video?.send_time;
-
-                                            if (publishTime === 2 && sendTime && scheduledReleasesBtn) {
-                                                console.log('[腾讯号发布] ⏰ 检测到需要定时发布，时间:', sendTime);
-
-                                                // 解析定时时间
-                                                const timeConfig = parseSendTime(sendTime);
-                                                if (!timeConfig) {
-                                                    console.error('[腾讯号发布] ❌ 解析定时时间失败');
+                                                // 🔴 检测到错误信息，直接上报失败
+                                                if (result.type === 'error') {
+                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
                                                     stopErrorListener();
-                                                    await closeWindowWithMessage('定时时间解析失败', 1000);
-                                                    return;
+                                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                                    if (publishId) {
+                                                        await sendStatisticsError(publishId, result.message, '腾讯号发布');
+                                                    }
+                                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                    return; // 不再继续
                                                 }
 
-                                                // 点击定时发布按钮
-                                                console.log('[腾讯号发布] 🖱️ 点击定时发布按钮');
-                                                scheduledReleasesBtn.click();
-                                                await delay(1000);
+                                                if (result.type === 'success') {
+                                                    console.log('[腾讯号发布] ✅ 图片上传成功');
 
-                                                // 等待弹窗出现并选择时间
-                                                const scheduledModal = await waitForElement('.ne-modal-wrap', 5000);
-                                                if (scheduledModal) {
-                                                    console.log('[腾讯号发布] ✅ 定时发布弹窗已打开');
+                                                    await delay(2000); // 等待渲染完成
 
-                                                    // 调用选择时间函数
-                                                    const timeSelectSuccess = await selectScheduledTime(
-                                                        timeConfig.dateIndex,
-                                                        timeConfig.hour,
-                                                        timeConfig.minute
-                                                    );
-
-                                                    if (!timeSelectSuccess) {
-                                                        console.error('[腾讯号发布] ❌ 时间选择失败');
+                                                    const submitCoverBtn = document.querySelector('.omui-dialog-footer .omui-button--primary');
+                                                    console.log("🚀 ~ tryUploadImage ~ submitCoverBtns: ", submitCoverBtns);
+                                                    // 点击确定按钮
+                                                    if (submitCoverBtn) {
+                                                        // 使用模拟真实鼠标事件，确保点击生效
+                                                        const clickEvent = new MouseEvent('click', {
+                                                            view: window,
+                                                            bubbles: true,
+                                                            cancelable: true
+                                                        });
+                                                        submitCoverBtn.dispatchEvent(clickEvent);
+                                                        console.log('[腾讯号发布] ✅ 已点击确定（模拟鼠标事件）');
+                                                        // 等待编辑器关闭和图片保存
+                                                        await delay(2000);
+                                                    } else {
+                                                        console.error('[腾讯号发布] ❌ 找不到提交图片按钮，上报失败');
                                                         stopErrorListener();
-                                                        await closeWindowWithMessage('定时时间选择失败', 1000);
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        if (publishId) {
+                                                            await sendStatisticsError(publishId, '找不到提交图片按钮', '腾讯号发布');
+                                                        }
+                                                        await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                         return;
                                                     }
 
-                                                    // 点击确定发布按钮
-                                                    await delay(500);
-                                                    const confirmBtn = Array.from(document.querySelectorAll('.ne-button-color-primary'))
-                                                        .find(btn => btn.textContent.trim() === '定时发布');
+                                                    // 自主声明
 
-                                                    if (confirmBtn) {
-                                                        console.log('[腾讯号发布] ✅ 点击确定定时发布');
 
-                                                        // 🔑 在点击定时发布前保存 publishId，让 publish-success.js 可以调用统计接口
-                                                        const publishId = dataObj.video?.dyPlatform?.id;
-                                                        if (publishId) {
-                                                            try {
-                                                                localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                                                console.log('[腾讯号发布] 💾 已保存 publishId 到 localStorage:', publishId);
-                                                            } catch (e) {
-                                                                console.error('[腾讯号发布] ❌ 保存 publishId 失败:', e);
+                                                    await delay(2000);
+                                                    const publishTime = dataObj.video.formData.send_set;
+                                                    console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
+
+                                                    const publishBtnWrap = document.querySelector('footer [class*="publish_tool-"]');
+                                                    console.log("🚀 ~ tryUploadImage ~ publishBtns: ", publishBtnWrap);
+                                                    if(publishBtnWrap){
+                                                        // 找发布按钮
+                                                        const publishBtns = document.querySelectorAll(".omui-button--primary")
+                                                        if(publishBtns.length > 0){
+                                                            let scheduledReleasesBtn = null;
+                                                            let publishBtn = null;
+                                                            publishBtns.forEach(item => {
+                                                                if(item.textContent.includes("定时")){
+                                                                    scheduledReleasesBtn = item;
+                                                                }else{
+                                                                    publishBtn = item;
+                                                                }
+                                                            })
+
+                                                            if (+publishTime === 2) {
+                                                                if (scheduledReleasesBtn) {
+                                                                    console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
+                                                                    if (scheduledReleasesBtn) {
+                                                                        const clickEvent = new MouseEvent('click', {
+                                                                            view: window,
+                                                                            bubbles: true,
+                                                                            cancelable: true
+                                                                        });
+                                                                        scheduledReleasesBtn.dispatchEvent(clickEvent);
+                                                                        console.log('[腾讯号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                                                        await delay(2000);
+
+                                                                        // 腾讯的ai生成声明确认弹窗
+                                                                        const aiCreateConfirmDialog = await waitForElement('.omui-dialog');
+                                                                        if (aiCreateConfirmDialog){
+                                                                            const dialogTitleEle = aiCreateConfirmDialog.querySelector('.omui-dialog-header');
+                                                                            const dialogTitle = dialogTitleEle.textContent.trim();
+                                                                            if(dialogTitle === "AI生成声明"){
+                                                                                const confirmBtn = aiCreateConfirmDialog.querySelector('.omui-button--primary');
+                                                                                if(confirmBtn){
+                                                                                    const clickEvent = new MouseEvent('click', {
+                                                                                        view: window,
+                                                                                        bubbles: true,
+                                                                                        cancelable: true
+                                                                                    });
+                                                                                    confirmBtn.dispatchEvent(clickEvent);
+                                                                                    console.log('[腾讯号发布] ✅ 已点击ai生成声明确认（模拟鼠标事件）');
+                                                                                    await delay(2000);
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        //  检测有没有定时发布弹窗
+                                                                        const scheduledReleasesModal = document.querySelector('.pushtimeout-dialog');
+                                                                        if (scheduledReleasesModal) {
+                                                                            console.log('[腾讯号发布] ✅ 检测到定时发布弹窗');
+
+                                                                            // 解析定时发布时间
+                                                                            const sendTime = dataObj.video?.formData?.send_time;
+                                                                            if (sendTime) {
+                                                                                console.log('[腾讯号发布] ⏰ 开始选择定时发布时间:', sendTime);
+
+                                                                                const timeConfig = parseSendTime(sendTime);
+                                                                                if (!timeConfig) {
+                                                                                    console.error('[腾讯号发布] ❌ 解析定时时间失败');
+                                                                                    stopErrorListener();
+                                                                                    await closeWindowWithMessage('定时时间解析失败', 1000);
+                                                                                    return;
+                                                                                }
+
+                                                                                // 调用选择时间函数
+                                                                                const timeSelectSuccess = await selectScheduledTime(
+                                                                                    timeConfig.dateIndex,
+                                                                                    timeConfig.hour,
+                                                                                    timeConfig.minute
+                                                                                );
+
+                                                                                if (!timeSelectSuccess) {
+                                                                                    console.error('[腾讯号发布] ❌ 时间选择失败');
+                                                                                    stopErrorListener();
+                                                                                    await closeWindowWithMessage('定时时间选择失败', 1000);
+                                                                                    return;
+                                                                                }
+
+                                                                                // 点击确定发布按钮
+                                                                                await delay(500);
+                                                                                const confirmBtn = document.querySelector('.pushtimeout-btn .sure-btn');
+
+                                                                                if (confirmBtn) {
+                                                                                    console.log('[腾讯号发布] ✅ 点击确定定时发布');
+
+                                                                                    // 🔑 在点击定时发布前保存 publishId，让首页可以调用统计接口
+                                                                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                                                                    if (publishId) {
+                                                                                        try {
+                                                                                            // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                                                                            window.__sohuPublishSuccessFlag = true;
+                                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                                            console.log('[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:', publishId);
+                                                                                        } catch (e) {
+                                                                                            console.error('[腾讯号发布] ❌ 保存 publishId 失败:', e);
+                                                                                        }
+                                                                                    } else {
+                                                                                        // 即使没有 publishId，也要设置全局变量允许跳转
+                                                                                        window.__sohuPublishSuccessFlag = true;
+                                                                                        console.log('[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志');
+                                                                                    }
+
+                                                                                    confirmBtn.click();
+
+                                                                                    // 定时发布点击后会立即跳转到成功页
+                                                                                    console.log('[腾讯号发布] ✅ 等待页面跳转到首页');
+                                                                                    stopErrorListener();
+                                                                                } else {
+                                                                                    console.error('[腾讯号发布] ❌ 未找到确定按钮');
+                                                                                }
+                                                                            } else {
+                                                                                console.warn('[腾讯号发布] ⚠️ 未传入定时发布时间');
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }else{
+                                                                //  点击发布按钮
+                                                                if(publishBtn){
+                                                                    // 🔑 检查发布按钮是否 disabled
+                                                                    if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
+                                                                        console.error('[腾讯号发布] ❌ 发布按钮不可用(disabled)');
+                                                                        stopErrorListener();
+                                                                        const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                                                        if (publishIdForError) {
+                                                                            await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '腾讯号发布');
+                                                                        }
+                                                                        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                                        return;
+                                                                    }
+                                                                    // 🔑 在点击发布前保存 publishId，让首页可以调用统计接口
+                                                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                                                    if (publishId) {
+                                                                        try {
+                                                                            // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                                                            window.__sohuPublishSuccessFlag = true;
+                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                            console.log('[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:', publishId);
+                                                                        } catch (e) {
+                                                                            console.error('[腾讯号发布] ❌ 保存 publishId 失败:', e);
+                                                                        }
+                                                                    } else {
+                                                                        // 即使没有 publishId，也要设置全局变量允许跳转
+                                                                        window.__sohuPublishSuccessFlag = true;
+                                                                        console.log('[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志');
+                                                                    }
+
+                                                                    const clickEvent = new MouseEvent('click', {
+                                                                        view: window,
+                                                                        bubbles: true,
+                                                                        cancelable: true
+                                                                    });
+                                                                    publishBtn.dispatchEvent(clickEvent);
+                                                                    await checkPublishResult(dataObj, true);
+                                                                    console.log('[腾讯号发布] ✅ 已点击发布（模拟鼠标事件）');
+                                                                }else{
+                                                                    console.error('[腾讯号发布] ❌ 找不到发布按钮，上报失败');
+                                                                    stopErrorListener();
+                                                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                                                    if (publishId) {
+                                                                        await sendStatisticsError(publishId, '发布按钮不可用', '腾讯号发布');
+                                                                    }
+                                                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                                    return;
+                                                                }
                                                             }
+                                                        }else{
+                                                            console.error('[腾讯号发布] ❌ 找不到发布按钮，上报失败');
+                                                            stopErrorListener();
+                                                            const publishId = dataObj.video?.dyPlatform?.id;
+                                                            if (publishId) {
+                                                                await sendStatisticsError(publishId, '发布按钮不可用', '腾讯号发布');
+                                                            }
+                                                            await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                            return;
                                                         }
-
-                                                        confirmBtn.click();
-
-                                                        // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
-                                                        console.log('[腾讯号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
-                                                        stopErrorListener();
                                                     } else {
-                                                        console.error('[腾讯号发布] ❌ 未找到确定按钮');
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        if (publishId) {
+                                                            await sendStatisticsError(publishId, '找不到发布按钮', '腾讯号发布');
+                                                        }
+                                                        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                        return;
                                                     }
                                                 } else {
-                                                    console.error('[腾讯号发布] ❌ 定时发布弹窗未打开');
-                                                    stopErrorListener();
-                                                    await closeWindowWithMessage('定时发布弹窗未打开', 1000);
-                                                    return;
-                                                }
-                                            } else if (publishBtn) {
-                                                // 直接发布流程
-                                                // 🔑 检查发布按钮是否 disabled - 支持腾讯号的禁用类名
-                                                const isDisabled = publishBtn.disabled === true ||
-                                                                   publishBtn.hasAttribute('disabled') ||
-                                                                   publishBtn.classList.contains('is-disabled') ||
-                                                                   publishBtn.classList.contains('ne-disabled') ||
-                                                                   publishBtn.classList.contains('ne-btn-disabled') ||
-                                                                   publishBtn.getAttribute('aria-disabled') === 'true';
+                                                    // 图片上传失败（timeout），检查是否有错误信息
+                                                    const myWindowId = await window.browserAPI.getWindowId();
+                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
 
-                                                if (isDisabled) {
-                                                    console.error('[腾讯号发布] ❌ 发布按钮不可用(disabled)');
-                                                    console.log('[腾讯号发布] 按钮 disabled:', publishBtn.disabled);
-                                                    console.log('[腾讯号发布] 按钮类名:', publishBtn.className);
-                                                    console.log('[腾讯号发布] 按钮属性:', {
-                                                        hasDisabled: publishBtn.hasAttribute('disabled'),
-                                                        ariaDisabled: publishBtn.getAttribute('aria-disabled')
-                                                    });
-                                                    stopErrorListener();
-                                                    const publishIdForError = dataObj.video?.dyPlatform?.id;
-                                                    if (publishIdForError) {
-                                                        await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '腾讯号发布');
+                                                    // 优先使用全局错误监听器捕获的错误
+                                                    const errorMessage = getLatestError();
+                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
+                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
+
+                                                    // 🔴 有错误信息就直接走失败接口，不再重试
+                                                    if (errorMessage) {
+                                                        console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
+                                                        stopErrorListener(); // 停止监听
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
+                                                        console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
+                                                        if (publishId) {
+                                                            console.log(`[腾讯号发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
+                                                            await sendStatisticsError(publishId, errorMessage, '腾讯号发布');
+                                                            console.log(`[腾讯号发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
+                                                        } else {
+                                                            console.error(`[腾讯号发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
+                                                        }
+                                                        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                                        return; // 不再继续
                                                     }
-                                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                                    return;
-                                                }
-                                                // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    try {
-                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({publishId: publishId}));
-                                                        console.log('[腾讯号发布] 💾 已保存 publishId 到 localStorage:', publishId);
-                                                    } catch (e) {
-                                                        console.error('[腾讯号发布] ❌ 保存 publishId 失败:', e);
-                                                    }
-                                                } else {
-                                                    console.log('[腾讯号发布] ℹ️ 没有 publishId，跳过统计接口');
-                                                }
 
-                                                const clickEvent = new MouseEvent('click', {
-                                                    view: window,
-                                                    bubbles: true,
-                                                    cancelable: true
-                                                });
-                                                publishBtn.dispatchEvent(clickEvent);
-                                                console.log('[腾讯号发布] ✅ 已点击发布（模拟鼠标事件）');
-
-                                                // 🔴 点击发布后，等待并检测是否有错误信息
-                                                console.log('[腾讯号发布] ⏳ 等待 5 秒检测发布结果...');
-                                                await delay(5000);
-
-                                                let publishDialogErrorMsg = null;
-                                                // 检查是否有弹窗类型的错误信息
-                                                await retryOperation(async () => {
-                                                    // 有弹窗先关闭弹窗
-                                                    const errorDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                                                    console.log("🚀 ~  ~ errorDialogEle: ", errorDialogEle);
-                                                    if (errorDialogEle) {
-                                                        publishDialogErrorMsg = errorDialogEle.querySelector('.custom-confirm-content').textContent.trim();
-                                                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, errorDialogEle);
-                                                        tipBtnEle.click()
-                                                    }
-                                                }, 5, 1000)
-
-                                                // 检查是否有错误信息
-                                                const publishErrorMsg = getLatestError();
-                                                if (publishErrorMsg || publishDialogErrorMsg) {
-                                                    console.log('[腾讯号发布] ❌ 检测到发布错误:', publishErrorMsg);
-                                                    stopErrorListener();
-                                                    const publishId = dataObj.video?.dyPlatform?.id;
-                                                    if (publishId) {
-                                                        console.log('[腾讯号发布] 📤 调用失败接口...');
-                                                        await sendStatisticsError(publishId, publishErrorMsg, '腾讯号发布');
-                                                    }
-                                                    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                                    return;
-                                                } else {
-                                                    console.log('[腾讯号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
-                                                    stopErrorListener();
-                                                }
-                                            } else {
-                                                console.error('[腾讯号发布] ❌ 找不到提交图片按钮，上报失败');
-                                                stopErrorListener();
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    await sendStatisticsError(publishId, '发布按钮不可用', '腾讯号发布');
-                                                }
-                                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                                return;
-                                            }
-                                        } else {
-                                            // 图片上传失败（timeout），检查是否有错误信息
-                                            const myWindowId = await window.browserAPI.getWindowId();
-                                            console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
-
-                                            // 优先使用全局错误监听器捕获的错误
-                                            const errorMessage = getLatestError();
-                                            console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
-                                            console.log(`[腾讯号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
-
-                                            // 🔴 有错误信息就直接走失败接口，不再重试
-                                            if (errorMessage) {
-                                                console.log(`[腾讯号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
-                                                stopErrorListener(); // 停止监听
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
-                                                console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
-                                                if (publishId) {
-                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
-                                                    await sendStatisticsError(publishId, errorMessage, '腾讯号发布');
-                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
-                                                } else {
-                                                    console.error(`[腾讯号发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
-                                                }
-                                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                                return; // 不再继续
-                                            }
-
-                                            // 没有错误信息才重试
-                                            if (retryCount < maxRetries) {
-                                                console.log(`[腾讯号发布] 🔄 ${2}秒后重新点击上传封面按钮...`);
-                                                await delay(2000);
-
-                                                // 重新点击封面上传按钮
-                                                const coverBtn = document.querySelector('.cover-pic__single__content__choose');
-                                                if (coverBtn) {
-                                                    coverBtn.click();
-                                                    console.log('[腾讯号发布] 🔄 已重新点击封面按钮');
-
-                                                    // 等待上传对话框出现
-                                                    await delay(1000);
-
-                                                    // 重新触发文件上传
-                                                    const input = document.querySelector(".cheetah-upload input");
-                                                    if (input) {
-                                                        input.files = dataTransfer.files;
-                                                        const event = new Event("change", {bubbles: true});
-                                                        input.dispatchEvent(event);
-                                                        console.log('[腾讯号发布] 🔄 已重新触发上传');
-
-                                                        // 递归重试
+                                                    // 没有错误信息才重试
+                                                    if (retryCount < maxRetries) {
+                                                        console.log(`[腾讯号发布] 🔄 ${2}秒后重新上传图片...`);
                                                         await delay(2000);
-                                                        await tryUploadImage(retryCount + 1);
+
+                                                        // 重新触发文件上传
+                                                        const input = document.querySelector(".cheetah-upload input");
+                                                        if (input) {
+                                                            input.files = dataTransfer.files;
+                                                            const event = new Event("change", {bubbles: true});
+                                                            input.dispatchEvent(event);
+                                                            console.log('[腾讯号发布] 🔄 已重新触发上传');
+
+                                                            // 递归重试
+                                                            await delay(2000);
+                                                            await tryUploadImage(retryCount + 1);
+                                                        } else {
+                                                            console.error('[腾讯号发布] ❌ 无法找到上传输入框，无法重试');
+                                                            stopErrorListener();
+                                                            const publishId = dataObj.video?.dyPlatform?.id;
+                                                            if (publishId) {
+                                                                await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '腾讯号发布');
+                                                            }
+                                                            await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
+                                                        }
                                                     } else {
-                                                        console.error('[腾讯号发布] ❌ 无法找到上传输入框，无法重试');
+                                                        // 超过最大重试次数
+                                                        console.error('[腾讯号发布] ❌ 图片上传重试次数已用尽');
                                                         stopErrorListener();
                                                         const publishId = dataObj.video?.dyPlatform?.id;
                                                         if (publishId) {
-                                                            await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '腾讯号发布');
+                                                            await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '腾讯号发布');
                                                         }
                                                         await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                     }
-                                                } else {
-                                                    console.error('[腾讯号发布] ❌ 无法找到封面按钮，无法重试');
-                                                    stopErrorListener();
-                                                    const publishId = dataObj.video?.dyPlatform?.id;
-                                                    if (publishId) {
-                                                        await sendStatisticsError(publishId, '图片上传失败，无法找到封面按钮', '腾讯号发布');
-                                                    }
-                                                    await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                 }
-                                            } else {
-                                                // 超过最大重试次数
-                                                console.error('[腾讯号发布] ❌ 图片上传重试次数已用尽');
-                                                stopErrorListener();
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '腾讯号发布');
-                                                }
-                                                await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
-                                            }
-                                        }
-                                    };
+                                            };
 
-                                    // 启动上传检测（延迟2秒等待上传开始）
-                                    setTimeout(async () => {
-                                        await tryUploadImage(0);
-                                    }, 2000);
-                                }, 1000);
-                            }, 2000);
+                                            // 启动上传检测（延迟2秒等待上传开始）
+                                            setTimeout(async () => {
+                                                await tryUploadImage(0);
+                                            }, 2000);
+                                        }
+                                    }, 1000);
+                                }, 2000);
+                            }, 1000);
                         } catch (error) {
                             console.log('[腾讯号发布] ❌ 封面下载失败:', error);
                             stopErrorListener();
