@@ -23,7 +23,8 @@
     "https://om.qq.com/main": ["common.js", "tengxvnhao-creator.js"],
     "https://om.qq.com/main/creation/article": ["common.js", "tengxvnhao-publish.js"],
     "https://mp.sohu.com/mpfe/v4/contentManagement/first/page*": ["common.js", "souhuhao-redirect.js", "souhuhao-creator.js"],
-    "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle*": ["common.js", "souhuhao-publish.js"]
+    "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle*": ["common.js", "souhuhao-publish.js"],
+    "https://om.qq.com/main/management/articleManage": ["common.js", "publish-success.js"]
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"

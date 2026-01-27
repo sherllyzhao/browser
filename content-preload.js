@@ -64,7 +64,8 @@ const config = {
     sph: 'https://channels.weixin.qq.com/platform/post/create',
     bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
     wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
-    shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle'
+    shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+    txh: 'https://om.qq.com/main/creation/article'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
@@ -72,7 +73,8 @@ const config = {
     6: 'xhs',   // 小红书
     7: 'sph',   // 视频号
     8: 'wyh',   // 网易号
-    9: 'shh'    // 搜狐号
+    9: 'shh',   // 搜狐号
+    10: 'txh'   // 腾讯号
   },
   platformNameMap: {
     'dy': 'douyin',
@@ -81,7 +83,8 @@ const config = {
     'bjh': 'baijiahao',
     'wx': 'weixin',
     'wyh': 'wangyihao',
-    'shh': 'sohuhao'
+    'shh': 'sohuhao',
+    'txh': 'tengxunhao'
   }
 };
 

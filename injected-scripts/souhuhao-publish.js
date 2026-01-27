@@ -214,7 +214,6 @@
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
-    let publishRunning = false; // 标记发布是否正在执行，防止重复点击
 
     // 防重复标志：确保数据只处理一次
     let isProcessing = false;

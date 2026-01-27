@@ -27,6 +27,17 @@
   console.log('🕐 注入时间:', new Date().toLocaleString());
   console.log('═══════════════════════════════════════');
 
+  // 🔴 先检查是否有发布成功标记，没有就不执行后续逻辑
+  // 这样可以避免干扰正常的页面浏览
+  const hasPublishFlag = window.__sohuPublishSuccessFlag ||
+                         localStorage.getItem('PUBLISH_SUCCESS_DATA') ||
+                         Object.keys(localStorage).some(k => k.startsWith('PUBLISH_SUCCESS_DATA_'));
+
+  if (!hasPublishFlag) {
+    console.log('[发布成功] ℹ️ 未检测到发布成功标记，可能是正常浏览，跳过处理');
+    return;
+  }
+
   // 延迟执行，确保页面完全加载
   setTimeout(async () => {
     console.log('[发布成功] 🎉 检测到发布成功页，开始处理...');
