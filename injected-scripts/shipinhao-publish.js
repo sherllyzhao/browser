@@ -705,6 +705,12 @@ async function publishApi(dataObj) {
     try {
       localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
       console.log('[视频号发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
+
+      // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+      if (window.browserAPI && window.browserAPI.setGlobalData && myWindowId) {
+        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${myWindowId}`, {publishId: publishId});
+        console.log('[视频号发布] 💾 已保存 publishId 到 globalData');
+      }
     } catch (e) {
       console.error('[视频号发布] ❌ 保存 publishId 失败:', e);
     }
