@@ -1111,6 +1111,145 @@
 })(); // IIFE 结束
 
 /**
+ * 选择虚拟列表中的选项
+ * @param {HTMLElement} selectElement - select 组件的容器
+ * @param {string|number} targetValue - 要选择的值（显示文本）
+ * @param targetIndex - 要选择的索引（默认0）
+ * @param {number} timeout - 超时时间（毫秒）
+ */
+async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0, timeout = 10000) {
+    try {
+        console.log("[腾讯号发布] 🔍 准备选择:", targetValue);
+
+        // 1. 找到触发器并点击打开下拉
+        // 尝试多种可能的触发器选择器
+        let selectTrigger = selectElement.querySelector(".ne-select-selector") || selectElement.querySelector(".ne-select") || selectElement;
+        console.log("🚀 ~ selectFromVirtualList ~ selectTrigger: ", selectTrigger);
+        if (!selectTrigger) {
+            console.error("[腾讯号发布] ❌ 找不到 select 触发器");
+            return false;
+        }
+
+        console.log("[腾讯号发布] ✅ 找到触发器，点击打开下拉列表");
+        selectTrigger.dispatchEvent(new Event("mousedown", { bubbles: true }));
+
+        // 等待下拉出现 - 增加等待时间到 1000ms
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 2. 查找虚拟列表容器（可能有多个位置）
+        const startTime = Date.now();
+        let virtualList = null;
+        let options = [];
+
+        while (Date.now() - startTime < timeout) {
+            // 尝试多种选择器找虚拟列表
+            virtualList = document.querySelectorAll(".rc-virtual-list-holder") || document.querySelectorAll(".ne-select-dropdown .rc-virtual-list") || document.querySelectorAll('[role="listbox"]') || document.querySelectorAll(".ne-select-dropdown");
+
+            if (virtualList && virtualList.length > 0) {
+                console.log("[腾讯号发布] 📍 找到虚拟列表容器:", virtualList[targetIndex].className);
+
+                // 查找所有可见的选项 - 尝试多种选择器
+                let allOptions = Array.from(virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]'));
+
+                // 如果还是没找到，尝试所有 div
+                if (allOptions.length === 0) {
+                    allOptions = Array.from(virtualList[targetIndex].querySelectorAll("div")).filter(el => {
+                        const text = el.textContent.trim();
+                        // 过滤掉空的和太长的（可能是容器）
+                        return text && text.length < 20 && el.children.length === 0;
+                    });
+                }
+
+                // 滚动到最顶部
+                virtualList[targetIndex].scrollTo(0, 0);
+                await new Promise(r => setTimeout(r, 300));
+
+                options = allOptions.filter(el => el.offsetParent !== null);
+
+                if (options.length > 0) {
+                    console.log("[腾讯号发布] ✅ 找到虚拟列表，有", options.length, "个选项");
+                    break;
+                } else {
+                    console.log("[腾讯号发布] ⏳ 虚拟列表已打开但选项还未渲染，等待中...");
+                }
+            } else {
+                console.log("[腾讯号发布] ⏳ 虚拟列表还未出现，等待中...");
+            }
+
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        if (options.length === 0) {
+            console.error("[腾讯号发布] ❌ 未找到任何选项");
+            return false;
+        }
+
+        // 3. 滚动搜索匹配项
+        const targetStr = String(targetValue).trim();
+        let foundOption = null;
+        const seenTexts = new Set();
+        const scrollStep = 100;
+        let currentScroll = 0;
+
+        while (true) {
+            // 获取当前可见选项
+            const currentOptions = Array.from(virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')).filter(el => el.offsetParent !== null);
+
+            // 检查当前可见选项
+            for (const option of currentOptions) {
+                const optionText = option.textContent.trim();
+                seenTexts.add(optionText);
+
+                if (optionText === targetStr) {
+                    foundOption = option;
+                    console.log("[腾讯号发布] ✅ 找到匹配的选项:", optionText);
+                    break;
+                }
+            }
+
+            if (foundOption) break;
+
+            // 检查是否到底
+            const scrollHeight = virtualList[targetIndex].scrollHeight;
+            const clientHeight = virtualList[targetIndex].clientHeight;
+            currentScroll += scrollStep;
+
+            if (currentScroll >= scrollHeight - clientHeight) {
+                console.log("[腾讯号发布] 📍 已滚动到底部");
+                break;
+            }
+
+            // 向下滚动
+            virtualList[targetIndex].scrollTo(0, currentScroll);
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        if (!foundOption) {
+            console.error("[腾讯号发布] ❌ 未找到目标选项:", targetStr);
+            console.log("[腾讯号发布] 📋 已扫描选项数:", seenTexts.size);
+            return false;
+        }
+
+        // 4. 滚动到视图并点击
+        foundOption.scrollIntoView({ behavior: "auto", block: "nearest" });
+        await new Promise(r => setTimeout(r, 300));
+
+        console.log("[腾讯号发布] 🖱️ 点击选项:", foundOption.textContent.trim());
+        console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
+        foundOption.querySelector(".ne-select-item-option-content").dispatchEvent(new Event("click", { bubbles: true }));
+
+        // 等待下拉关闭
+        await new Promise(r => setTimeout(r, 500));
+
+        console.log("[腾讯号发布] ✅ 选项选择完成");
+        return true;
+    } catch (error) {
+        console.error("[腾讯号发布] ❌ selectFromVirtualList 错误:", error);
+        return false;
+    }
+}
+
+/**
  * 选择定时发布的日期和时间
  * @param sendTime 定时发布时间，格式：YYYY-MM-DD HH:mm
  */

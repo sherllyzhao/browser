@@ -824,6 +824,12 @@
                                           try {
                                             localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
                                             console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+
+                                            // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                            if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                              await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                              console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
+                                            }
                                           } catch (e) {
                                             console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
                                           }
@@ -863,6 +869,12 @@
                                   try {
                                     localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
                                     console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+
+                                    // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                    if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                      await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                      console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
+                                    }
                                   } catch (e) {
                                     console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
                                   }
