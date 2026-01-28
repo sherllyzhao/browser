@@ -375,10 +375,14 @@
             setTimeout(async () => {
                 await retryOperation(async () => {
                     // 有弹窗先关闭弹窗
-                    const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                    if (tipDialogEle) {
-                        const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                        tipBtnEle.click()
+                    try{
+                        const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
+                        if (tipDialogEle) {
+                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
+                            tipBtnEle.click()
+                        }
+                    }catch (e) {
+                        console.log('[网易号发布] ❌ 关闭弹窗失败:', e);
                     }
                 }, 5, 1000)
 
@@ -688,7 +692,7 @@
                         // 🔑 过滤掉成功消息、中间状态消息和非错误提示
                         const ignoredMessages = [
                             '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-                            '设置区', '设置', '配置', '选项', '功能', '功能暂未开放', '暂未开放'
+                            '设置区', '内容区', '封面区'
                         ];
                         for (let i = capturedErrors.length - 1; i >= 0; i--) {
                             const msg = capturedErrors[i];
@@ -934,6 +938,14 @@
                                             const startTime = Date.now();
                                             const checkInterval = 300; // 每300ms检查一次
 
+                                            // 判断是否为非错误提示（需要忽略的文本）
+                                            const shouldIgnore = (text) => {
+                                                if (!text) return true;
+                                                // 排除这些非错误文本
+                                                const ignoreTexts = ['发文前检测', '内容区', '设置区'];
+                                                return ignoreTexts.some(t => text.includes(t));
+                                            };
+
                                             while (Date.now() - startTime < timeout) {
                                                 // 1. 先检查是否有错误信息（优先级更高）- 直接扫描 DOM
                                                 const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
@@ -942,7 +954,8 @@
                                                     if (spans.length >= 2) {
                                                         const textSpan = spans[spans.length - 1];
                                                         const text = (textSpan.textContent || '').trim();
-                                                        if (text) {
+                                                        // 排除非错误提示
+                                                        if (!shouldIgnore(text)) {
                                                             console.log('[网易号发布] 📨 实时捕获到错误信息:', text);
                                                             return {type: 'error', message: text};
                                                         }
@@ -967,7 +980,8 @@
                                                                 if (spans.length >= 2) {
                                                                     const textSpan = spans[spans.length - 1];
                                                                     const text = (textSpan.textContent || '').trim();
-                                                                    if (text) {
+                                                                    // 排除非错误提示，不当作错误
+                                                                    if (text && !shouldIgnore(text)) {
                                                                         console.log('[网易号发布] ⚠️ 确认期间检测到错误:', text);
                                                                         return {type: 'error', message: text};
                                                                     }
@@ -990,7 +1004,8 @@
                                                 if (spans.length >= 2) {
                                                     const textSpan = spans[spans.length - 1];
                                                     const text = (textSpan.textContent || '').trim();
-                                                    if (text) {
+                                                    // 排除"发文前检测"提示，不当作错误
+                                                    if (text && !isPreCheckTip(text)) {
                                                         return {type: 'error', message: text};
                                                     }
                                                 }
@@ -1020,86 +1035,59 @@
 
                                             await delay(5000); // 等待渲染完成
 
-                                            const publishBtns = document.querySelectorAll(".ne-button-color-primary");
+                                            const publishBtns = document.querySelectorAll(".post-footer__container-right .ne-button");
                                             let publishBtn = null;
                                             let scheduledReleasesBtn = null;
                                             for (let publishBtnEle of publishBtns) {
                                                 if(publishBtnEle.textContent.trim() === '发布'){
                                                     publishBtn = publishBtnEle;
-                                                    break;
                                                 }
                                                 if(publishBtnEle.textContent.trim() === '定时发布'){
                                                     scheduledReleasesBtn = publishBtnEle;
-                                                    break;
                                                 }
                                             }
 
+                                            console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
                                             // 🔑 检查是否需要定时发布
-                                            const publishTime = dataObj.video?.publishTime;
-                                            const sendTime = dataObj.video?.send_time;
+                                            const publishTime = dataObj.video?.formData?.send_set;
+                                            console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
+                                            const sendTime = dataObj.video?.formData?.send_time;
+                                            console.log("🚀 ~ tryUploadImage ~ sendTime: ", sendTime);
 
                                             if (publishTime === 2 && sendTime && scheduledReleasesBtn) {
+                                                console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
                                                 console.log('[网易号发布] ⏰ 检测到需要定时发布，时间:', sendTime);
 
-                                                // 解析定时时间
-                                                const timeConfig = parseSendTime(sendTime);
-                                                if (!timeConfig) {
-                                                    console.error('[网易号发布] ❌ 解析定时时间失败');
-                                                    stopErrorListener();
-                                                    await closeWindowWithMessage('定时时间解析失败', 1000);
-                                                    return;
+                                                // 点击定时发布按钮（第一次，触发发文前检测）
+                                                await delay(5000);
+                                                console.log('[网易号发布] 🖱️ 点击定时发布按钮');
+                                                scheduledReleasesBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                                                await delay(300);
+                                                scheduledReleasesBtn.click();
+
+                                                // 检查是否有发文前检测提示
+                                                await delay(1000);
+                                                const checkTip = document.querySelector('.ne-snackbar-item-description');
+                                                if (checkTip && checkTip.textContent.includes('发文前检测')) {
+                                                    console.log('[网易号发布] 🔍 检测到发文前检测提示，等待完成后再点一次...');
+                                                    await delay(5000);
+                                                    console.log('[网易号发布] 🖱️ 再次点击定时发布按钮');
+                                                    scheduledReleasesBtn.click();
+                                                    await delay(1000);
                                                 }
 
-                                                // 点击定时发布按钮
-                                                console.log('[网易号发布] 🖱️ 点击定时发布按钮');
-                                                scheduledReleasesBtn.click();
-                                                await delay(1000);
-
                                                 // 等待弹窗出现并选择时间
-                                                const scheduledModal = await waitForElement('.ne-modal-wrap', 5000);
+                                                const scheduledModal = await waitForElement('.ne-modal-container');
                                                 if (scheduledModal) {
                                                     console.log('[网易号发布] ✅ 定时发布弹窗已打开');
 
                                                     // 调用选择时间函数
-                                                    const timeSelectSuccess = await selectScheduledTime(
-                                                        timeConfig.dateIndex,
-                                                        timeConfig.hour,
-                                                        timeConfig.minute
-                                                    );
+                                                    const timeSelectSuccess = await selectScheduledTime(sendTime);
 
                                                     if (!timeSelectSuccess) {
                                                         console.error('[网易号发布] ❌ 时间选择失败');
                                                         stopErrorListener();
                                                         await closeWindowWithMessage('定时时间选择失败', 1000);
-                                                        return;
-                                                    }
-
-                                                    // 点击确定发布按钮
-                                                    await delay(500);
-                                                    const confirmBtn = Array.from(document.querySelectorAll('.ne-button-color-primary'))
-                                                        .find(btn => btn.textContent.trim() === '定时发布');
-
-                                                    if (confirmBtn) {
-                                                        console.log('[网易号发布] ✅ 点击确定定时发布');
-
-                                                        // 🔑 在点击定时发布前保存 publishId，让 publish-success.js 可以调用统计接口
-                                                        const publishId = dataObj.video?.dyPlatform?.id;
-                                                        if (publishId) {
-                                                            try {
-                                                                localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                                                console.log('[网易号发布] 💾 已保存 publishId 到 localStorage:', publishId);
-                                                            } catch (e) {
-                                                                console.error('[网易号发布] ❌ 保存 publishId 失败:', e);
-                                                            }
-                                                        }
-
-                                                        confirmBtn.click();
-
-                                                        // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
-                                                        console.log('[网易号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
-                                                        stopErrorListener();
-                                                    } else {
-                                                        console.error('[网易号发布] ❌ 未找到确定按钮');
                                                     }
                                                 } else {
                                                     console.error('[网易号发布] ❌ 定时发布弹窗未打开');
@@ -1137,8 +1125,15 @@
                                                 const publishId = dataObj.video?.dyPlatform?.id;
                                                 if (publishId) {
                                                     try {
+                                                        // 同时保存到 localStorage 和 globalData（双保险）
                                                         localStorage.setItem(getPublishSuccessKey(), JSON.stringify({publishId: publishId}));
                                                         console.log('[网易号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+
+                                                        // 🔑 也保存到 globalData（更可靠，不受域名隔离限制）
+                                                        if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                                            console.log('[网易号发布] 💾 已保存 publishId 到 globalData');
+                                                        }
                                                     } catch (e) {
                                                         console.error('[网易号发布] ❌ 保存 publishId 失败:', e);
                                                     }
@@ -1152,11 +1147,18 @@
                                                     cancelable: true
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
-                                                console.log('[网易号发布] ✅ 已点击发布（模拟鼠标事件）');
+                                                console.log('[网易号发布] ✅ 已点击发布按钮');
 
-                                                // 🔴 点击发布后，等待并检测是否有错误信息
-                                                console.log('[网易号发布] ⏳ 等待 1 秒检测发布结果...');
+                                                // 检查是否有发文前检测提示
                                                 await delay(1000);
+                                                const publishCheckTip = document.querySelector('.ne-snackbar-item-description');
+                                                if (publishCheckTip && publishCheckTip.textContent.includes('发文前检测')) {
+                                                    console.log('[网易号发布] 🔍 检测到发文前检测提示，等待完成后再点一次...');
+                                                    await delay(5000);
+                                                    console.log('[网易号发布] 🖱️ 再次点击发布按钮');
+                                                    publishBtn.dispatchEvent(clickEvent);
+                                                    await delay(1000);
+                                                }
 
                                                 let publishDialogErrorMsg = null;
                                                 // 检查是否有弹窗类型的错误信息
@@ -1333,457 +1335,202 @@ function getImageType(src){
 }
 
 /**
- * 解析定时发布时间
- * @param {string} sendTimeStr - 时间字符串，格式："2026-01-21 00:00:00"
- * @returns {object} { dateIndex, hour, minute } 或 null
+ * 选择定时发布的日期和时间
+ * @param sendTime
  */
-function parseSendTime(sendTimeStr) {
+async function selectScheduledTime(sendTime) {
+    console.log("🚀 ~ selectScheduledTime ~ sendTime: ", sendTime);
     try {
-        // 解析时间字符串
-        const [dateStr, timeStr] = sendTimeStr.split(' ');
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const [hour, minute] = timeStr.split(':').map(Number);
-
-        // 计算相对于今天的天数差
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const sendDate = new Date(year, month - 1, day);
-        sendDate.setHours(0, 0, 0, 0);
-
-        const dayDiff = Math.floor((sendDate - today) / (1000 * 60 * 60 * 24));
-
-        console.log('[网易号发布] 📅 解析定时时间:', {
-            原始时间: sendTimeStr,
-            日期: `${year}-${month}-${day}`,
-            时间: `${hour}:${minute}`,
-            相对天数: dayDiff
-        });
-
-        return {
-            dateIndex: dayDiff,
-            hour: hour,
-            minute: minute
-        };
-    } catch (error) {
-        console.error('[网易号发布] ❌ 解析定时时间失败:', error);
-        return null;
-    }
-}
-
-/**
- * 选择虚拟列表中的选项
- * @param {HTMLElement} selectElement - select 组件的容器
- * @param {string|number} targetValue - 要选择的值（显示文本）
- * @param targetIndex - 要选择的索引（默认0）
- * @param {number} timeout - 超时时间（毫秒）
- */
-async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0, timeout = 10000) {
-    try {
-        console.log('[网易号发布] 🔍 准备选择:', targetValue);
-
-        // 1. 找到触发器并点击打开下拉
-        // 尝试多种可能的触发器选择器
-        let selectTrigger = selectElement.querySelector('.ne-select-selector') ||
-                           selectElement.querySelector('.ne-select') ||
-                           selectElement;
-        console.log("🚀 ~ selectFromVirtualList ~ selectTrigger: ", selectTrigger);
-        if (!selectTrigger) {
-            console.error('[网易号发布] ❌ 找不到 select 触发器');
+        const modal = document.querySelector(".ne-modal-body");
+        if (!modal) {
+            console.error("[网易号发布] ❌ 找不到定时发布弹窗");
             return false;
         }
 
-        console.log('[网易号发布] ✅ 找到触发器，点击打开下拉列表');
-        selectTrigger.dispatchEvent(new Event('mousedown', { bubbles: true }));
+        // 解析目标日期时间
+        const [datePart, timePart] = sendTime.split(' ');
+        const [year, month, day] = datePart.split('-');
+        console.log("🚀 ~ selectScheduledTime ~ day: ", day);
 
-        // 等待下拉出现 - 增加等待时间到 1000ms
-        await new Promise(r => setTimeout(r, 1000));
+        // 1. 点击日期输入框打开日历
+        const dateInput = modal.querySelector(".ne-input-container input");
+        if (!dateInput) {
+            console.error("[网易号发布] ❌ 找不到日期输入框");
+            return false;
+        }
+        dateInput.click();
+        await delay(300);
+        console.log("[网易号发布] 🔧 开始选择定时发布时间...");
 
-        // 2. 查找虚拟列表容器（可能有多个位置）
-        const startTime = Date.now();
-        let virtualList = null;
-        let options = [];
+        const picker = document.querySelector(".ne-date-picker");
+        if (!picker) {
+            console.error("[网易号发布] ❌ 找不到日期选择器");
+            return false;
+        }
 
-        while (Date.now() - startTime < timeout) {
-            // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelectorAll('.rc-virtual-list-holder') ||
-                         document.querySelectorAll('.ne-select-dropdown .rc-virtual-list') ||
-                         document.querySelectorAll('[role="listbox"]') ||
-                         document.querySelectorAll('.ne-select-dropdown');
+        // 2. 导航到目标月份（处理跨月情况）
+        for (let i = 0; i < 24; i++) { // 最多尝试24个月
+            // 注意: curr-date 是独立的 class，不是 omui-calendar-nav 的子元素
+            const currDateEl = picker.querySelector(".ne-calendar-head-date-title");
+            if (!currDateEl) {
+                console.error("[网易号发布] ❌ 找不到当前月份显示元素");
+                break;
+            }
 
-            if (virtualList && virtualList.length > 0) {
-                console.log('[网易号发布] 📍 找到虚拟列表容器:', virtualList[targetIndex].className);
+            const currentText = currDateEl.textContent; // 格式: "2026-01"
+            const match = currentText.match(/(\d+)-(\d+)/);
+            if (!match) {
+                console.error("[网易号发布] ❌ 无法解析当前月份:", currentText);
+                break;
+            }
 
-                // 查找所有可见的选项 - 尝试多种选择器
-                let allOptions = Array.from(
-                    virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
-                );
+            const currYear = parseInt(match[1], 10);
+            const currMonth = parseInt(match[2], 10);
+            console.log(`[网易号发布] 📅 当前显示: ${currYear}-${currMonth}, 目标: ${year}-${month}`);
 
-                // 如果还是没找到，尝试所有 div
-                if (allOptions.length === 0) {
-                    allOptions = Array.from(virtualList[targetIndex].querySelectorAll('div')).filter(el => {
-                        const text = el.textContent.trim();
-                        // 过滤掉空的和太长的（可能是容器）
-                        return text && text.length < 20 && el.children.length === 0;
-                    });
-                }
+            if (currYear === parseInt(year) && currMonth === parseInt(month)) {
+                console.log("[网易号发布] ✅ 已到达目标月份");
+                break; // 已到达目标月份
+            }
 
-              // 滚动到最顶部
-              virtualList[targetIndex].scrollTo(0, 0);
-              await new Promise(r => setTimeout(r, 300));
+            // 判断需要前进还是后退
+            const targetDate = new Date(year, month - 1);
+            const currentDate = new Date(currYear, currMonth - 1);
 
-                options = allOptions.filter(el => el.offsetParent !== null);
-
-                if (options.length > 0) {
-                    console.log('[网易号发布] ✅ 找到虚拟列表，有', options.length, '个选项');
-                    break;
-                } else {
-                    console.log('[网易号发布] ⏳ 虚拟列表已打开但选项还未渲染，等待中...');
+            if (targetDate > currentDate) {
+                // 点击下一月 > (omui-calendar-nav 和 next-m 是同一元素的 class)
+                const nextBtn = picker.querySelector(".ne-calendar-next");
+                if (nextBtn) {
+                    nextBtn.click();
+                    console.log("[网易号发布] ➡️ 点击下一月");
                 }
             } else {
-                console.log('[网易号发布] ⏳ 虚拟列表还未出现，等待中...');
-            }
-
-            await new Promise(r => setTimeout(r, 200));
-        }
-
-        if (options.length === 0) {
-            console.error('[网易号发布] ❌ 未找到任何选项');
-            return false;
-        }
-
-        // 3. 滚动搜索匹配项
-        const targetStr = String(targetValue).trim();
-        let foundOption = null;
-        const seenTexts = new Set();
-        const scrollStep = 100;
-        let currentScroll = 0;
-
-        while (true) {
-            // 获取当前可见选项
-            const currentOptions = Array.from(
-                virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
-            ).filter(el => el.offsetParent !== null);
-
-            // 检查当前可见选项
-            for (const option of currentOptions) {
-                const optionText = option.textContent.trim();
-                seenTexts.add(optionText);
-
-                if (optionText === targetStr) {
-                    foundOption = option;
-                    console.log('[网易号发布] ✅ 找到匹配的选项:', optionText);
-                    break;
+                // 点击上一月 < (omui-calendar-nav 和 prev-m 是同一元素的 class)
+                const prevBtn = picker.querySelector(".ne-calendar-prev");
+                if (prevBtn) {
+                    prevBtn.click();
+                    console.log("[网易号发布] ⬅️ 点击上一月");
                 }
             }
-
-            if (foundOption) break;
-
-            // 检查是否到底
-            const scrollHeight = virtualList[targetIndex].scrollHeight;
-            const clientHeight = virtualList[targetIndex].clientHeight;
-            currentScroll += scrollStep;
-
-            if (currentScroll >= scrollHeight - clientHeight) {
-                console.log('[网易号发布] 📍 已滚动到底部');
-                break;
-            }
-
-            // 向下滚动
-            virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 200));
+            await delay(200);
         }
+        await delay(200);
 
-        if (!foundOption) {
-            console.error('[网易号发布] ❌ 未找到目标选项:', targetStr);
-            console.log('[网易号发布] 📋 已扫描选项数:', seenTexts.size);
-            return false;
-        }
+        // 3. 选择日期 - 找到目标日期的 td 并点击
+        let dateSelected = false;
+        const allDayCells = picker.querySelectorAll(".ne-calendar-body td");
+        for (const td of allDayCells) {
+            const span = td.querySelector("button");
+            if (!span) continue;
 
-        // 4. 滚动到视图并点击
-        foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 300));
+            // 跳过不可选的日期（有 no-drop 类，表示过去的日期）
+            if (span.classList.contains("ne-calendar-date-item-disabled")) continue;
 
-        console.log('[网易号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
-        console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
-        foundOption.querySelector('.ne-select-item-option-content').dispatchEvent(new Event('click', { bubbles: true }));
+            // 跳过非当前月份的日期（上月/下月的灰色日期）
+            if (td.classList.contains("ne-calendar-date-item-different-month")) continue;
+            console.log("🚀 ~ selectScheduledTime ~ td: ", td);
 
-        // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 500));
-
-        console.log('[网易号发布] ✅ 选项选择完成');
-        return true;
-
-    } catch (error) {
-        console.error('[网易号发布] ❌ selectFromVirtualList 错误:', error);
-        return false;
-    }
-}
-
-/**
- * 选择定时发布的日期和时间
- * @param {number} dateIndex - 日期索引（0=今天, 1=明天等）
- * @param {number} hour - 小时（0-23）
- * @param {number} minute - 分钟（0-59）
- */
-async function selectScheduledTime(dateIndex, hour, minute) {
-    try {
-        // 1. 找到定时发布弹窗的三个 select 组件
-        const modal = document.querySelector('.ne-modal-wrap');
-        if (!modal) {
-            console.error('[网易号发布] ❌ 找不到定时发布弹窗');
-            return false;
-        }
-
-        const selectElements = modal.querySelectorAll('.select-wrap');
-        if (selectElements.length < 3) {
-            console.error('[网易号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
-            return false;
-        }
-
-        const dateSelect = selectElements[0]; // 日期
-        const hourSelect = selectElements[1]; // 小时
-        const minuteSelect = selectElements[2]; // 分钟
-
-        console.log('[网易号发布] 🔧 开始选择定时发布时间...');
-
-        // 2. 获取日期选项的显示文本
-        let dateText = '';
-        const date = new Date();
-        date.setDate(date.getDate() + dateIndex);
-
-        // 格式：M月D日 或 MM月DD日
-        const month = date.getMonth() + 1; // getMonth() 返回 0-11
-        const day = date.getDate();
-        dateText = `${month}月${day}日`;
-
-        // 3. 依次选择日期、小时、分钟
-        console.log('[网易号发布] 📅 选择日期:', dateText);
-        if (!await selectFromVirtualList(dateSelect, dateText, 0)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const hourText = `${hour}点`;
-        console.log('[网易号发布] 🕐 选择小时:', hourText);
-        if (!await selectFromVirtualList(hourSelect, hourText, 1)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const minuteText = `${minute}分`;
-        console.log('[网易号发布] ⏱️ 选择分钟:', minuteText);
-        if (!await selectFromVirtualList(minuteSelect, minuteText, 2)) {
-            return false;
-        }
-
-        console.log('[网易号发布] ✅ 定时发布时间选择完成');
-        return true;
-
-    } catch (error) {
-        console.error('[网易号发布] ❌ selectScheduledTime 错误:', error);
-        return false;
-    }
-}
-
-/**
- * 解析定时发布时间
- * @param {string} sendTimeStr - 时间字符串，格式："2026-01-21 00:00:00"
- * @returns {object} { dateIndex, hour, minute } 或 null
- */
-function parseSendTime(sendTimeStr) {
-    try {
-        // 解析时间字符串
-        const [dateStr, timeStr] = sendTimeStr.split(' ');
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const [hour, minute] = timeStr.split(':').map(Number);
-
-        // 计算相对于今天的天数差
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const sendDate = new Date(year, month - 1, day);
-        sendDate.setHours(0, 0, 0, 0);
-
-        const dayDiff = Math.floor((sendDate - today) / (1000 * 60 * 60 * 24));
-
-        console.log('[网易号发布] 📅 解析定时时间:', {
-            原始时间: sendTimeStr,
-            日期: `${year}-${month}-${day}`,
-            时间: `${hour}:${minute}`,
-            相对天数: dayDiff
-        });
-
-        return {
-            dateIndex: dayDiff,
-            hour: hour,
-            minute: minute
-        };
-    } catch (error) {
-        console.error('[网易号发布] ❌ 解析定时时间失败:', error);
-        return null;
-    }
-}
-
-/**
- * 选择虚拟列表中的选项
- * @param {HTMLElement} selectElement - select 组件的容器
- * @param {string|number} targetValue - 要选择的值（显示文本）
- * @param {number} timeout - 超时时间（毫秒）
- */
-async function selectFromVirtualList(selectElement, targetValue, timeout = 10000) {
-    try {
-        console.log('[网易号发布] 🔍 准备选择:', targetValue);
-
-        // 1. 找到触发器并点击打开下拉
-        const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
-        if (!selectTrigger) {
-            console.error('[网易号发布] ❌ 找不到 select 触发器');
-            return false;
-        }
-
-        console.log('[网易号发布] ✅ 找到触发器，点击打开下拉列表');
-        selectTrigger.click();
-
-        // 等待下拉出现
-        await new Promise(r => setTimeout(r, 500));
-
-        // 2. 查找虚拟列表容器（可能有多个位置）
-        const startTime = Date.now();
-        let virtualList = null;
-        let options = [];
-
-        while (Date.now() - startTime < timeout) {
-            // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelector('.rc-virtual-list-holder') ||
-                         document.querySelector('.cheetah-select-dropdown .rc-virtual-list') ||
-                         document.querySelector('[role="listbox"]');
-
-            if (virtualList) {
-                // 查找所有可见的选项
-                options = Array.from(virtualList.querySelectorAll('[role="option"], .cheetah-select-item-option'))
-                    .filter(el => el.offsetParent !== null); // 过滤隐藏的元素
-
-                if (options.length > 0) {
-                    console.log('[网易号发布] ✅ 找到虚拟列表，有', options.length, '个选项');
-                    break;
-                }
-            }
-
-            await new Promise(r => setTimeout(r, 100));
-        }
-
-        if (options.length === 0) {
-            console.error('[网易号发布] ❌ 未找到任何选项');
-            return false;
-        }
-
-        // 3. 在所有选项中查找匹配的
-        const targetStr = String(targetValue).trim();
-        let foundOption = null;
-
-        for (const option of options) {
-            const optionText = option.textContent.trim();
-            console.log('[网易号发布] 🔎 检查选项:', optionText);
-
-            if (optionText === targetStr) {
-                foundOption = option;
-                console.log('[网易号发布] ✅ 找到匹配的选项:', optionText);
+            const dayNum = parseInt(span.textContent, 10);
+            console.log("🚀 ~ selectScheduledTime ~ dayNum: ", dayNum);
+            if (dayNum === parseInt(day)) {
+                span.click();
+                dateSelected = true;
+                console.log(`[网易号发布] ✅ 选择日期: ${year}-${month}-${day}`);
                 break;
             }
         }
 
-        if (!foundOption) {
-            console.error('[网易号发布] ❌ 未找到目标选项:', targetStr);
-            console.log('[网易号发布] 📋 所有选项:', options.map(o => o.textContent.trim()).join(', '));
-            return false;
+        if (!dateSelected) {
+            console.error(`[网易号发布] ❌ 未能选择日期 ${day} 号`);
+        }
+        await delay(300);
+
+        // 4. 设置时间 - 点击时间输入框打开下拉，然后选择小时和分钟
+        const [hour, minute] = timePart.split(':');
+        console.log(`[网易号发布] ⏰ 目标时间: ${hour}:${minute}`);
+
+        // 点击时间输入框打开下拉面板
+        const timeInput = modal.querySelector(".time-picker__item__value");
+        if (timeInput) {
+            timeInput.click();
+            await delay(300);
+
+            // 找到时间选择面板
+            const timePanel = document.querySelector(".time-picker-tooltip");
+            if (timePanel) {
+                // 获取两个 ul：第一个是小时，第二个是分钟
+                const ulList = timePanel.querySelectorAll("ul");
+                console.log(`[网易号发布] ⏰ 找到 ${ulList.length} 个时间列表`);
+
+                // 选择小时
+                if (ulList[0]) {
+                    const hourItems = ulList[0].querySelectorAll("li");
+                    for (const li of hourItems) {
+                        if (li.textContent.trim() === hour) {
+                            li.click();
+                            console.log(`[网易号发布] ✅ 选择小时: ${hour}`);
+                            break;
+                        }
+                    }
+                }
+                await delay(200);
+
+                // 选择分钟（分钟选项是每5分钟一档：00, 05, 10, 15...，需要找最接近的）
+                if (ulList[1]) {
+                    const minuteNum = parseInt(minute, 10);
+                    // 向上取整到最近的5分钟（如 17 -> 20, 12 -> 15）
+                    const roundedMinute = Math.ceil(minuteNum / 5) * 5;
+                    // 如果超过55，则取55
+                    const targetMinute = roundedMinute > 55 ? 55 : roundedMinute;
+                    const targetMinuteStr = targetMinute.toString().padStart(2, '0');
+                    console.log(`[网易号发布] ⏰ 原始分钟: ${minute}, 取整后: ${targetMinuteStr}`);
+
+                    const minuteItems = ulList[1].querySelectorAll("li");
+                    for (const li of minuteItems) {
+                        if (li.textContent.trim() === targetMinuteStr) {
+                            li.click();
+                            console.log(`[网易号发布] ✅ 选择分钟: ${targetMinuteStr}`);
+                            break;
+                        }
+                    }
+                }
+                await delay(200);
+
+                // 点击时间面板的确定按钮
+                const timeConfirmBtn = document.querySelector(".time-picker__footer__save");
+                if (timeConfirmBtn) {
+                    timeConfirmBtn.click();
+                    console.log("[网易号发布] ✅ 点击时间确定按钮");
+                }
+            } else {
+                console.warn("[网易号发布] ⚠️ 未找到时间选择面板");
+            }
+        } else {
+            console.warn("[网易号发布] ⚠️ 未找到时间输入框");
+        }
+        await delay(200);
+
+        // 5. 等待确定按钮出现
+        const confirmDateBtns = modal.querySelectorAll(".regularRelease__content__footer div");
+        let confirmDateBtn = null;
+        for (const btn of confirmDateBtns) {
+            if (btn.textContent.trim().includes("确认")) {
+                confirmDateBtn = btn;
+                break;
+            }
         }
 
-        // 4. 滚动到视图并点击
-        foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 200));
-
-        console.log('[网易号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
-        foundOption.click();
-
-        // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 300));
-
-        console.log('[网易号发布] ✅ 选项选择完成');
+        console.log("🚀 ~ selectScheduledTime ~ confirmDateBtn: ", confirmDateBtn);
+        if (!confirmDateBtn) {
+            console.error("[网易号发布] ❌ 找不到确认按钮");
+            return false;
+        }
+        confirmDateBtn.click();
+        console.log("[网易号发布] ✅ 点击确认按钮");
+        //return false;
         return true;
-
     } catch (error) {
-        console.error('[网易号发布] ❌ selectFromVirtualList 错误:', error);
-        return false;
-    }
-}
-
-/**
- * 选择定时发布的日期和时间
- * @param {number} dateIndex - 日期索引（0=今天, 1=明天等）
- * @param {number} hour - 小时（0-23）
- * @param {number} minute - 分钟（0-59）
- */
-async function selectScheduledTime(dateIndex, hour, minute) {
-    try {
-        // 1. 找到定时发布弹窗的三个 select 组件
-        const modal = document.querySelector('.cheetah-modal-wrap');
-        if (!modal) {
-            console.error('[网易号发布] ❌ 找不到定时发布弹窗');
-            return false;
-        }
-
-        const selectElements = modal.querySelectorAll('.select-wrap');
-        if (selectElements.length < 3) {
-            console.error('[网易号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
-            return false;
-        }
-
-        const dateSelect = selectElements[0]; // 日期
-        const hourSelect = selectElements[1]; // 小时
-        const minuteSelect = selectElements[2]; // 分钟
-
-        console.log('[网易号发布] 🔧 开始选择定时发布时间...');
-
-        // 2. 获取日期选项的显示文本
-        let dateText = '';
-        const date = new Date();
-        date.setDate(date.getDate() + dateIndex);
-
-        // 格式：M月D日 或 MM月DD日
-        const month = date.getMonth() + 1; // getMonth() 返回 0-11
-        const day = date.getDate();
-        dateText = `${month}月${day}日`;
-
-        // 3. 依次选择日期、小时、分钟
-        console.log('[网易号发布] 📅 选择日期:', dateText);
-        if (!await selectFromVirtualList(dateSelect, dateText)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const hourText = `${hour}点`;
-        console.log('[网易号发布] 🕐 选择小时:', hourText);
-        if (!await selectFromVirtualList(hourSelect, hourText)) {
-            return false;
-        }
-
-        await new Promise(r => setTimeout(r, 300));
-
-        const minuteText = `${minute}分`;
-        console.log('[网易号发布] ⏱️ 选择分钟:', minuteText);
-        if (!await selectFromVirtualList(minuteSelect, minuteText)) {
-            return false;
-        }
-
-        console.log('[网易号发布] ✅ 定时发布时间选择完成');
-        return true;
-
-    } catch (error) {
-        console.error('[网易号发布] ❌ selectScheduledTime 错误:', error);
+        console.error("[网易号发布] ❌ selectScheduledTime 错误:", error);
         return false;
     }
 }
