@@ -58,7 +58,10 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/common.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" show HEAD:injected-scripts/tengxvnhao-publish.js:*)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" show HEAD:injected-scripts/common.js 2 >& 1:*)",
-      "mcp__playwright__browser_snapshot"
+      "mcp__playwright__browser_snapshot",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/douyin-publish.js injected-scripts/xiaohongshu-publish.js injected-scripts/shipinhao-publish.js injected-scripts/wangyihao-publish.js injected-scripts/publish-success.js --stat)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" add injected-scripts/douyin-publish.js injected-scripts/xiaohongshu-publish.js injected-scripts/shipinhao-publish.js injected-scripts/baijiahao-publish.js injected-scripts/tengxvnhao-publish.js injected-scripts/souhuhao-publish.js injected-scripts/wangyihao-publish.js injected-scripts/publish-success.js injected-scripts/scripts-config.json)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" commit -m \"$(cat <<''EOF''\nfix: 所有发布脚本添加 globalData 双保险机制，防止跨域 localStorage 失效\n\n为所有平台的发布脚本添加 globalData 保存机制，解决网易号等平台因域名隔离导致的发布成功检测失败问题。\n\n## 修改内容\n\n### 1. 发布脚本修改（7个平台）\n- douyin-publish.js: 添加 globalData 保存\n- xiaohongshu-publish.js: 添加 globalData 保存\n- shipinhao-publish.js: 添加 globalData 保存\n- baijiahao-publish.js: 添加 globalData 保存（2处）\n- tengxvnhao-publish.js: 添加 globalData 保存（2处）\n- souhuhao-publish.js: 添加 globalData 保存（2处）\n- wangyihao-publish.js: 添加 globalData 保存\n\n所有发布脚本在点击发布按钮前，同时保存 publishId 到：\n- localStorage（原有机制）\n- globalData（新增，通过主进程存储，不受域名限制）\n\n### 2. publish-success.js 增强检测\n- 改为 async IIFE，提前获取 windowId\n- 增加 globalData 检测逻辑\n- 数据读取优先级：globalData > 窗口专属 localStorage > 通用 localStorage\n- 清理数据时同时清理 globalData 和 localStorage\n- 增加详细的调试日志\n\n### 3. scripts-config.json\n- 网易号发布页和内容管理页 URL 添加通配符 `*`\n- 确保带参数的 URL 也能正确匹配脚本\n\n## 技术原理\n\n**问题根源**：\n- localStorage 基于域名隔离\n- 网易号发布页和内容管理页在同一域名下，理论上 localStorage 共享\n- 但跨页面导航时可能存在时序问题或读写延迟\n\n**解决方案**：\n- globalData 通过 Electron 主进程的 global-storage.json 存储\n- 不受浏览器域名隔离限制\n- 跨域、跨页面都能可靠读取\n- 与 localStorage 双保险，任一机制成功即可\n\n## 影响范围\n- 所有平台的发布成功检测更可靠\n- 避免因 localStorage 失效导致的\"未检测到发布成功标记\"问题\n- 不影响现有功能，向下兼容\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

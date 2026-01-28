@@ -630,6 +630,16 @@
                     const capturedErrors = []; // 收集所有捕获的错误信息
                     let errorScanInterval = null;
 
+                    // 🔑 需要忽略的非错误文本（在采集时就过滤掉）
+                    const ignoredTexts = [
+                        '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
+                        '设置区', '内容区', '封面区', '发文前检测'
+                    ];
+                    const shouldIgnoreText = (text) => {
+                        if (!text) return true;
+                        return ignoredTexts.some(ignored => text.includes(ignored));
+                    };
+
                     // 启动错误监听
                     const startErrorListener = () => {
                         console.log('[网易号发布] 🔍 启动全局错误监听器...');
@@ -653,7 +663,8 @@
                                 if (spans.length >= 2) {
                                     const textSpan = spans[spans.length - 1];
                                     const text = (textSpan.textContent || '').trim();
-                                    if (text && !capturedErrors.includes(text)) {
+                                    // 🔑 采集时就过滤掉非错误文本
+                                    if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
                                         capturedErrors.push(text);
                                         console.log('[网易号发布] 📨 捕获到错误信息:', text);
                                     }
@@ -666,7 +677,8 @@
                                 const errorSpan = formError.querySelector('span:last-child');
                                 if (errorSpan) {
                                     const text = (errorSpan.textContent || '').trim();
-                                    if (text && !capturedErrors.includes(text)) {
+                                    // 🔑 采集时就过滤掉非错误文本
+                                    if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
                                         capturedErrors.push(text);
                                         console.log('[网易号发布] 📨 捕获到错误信息:', text);
                                     }
@@ -688,16 +700,11 @@
 
                     // 获取最新的错误信息
                     const getLatestError = () => {
-                        // 优先返回最后一条非中间状态的错误
-                        // 🔑 过滤掉成功消息、中间状态消息和非错误提示
-                        const ignoredMessages = [
-                            '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
-                            '设置区', '内容区', '封面区'
-                        ];
+                        // 优先返回最后一条错误（采集时已过滤非错误文本）
                         for (let i = capturedErrors.length - 1; i >= 0; i--) {
                             const msg = capturedErrors[i];
-                            const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-                            if (!isIgnored) {
+                            // 🔑 双重保险：再次检查是否应忽略
+                            if (!shouldIgnoreText(msg)) {
                                 console.log("🚀 ~ getLatestError ~ msg: ", msg);
                                 return msg;
                             }
@@ -938,14 +945,6 @@
                                             const startTime = Date.now();
                                             const checkInterval = 300; // 每300ms检查一次
 
-                                            // 判断是否为非错误提示（需要忽略的文本）
-                                            const shouldIgnore = (text) => {
-                                                if (!text) return true;
-                                                // 排除这些非错误文本
-                                                const ignoreTexts = ['发文前检测', '内容区', '设置区'];
-                                                return ignoreTexts.some(t => text.includes(t));
-                                            };
-
                                             while (Date.now() - startTime < timeout) {
                                                 // 1. 先检查是否有错误信息（优先级更高）- 直接扫描 DOM
                                                 const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
@@ -954,8 +953,8 @@
                                                     if (spans.length >= 2) {
                                                         const textSpan = spans[spans.length - 1];
                                                         const text = (textSpan.textContent || '').trim();
-                                                        // 排除非错误提示
-                                                        if (!shouldIgnore(text)) {
+                                                        // 排除非错误提示（使用外层定义的过滤函数）
+                                                        if (!shouldIgnoreText(text)) {
                                                             console.log('[网易号发布] 📨 实时捕获到错误信息:', text);
                                                             return {type: 'error', message: text};
                                                         }
@@ -981,7 +980,7 @@
                                                                     const textSpan = spans[spans.length - 1];
                                                                     const text = (textSpan.textContent || '').trim();
                                                                     // 排除非错误提示，不当作错误
-                                                                    if (text && !shouldIgnore(text)) {
+                                                                    if (text && !shouldIgnoreText(text)) {
                                                                         console.log('[网易号发布] ⚠️ 确认期间检测到错误:', text);
                                                                         return {type: 'error', message: text};
                                                                     }
@@ -1004,8 +1003,8 @@
                                                 if (spans.length >= 2) {
                                                     const textSpan = spans[spans.length - 1];
                                                     const text = (textSpan.textContent || '').trim();
-                                                    // 排除"发文前检测"提示，不当作错误
-                                                    if (text && !isPreCheckTip(text)) {
+                                                    // 排除非错误提示，不当作错误
+                                                    if (text && !shouldIgnoreText(text)) {
                                                         return {type: 'error', message: text};
                                                     }
                                                 }

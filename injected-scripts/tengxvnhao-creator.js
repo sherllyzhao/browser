@@ -11,7 +11,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    if (window.__WANGYIHAO_SCRIPT_LOADED__) {
+    if (window.__TENGXVNHAO_SCRIPT_LOADED__) {
         console.log('[腾讯号授权] ⚠️ 脚本已经加载过，跳过重复注入');
         return;
     }
@@ -25,7 +25,7 @@
         }
     }
 
-    window.__WANGYIHAO_SCRIPT_LOADED__ = true;
+    window.__TENGXVNHAO_SCRIPT_LOADED__ = true;
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 腾讯号授权脚本已注入');
@@ -70,7 +70,7 @@
     // 3. 暴露全局方法供手动调用
     // ===========================
 
-    window.__WANGYIHAO_AUTH__ = {
+    window.__TENGXVNHAO_AUTH__ = {
         // 发送授权成功消息
         notifySuccess: () => {
             sendMessageToParent('授权成功');
@@ -336,7 +336,7 @@
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 腾讯号授权脚本初始化完成');
-    console.log('📝 全局方法: window.__WANGYIHAO_AUTH__');
+    console.log('📝 全局方法: window.__TENGXVNHAO_AUTH__');
     console.log('  - notifySuccess()  : 发送授权成功消息');
     console.log('  - sendMessage(msg) : 发送自定义消息');
     console.log('  - getAuthData()    : 获取授权数据');

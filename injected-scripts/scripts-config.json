@@ -26,7 +26,8 @@
     "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle*": ["common.js", "souhuhao-publish.js"],
     "https://om.qq.com/main/management/articleManage": ["common.js", "publish-success.js"],
     "https://zhuanlan.zhihu.com/write": ["common.js", "zhihu-creator.js"],
-    "https://www.zhihu.com/": ["common.js", "zhihu-redirect.js"]
+    "https://www.zhihu.com/": ["common.js", "zhihu-redirect.js"],
+    "https://www.zhihu.com/people/*": ["common.js", "zhihu-creator.js"]
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"
