@@ -365,7 +365,7 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor_wyh", 10000);
+                                const editorIframeEle = await waitForElement(".PostEditor", 10000);
                                 const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
                                 let htmlContent = dataObj.video.video.content;
 
