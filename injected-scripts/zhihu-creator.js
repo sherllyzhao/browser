@@ -200,7 +200,7 @@
                 console.log('[知乎授权] 📤 准备发送数据到接口...', scanData);
 
                 // 发送数据到服务器
-                const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/txinfo', {
+                const apiResponse = await fetch('https://apidev.china9.cn/api/mediaauth/zhinfo', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
