@@ -1,185 +1,315 @@
-# 自定义浏览器
+# 运营助手浏览器
 
-基于 Electron + Chromium 内核的可编程浏览器，支持 JS 注入和页面间通信。
+基于 Electron + Chromium 内核的可编程浏览器，支持 JS 注入、页面间通信和多账号管理，专为自媒体运营场景设计。
 
 ## 功能特性
 
-✅ **Chromium 内核** - 基于最新的 Chromium 引擎
-✅ **固定首页** - 默认首页为 http://localhost:5173/
-✅ **刷新功能** - 支持页面刷新
-✅ **DevTools** - 内置开发者工具
-✅ **JS 注入** - 为每个 URL 注入独立的自定义脚本
-✅ **脚本隔离** - 每个页面的脚本独立运行，互不影响
-✅ **页面通信** - 页面可以与首页自由通信
+- **Chromium 内核** - 基于最新的 Chromium 引擎
+- **Session 持久化** - 登录状态自动保存，重启后保持登录
+- **JS 注入** - 根据 URL 自动注入自定义脚本
+- **页面通信** - 首页与子窗口双向通信
+- **多账号管理** - 每个平台支持多账号独立 Session
+- **全局数据存储** - 跨页面持久化数据存储
 
-## 安装依赖
+## 支持平台
+
+| 平台 | 授权 | 发布 |
+|------|------|------|
+| 抖音 | ✅ | ✅ |
+| 小红书 | ✅ | ✅ |
+| 视频号 | ✅ | ✅ |
+| 百家号 | ✅ | ✅ |
+| 网易号 | ✅ | ✅ |
+| 腾讯内容开放平台 | ✅ | ✅ |
+| 搜狐号 | ✅ | ✅ |
+| 知乎 | ✅ | ✅ |
+
+## 安装与运行
 
 ```bash
+# 安装依赖
 npm install
-```
 
-## 运行
-
-```bash
+# 开发环境运行（需要先启动父级 Vue 项目）
 npm start
+
+# 打包生产版本
+npm run build
+
+# 打包便携版
+npm run build:portable
 ```
 
-## 使用说明
+## 环境区分
 
-### 1. 基本导航
+| 环境 | 判断条件 | 首页地址 |
+|------|----------|----------|
+| 开发环境 | `npm start` 运行 | `http://localhost:5173/` |
+| 生产环境 | 打包后运行 | `https://dev.china9.cn/aigc_browser/` |
 
-- **🏠 首页** - 返回���页（http://localhost:5173/）
-- **◀ ▶** - 后退/前进（暂未实现，可自行扩展）
-- **🔄 刷新** - 刷新当前页面
-- **DevTools** - 打开开发者工具
-- **地址栏** - 输入 URL 并按回车或点击"前往"按钮
+## 目录结构
 
-### 2. JS 脚本注入
-
-点击右上角的 **"📝 注入脚本"** 按钮打开脚本面板。
-
-#### 脚本功能：
-- **每个 URL 独立保存** - 不同页面可以有不同的注入脚本
-- **自动注入** - 保存后，每次访问该 URL 都会自动执行脚本
-- **立即执行** - 无需刷新，立即在当前页面执行脚本
-- **脚本隔离** - 每个页面的脚本运行在独立上下文中
-
-#### 示例脚本：
-
-**修改页面样式**
-```javascript
-document.body.style.backgroundColor = '#f0f0f0';
-document.body.style.filter = 'brightness(0.9)';
+```
+D:\浏览器\运营助手\
+├── main.js                 # 主进程
+├── preload.js              # 控制面板预加载脚本
+├── content-preload.js      # 内容页面预加载脚本（暴露 browserAPI）
+├── index.html              # 控制面板界面
+├── login.html              # 登录页面
+├── not-available.html      # 功能未开放页面
+├── script-manager.js       # 脚本管理器
+└── injected-scripts/       # 注入脚本目录
+    ├── scripts-config.json # URL → 脚本映射配置
+    ├── common.js           # 公共工具函数
+    ├── *-creator.js        # 各平台授权脚本
+    └── *-publish.js        # 各平台发布脚本
 ```
 
-**添加自定义元素**
-```javascript
-const banner = document.createElement('div');
-banner.textContent = '这是注入的内容！';
-banner.style.cssText = `
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  background: #ff6b6b;
-  color: white;
-  text-align: center;
-  padding: 10px;
-  z-index: 999999;
-  font-size: 16px;
-`;
-document.body.appendChild(banner);
+## 数据存储路径
+
+| 版本 | 存储位置 |
+|------|----------|
+| 开发/安装版 | `%APPDATA%\运营助手\` |
+| 便携版 | `%LOCALAPPDATA%\运营助手-Portable\` |
+
+```
+运营助手\
+├── global-storage.json              # 全局数据（token、用户信息等）
+└── Partitions\browserview\          # 持久化 Session
+    ├── Network\Cookies              # 第三方平台 Cookies
+    ├── Local Storage\               # localStorage 数据
+    └── IndexedDB\                   # IndexedDB 数据
 ```
 
-**自动填充表单**
-```javascript
-// 等待页面加载完成
-setTimeout(() => {
-  const usernameInput = document.querySelector('input[name="username"]');
-  const passwordInput = document.querySelector('input[name="password"]');
+## 核心 API
 
-  if (usernameInput) usernameInput.value = 'myusername';
-  if (passwordInput) passwordInput.value = 'mypassword';
-}, 1000);
+所有 API 通过 `window.browserAPI` 调用。
+
+### 页面通信
+
+```javascript
+// 子窗口 → 首页
+window.browserAPI.sendToHome({ type: 'event', data: {...} });
+
+// 首页监听子窗口消息
+window.browserAPI.onMessageFromOtherPage((message) => { ... });
+
+// 首页 → 子窗口
+window.browserAPI.sendToOtherPage({ type: 'config', data: {...} });
+
+// 子窗口监听首页消息
+window.browserAPI.onMessageFromHome((message) => { ... });
 ```
 
-**监听页面事件**
+### 窗口管理
+
 ```javascript
-document.addEventListener('click', (e) => {
-  console.log('点击了元素:', e.target);
+// 打开新窗口（持久化 Session）
+const result = await window.browserAPI.openNewWindow('https://example.com');
+
+// 打开授权窗口（临时 Session）
+const result = await window.browserAPI.openNewWindow(url, {
+  useTemporarySession: true
+});
+
+// 打开多账号发布窗口
+const result = await window.browserAPI.openNewWindow(url, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1',
+  sessionData: sessionDataFromBackend  // 可选，自动恢复会话
+});
+
+// 获取窗口 ID
+const windowId = await window.browserAPI.getWindowId();
+
+// 关闭当前窗口
+await window.browserAPI.closeCurrentWindow();
+
+// 监听窗口加载完成
+window.browserAPI.onWindowLoaded((data) => {
+  console.log('窗口加载完成:', data.url, data.windowId);
 });
 ```
 
-### 3. 页面间通信
+### 全局数据存储
 
-#### 从任意页面发送消息到首页：
-
-在注入的脚本中使用：
 ```javascript
-// 发送消息到首页
-window.browserAPI.sendToHome({
-  type: 'custom_event',
-  data: { message: 'Hello from other page!' }
+// 存储数据（持久化到文件）
+await window.browserAPI.setGlobalData('key', value);
+
+// 获取数据
+const value = await window.browserAPI.getGlobalData('key');
+
+// 删除数据
+await window.browserAPI.removeGlobalData('key');
+
+// 获取所有数据
+const allData = await window.browserAPI.getAllGlobalData();
+```
+
+### Session 管理
+
+```javascript
+// 检查 Session 状态
+const status = await window.browserAPI.checkSessionStatus();
+// 返回: { hasSession, cookieCount, platforms: { douyin: { count, loggedIn }, ... } }
+
+// 获取完整会话数据（用于存储到后台）
+const result = await window.browserAPI.getFullSessionData('douyin.com');
+
+// 迁移临时 Session 到持久化（授权成功后调用）
+await window.browserAPI.migrateCookiesToPersistent('douyin.com');
+
+// 清除指定域名 Cookies
+await window.browserAPI.clearDomainCookies('douyin.com');
+
+// 设置跨域 Cookie
+await window.browserAPI.setCookie({
+  name: 'token',
+  value: 'xxx',
+  domain: '.china9.cn',
+  expirationDate: Math.floor(Date.now() / 1000) + 86400
 });
 ```
 
-#### 在首页监听其他页面的消息：
+### 多账号管理
 
-在首页（http://localhost:5173/）中添加：
 ```javascript
-window.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'FROM_OTHER_PAGE') {
-    console.log('收到其他页面的消息:', event.data.data);
-    // 处理消息
-  }
+// 获取账号列表
+const accounts = await window.browserAPI.getAccounts('douyin');
+
+// 添加账号
+const result = await window.browserAPI.addAccount('douyin', {
+  nickname: '昵称',
+  avatar: '头像URL',
+  platformUid: '平台用户ID'
 });
+
+// 删除账号
+await window.browserAPI.removeAccount('douyin', 'douyin_xxx_1');
+
+// 检查账号登录状态
+const status = await window.browserAPI.checkAccountLoginStatus('douyin', 'douyin_xxx_1');
+
+// 获取当前窗口账号信息（发布脚本中使用）
+const info = await window.browserAPI.getCurrentAccount();
 ```
 
-#### 完整示例 - 页面数据同步：
+### 其他 API
 
-**在其他页面注入的脚本：**
 ```javascript
-// 监听按钮点击
-document.addEventListener('click', (e) => {
-  if (e.target.tagName === 'BUTTON') {
-    // 发送按钮点击信息到首页
-    window.browserAPI.sendToHome({
-      type: 'button_clicked',
-      buttonText: e.target.textContent,
-      timestamp: Date.now()
-    });
-  }
-});
+// 获取主窗口 URL（用于构建 API 地址）
+const mainInfo = await window.browserAPI.getMainUrl();
+// 返回: { success, url, origin, host, protocol }
+
+// 跳转到本地页面
+await window.browserAPI.navigateToLocalPage('not-available.html');
+
+// 监听 Cookies 清除事件
+window.browserAPI.onCookiesCleared((data) => { ... });
 ```
 
-**在首页（http://localhost:5173/）的代码：**
-```javascript
-// 监听来自其他页面的消息
-window.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'FROM_OTHER_PAGE') {
-    const { type, buttonText, timestamp } = event.data.data;
+## 脚本注入
 
-    if (type === 'button_clicked') {
-      console.log(`按钮被点击: ${buttonText}`);
-      console.log(`时间: ${new Date(timestamp).toLocaleString()}`);
+### 配置文件
 
-      // 可以更新 UI 或执行其他操作
-      updateStatistics(buttonText);
-    }
-  }
-});
+`injected-scripts/scripts-config.json`:
 
-function updateStatistics(buttonText) {
-  // 更新统计数据
-  const statsDiv = document.getElementById('stats');
-  if (statsDiv) {
-    statsDiv.innerHTML += `<p>点击了: ${buttonText}</p>`;
+```json
+{
+  "scripts": {
+    "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
+    "https://www.example.com/*": ["common.js", "example.js"]
   }
 }
 ```
 
-## 技术架构
+- URL 支持 `*` 通配符
+- 数组中的脚本按顺序注入，前面的可被后面的调用
 
-- **主进程（main.js）** - 管理窗口、BrowserView、IPC 通信
-- **控制面板（index.html + renderer.js）** - 浏览器控制 UI
-- **内容页面（BrowserView）** - 显示实际网页内容
-- **Preload 脚本** - 安全的页面与主进程通信桥梁
+### common.js 工具函数
 
-## 注意事项
+```javascript
+// 等待元素出现
+await waitForElement('.button', 10000);
 
-1. **脚本持久化** - 当前脚本保存在内存中，关闭应用后会丢失。如需持久化，可以将 `injectedScripts` 保存到文件。
-2. **脚本安全** - 注入的脚本拥有完整的页面权限，请谨慎使用。
-3. **跨域限制** - 页面通信遵循浏览器的安全策略。
-4. **首页地址** - 默认首页是 `http://localhost:5173/`，可在 `main.js` 中修改 `HOME_URL` 常量。
+// 等待多个元素
+await waitForElements(['.btn1', '.btn2'], 10000);
 
-## 扩展建议
+// 重试操作
+await retryOperation(async () => await fetch('/api'), 3, 1000);
 
-- 添加历史记录功能
-- 实现书签管理
-- 支持多标签页
-- 脚本持久化存储（保存到文件或数据库）
-- 添加脚本模板库
-- 实现脚本市场（分享和下载脚本）
+// 发送消息到父窗口
+sendMessageToParent('授权成功');
+
+// 上传文件到 input
+await uploadFileToInput(fileInput, file);
+
+// 延迟
+await delay(1000);
+```
+
+## 授权流程示例
+
+```javascript
+// 1. 父窗口打开授权窗口
+const result = await window.browserAPI.openNewWindow(authUrl, {
+  useTemporarySession: true
+});
+
+// 2. 授权脚本检测登录成功后
+const sessionData = await window.browserAPI.getFullSessionData('douyin.com');
+await window.browserAPI.migrateCookiesToPersistent('douyin.com');
+sendMessageToParent('授权成功，刷新数据');
+window.browserAPI.closeCurrentWindow();
+```
+
+## 发布流程示例
+
+```javascript
+// 1. 父窗口打开发布窗口
+const result = await window.browserAPI.openNewWindow(publishUrl, {
+  platform: 'douyin',
+  accountId: 'douyin_xxx_1',
+  sessionData: sessionDataFromBackend
+});
+
+// 存储发布数据
+await window.browserAPI.setGlobalData(`publish_data_window_${result.windowId}`, publishData);
+
+// 2. 发布脚本读取数据
+const windowId = await window.browserAPI.getWindowId();
+const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+```
+
+## 快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| `Ctrl+Alt+C` | 清除所有 Cookies |
+
+## 常见问题
+
+### 页面空白
+
+删除缓存目录后重启：
+```
+%APPDATA%\运营助手\Partitions\browserview\Cache
+```
+
+### Electron 安装失败
+
+```bash
+rm -rf node_modules
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
+```
+
+### 开发环境需要先启动 Vue 项目
+
+```bash
+cd E:\项目\资海云\视频剪辑\ai-media-edit
+npm run dev
+```
 
 ## License
 

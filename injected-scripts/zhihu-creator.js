@@ -94,7 +94,34 @@
     // ===========================
     console.log('[知乎授权] 检查 globalData 中的授权数据...');
 
+    // 读取 redirect 阶段的详细执行日志
+    const redirectLog = await window.browserAPI.getGlobalData('zhihu_redirect_log');
+    if (redirectLog && redirectLog.length > 0) {
+        console.log('[知乎授权] 📋 redirect 脚本执行日志:');
+        redirectLog.forEach(log => console.log('  ' + log));
+        // 不删除，保留供下次查看
+    } else {
+        console.log('[知乎授权] ⚠️ 没有 redirect 脚本执行日志（脚本可能未注入到 https://www.zhihu.com/）');
+    }
+
+    // 读取 redirect 阶段的调试日志（存储数据前后的）
+    const debugLog = await window.browserAPI.getGlobalData('zhihu_debug_log');
+    if (debugLog) {
+        console.log('[知乎授权] 📋 redirect 存储阶段日志:', debugLog);
+        await window.browserAPI.removeGlobalData('zhihu_debug_log');
+    }
+
+    // 列出所有 globalData 的 key
+    try {
+        const allData = await window.browserAPI.getAllGlobalData();
+        const keys = Object.keys(allData || {});
+        console.log('[知乎授权] 📋 globalData 中的所有 key:', keys);
+    } catch (e) {
+        console.error('[知乎授权] 获取 getAllGlobalData 失败:', e);
+    }
+
     const authData = await window.browserAPI.getGlobalData('zhihu_auth_data');
+    console.log('[知乎授权] 读取到的 authData:', authData);
 
     if (authData && authData.timestamp) {
         // 检查数据是否在 5 分钟内（防止使用过期数据）
