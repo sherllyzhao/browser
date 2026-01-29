@@ -90,38 +90,63 @@
     // ===========================
 
     // ===========================
-    // 5. 从 globalData 读取授权数据（由 zhihu-redirect.js 跳转前存储）
+    // 5. 从多个来源读取授权数据
     // ===========================
-    console.log('[知乎授权] 检查 globalData 中的授权数据...');
+    console.log('[知乎授权] 检查授权数据...');
+    console.log('[知乎授权] 当前 URL:', window.location.href);
+    console.log('[知乎授权] URL hash:', window.location.hash);
 
-    // 读取 redirect 阶段的详细执行日志
+    // 读取 redirect 脚本执行日志
     const redirectLog = await window.browserAPI.getGlobalData('zhihu_redirect_log');
     if (redirectLog && redirectLog.length > 0) {
         console.log('[知乎授权] 📋 redirect 脚本执行日志:');
         redirectLog.forEach(log => console.log('  ' + log));
-        // 不删除，保留供下次查看
-    } else {
-        console.log('[知乎授权] ⚠️ 没有 redirect 脚本执行日志（脚本可能未注入到 https://www.zhihu.com/）');
     }
 
-    // 读取 redirect 阶段的调试日志（存储数据前后的）
-    const debugLog = await window.browserAPI.getGlobalData('zhihu_debug_log');
-    if (debugLog) {
-        console.log('[知乎授权] 📋 redirect 存储阶段日志:', debugLog);
-        await window.browserAPI.removeGlobalData('zhihu_debug_log');
+    let authData = null;
+
+    // 方案1: 从 URL hash 读取（最可靠）
+    if (window.location.hash && window.location.hash.includes('auth_data=')) {
+        try {
+            const hashData = window.location.hash.split('auth_data=')[1];
+            if (hashData) {
+                authData = JSON.parse(decodeURIComponent(hashData));
+                console.log('[知乎授权] ✅ 从 URL hash 读取到授权数据');
+                // 清除 hash，避免显示在地址栏
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
+        } catch (e) {
+            console.error('[知乎授权] URL hash 解析失败:', e);
+        }
     }
 
-    // 列出所有 globalData 的 key
-    try {
-        const allData = await window.browserAPI.getAllGlobalData();
-        const keys = Object.keys(allData || {});
-        console.log('[知乎授权] 📋 globalData 中的所有 key:', keys);
-    } catch (e) {
-        console.error('[知乎授权] 获取 getAllGlobalData 失败:', e);
+    // 方案2: 从 localStorage 读取
+    if (!authData) {
+        try {
+            const lsData = localStorage.getItem('zhihu_auth_data');
+            console.log('[知乎授权] localStorage 原始值:', lsData ? '有数据，长度' + lsData.length : 'null');
+            if (lsData) {
+                authData = JSON.parse(lsData);
+                console.log('[知乎授权] ✅ 从 localStorage 读取到授权数据');
+                localStorage.removeItem('zhihu_auth_data');
+            }
+        } catch (e) {
+            console.error('[知乎授权] localStorage 读取失败:', e);
+        }
     }
 
-    const authData = await window.browserAPI.getGlobalData('zhihu_auth_data');
-    console.log('[知乎授权] 读取到的 authData:', authData);
+    // 方案3: 从 globalData 读取
+    if (!authData) {
+        authData = await window.browserAPI.getGlobalData('zhihu_auth_data');
+        if (authData) {
+            console.log('[知乎授权] ✅ 从 globalData 读取到授权数据');
+            await window.browserAPI.removeGlobalData('zhihu_auth_data');
+        } else {
+            console.log('[知乎授权] ⚠️ 所有来源都没有数据');
+        }
+    }
+
+    console.log('[知乎授权] 最终 authData:', authData ? '有数据' : 'undefined');
 
     if (authData && authData.timestamp) {
         // 检查数据是否在 5 分钟内（防止使用过期数据）

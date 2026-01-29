@@ -203,39 +203,41 @@
                             const result = await response.json();
                             await logAndSave(`📡 用户信息: type=${result.type}, url_token=${result.url_token}`);
 
-                            // 🔑 跳转前把数据存到 globalData，供跳转后的页面读取
-                            await logAndSave('💾 准备存储 authData 到 globalData...');
+                            // 🔑 跳转前存储数据，供跳转后的页面读取
+                            await logAndSave('💾 准备存储 authData...');
+                            await logAndSave('💾 当前域名: ' + window.location.origin);
                             const authDataToStore = {
                                 messageData: messageData,
                                 userInfo: result,
                                 companyId: companyId,
                                 timestamp: Date.now()
                             };
-                            await window.browserAPI.setGlobalData('zhihu_auth_data', authDataToStore);
+                            const authDataStr = JSON.stringify(authDataToStore);
 
-                            // 等待 500ms 确保文件写入完成（避免内存与文件不同步）
-                            await new Promise(resolve => setTimeout(resolve, 500));
-
-                            await logAndSave('💾 setGlobalData 完成，等待 500ms');
-
-                            // 验证数据是否存储成功
-                            const verifyData = await window.browserAPI.getGlobalData('zhihu_auth_data');
-                            if (verifyData && verifyData.timestamp) {
-                                await logAndSave('✅ 验证成功，数据已写入');
-                            } else {
-                                await logAndSave('❌ 验证失败！读回为: ' + JSON.stringify(verifyData));
-                                // 验证失败时重试一次
-                                await window.browserAPI.setGlobalData('zhihu_auth_data', authDataToStore);
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                await logAndSave('🔄 重试写入完成');
+                            // 方案1: localStorage（同域名共享）
+                            try {
+                                localStorage.setItem('zhihu_auth_data', authDataStr);
+                                // 立即验证
+                                const verify = localStorage.getItem('zhihu_auth_data');
+                                if (verify) {
+                                    await logAndSave('💾 localStorage 写入成功，验证通过，长度: ' + verify.length);
+                                } else {
+                                    await logAndSave('❌ localStorage 写入后验证失败！');
+                                }
+                            } catch (e) {
+                                await logAndSave('❌ localStorage 写入失败: ' + e.message);
                             }
 
-                            await logAndSave('🚀 即将跳转到: https://www.zhihu.com/' + result.type + '/' + result.url_token);
+                            // 方案2: globalData 备用
+                            await window.browserAPI.setGlobalData('zhihu_auth_data', authDataToStore);
+                            await logAndSave('💾 globalData 写入完成');
 
-                            // 再等待 300ms 确保所有写入都完成
-                            await new Promise(resolve => setTimeout(resolve, 300));
+                            // 方案3: 通过 URL hash 传递（最可靠）
+                            const targetUrl = 'https://www.zhihu.com/' + result.type + '/' + result.url_token;
+                            const urlWithData = targetUrl + '#auth_data=' + encodeURIComponent(authDataStr);
+                            await logAndSave('🚀 即将跳转到: ' + targetUrl);
 
-                            window.location.href = 'https://www.zhihu.com/' + result.type + '/' + result.url_token;
+                            window.location.href = urlWithData;
                         }
 
                         // 重置处理标志（无论成功或失败）

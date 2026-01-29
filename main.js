@@ -1441,6 +1441,15 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
+// 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
+// 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+// 禁用自动化扩展
+app.commandLine.appendSwitch('disable-extensions');
+// 使用正常的渲染模式
+app.commandLine.appendSwitch('disable-dev-shm-usage');
+console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
+
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
   // 这会导致错误: "Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc"

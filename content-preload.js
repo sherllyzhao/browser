@@ -1,5 +1,74 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🛡️ 反自动化检测 - 隐藏 Electron/Webdriver 特征
+// 必须在最开始执行，在页面脚本之前
+(function injectAntiDetection() {
+  try {
+    const antiDetectionScript = `
+      (function() {
+        'use strict';
+
+        // 1. 隐藏 webdriver 属性
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: true
+        });
+
+        // 2. 模拟正常的 chrome 对象
+        if (!window.chrome) {
+          window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+          };
+        }
+
+        // 3. 隐藏 Electron 特征
+        delete window.process;
+        delete window.require;
+
+        // 4. 修复 permissions API
+        const originalQuery = window.navigator.permissions?.query;
+        if (originalQuery) {
+          window.navigator.permissions.query = function(parameters) {
+            if (parameters.name === 'notifications') {
+              return Promise.resolve({ state: Notification.permission });
+            }
+            return originalQuery.call(this, parameters);
+          };
+        }
+
+        // 5. 模拟正常的 plugins 数组
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            const plugins = [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ];
+            plugins.length = 3;
+            return plugins;
+          },
+          configurable: true
+        });
+
+        // 6. 模拟正常的 languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['zh-CN', 'zh', 'en'],
+          configurable: true
+        });
+
+        console.log('[AntiDetection] ✅ 反自动化检测已启用');
+      })();
+    `;
+
+    webFrame.executeJavaScript(antiDetectionScript);
+  } catch (e) {
+    console.error('[AntiDetection] 注入失败:', e);
+  }
+})();
+
 // 🔑 搜狐号 toPath 处理 - 在页面脚本执行之前注入
 // 这必须在最开始执行，因为搜狐号的页面代码会在加载时读取 toPath
 (function injectSohuToPathFix() {
