@@ -105,7 +105,7 @@
         try {
             // 获取用户信息
             console.log('[新浪授权] 📡 正在获取用户信息...');
-            const response = await fetch('https://mp.sina.com.cn/ajp/v2/userinfo');
+            const response = await fetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo');
 
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -118,7 +118,8 @@
                 throw new Error('获取用户信息失败: ' + (result.msg || 'Unknown error'));
             }
 
-            const user = result.data;
+            const user = result.data?.userInfo;
+            console.log("🚀 ~ processAuthorization ~ user: ", user);
 
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
@@ -143,12 +144,12 @@
 
             const scanData = {
                 data: JSON.stringify({
-                    nickname: user.nick || user.name || '',
-                    avatar: user.avatar || user.head_img || '',
-                    follow: user.follow_count || 0,
-                    follower_count: user.fans_count || user.follower_count || 0,
-                    video: user.article_count || user.content_count || 0,
-                    uid: user.uid || user.id || '',
+                    nickname: user.m_fname || '',
+                    avatar: user.m_logo || '',
+                    follow: 0,
+                    follower_count: 0,
+                    video: 0,
+                    uid: user.uid || '',
                     favoriting_count: 0,
                     total_favorited: 0,
                     company_id: storedCompanyId,
@@ -198,7 +199,7 @@
 
                 // 统计接口成功后关闭弹窗
                 setTimeout(() => {
-                    window.browserAPI.closeCurrentWindow();
+                    //window.browserAPI.closeCurrentWindow();
                 }, 1000);
             } else {
                 throw new Error(apiResult.msg || apiResult.message || '上报数据失败');

@@ -29,7 +29,7 @@
     "https://www.zhihu.com/": ["common.js", "zhihu-redirect.js"],
     "https://www.zhihu.com/*/*": ["common.js", "zhihu-creator.js"],
     "https://zhuanlan.zhihu.com/*/*": ["common.js", "publish-success.js"],
-    "https://mp.sina.com.cn/#/ContentList": ["common.js", "xinlang-creator.js"],
+    "https://mp.sina.com.cn/#/Home/Notice": ["common.js", "xinlang-creator.js"],
     "https://card.weibo.com/article/v5/editor#/draft": ["common.js", "xinlang-publish.js"]
   },
   "dependencies": {
