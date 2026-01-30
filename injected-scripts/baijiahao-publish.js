@@ -42,6 +42,37 @@
   // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
   let currentWindowId = null;
 
+  // ===========================
+  // 🔴 使用公共错误监听器（来自 common.js）
+  // ===========================
+  let errorListener = null;
+
+  // 初始化错误监听器
+  const initErrorListener = () => {
+    if (typeof createErrorListener === 'function' && ERROR_LISTENER_CONFIGS?.baijiahao) {
+      errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.baijiahao);
+      console.log('[百家号发布] ✅ 使用公共错误监听器配置');
+    } else {
+      // 回退方案：使用本地配置
+      errorListener = createErrorListener({
+        logPrefix: '[百家号发布]',
+        selectors: [
+          { containerClass: 'cheetah-message-error', textSelector: 'span:last-child', recursiveSelector: '.cheetah-message.cheetah-message-error' },
+          { containerClass: 'cheetah-message', textSelector: '.cheetah-message-custom-content span:last-child' }
+        ]
+      });
+      console.log('[百家号发布] ⚠️ 使用本地错误监听器配置');
+    }
+  };
+
+  // 兼容旧代码的函数别名
+  const startErrorListener = () => {
+    if (!errorListener) initErrorListener();
+    errorListener.start();
+  };
+  const stopErrorListener = () => errorListener?.stop();
+  const getLatestError = () => errorListener?.getLatestError() || null;
+
   // 获取窗口专属的发布成功数据 key
   const getPublishSuccessKey = () => {
     const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
@@ -90,47 +121,17 @@
         // 接收完整的发布数据（直接传递，不使用 IndexedDB）
         // 兼容 publish-data 和 auth-data 两种消息类型
         if (message.type === 'publish-data') {
-          let messageData;
-          try {
-            messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-          } catch (parseError) {
-            console.error('[百家号发布] ❌ 解析消息数据失败:', parseError);
-            console.error('[百家号发布] 原始数据:', message.data);
-            return;
-          }
+          // 使用公共方法解析消息数据
+          const messageData = parseMessageData(message.data, '[百家号发布]');
+          if (!messageData) return;
 
-          // 🔑 先检查 windowId 是否匹配（在保存数据之前！避免串数据）
-          if (message.windowId) {
-            const myWindowId = await window.browserAPI.getWindowId();
-            console.log('[百家号发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-            if (myWindowId !== message.windowId) {
-              console.log('[百家号发布] ⏭️ 消息不是发给我的，跳过（不保存数据）');
-              return;
-            }
-            console.log('[百家号发布] ✅ windowId 匹配，处理消息');
-          }
+          // 使用公共方法检查 windowId 是否匹配
+          const isMatch = await checkWindowIdMatch(message, '[百家号发布]');
+          if (!isMatch) return;
 
-          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-          if (messageData.cookies) {
-            console.log('[百家号发布] 📦 检测到 cookies 数据，开始恢复会话...');
-            try {
-              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
-              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
-              if (restoreResult.success) {
-                console.log('[百家号发布] ✅ 会话数据恢复成功:', restoreResult.results);
-                // 恢复 cookies 后需要刷新页面才能生效
-                console.log('[百家号发布] 🔄 刷新页面以应用 cookies...');
-                // 保存消息数据到全局存储，刷新后继续使用
-                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
-                window.location.reload();
-                return; // 刷新后脚本会重新注入
-              } else {
-                console.warn('[百家号发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
-              }
-            } catch (restoreError) {
-              console.error('[百家号发布] ⚠️ 会话数据恢复异常:', restoreError);
-            }
-          }
+          // 使用公共方法恢复会话数据
+          const needReload = await restoreSessionAndReload(messageData, '[百家号发布]');
+          if (needReload) return; // 已触发刷新，脚本会重新注入
 
           // windowId 匹配后才保存消息数据
           receivedMessageData = messageData;
@@ -323,6 +324,7 @@
   // 填写表单数据
   async function fillFormData(dataObj) {
       console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
+    console.log("🚀 ~ fillFormData ~ fillFormRunning: ", fillFormRunning);
     // 防止重复执行
     if (fillFormRunning) {
       return;
@@ -331,6 +333,7 @@
 
     try {
       const pathImage = dataObj?.video?.video?.cover;
+      console.log("🚀 ~ fillFormData ~ pathImage: ", pathImage);
       if (!pathImage) {
         // alert('No cover image found');
         fillFormRunning = false;
@@ -339,7 +342,7 @@
 
       setTimeout(async () => {
         await retryOperation (async () => {
-          const tourBtn = await waitForElement('.cheetah-tour-close', 5, 1000);
+          const tourBtn = await waitForElement('.cheetah-tour-close', 5000, 1000);
           if (tourBtn) {
             tourBtn.click()
           }
@@ -510,7 +513,7 @@
                   }
 
                   try {
-                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 80));
+                    console.log('[百家号发布] 📤 上传图片:', originalSrc.substring(0, 200));
 
                     // 调用百家号图片代理接口
                     const response = await fetch('https://baijiahao.baidu.com/pcui/picture/dumpproxy', {
@@ -555,85 +558,7 @@
             }
           }, 200);
 
-          // ===========================
-          // 🔴 全局错误监听器 - 在上传图片之前就开始监听
-          // ===========================
-          const capturedErrors = []; // 收集所有捕获的错误信息
-          let errorObserver = null;
-
-          // 启动错误监听
-          const startErrorListener = () => {
-            console.log('[百家号发布] 🔍 启动全局错误监听器...');
-
-            errorObserver = new MutationObserver((mutations) => {
-              for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                  if (node.nodeType === 1) {
-                    const element = node;
-                    const classList = element.classList ? Array.from(element.classList).join(' ') : '';
-
-                    // 检测百家号的错误提示
-                    if (classList.includes('cheetah-message') || classList.includes('message')) {
-                      // 百家号错误提示结构：<span>图标</span><span>错误文本</span>
-                      const errorSpan = element.querySelector('.cheetah-message-error span:last-child') ||
-                                        element.querySelector('.cheetah-message-custom-content span:last-child');
-                      if (errorSpan) {
-                        const text = (errorSpan.textContent || '').trim();
-                        if (text && !capturedErrors.includes(text)) {
-                          capturedErrors.push(text);
-                          console.log('[百家号发布] 📨 捕获到错误信息:', text);
-                        }
-                      }
-                    }
-
-                    // 递归检查子元素
-                    const errorElements = element.querySelectorAll('.cheetah-message-error span:last-child, .cheetah-message-custom-content span:last-child');
-                    for (const el of errorElements) {
-                      const text = (el.textContent || '').trim();
-                      if (text && !capturedErrors.includes(text)) {
-                        capturedErrors.push(text);
-                        console.log('[百家号发布] 📨 捕获到错误信息（子元素）:', text);
-                      }
-                    }
-                  }
-                }
-              }
-            });
-
-            errorObserver.observe(document.body, {
-              childList: true,
-              subtree: true
-            });
-
-            console.log('[百家号发布] ✅ 全局错误监听器已启动');
-          };
-
-          // 停止错误监听
-          const stopErrorListener = () => {
-            if (errorObserver) {
-              errorObserver.disconnect();
-              errorObserver = null;
-              console.log('[百家号发布] 🛑 全局错误监听器已停止');
-            }
-          };
-
-          // 获取最新的错误信息
-          const getLatestError = () => {
-            // 优先返回最后一条非中间状态的错误
-            // 🔑 过滤掉成功消息和中间状态消息
-            const ignoredMessages = ['正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功'];
-            for (let i = capturedErrors.length - 1; i >= 0; i--) {
-              const msg = capturedErrors[i];
-              const isIgnored = ignoredMessages.some(ignored => msg.includes(ignored));
-              if (!isIgnored) {
-                return msg;
-              }
-            }
-            // 🔑 如果所有消息都被过滤了，返回 null（不是错误）
-            return null;
-          };
-
-          // 立即启动错误监听
+          // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
           startErrorListener();
 
           // 设置封面（使用主进程下载绕过跨域）
@@ -829,91 +754,152 @@
                               return;
                             }
                             await delay(2000);
-                          //  点击发布按钮
-                            if(publishBtn){
-                              // 🔑 检查发布按钮是否 disabled
-                              if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
-                                console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
-                                stopErrorListener();
-                                const publishIdForError = dataObj.video?.dyPlatform?.id;
-                                if (publishIdForError) {
-                                  await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
-                                }
-                                await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                                return;
-                              }
-                              // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
-                              const publishId = dataObj.video?.dyPlatform?.id;
-                              if (publishId) {
-                                try {
-                                  localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                  console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
-                                } catch (e) {
-                                  console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
-                                }
-                              } else {
-                                console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
-                              }
+                            const publishTime = dataObj.video.formData.send_set;
+                            if (+publishTime === 2) {
+                              const outlineFootBtns = document.querySelectorAll('.op-list-wrap-news .cheetah-btn-outlined');
+                              let scheduledReleasesBtn = null;
 
-                              const clickEvent = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true
-                              });
-                              publishBtn.dispatchEvent(clickEvent);
-                              console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+                              if (outlineFootBtns.length) {
+                                for (const btn of outlineFootBtns) {
+                                  if (btn.textContent.trim().includes('定时发布')) {
+                                    scheduledReleasesBtn = btn;
+                                  }
+                                }
+                                console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
+                                if (scheduledReleasesBtn) {
+                                  const clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                  });
+                                  scheduledReleasesBtn.dispatchEvent(clickEvent);
+                                  console.log('[百家号发布] ✅ 已点击定时发布（模拟鼠标事件）');
+                                  await delay(2000);
+                                  // 检测有没有动态发布
+                                  await checkPublishResult(dataObj, true);
+                                  await delay(2000);
+                                //  检测有没有定时发布弹窗
+                                  const scheduledReleasesModal = document.querySelector('.cheetah-modal-content');
+                                  if (scheduledReleasesModal) {
+                                    console.log('[百家号发布] ✅ 检测到定时发布弹窗');
 
-                              // 🔴 点击发布后，等待并检测是否有错误信息
-                              console.log('[百家号发布] ⏳ 等待 5 秒检测发布结果...');
-                              await delay(1000);
-                              try{
-                                const transferDynamic = document.querySelectorAll('.cheetah-btn-default');
-                                if(transferDynamic && transferDynamic.length){
-                                  for(const btn of transferDynamic){
-                                    if(btn.textContent.trim().includes('保持图文发布')){
-                                      btn.click();
+                                    // 解析定时发布时间
+                                    const sendTime = dataObj.video?.formData?.send_time;
+                                    if (sendTime) {
+                                      console.log('[百家号发布] ⏰ 开始选择定时发布时间:', sendTime);
+
+                                      const timeConfig = parseSendTime(sendTime);
+                                      if (!timeConfig) {
+                                        console.error('[百家号发布] ❌ 解析定时时间失败');
+                                        stopErrorListener();
+                                        await closeWindowWithMessage('定时时间解析失败', 1000);
+                                        return;
+                                      }
+
+                                      // 调用选择时间函数
+                                      const timeSelectSuccess = await selectScheduledTime(
+                                        timeConfig.dateIndex,
+                                        timeConfig.hour,
+                                        timeConfig.minute
+                                      );
+
+                                      if (!timeSelectSuccess) {
+                                        console.error('[百家号发布] ❌ 时间选择失败');
+                                        stopErrorListener();
+                                        await closeWindowWithMessage('定时时间选择失败', 1000);
+                                        return;
+                                      }
+
+                                      // 点击确定发布按钮
+                                      await delay(500);
+                                      const confirmBtn = Array.from(document.querySelectorAll('.cheetah-btn-primary'))
+                                        .find(btn => btn.textContent.trim() === '定时发布');
+
+                                      if (confirmBtn) {
+                                        console.log('[百家号发布] ✅ 点击确定定时发布');
+
+                                        // 🔑 在点击定时发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                        if (publishId) {
+                                          try {
+                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                            console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
+
+                                            // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                            if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                              await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                              console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
+                                            }
+                                          } catch (e) {
+                                            console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                          }
+                                        }
+
+                                        confirmBtn.click();
+
+                                        // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
+                                        console.log('[百家号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
+                                        stopErrorListener();
+                                      } else {
+                                        console.error('[百家号发布] ❌ 未找到确定按钮');
+                                      }
+                                    } else {
+                                      console.warn('[百家号发布] ⚠️ 未传入定时发布时间');
                                     }
                                   }
                                 }
-                                const continueBtn = document.querySelectorAll('.cheetah-btn-primary');
-                                if(continueBtn && continueBtn.length){
-                                  for(const btn of continueBtn){
-                                    if(btn.textContent.trim().includes('确定')){
-                                      btn.click();
-                                    }
-                                  }
-                                }
-                              }catch (e){
-                                console.log(e);
                               }
+                            }else{
+                              //  点击发布按钮
+                              if(publishBtn){
+                                // 🔑 检查发布按钮是否 disabled
+                                if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
+                                  console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
+                                  stopErrorListener();
+                                  const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                  if (publishIdForError) {
+                                    await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '百家号发布');
+                                  }
+                                  await closeWindowWithMessage('发布失败，刷新数据', 1000);
+                                  return;
+                                }
+                                // 🔑 在点击发布前保存 publishId，让 publish-success.js 可以调用统计接口
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                  try {
+                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                    console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
 
-                              await delay(5000);
+                                    // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                    if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                      await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                      console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
+                                    }
+                                  } catch (e) {
+                                    console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+                                  }
+                                } else {
+                                  console.log('[百家号发布] ℹ️ 没有 publishId，跳过统计接口');
+                                }
 
-                              // 检查是否有错误信息
-                              const publishErrorMsg = getLatestError();
-                              if (publishErrorMsg) {
-                                console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
+                                const clickEvent = new MouseEvent('click', {
+                                  view: window,
+                                  bubbles: true,
+                                  cancelable: true
+                                });
+                                publishBtn.dispatchEvent(clickEvent);
+                                console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+                                await checkPublishResult(dataObj, true);
+                              }else{
+                                console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                                 stopErrorListener();
                                 const publishId = dataObj.video?.dyPlatform?.id;
                                 if (publishId) {
-                                  console.log('[百家号发布] 📤 调用失败接口...');
-                                  await sendStatisticsError(publishId, publishErrorMsg, '百家号发布');
+                                  await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
                                 }
                                 await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                 return;
-                              } else {
-                                console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
-                                stopErrorListener();
                               }
-                            }else{
-                              console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
-                              stopErrorListener();
-                              const publishId = dataObj.video?.dyPlatform?.id;
-                              if (publishId) {
-                                await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
-                              }
-                              await closeWindowWithMessage('发布失败，刷新数据', 1000);
-                              return;
                             }
                           } else {
                             // 图片上传失败（timeout），检查是否有错误信息
@@ -1022,4 +1008,310 @@
     // 因为 setTimeout 是异步的，finally 会立即执行
     // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
   }
+
+  /**
+   * 检查发布结果（通用方法）
+   * @param {object} dataObj - 发布数据对象
+   * @param {boolean} handleExtraButtons - 是否处理额外的确认按钮（立即发布需要，定时发布不需要）
+   * @returns {Promise<boolean>} 是否成功（无错误）
+   */
+  async function checkPublishResult(dataObj, handleExtraButtons = true) {
+    console.log('[百家号发布] ⏳ 等待检测发布结果...');
+    await delay(1000);
+
+    if (handleExtraButtons) {
+      try {
+        const transferDynamic = document.querySelectorAll('.cheetah-btn-default');
+        if (transferDynamic && transferDynamic.length) {
+          for (const btn of transferDynamic) {
+            if (btn.textContent.trim().includes('保持图文发布')) {
+              btn.click();
+            }
+          }
+        }
+        const continueBtn = document.querySelectorAll('.cheetah-btn-primary');
+        if (continueBtn && continueBtn.length) {
+          for (const btn of continueBtn) {
+            if (btn.textContent.trim().includes('确定')) {
+              btn.click();
+            }
+          }
+        }
+      } catch (e) {
+        console.log(e);
+      }
+    }
+
+    await delay(5000);
+
+    const publishErrorMsg = getLatestError();
+    if (publishErrorMsg) {
+      console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
+      stopErrorListener();
+      const publishId = dataObj.video?.dyPlatform?.id;
+      if (publishId) {
+        console.log('[百家号发布] 📤 调用失败接口...');
+        await sendStatisticsError(publishId, publishErrorMsg, '百家号发布');
+      }
+      await closeWindowWithMessage('发布失败，刷新数据', 1000);
+      return false;
+    } else {
+      console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
+      stopErrorListener();
+      return true;
+    }
+  }
 })(); // IIFE 结束
+
+/**
+ * 解析定时发布时间
+ * @param {string} sendTimeStr - 时间字符串，格式："2026-01-21 00:00:00"
+ * @returns {object} { dateIndex, hour, minute } 或 null
+ */
+function parseSendTime(sendTimeStr) {
+    try {
+        // 解析时间字符串
+        const [dateStr, timeStr] = sendTimeStr.split(' ');
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const [hour, minute] = timeStr.split(':').map(Number);
+
+        // 计算相对于今天的天数差
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const sendDate = new Date(year, month - 1, day);
+        sendDate.setHours(0, 0, 0, 0);
+
+        const dayDiff = Math.floor((sendDate - today) / (1000 * 60 * 60 * 24));
+
+        console.log('[百家号发布] 📅 解析定时时间:', {
+            原始时间: sendTimeStr,
+            日期: `${year}-${month}-${day}`,
+            时间: `${hour}:${minute}`,
+            相对天数: dayDiff
+        });
+
+        return {
+            dateIndex: dayDiff,
+            hour: hour,
+            minute: minute
+        };
+    } catch (error) {
+        console.error('[百家号发布] ❌ 解析定时时间失败:', error);
+        return null;
+    }
+}
+
+/**
+ * 选择虚拟列表中的选项
+ * @param {HTMLElement} selectElement - select 组件的容器
+ * @param {string|number} targetValue - 要选择的值（显示文本）
+ * @param targetIndex - 要选择的索引（默认0）
+ * @param {number} timeout - 超时时间（毫秒）
+ */
+async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0, timeout = 10000) {
+    try {
+        console.log('[百家号发布] 🔍 准备选择:', targetValue);
+
+        // 1. 找到触发器并点击打开下拉
+        const selectTrigger = selectElement.querySelector('.cheetah-select-selector');
+        console.log("🚀 ~ selectFromVirtualList ~ selectTrigger: ", selectTrigger);
+        if (!selectTrigger) {
+            console.error('[百家号发布] ❌ 找不到 select 触发器');
+            return false;
+        }
+
+        console.log('[百家号发布] ✅ 找到触发器，点击打开下拉列表');
+        selectTrigger.dispatchEvent(new Event('mousedown', { bubbles: true }));
+
+        // 等待下拉出现 - 增加等待时间到 1000ms
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 2. 查找虚拟列表容器（可能有多个位置）
+        const startTime = Date.now();
+        let virtualList = null;
+        let options = [];
+
+        while (Date.now() - startTime < timeout) {
+            // 尝试多种选择器找虚拟列表
+            virtualList = document.querySelectorAll('.rc-virtual-list-holder') ||
+                         document.querySelectorAll('.cheetah-select-dropdown .rc-virtual-list') ||
+                         document.querySelectorAll('[role="listbox"]') ||
+                         document.querySelectorAll('.cheetah-select-dropdown');
+
+            if (virtualList && virtualList.length > 0) {
+                console.log('[百家号发布] 📍 找到虚拟列表容器:', virtualList[targetIndex].className);
+
+                // 查找所有可见的选项 - 尝试多种选择器
+                let allOptions = Array.from(
+                    virtualList[targetIndex].querySelectorAll('[role="option"], .cheetah-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
+                );
+
+                // 如果还是没找到，尝试所有 div
+                if (allOptions.length === 0) {
+                    allOptions = Array.from(virtualList[targetIndex].querySelectorAll('div')).filter(el => {
+                        const text = el.textContent.trim();
+                        // 过滤掉空的和太长的（可能是容器）
+                        return text && text.length < 20 && el.children.length === 0;
+                    });
+                }
+
+              // 滚动到最顶部
+              virtualList[targetIndex].scrollTo(0, 0);
+              await new Promise(r => setTimeout(r, 300));
+
+                options = allOptions.filter(el => el.offsetParent !== null);
+
+                if (options.length > 0) {
+                    console.log('[百家号发布] ✅ 找到虚拟列表，有', options.length, '个选项');
+                    break;
+                } else {
+                    console.log('[百家号发布] ⏳ 虚拟列表已打开但选项还未渲染，等待中...');
+                }
+            } else {
+                console.log('[百家号发布] ⏳ 虚拟列表还未出现，等待中...');
+            }
+
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        if (options.length === 0) {
+            console.error('[百家号发布] ❌ 未找到任何选项');
+            return false;
+        }
+
+        // 3. 滚动搜索匹配项
+        const targetStr = String(targetValue).trim();
+        let foundOption = null;
+        const seenTexts = new Set();
+        const scrollStep = 100;
+        let currentScroll = 0;
+
+        while (true) {
+            // 获取当前可见选项
+            const currentOptions = Array.from(
+                virtualList[targetIndex].querySelectorAll('[role="option"], .cheetah-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')
+            ).filter(el => el.offsetParent !== null);
+
+            // 检查当前可见选项
+            for (const option of currentOptions) {
+                const optionText = option.textContent.trim();
+                seenTexts.add(optionText);
+
+                if (optionText === targetStr) {
+                    foundOption = option;
+                    console.log('[百家号发布] ✅ 找到匹配的选项:', optionText);
+                    break;
+                }
+            }
+
+            if (foundOption) break;
+
+            // 检查是否到底
+            const scrollHeight = virtualList[targetIndex].scrollHeight;
+            const clientHeight = virtualList[targetIndex].clientHeight;
+            currentScroll += scrollStep;
+
+            if (currentScroll >= scrollHeight - clientHeight) {
+                console.log('[百家号发布] 📍 已滚动到底部');
+                break;
+            }
+
+            // 向下滚动
+            virtualList[targetIndex].scrollTo(0, currentScroll);
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        if (!foundOption) {
+            console.error('[百家号发布] ❌ 未找到目标选项:', targetStr);
+            console.log('[百家号发布] 📋 已扫描选项数:', seenTexts.size);
+            return false;
+        }
+
+        // 4. 滚动到视图并点击
+        foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+        await new Promise(r => setTimeout(r, 300));
+
+        console.log('[百家号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
+        console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
+        foundOption.querySelector('.cheetah-select-item-option-content').dispatchEvent(new Event('click', { bubbles: true }));
+
+        // 等待下拉关闭
+        await new Promise(r => setTimeout(r, 500));
+
+        console.log('[百家号发布] ✅ 选项选择完成');
+        return true;
+
+    } catch (error) {
+        console.error('[百家号发布] ❌ selectFromVirtualList 错误:', error);
+        return false;
+    }
+}
+
+/**
+ * 选择定时发布的日期和时间
+ * @param {number} dateIndex - 日期索引（0=今天, 1=明天等）
+ * @param {number} hour - 小时（0-23）
+ * @param {number} minute - 分钟（0-59）
+ */
+async function selectScheduledTime(dateIndex, hour, minute) {
+    try {
+        // 1. 找到定时发布弹窗的三个 select 组件
+        const modal = document.querySelector('.cheetah-modal-wrap');
+        if (!modal) {
+            console.error('[百家号发布] ❌ 找不到定时发布弹窗');
+            return false;
+        }
+
+        const selectElements = modal.querySelectorAll('.select-wrap');
+        if (selectElements.length < 3) {
+            console.error('[百家号发布] ❌ 找不到三个 select 组件，找到:', selectElements.length);
+            return false;
+        }
+
+        const dateSelect = selectElements[0]; // 日期
+        const hourSelect = selectElements[1]; // 小时
+        const minuteSelect = selectElements[2]; // 分钟
+
+        console.log('[百家号发布] 🔧 开始选择定时发布时间...');
+
+        // 2. 获取日期选项的显示文本
+        let dateText = '';
+        const date = new Date();
+        date.setDate(date.getDate() + dateIndex);
+
+        // 格式：M月D日 或 MM月DD日
+        const month = date.getMonth() + 1; // getMonth() 返回 0-11
+        const day = date.getDate();
+        dateText = `${month}月${day}日`;
+
+        // 3. 依次选择日期、小时、分钟
+        console.log('[百家号发布] 📅 选择日期:', dateText);
+        if (!await selectFromVirtualList(dateSelect, dateText, 0)) {
+            return false;
+        }
+
+        await new Promise(r => setTimeout(r, 300));
+
+        const hourText = `${hour}点`;
+        console.log('[百家号发布] 🕐 选择小时:', hourText);
+        if (!await selectFromVirtualList(hourSelect, hourText, 1)) {
+            return false;
+        }
+
+        await new Promise(r => setTimeout(r, 300));
+
+        const minuteText = `${minute}分`;
+        console.log('[百家号发布] ⏱️ 选择分钟:', minuteText);
+        if (!await selectFromVirtualList(minuteSelect, minuteText, 2)) {
+            return false;
+        }
+
+        console.log('[百家号发布] ✅ 定时发布时间选择完成');
+        return true;
+
+    } catch (error) {
+        console.error('[百家号发布] ❌ selectScheduledTime 错误:', error);
+        return false;
+    }
+}

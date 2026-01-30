@@ -211,7 +211,8 @@
 
               console.log('[百家号授权] 📤 准备发送数据到接口...');
               // 发送数据到服务器（根据环境选择域名）
-              const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+              const apiDomain = await getApiDomain();
+              console.log('[百家号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/bjhinfo`);
               const apiResponse = await fetch(`${apiDomain}/api/mediaauth/bjhinfo`, {
                 method: 'POST',
                 headers: {

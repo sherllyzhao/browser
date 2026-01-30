@@ -90,7 +90,8 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
   'http://localhost:5173/',
-  'https://dev.china9.cn/aigc_browser2/',
+  'https://dev.china9.cn/aigc_browser/',
+  'https://china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
@@ -201,7 +202,7 @@ function createWindow() {
           const currentUrl = browserView.webContents.getURL();
           if (currentUrl && !currentUrl.includes('login.html')) {
             // 判断是哪个项目
-            if (currentUrl.includes('aigc_browser2') || currentUrl.includes('localhost:5173')) {
+            if (currentUrl.includes('aigc_browser') || currentUrl.includes('localhost:5173')) {
               globalStorage.last_project = 'aigc';
               console.log('[Window Close] 💾 记录项目类型: aigc');
             } else if (currentUrl.includes('jzt_all') || currentUrl.includes('geo') ||
@@ -269,15 +270,27 @@ function createWindow() {
     }
   });
 
-  // 获取或创建持久化 session
-  const persistentSession = session.fromPartition('persist:browserview', { cache: true });
+  // 获取或创建持久化 session（禁用 HTTP 缓存，只保留 cookies 和 storage）
+  const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
-  // 启动时清理可能损坏的缓存（解决 CSS 渲染成文字的问题）
-  persistentSession.clearCache().then(() => {
-    console.log('[Session] ✅ 已清理缓存');
-  }).catch(err => {
-    console.error('[Session] ⚠️ 清理缓存失败:', err);
-  });
+  // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
+  let cacheCleared = false;
+  const clearCachePromise = (async () => {
+    try {
+      // 清理 HTTP 缓存
+      await persistentSession.clearCache();
+      console.log('[Session] ✅ HTTP 缓存已清理');
+
+      // 清理 Code Cache（JavaScript 编译缓存）
+      await persistentSession.clearCodeCaches({});
+      console.log('[Session] ✅ Code Cache 已清理');
+
+      cacheCleared = true;
+    } catch (err) {
+      console.error('[Session] ⚠️ 清理缓存失败:', err);
+      cacheCleared = true; // 即使失败也继续
+    }
+  })();
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -399,6 +412,11 @@ function createWindow() {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
 
+    // 🔑 等待缓存清理完成
+    console.log('[BrowserView] 等待缓存清理完成...');
+    await clearCachePromise;
+    console.log('[BrowserView] ✅ 缓存清理完成，开始加载页面');
+
     // 检查是否有保存的登录 token
     const savedToken = globalStorage.login_token;
     const savedExpires = globalStorage.login_expires;
@@ -491,7 +509,7 @@ function createWindow() {
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser2/'
+            ? 'https://china9.cn/aigc_browser/'
             : 'http://localhost:5173/';
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
@@ -555,17 +573,31 @@ function createWindow() {
       (function() {
         if (!document.body) return { ready: false, reason: 'no body' };
 
-        // 跳过包含富文本编辑器的页面（TinyMCE, CKEditor 等）
-        const hasRichEditor = document.querySelector('.tiny-textarea, .tox, .tox-tinymce, .mce-container, .ck-editor, [data-tiny-editor]');
-        if (hasRichEditor) {
-          console.log('[Page Check] 检测到富文本编辑器，跳过CSS检测');
+        // 🔑 跳过包含富文本编辑器的页面（TinyMCE, CKEditor, Quill, wangEditor 等）
+        const richEditorSelectors = [
+          '.tiny-textarea', '.tox', '.tox-tinymce', '.mce-container', '.mce-content-body',
+          '.ck-editor', '.ck-content', '[data-tiny-editor]',
+          '.ql-editor', '.ql-container', '.quill',
+          '.w-e-text', '.w-e-toolbar', '[data-wangeditor]',
+          '.CodeMirror', '.monaco-editor',
+          '[contenteditable="true"]',
+          'iframe[id*="editor"]', 'iframe[id*="tinymce"]'
+        ];
+        const hasRichEditor = richEditorSelectors.some(sel => document.querySelector(sel));
+
+        // 🔑 检查 URL 路径，跳过可能包含编辑器的页面
+        const editorPaths = ['/edit', '/editor', '/publish', '/create', '/write', '/article', '/content'];
+        const isEditorPage = editorPaths.some(p => window.location.pathname.includes(p) || window.location.hash.includes(p));
+
+        if (hasRichEditor || isEditorPage) {
+          console.log('[Page Check] 检测到富文本编辑器或编辑页面，跳过CSS检测');
           const preHideStyle = document.getElementById('__pre_hide_style__');
           if (preHideStyle) preHideStyle.remove();
           if (document.body) {
             document.body.style.visibility = '';
             document.body.style.opacity = '';
           }
-          return { ready: true, reason: 'rich-editor-detected' };
+          return { ready: true, reason: 'editor-detected' };
         }
 
         const bodyText = document.body.innerText || '';
@@ -610,41 +642,47 @@ function createWindow() {
       })()
     `;
 
-    // 【临时禁用】页面状态检测
-    /*
-    try {
-      // 先检查页面状态
-      const pageState = await webContents.executeJavaScript(pageCheckScript);
+    // 🔑 页面状态检测 - 只在登录页和首页检测 CSS 渲染异常
+    // 其他页面（可能包含富文本编辑器）跳过检测，避免白屏问题
+    const safeCheckUrls = ['login.html', '/#/', '/aigc_browser/', '/jzt_all/', 'localhost:5173/', 'localhost:8080/'];
+    const shouldCheckPage = safeCheckUrls.some(pattern => url.includes(pattern)) &&
+                            !url.includes('/edit') && !url.includes('/publish') &&
+                            !url.includes('/create') && !url.includes('/article');
 
-      if (!pageState.ready) {
-        console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+    if (shouldCheckPage) {
+      try {
+        // 先检查页面状态
+        const pageState = await webContents.executeJavaScript(pageCheckScript);
 
-        // 最多重试2次，每次间隔1.5秒，然后刷新
-        if (retryCount < 2) {
-          console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
-          setTimeout(() => {
-            injectScriptForUrl(webContents, url, retryCount + 1);
-          }, 1500);
-          return;
-        } else {
-          console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
-          webContents.reload();
-          return;
+        if (!pageState.ready) {
+          console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+          // 最多重试2次，每次间隔1.5秒，然后刷新
+          if (retryCount < 2) {
+            console.log(`[Script Injection] ⏳ ${1.5}秒后重试 (第${retryCount + 1}次)...`);
+            setTimeout(() => {
+              injectScriptForUrl(webContents, url, retryCount + 1);
+            }, 1500);
+            return;
+          } else {
+            console.log('[Script Injection] ❌ 页面持续异常，刷新页面...');
+            webContents.reload();
+            return;
+          }
         }
-      }
-    } catch (checkErr) {
-      // 检查脚本执行失败，可能页面还没准备好
-      if (!checkErr.message.includes('destroyed')) {
-        console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
-        if (retryCount < 2) {
-          setTimeout(() => {
-            injectScriptForUrl(webContents, url, retryCount + 1);
-          }, 1000);
-          return;
+      } catch (checkErr) {
+        // 检查脚本执行失败，可能页面还没准备好
+        if (!checkErr.message.includes('destroyed')) {
+          console.log('[Script Injection] ⚠️ 页面检查失败:', checkErr.message);
+          if (retryCount < 2) {
+            setTimeout(() => {
+              injectScriptForUrl(webContents, url, retryCount + 1);
+            }, 1000);
+            return;
+          }
         }
       }
     }
-    */
 
     // 注入公共头（已移至浏览器级别 index.html，不再每页注入）
     // 保留此注释以便将来参考，公共头现在固定在 index.html 中，不会随页面切换而闪烁
@@ -722,10 +760,80 @@ function createWindow() {
     })()
   `;
 
+  // 🔑 记录跳转到无权限页面前的 URL（用于保持 header 选中状态）
+  let lastValidUrl = null;
+  let pendingNavigationUrl = null;  // 记录用户点击的原始目标 URL
+
+  // 监听用户点击链接（在导航开始前触发，可捕获原始目标 URL）
+  browserView.webContents.on('will-navigate', (event, url) => {
+    console.log(`[Navigation] 用户点击链接 → ${url}`);
+    // 记录用户点击的目标 URL（即使会被重定向）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://')) {
+      pendingNavigationUrl = url;
+    }
+  });
+
+  // 监听 hash 路由变化（Vue 前端路由跳转）
+  browserView.webContents.on('did-navigate-in-page', (event, url) => {
+    console.log(`[Navigation] Hash 路由变化 → ${url}`);
+    // 记录 hash 路由变化的 URL（前端路由跳转到的目标页面）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes('not-available')) {
+      pendingNavigationUrl = url;
+      lastValidUrl = url;
+    }
+  });
+
   // 监听页面导航开始
   browserView.webContents.on('did-start-navigation', (event, url) => {
     console.log(`[Navigation] 导航开始 → ${url}`);
-    // 不在这里发送 url-changed，避免重复触发
+
+    // 🔑 提前拦截 account.china9.cn/login，阻止页面显示
+    if (url.includes('account.china9.cn/login')) {
+      console.log('[Navigation] ⚠️ 检测到统一登录页，停止导航');
+      console.log('[Navigation] pendingNavigationUrl:', pendingNavigationUrl);
+      console.log('[Navigation] lastValidUrl:', lastValidUrl);
+
+      // 延迟执行，避免在导航事件中直接触发新导航导致浏览器崩溃
+      setImmediate(() => {
+        if (browserView && !browserView.webContents.isDestroyed()) {
+          // 优先使用 pendingNavigationUrl（用户点击的原始目标），其次使用 lastValidUrl
+          const urlToSend = pendingNavigationUrl || lastValidUrl;
+
+          // 根据目标 URL 判断系统类型，传递给 not-available.html
+          let systemParam = 'aigc';
+          if (urlToSend) {
+            const urlLower = urlToSend.toLowerCase();
+            if (urlLower.includes(':8080') ||
+                urlLower.includes('/geo/') ||
+                urlLower.includes('/jzt_all/') ||
+                urlLower.includes('jzt_dev') ||
+                urlLower.includes('zhjzt')) {
+              systemParam = 'geo';
+            }
+          }
+          console.log('[Navigation] 系统类型:', systemParam);
+
+          // 加载占位页，带上 system 参数
+          browserView.webContents.loadURL(`file://${__dirname}/not-auth.html?system=${systemParam}`);
+
+          // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
+          if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
+            console.log('[Navigation] 发送 URL 到 renderer:', urlToSend);
+            mainWindow.webContents.send('url-changed', urlToSend);
+          }
+        }
+        // 清空 pendingNavigationUrl
+        pendingNavigationUrl = null;
+      });
+      return;
+    }
+
+    // 记录有效的 URL（排除本地文件和特殊页面）
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes('not-available') && !url.includes('not-auth'))) {
+      lastValidUrl = url;
+    }
+    // 清空 pendingNavigationUrl（导航成功开始）
+    pendingNavigationUrl = null;
 
     // 【已禁用】预防性隐藏脚本 - 会导致 TinyMCE 白屏且对 CSS 渲染异常无效
     // if (browserView && !browserView.webContents.isDestroyed()) {
@@ -743,16 +851,17 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser2/#/login',
-      'china9.cn/aigc_browser2/#/login',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
       'localhost:8080/#/login'
     ];
+
+    // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
@@ -811,16 +920,17 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'account.china9.cn/login',
       'china9.cn/#/home',
       'dev.china9.cn/#/home',
-      'dev.china9.cn/aigc_browser2/#/login',
-      'china9.cn/aigc_browser2/#/login',
+      'dev.china9.cn/aigc_browser/#/login',
+      'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
       'localhost:5173/#/login',
       'localhost:8080/#/home',
       'localhost:8080/#/login'
     ];
+
+    // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
@@ -944,7 +1054,7 @@ function createWindow() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);
@@ -985,7 +1095,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
     // 检测远程登录页，自动跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser2/#/login') ||
+    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
       browserView.webContents.loadURL(LOGIN_URL);
@@ -1331,6 +1441,15 @@ function createTray() {
   tray.setToolTip('应用名称')
   tray.setContextMenu(contextMenu)
 }
+
+// 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
+// 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+// 禁用自动化扩展
+app.commandLine.appendSwitch('disable-extensions');
+// 使用正常的渲染模式
+app.commandLine.appendSwitch('disable-dev-shm-usage');
+console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -2845,7 +2964,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
       const tempSessionId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      windowSession = session.fromPartition(tempSessionId, { cache: true }); // 启用缓存，避免脚本加载异常
+      windowSession = session.fromPartition(tempSessionId, { cache: false }); // 禁用缓存，避免 CSS 渲染异常
       sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
@@ -2981,7 +3100,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             }));
 
             // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-            let apiOrigin = config.getApiDomain(isProduction);
+            let apiOrigin = config.apiBaseUrl;
             if (browserView && !browserView.webContents.isDestroyed()) {
               try {
                 const mainUrl = browserView.webContents.getURL();
@@ -3061,7 +3180,27 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       newWindow.webContents.openDevTools();
     }
 
-    // 为新窗口添加脚本注入
+    // 🔑 为新窗口添加脚本注入（使用 dom-ready 而不是 did-finish-load，更早注入）
+    // dom-ready 在 DOM 准备好但在 DOMContentLoaded 之前触发，可以更早执行脚本
+    newWindow.webContents.on('dom-ready', async () => {
+      const currentURL = newWindow.webContents.getURL();
+      console.log('[New Window API] DOM ready:', currentURL);
+
+      // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
+      await scriptManager.getScript(currentURL).then(async (script) => {
+        if (script) {
+          console.log('[New Window API] Injecting script on dom-ready...');
+          try {
+            await newWindow.webContents.executeJavaScript(script);
+            console.log('[New Window API] Script injected successfully');
+          } catch (err) {
+            console.error('[New Window API] Script injection error:', err);
+          }
+        }
+      });
+    });
+
+    // 页面完全加载后通知首页
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
@@ -3075,18 +3214,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         });
         console.log('[New Window API] 已通知首页窗口加载完成');
       }
-
-      await scriptManager.getScript(currentURL).then(async (script) => {
-        if (script) {
-          console.log('[New Window API] Injecting script...');
-          try {
-            await newWindow.webContents.executeJavaScript(script);
-            console.log('[New Window API] Script injected successfully');
-          } catch (err) {
-            console.error('[New Window API] Script injection error:', err);
-          }
-        }
-      });
     });
 
     // 监听新窗口内的导航（SPA 路由）
@@ -3103,6 +3230,78 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       }
     });
 
+    // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
+    // 问题原因：页面脚本在 dom-ready 前就执行，读取了旧的 localStorage 值
+    // 解决方案：先加载 about:blank，设置 localStorage，再导航到目标 URL
+    let localStorageData = null;
+
+    if (options.sessionData) {
+      let sessionData = options.sessionData;
+      // 解析 sessionData
+      if (typeof sessionData === 'string') {
+        try {
+          sessionData = JSON.parse(sessionData);
+          if (typeof sessionData === 'string') {
+            sessionData = JSON.parse(sessionData);
+          }
+        } catch (e) {
+          // 忽略解析错误
+        }
+      }
+
+      // 检查是否有 localStorage 数据
+      if (sessionData && typeof sessionData === 'object' && sessionData.localStorage) {
+        localStorageData = sessionData.localStorage;
+        console.log('[Window Manager] 🔑 检测到 localStorage 数据:', Object.keys(localStorageData));
+      }
+    }
+
+    // 如果有 localStorage 数据需要预设，先加载 about:blank
+    if (localStorageData && Object.keys(localStorageData).length > 0) {
+      console.log('[Window Manager] 🔄 预设 localStorage，先加载 about:blank...');
+
+      // 获取目标域名（用于设置 localStorage）
+      const targetUrl = new URL(url);
+      const targetOrigin = targetUrl.origin;
+
+      // 先加载一个同域的空白页（about:blank 不能设置 localStorage，需要用目标域）
+      // 使用一个简单的 data URL 或者目标域的任意页面
+      await newWindow.loadURL(`${targetOrigin}/favicon.ico`).catch(() => {
+        // favicon 可能不存在，忽略错误
+      });
+
+      // 等待页面加载
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // 设置 localStorage
+      const localStorageScript = `
+        (function() {
+          const data = ${JSON.stringify(localStorageData)};
+          console.log('[预设 localStorage] 开始设置...', Object.keys(data));
+          for (const key in data) {
+            try {
+              localStorage.setItem(key, data[key]);
+              console.log('[预设 localStorage] 已设置:', key, '=', data[key]);
+            } catch (e) {
+              console.error('[预设 localStorage] 设置失败:', key, e);
+            }
+          }
+          console.log('[预设 localStorage] 完成');
+        })();
+      `;
+
+      try {
+        await newWindow.webContents.executeJavaScript(localStorageScript);
+        console.log('[Window Manager] ✅ localStorage 预设完成');
+      } catch (err) {
+        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+      }
+
+      // 等待一下确保 localStorage 写入
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // 加载目标 URL
     newWindow.loadURL(url);
     return { success: true, windowId: newWindow.id };
   } catch (err) {
@@ -3489,41 +3688,104 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
     return { success: false, error: '域名不能为空' };
   }
 
-  if (browserView && !browserView.webContents.isDestroyed()) {
-    try {
-      const ses = browserView.webContents.session;
-      const cookies = await ses.cookies.get({});
-      console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+  try {
+    // 获取调用者的 session（可能是 BrowserView 或子窗口）
+    let ses = null;
+    let sessionSource = '';
 
-      let deletedCount = 0;
-      for (const cookie of cookies) {
-        // 匹配域名（包括子域名）
-        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-        const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+    // 检查是否来自 BrowserView
+    if (browserView && event.sender === browserView.webContents) {
+      ses = browserView.webContents.session;
+      sessionSource = 'BrowserView';
+    } else {
+      // 检查是否来自子窗口
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      if (senderWindow) {
+        ses = senderWindow.webContents.session;
+        sessionSource = `子窗口 (ID: ${senderWindow.id})`;
+      }
+    }
 
-        if (shouldDelete) {
-          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
-          try {
-            await ses.cookies.remove(cookieUrl, cookie.name);
-            deletedCount++;
-            console.log(`[Clear Cookies] ✓ 删除: ${cookie.name} @ ${cookie.domain}`);
-          } catch (err) {
-            console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+    if (!ses) {
+      console.error('[Clear Cookies] 无法获取 session');
+      return { success: false, error: '无法获取 session' };
+    }
+
+    console.log(`[Clear Cookies] Session 来源: ${sessionSource}`);
+    const cookies = await ses.cookies.get({});
+    console.log(`[Clear Cookies] 当前共有 ${cookies.length} 个 cookies`);
+
+    let deletedCount = 0;
+    for (const cookie of cookies) {
+      // 匹配域名（包括子域名）
+      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      const shouldDelete = cookieDomain.includes(domain) || domain.includes(cookieDomain);
+
+      // 调试：显示所有 Cookie 的匹配情况
+      if (cookie.domain.includes('weixin') || cookie.domain.includes('channels')) {
+        console.log(`[Clear Cookies] 检查: ${cookie.name} @ ${cookie.domain}, 匹配: ${shouldDelete}`);
+      }
+
+      if (shouldDelete) {
+        // 使用原始域名（保留点）构建 URL
+        // 对于 .channels.weixin.qq.com，需要使用去掉点的域名作为 host
+        const urlHost = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${urlHost}${cookie.path}`;
+
+        console.log(`[Clear Cookies] 尝试删除: ${cookie.name} @ ${cookie.domain}`);
+        console.log(`[Clear Cookies] Cookie 详情:`, {
+          name: cookie.name,
+          domain: cookie.domain,
+          path: cookie.path,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          sameSite: cookie.sameSite
+        });
+        console.log(`[Clear Cookies] 使用 URL: ${cookieUrl}`);
+
+        try {
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          deletedCount++;
+          console.log(`[Clear Cookies] ✓ 删除成功: ${cookie.name} @ ${cookie.domain}`);
+        } catch (err) {
+          console.error(`[Clear Cookies] ✗ 删除失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+
+          // 如果删除失败，尝试多种 URL 格式
+          const urlsToTry = [
+            `${cookie.secure ? 'https' : 'http'}://${cookie.domain}${cookie.path}`, // 带点的域名
+            `${cookie.secure ? 'https' : 'http'}://${urlHost}/`, // 根路径
+            `${cookie.secure ? 'https' : 'http'}://${cookie.domain}/`, // 带点的域名 + 根路径
+          ];
+
+          let retrySuccess = false;
+          for (const tryUrl of urlsToTry) {
+            try {
+              console.log(`[Clear Cookies] 重试 URL: ${tryUrl}`);
+              await ses.cookies.remove(tryUrl, cookie.name);
+              deletedCount++;
+              retrySuccess = true;
+              console.log(`[Clear Cookies] ✓ 重试成功: ${cookie.name} @ ${cookie.domain} (URL: ${tryUrl})`);
+              break;
+            } catch (retryErr) {
+              console.error(`[Clear Cookies] ✗ 重试失败 (${tryUrl}):`, retryErr.message);
+            }
+          }
+
+          if (!retrySuccess) {
+            console.error(`[Clear Cookies] ❌ 所有重试都失败了: ${cookie.name} @ ${cookie.domain}`);
           }
         }
       }
-
-      console.log(`[Clear Cookies] ========== 清除完成 ==========`);
-      console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
-
-      return { success: true, deletedCount };
-    } catch (err) {
-      console.error('[Clear Cookies] 清除失败:', err);
-      return { success: false, error: err.message };
     }
-  }
 
-  return { success: false, error: 'BrowserView 不可用' };
+    console.log(`[Clear Cookies] ========== 清除完成 ==========`);
+    console.log(`[Clear Cookies] ✅ 共删除 ${deletedCount} 个 cookies`);
+
+    return { success: true, deletedCount };
+  } catch (err) {
+    console.error('[Clear Cookies] 清除失败:', err);
+    return { success: false, error: err.message };
+  }
 });
 
 // ========== 全局数据存储（用于跨页面数据传递） ==========
@@ -3719,8 +3981,8 @@ function getAccountSession(platform, accountId) {
     return accountSessions.get(partitionName);
   }
 
-  // 创建新的持久化 session
-  const accountSession = session.fromPartition(partitionName, { cache: true });
+  // 创建新的持久化 session（禁用 HTTP 缓存，避免 CSS 渲染异常）
+  const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
@@ -4747,7 +5009,7 @@ ipcMain.handle('save-session-to-backend', async (event) => {
     }));
 
     // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.getApiDomain(isProduction);
+    let apiOrigin = config.apiBaseUrl;
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const mainUrl = browserView.webContents.getURL();

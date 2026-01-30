@@ -158,7 +158,8 @@
                     }
 
                     // 发送数据到服务器（根据环境选择域名）
-                    const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+                    const apiDomain = await getApiDomain();
+                    console.log('[小红书授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/xhsinfo`);
                     const apiResponse = await fetch(`${apiDomain}/api/mediaauth/xhsinfo`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },

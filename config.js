@@ -16,6 +16,9 @@ module.exports = {
     return isProduction ? 'https://api.china9.cn' : 'https://apidev.china9.cn';
   },
 
+  // API 基础地址（默认值，实际会从主窗口 URL 自动获取）
+  apiBaseUrl: 'https://dev.china9.cn',
+
   // 各平台保存会话的接口路径
   // 注意：现在改为由父页面在 element.saveSessionApi 中传入，此处仅作为备用/参考
   platformApis: {

@@ -181,7 +181,8 @@
             }
 
             // 发送数据到服务器（根据环境选择域名）
-            const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+            const apiDomain = await getApiDomain();
+            console.log('[视频号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/sphinfo`);
             const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

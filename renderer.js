@@ -46,7 +46,7 @@ const tabGeo = document.getElementById('__tab_geo__');
 // AIGC 和 GEO 的 URL（根据环境）
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 const AIGC_URL = isProduction
-  ? 'https://dev.china9.cn/aigc_browser2/'
+  ? 'https://china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const GEO_URL = isProduction
   ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
@@ -59,7 +59,7 @@ function getCurrentSystem(url) {
   const urlLower = url.toLowerCase();
 
   // 检查 not-available.html 的查询参数（用于占位页保持正确的 Tab 选中状态）
-  if (urlLower.includes('not-available.html')) {
+  if (urlLower.includes('not-available.html') || urlLower.includes('not-auth.html?')) {
     try {
       const urlObj = new URL(url);
       const systemParam = urlObj.searchParams.get('system');
@@ -81,7 +81,7 @@ function getCurrentSystem(url) {
 
   // AIGC 系统特征
   if (urlLower.includes(':5173') ||
-      urlLower.includes('/aigc_browser2/') ||
+      urlLower.includes('/aigc_browser/') ||
       urlLower.includes('aigc')) {
     return 'aigc';
   }

@@ -179,7 +179,7 @@
                   nickname: user.nickname,
                   avatar: user.avatar_thumb.url_list[0],
                   follow: user.following_count,
-                  follower_count: user.follower_count,
+                  follower_count: user.follower_count, // 我关注别人的关注数
                   video: user.aweme_count,
                   uid: user.uid,
                   favoriting_count: user.favoriting_count,
@@ -208,7 +208,8 @@
 
               console.log('[抖音授权] 📤 准备发送数据到接口...');
               // 发送数据到服务器（根据环境选择域名）
-              const apiDomain = window.getApiDomain ? window.getApiDomain() : 'https://apidev.china9.cn';
+              const apiDomain = await getApiDomain();
+              console.log('[抖音授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/douyininfo`);
               const apiResponse = await fetch(`${apiDomain}/api/mediaauth/douyininfo`, {
                 method: 'POST',
                 headers: {
