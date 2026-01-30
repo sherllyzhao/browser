@@ -135,6 +135,7 @@ const config = {
     wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
     shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
     txh: 'https://om.qq.com/main/creation/article',
+    xl: 'https://card.weibo.com/article/v5/editor#/draft',
     zh: 'https://zhuanlan.zhihu.com/write'
   },
   platformIdMap: {
@@ -145,6 +146,7 @@ const config = {
     8: 'wyh',   // 网易号
     9: 'shh',   // 搜狐号
     10: 'txh',  // 腾讯号
+    11: 'xl',   // 新浪号
     12: 'zh',   // 知乎
   },
   platformNameMap: {
@@ -156,6 +158,7 @@ const config = {
     'wyh': 'wangyihao',
     'shh': 'sohuhao',
     'txh': 'tengxunhao',
+    'xl': 'xinlang',
     'zh': 'zhihu'
   }
 };
