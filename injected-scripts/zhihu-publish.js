@@ -55,7 +55,10 @@
             // 回退方案：使用本地配置
             errorListener = createErrorListener({
                 logPrefix: "[知乎发布]",
-                selectors: [{ containerClass: "omui-message", textSelector: ".omui-message__desc", recursiveSelector: ".omui-message" }],
+                selectors: [
+                    { containerClass: "WriteIndexMain", textSelector: ".WriteIndex-LengthStatus-warning", recursiveSelector: ".WriteIndexMain" },
+                    { containerClass: "Notification", textSelector: ".Notification-textsection", recursiveSelector: ".Notification" },
+                ],
             });
             console.log("[知乎发布] ⚠️ 使用本地错误监听器配置");
         }
