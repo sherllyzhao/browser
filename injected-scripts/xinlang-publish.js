@@ -35,6 +35,9 @@
     let isProcessing = false;
     let hasProcessed = false;
 
+    // 简介填写标志：防止重复填写
+    let introFilled = false;
+
     // 保存收到的父窗口消息（用于备用方案）
     let receivedMessageData = null;
 
@@ -534,25 +537,43 @@
                         await delay(1000);
 
                         // 等待封面选择区域出现
-                        await waitForElement(".cover-preview");
+                        const coverPreview = document.querySelector(".cover-preview");
                         await delay(500); // 等待渲染完成
+                        try{
+                            if(coverPreview){
+                                // 查找并点击"替换封面图"按钮
+                                const coverBtns = document.querySelectorAll(".cover-preview span");
+                                console.log("🚀 ~  ~ coverBtns: ", coverBtns);
+                                if(!coverBtns || coverBtns.length === 0){
+                                    throw new Error('[新浪发布]：找不到替换封面按钮');
+                                }
+                                let coverChangeBtn = null;
+                                for (let coverBtn of coverBtns) {
+                                    const coverBtnText = coverBtn.textContent.trim();
+                                    if(coverBtnText.includes("替换封面图")){
+                                        coverChangeBtn = coverBtn;
+                                    }
+                                }
+                                console.log("🚀 ~  ~ coverChangeBtn: ", coverChangeBtn);
+                                if(!coverChangeBtn) {
+                                    throw new Error('[新浪发布]：找不到替换封面按钮');
+                                }
+                                coverChangeBtn.click();
 
-                        // 查找并点击"替换封面图"按钮
-                        const coverBtns = document.querySelectorAll(".cover-preview span");
-                        console.log("🚀 ~  ~ coverBtns: ", coverBtns);
-                        if(!coverBtns || coverBtns.length === 0){
-                            throw new Error('[新浪发布]：找不到替换封面按钮');
-                            return;
-                        }
-                        let coverChangeBtn = null;
-                        for (let coverBtn of coverBtns) {
-                            const coverBtnText = coverBtn.textContent.trim();
-                            if(coverBtnText.includes("替换封面图")){
-                                coverChangeBtn = coverBtn;
+                            }else{
+                                const uploadBtn = document.querySelector(".cover-empty");
+                                if(!uploadBtn){
+                                    throw new Error('[新浪发布]：找不到封面按钮');
+                                }
+                                uploadBtn.click();
                             }
+                        } catch (e){
+                            const uploadBtn = document.querySelector(".cover-empty");
+                            if(!uploadBtn){
+                                throw new Error('[新浪发布]：找不到封面按钮');
+                            }
+                            uploadBtn.click();
                         }
-                        console.log("🚀 ~  ~ coverChangeBtn: ", coverChangeBtn);
-                        coverChangeBtn && coverChangeBtn.click();
                         await delay(1000); // 等待渲染完成
 
                         // 检测上传封面弹窗
@@ -784,7 +805,7 @@
                                                 if(!publishDialogEle){
                                                     throw new Error('[新浪发布]：找不到发布弹窗');
                                                 }
-                                                const publishBtnArea = publishDialogEle.querySelector('.n-mention + div');
+                                                const publishBtnArea = publishDialogEle.querySelector('.n-mention + div .items-center:nth-of-type(2)');
                                                 if(!publishBtnArea){
                                                     throw new Error('[新浪发布]：找不到发布按钮操作区');
                                                 }
@@ -1158,7 +1179,7 @@ async function selectScheduledTime(sendTime) {
     try {
         const modal = document.querySelector(".n-dialog");
         if (!modal) {
-            console.error("[网易号发布] ❌ 找不到定时发布弹窗");
+            console.error("[新浪发布] ❌ 找不到定时发布弹窗");
             return false;
         }
 
@@ -1167,19 +1188,21 @@ async function selectScheduledTime(sendTime) {
         const [year, month, day] = datePart.split('-');
         console.log("🚀 ~ selectScheduledTime ~ day: ", day);
 
+        await delay(1000);
+
         // 1. 点击日期输入框打开日历
         const dateInput = modal.querySelector(".n-date-picker input");
         if (!dateInput) {
-            console.error("[网易号发布] ❌ 找不到日期输入框");
+            console.error("[新浪发布] ❌ 找不到日期输入框");
             return false;
         }
         dateInput.click();
         await delay(300);
-        console.log("[网易号发布] 🔧 开始选择定时发布时间...");
+        console.log("[新浪发布] 🔧 开始选择定时发布时间...");
 
         const picker = document.querySelector(".n-date-panel");
         if (!picker) {
-            console.error("[网易号发布] ❌ 找不到日期选择器");
+            console.error("[新浪发布] ❌ 找不到日期选择器");
             return false;
         }
 
@@ -1188,23 +1211,23 @@ async function selectScheduledTime(sendTime) {
             // 注意: curr-date 是独立的 class，不是 omui-calendar-nav 的子元素
             const currDateEl = picker.querySelector(".n-date-panel-month__text");
             if (!currDateEl) {
-                console.error("[网易号发布] ❌ 找不到当前月份显示元素");
+                console.error("[新浪发布] ❌ 找不到当前月份显示元素");
                 break;
             }
 
-            const currentText = currDateEl.textContent; // 格式: "2026-01"
-            const match = currentText.match(/(\d+)-(\d+)/);
+            const currentText = currDateEl.textContent.trim(); // 格式: "2026年 1月" 或 "2026年1月"
+            const match = currentText.match(/(\d+)年\s*(\d+)月/);
             if (!match) {
-                console.error("[网易号发布] ❌ 无法解析当前月份:", currentText);
+                console.error("[新浪发布] ❌ 无法解析当前月份:", currentText);
                 break;
             }
 
             const currYear = parseInt(match[1], 10);
             const currMonth = parseInt(match[2], 10);
-            console.log(`[网易号发布] 📅 当前显示: ${currYear}-${currMonth}, 目标: ${year}-${month}`);
+            console.log(`[新浪发布] 📅 当前显示: ${currYear}-${currMonth}, 目标: ${year}-${month}`);
 
             if (currYear === parseInt(year) && currMonth === parseInt(month)) {
-                console.log("[网易号发布] ✅ 已到达目标月份");
+                console.log("[新浪发布] ✅ 已到达目标月份");
                 break; // 已到达目标月份
             }
 
@@ -1217,14 +1240,14 @@ async function selectScheduledTime(sendTime) {
                 const nextBtn = picker.querySelector(".n-date-panel-month__next");
                 if (nextBtn) {
                     nextBtn.click();
-                    console.log("[网易号发布] ➡️ 点击下一月");
+                    console.log("[新浪发布] ➡️ 点击下一月");
                 }
             } else {
                 // 点击上一月 < (omui-calendar-nav 和 prev-m 是同一元素的 class)
                 const prevBtn = picker.querySelector(".n-date-panel-month__prev");
                 if (prevBtn) {
                     prevBtn.click();
-                    console.log("[网易号发布] ⬅️ 点击上一月");
+                    console.log("[新浪发布] ⬅️ 点击上一月");
                 }
             }
             await delay(200);
@@ -1234,90 +1257,109 @@ async function selectScheduledTime(sendTime) {
         // 3. 选择日期 - 找到目标日期的 td 并点击
         let dateSelected = false;
         const allDayCells = picker.querySelectorAll(".n-date-panel-date");
-        for (const td of allDayCells) {
-            const span = td.querySelector(".n-date-panel-date__trigger");
-            if (!span) continue;
+        console.log(`[新浪发布] 📅 找到 ${allDayCells.length} 个日期单元格`);
 
-            // 跳过不可选的日期（有 no-drop 类，表示过去的日期）
+        for (const td of allDayCells) {
+            // 跳过不可选的日期（有 disabled 类，表示过去的日期）
             if (td.classList.contains("n-date-panel-date--disabled")) continue;
 
             // 跳过非当前月份的日期（上月/下月的灰色日期）
             if (td.classList.contains("n-date-panel-date--excluded")) continue;
-            console.log("🚀 ~ selectScheduledTime ~ td: ", td);
 
-            const dayNum = parseInt(span.textContent, 10);
-            console.log("🚀 ~ selectScheduledTime ~ dayNum: ", dayNum);
-            if (dayNum === parseInt(day)) {
-                span.click();
+            // 尝试多种方式获取日期数字
+            let dayText = '';
+            const trigger = td.querySelector(".n-date-panel-date__trigger");
+            if (trigger) {
+                dayText = trigger.textContent.trim();
+            }
+            // 如果 trigger 内容不是数字，尝试直接从 td 获取
+            if (!dayText || isNaN(parseInt(dayText, 10))) {
+                // 可能日期数字直接在 td 的文本节点中
+                dayText = td.textContent.trim();
+            }
+
+            const dayNum = parseInt(dayText, 10);
+            const targetDay = parseInt(day, 10);
+            console.log(`[新浪发布] 📅 检查日期: text="${dayText}", dayNum=${dayNum}, targetDay=${targetDay}, match=${dayNum === targetDay}`);
+
+            if (!isNaN(dayNum) && dayNum === targetDay) {
+                // 点击整个单元格或 trigger
+                if (trigger) {
+                    trigger.click();
+                } else {
+                    td.click();
+                }
                 dateSelected = true;
-                console.log(`[网易号发布] ✅ 选择日期: ${year}-${month}-${day}`);
+                console.log(`[新浪发布] ✅ 选择日期: ${year}-${month}-${day}`);
                 break;
             }
         }
 
         if (!dateSelected) {
-            console.error(`[网易号发布] ❌ 未能选择日期 ${day} 号`);
+            console.error(`[新浪发布] ❌ 未能选择日期 ${day} 号`);
         }
         await delay(300);
 
         // 4. 设置时间 - 点击时间输入框打开下拉，然后选择小时和分钟
         const [hour, minute] = timePart.split(':');
-        console.log(`[网易号发布] ⏰ 目标时间: ${hour}:${minute}`);
+        console.log(`[新浪发布] ⏰ 目标时间: ${hour}:${minute}`);
 
         // 点击时间输入框打开下拉面板
-        const hourInput = modal.querySelector(".n-select:nth-of-type(1)");
+        const hourInput = modal.querySelector(".n-select:nth-of-type(1) .n-base-selection-label");
         if (hourInput) {
             hourInput.click();
-            await delay(300);
+            await delay(1000);
 
             // 找到时间选择面板
             const timePanel = document.querySelector(".n-base-select-menu-option-wrapper");
+            await delay(1000);
             if (timePanel) {
                 const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
                 for (const li of hourItems) {
-                    if (li.textContent.trim() === hour) {
+                    if (li.textContent.trim() === hour + '时') {
                         li.click();
-                        console.log(`[网易号发布] ✅ 选择小时: ${hour}`);
+                        console.log(`[新浪发布] ✅ 选择小时: ${hour}`);
                         break;
                     }
                 }
                 await delay(200);
             } else {
-                console.warn("[网易号发布] ⚠️ 未找到时间选择面板");
+                console.warn("[新浪发布] ⚠️ 未找到时间选择面板");
             }
         } else {
-            console.warn("[网易号发布] ⚠️ 未找到时间输入框");
+            console.warn("[新浪发布] ⚠️ 未找到小时输入框");
         }
         await delay(1000);
 
         // 点击时间输入框打开下拉面板
-        const timeInput = modal.querySelector(".n-select:nth-of-type(2)");
+        const timeInput = modal.querySelector(".n-select:nth-of-type(2) .n-base-selection-label");
         if (timeInput) {
             timeInput.click();
             await delay(300);
 
             // 找到时间选择面板
             const timePanel = document.querySelector(".n-base-select-menu-option-wrapper");
+            await delay(1000);
             if (timePanel) {
                 const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
                 for (const li of hourItems) {
-                    if (li.textContent.trim() === minute) {
+                    if (li.textContent.trim() === minute + '分') {
                         li.click();
-                        console.log(`[网易号发布] ✅ 选择分钟: ${minute}`);
+                        console.log(`[新浪发布] ✅ 选择分钟: ${minute}`);
                         break;
                     }
                 }
                 await delay(200);
             } else {
-                console.warn("[网易号发布] ⚠️ 未找到时间选择面板");
+                console.warn("[新浪发布] ⚠️ 未找到时间选择面板");
             }
         } else {
-            console.warn("[网易号发布] ⚠️ 未找到时间输入框");
+            console.warn("[新浪发布] ⚠️ 未找到时间输入框");
         }
         await delay(200);
         return true;
     } catch (error) {
-        console.error("[网易号发布] ❌ selectScheduledTime 错误:", error);
+        console.error("[新浪发布] ❌ selectScheduledTime 错误:", error);
         return false;
     }
 }
