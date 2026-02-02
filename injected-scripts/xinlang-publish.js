@@ -322,6 +322,75 @@
         fillFormRunning = true;
 
         try {
+            // 🔴 等待 URL 稳定（新浪可能会自动跳转）
+            console.log("[新浪发布] ⏳ 等待页面 URL 稳定...");
+            let lastUrl = window.location.href;
+            let stableCount = 0;
+            const maxWait = 5000; // 最多等待 5 秒
+            const startTime = Date.now();
+
+            while (stableCount < 3 && Date.now() - startTime < maxWait) {
+                await new Promise(r => setTimeout(r, 500));
+                if (window.location.href === lastUrl) {
+                    stableCount++;
+                } else {
+                    lastUrl = window.location.href;
+                    stableCount = 0;
+                    console.log("[新浪发布] 🔄 URL 变化:", lastUrl);
+                }
+            }
+            console.log("[新浪发布] ✅ URL 已稳定:", window.location.href);
+
+            // 🔴 如果是草稿详情页（#/draft/xxx），点击"写文章"按钮创建新文章
+            const currentHash = window.location.hash;
+            if (currentHash.match(/#\/draft\/\d+/)) {
+                console.log("[新浪发布] 📝 检测到草稿详情页，尝试点击写文章按钮...");
+
+                // 🔑 先把数据保存到 globalData，防止跳转后丢失
+                if (currentWindowId && dataObj) {
+                    try {
+                        await window.browserAPI.setGlobalData(`xinlang_publish_data_${currentWindowId}`, dataObj);
+                        console.log("[新浪发布] 💾 已备份发布数据到 globalData");
+                    } catch (e) {
+                        console.log("[新浪发布] ⚠️ 备份数据失败:", e);
+                    }
+                }
+
+                // 查找"写文章"按钮
+                const writeBtn = await waitForElement('.n-button--primary-type', 5000);
+                if (writeBtn && writeBtn.textContent.includes('写文章')) {
+                    console.log("[新浪发布] ✅ 找到写文章按钮，点击...");
+                    writeBtn.click();
+
+                    // 等待跳转到新文章页面（延长到 3 秒）
+                    await new Promise(r => setTimeout(r, 3000));
+                    console.log("[新浪发布] ✅ 已跳转到新文章页面:", window.location.href);
+                } else {
+                    // 尝试其他方式找按钮
+                    const allButtons = document.querySelectorAll('button');
+                    for (const btn of allButtons) {
+                        if (btn.textContent.trim() === '写文章') {
+                            console.log("[新浪发布] ✅ 找到写文章按钮（遍历），点击...");
+                            btn.click();
+                            await new Promise(r => setTimeout(r, 3000));
+                            break;
+                        }
+                    }
+                }
+
+                // 🔑 如果 dataObj 丢失，从 globalData 恢复
+                if (!dataObj && currentWindowId) {
+                    try {
+                        dataObj = await window.browserAPI.getGlobalData(`xinlang_publish_data_${currentWindowId}`);
+                        if (dataObj) {
+                            console.log("[新浪发布] 📦 从 globalData 恢复发布数据");
+                        }
+                    } catch (e) {
+                        console.log("[新浪发布] ⚠️ 恢复数据失败:", e);
+                    }
+                }
+            }
+
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
                 // alert('No cover image found');
@@ -631,7 +700,21 @@
                                         throw Error('[新浪发布]：找不到图片上传按钮');
                                     }
                                     confirmBtn.click();
-                                    await delay(1000);
+
+                                    // 🔴 等待 loading 消失（图片上传可能很慢）
+                                    console.log("[新浪发布] ⏳ 等待图片上传完成...");
+                                    const maxLoadingWait = 60000; // 最多等待 60 秒
+                                    const loadingStartTime = Date.now();
+                                    while (Date.now() - loadingStartTime < maxLoadingWait) {
+                                        const loadingEl = document.querySelector(".n-base-loading__container");
+                                        if (!loadingEl) {
+                                            console.log("[新浪发布] ✅ 图片上传完成（loading 消失）");
+                                            break;
+                                        }
+                                        console.log("[新浪发布] ⏳ 图片上传中...");
+                                        await delay(500);
+                                    }
+                                    await delay(1000); // 额外等待 1 秒确保弹窗渲染
 
                                     // 图片裁剪弹窗
                                     const coverCutDialogEle = document.querySelector(".n-dialog");
@@ -774,6 +857,7 @@
                                                     try {
                                                         // 同时设置全局变量和 localStorage，确保标志能被检测到
                                                         window.__xinlangPublishSuccessFlag = true;
+                                                        window.__xinlangPublishId = publishId; // 供 selectScheduledTime 使用
                                                         localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
                                                         console.log("[新浪发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
@@ -860,7 +944,45 @@
                                                         cancelable: true,
                                                     });
                                                     publishButton.dispatchEvent(clickEvent);
-                                                    console.log("[新浪发布] ✅ 已点击发布");
+                                                    console.log("[新浪发布] ✅ 已点击即时发布");
+
+                                                    // 🔑 即时发布成功后直接上报并关闭窗口，不等页面跳转
+                                                    await delay(1000);
+                                                    console.log("[新浪发布] 📤 即时发布提交成功，准备上报统计...");
+
+                                                    // 获取 publishId 并上报成功
+                                                    const publishIdForInstant = window.__xinlangPublishId ||
+                                                        (await window.browserAPI?.getGlobalData?.(`PUBLISH_SUCCESS_DATA_${currentWindowId}`))?.publishId;
+
+                                                    if (publishIdForInstant) {
+                                                        try {
+                                                            const successUrl = await getStatisticsUrl();
+                                                            const scanData = { data: JSON.stringify({ id: publishIdForInstant }) };
+                                                            await fetch(successUrl, {
+                                                                method: "POST",
+                                                                headers: { "Content-Type": "application/json" },
+                                                                body: JSON.stringify(scanData),
+                                                            });
+                                                            console.log("[新浪发布] ✅ 即时发布统计上报成功");
+                                                        } catch (e) {
+                                                            console.error("[新浪发布] ❌ 统计上报失败:", e);
+                                                        }
+                                                    }
+
+                                                    // 清除保存的标记（避免 publish-success.js 重复处理）
+                                                    try {
+                                                        if (currentWindowId) {
+                                                            localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                                                            await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                                                            console.log("[新浪发布] 🗑️ 已清除发布标记");
+                                                        }
+                                                    } catch (e) {
+                                                        // 忽略清除失败
+                                                    }
+
+                                                    // 关闭窗口
+                                                    stopErrorListener();
+                                                    await closeWindowWithMessage("发布成功，刷新数据", 1000);
                                                 }
                                             } else {
                                                 console.error("[新浪发布] ❌ 找不到发布按钮，上报失败");
@@ -1304,60 +1426,91 @@ async function selectScheduledTime(sendTime) {
         const [hour, minute] = timePart.split(':');
         console.log(`[新浪发布] ⏰ 目标时间: ${hour}:${minute}`);
 
-        // 点击时间输入框打开下拉面板
-        const hourInput = modal.querySelector(".n-select:nth-of-type(1) .n-base-selection-label");
-        if (hourInput) {
-            hourInput.click();
-            await delay(1000);
+        const inputs = modal.querySelectorAll(".n-select");
+        console.log("🚀 ~ selectScheduledTime ~ inputs: ", inputs);
+        for (let i = 0; i < inputs.length; i++) {
+            // 点击时间输入框打开下拉面板
+            const hourInput = inputs[i].querySelector(".n-base-selection-label");
+            if (hourInput) {
+                hourInput.click();
+                await delay(1000);
 
-            // 找到时间选择面板
-            const timePanel = document.querySelector(".n-base-select-menu-option-wrapper");
-            await delay(1000);
-            if (timePanel) {
-                const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
-                for (const li of hourItems) {
-                    if (li.textContent.trim() === hour + '时') {
-                        li.click();
-                        console.log(`[新浪发布] ✅ 选择小时: ${hour}`);
-                        break;
+                // 找到时间选择面板
+                const timePanels = document.querySelectorAll(".n-base-select-menu-option-wrapper");
+                const timePanel = timePanels[i];
+                await delay(1000);
+                if (timePanel) {
+                    const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
+                    const targetValue = i === 0 ? hour : minute;
+                    for (const li of hourItems) {
+                        if (li.textContent.trim() === targetValue + (i === 0 ? '时' : '分')) {
+                            li.click();
+                            console.log(`[新浪发布] ✅ 选择时间${i}: ${targetValue}`);
+                            break;
+                        }
                     }
+                    await delay(200);
+                } else {
+                    console.warn("[新浪发布] ⚠️ 未找到时间选择面板");
                 }
-                await delay(200);
             } else {
-                console.warn("[新浪发布] ⚠️ 未找到时间选择面板");
+                console.warn("[新浪发布] ⚠️ 未找到"+i+"输入框");
             }
-        } else {
-            console.warn("[新浪发布] ⚠️ 未找到小时输入框");
-        }
-        await delay(1000);
-
-        // 点击时间输入框打开下拉面板
-        const timeInput = modal.querySelector(".n-select:nth-of-type(2) .n-base-selection-label");
-        if (timeInput) {
-            timeInput.click();
-            await delay(300);
-
-            // 找到时间选择面板
-            const timePanel = document.querySelector(".n-base-select-menu-option-wrapper");
             await delay(1000);
-            if (timePanel) {
-                const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
-                for (const li of hourItems) {
-                    if (li.textContent.trim() === minute + '分') {
-                        li.click();
-                        console.log(`[新浪发布] ✅ 选择分钟: ${minute}`);
-                        break;
-                    }
-                }
-                await delay(200);
-            } else {
-                console.warn("[新浪发布] ⚠️ 未找到时间选择面板");
-            }
-        } else {
-            console.warn("[新浪发布] ⚠️ 未找到时间输入框");
         }
         await delay(200);
-        return true;
+
+        // 点击发布
+        const publishBtn = modal.querySelector(".timing-setting + div .n-button--primary-type");
+        if (publishBtn) {
+            publishBtn.click();
+            console.log("[新浪发布] ✅ 已点击定时发布按钮");
+
+            // 等待发布请求完成（检测弹窗是否关闭）
+            await delay(1000);
+
+            // 🔑 定时发布成功后直接上报并关闭窗口，不等页面跳转
+            // 这样可以避免新浪跳转到草稿页导致的各种问题
+            console.log("[新浪发布] ⏰ 定时发布提交成功，准备上报统计...");
+
+            // 获取 publishId 并上报成功
+            const publishIdForTimer = window.__xinlangPublishId ||
+                (await window.browserAPI?.getGlobalData?.(`PUBLISH_SUCCESS_DATA_${await window.browserAPI?.getWindowId()}`))?.publishId;
+
+            if (publishIdForTimer) {
+                try {
+                    const successUrl = await getStatisticsUrl();
+                    const scanData = { data: JSON.stringify({ id: publishIdForTimer }) };
+                    await fetch(successUrl, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(scanData),
+                    });
+                    console.log("[新浪发布] ✅ 定时发布统计上报成功");
+                } catch (e) {
+                    console.error("[新浪发布] ❌ 统计上报失败:", e);
+                }
+            }
+
+            // 清除保存的标记（避免 publish-success.js 重复处理）
+            try {
+                const wid = await window.browserAPI?.getWindowId();
+                if (wid) {
+                    localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${wid}`);
+                    await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${wid}`);
+                    console.log("[新浪发布] 🗑️ 已清除发布标记");
+                }
+            } catch (e) {
+                // 忽略清除失败
+            }
+
+            // 关闭窗口
+            await closeWindowWithMessage("发布成功，刷新数据", 1000);
+            return true;
+        } else {
+            console.error("[新浪发布] ❌ 未找到发布按钮");
+        }
+        return false;
     } catch (error) {
         console.error("[新浪发布] ❌ selectScheduledTime 错误:", error);
         return false;

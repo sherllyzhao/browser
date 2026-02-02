@@ -31,6 +31,7 @@
     "https://zhuanlan.zhihu.com/*/*": ["common.js", "publish-success.js"],
     "https://mp.sina.com.cn/#/Home/Notice": ["common.js", "xinlang-creator.js"],
     "https://card.weibo.com/article/v5/editor#/draft": ["common.js", "xinlang-publish.js"],
+    "https://card.weibo.com/article/v5/editor#/draft/*": ["common.js", "xinlang-publish.js"],
     "https://card.weibo.com/article/v5/editor#/history/*": ["common.js", "publish-success.js"]
   },
   "dependencies": {

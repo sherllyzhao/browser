@@ -12,6 +12,7 @@
  * - 网易号: https://mp.163.com/subscribe_v4/index.html#/content-manage*
  * - 企鹅号: https://om.qq.com/main/management/articleManage
  * - 百家号: https://baijiahao.baidu.com/builder/rc/clue*
+ * - 新浪: https://card.weibo.com/article/v5/editor#/draft/*
  */
 
 (async function() {
