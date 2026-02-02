@@ -1110,6 +1110,23 @@ function createWindow() {
   // 监听完整页面导航，检测远程登录页和 token 有效性
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
+
+    // 🔑 检查 geo 页面权限（优先级最高，在所有检查之前）
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+      console.log('[Geo Auth Check] siteInfo:', siteInfo);
+      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+
+      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        browserView.webContents.loadURL(notPurchaseUrl);
+        return;
+      }
+      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
+    }
+
     // 检测远程登录页，自动跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
@@ -3043,138 +3060,59 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
 
+    // 标记是否正在保存中（防止重复触发）
+    let isSavingSession = false;
+
     // 🔑 监听窗口关闭前事件，保存最新会话数据到后台
+    // 使用 e.preventDefault() 阻止立即关闭，等待保存完成后再销毁窗口
     newWindow.on('close', async (e) => {
       console.log('[Window Manager] ========== 窗口关闭前 ==========');
       console.log('[Window Manager] windowId:', windowId);
 
-      // 检查是否是多账号模式的窗口
+      // 防止重复触发
+      if (isSavingSession) {
+        console.log('[Window Manager] 正在保存中，忽略重复触发');
+        return;
+      }
+
+      // 检查是否是多账号模式的窗口，需要保存登录信息
       const accountInfo = windowAccountMap.get(windowId);
       if (accountInfo) {
-        console.log('[Window Manager] 多账号模式窗口，准备保存会话数据');
-        console.log('[Window Manager] platform:', accountInfo.platform, 'accountId:', accountInfo.accountId);
+        // 阻止窗口立即关闭，等待保存完成
+        e.preventDefault();
+        isSavingSession = true;
+
+        console.log('[Window Manager] 多账号模式窗口，等待保存会话数据完成后再关闭');
 
         try {
-          // 获取发布数据中的账号信息
-          const publishDataKey = `publish_data_window_${windowId}`;
-          const publishData = globalStorage[publishDataKey];
-          const backendAccountId = publishData?.element?.account_info?.id;
+          // 调用公共函数保存登录信息
+          const result = await saveWindowSessionToBackend(newWindow, windowId);
+          console.log('[Window Manager] 保存结果:', result);
 
-          // 优先从 element 获取配置，否则使用配置文件
-          const saveSessionApi = publishData?.element?.saveSessionApi
-            || publishData?.element?.save_session_api
-            || config.platformApis[accountInfo.platform];
-
-          // 从 element.cookies 提取 domain，否则使用配置文件
-          let cookieDomains = config.platformDomains[accountInfo.platform] || [];
-          const elementCookies = publishData?.element?.cookies;
-          if (elementCookies) {
-            try {
-              const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-              if (cookiesData.domain) {
-                cookieDomains = [cookiesData.domain];
-                console.log('[Window Manager] 从 element.cookies 提取 domain:', cookiesData.domain);
-              }
-            } catch (parseErr) {
-              console.error('[Window Manager] 解析 element.cookies 失败:', parseErr);
-            }
-          }
-
-          if (!saveSessionApi) {
-            console.log('[Window Manager] ⚠️ 未找到保存接口配置，跳过保存');
-            return;
-          }
-
-          if (cookieDomains.length === 0) {
-            console.log('[Window Manager] ⚠️ 未找到 cookie domain 配置，跳过保存');
-            return;
-          }
-
-          // 获取该窗口 session 的最新 cookies
-          const windowSession = newWindow.webContents.session;
-          const allCookies = await windowSession.cookies.get({});
-
-          // 根据 domains 过滤 cookies
-          const platformCookies = allCookies.filter(cookie => {
-            const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-            return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
-          });
-
-          console.log(`[Window Manager] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
-
-          if (platformCookies.length > 0 && backendAccountId) {
-            // 转换为可序列化的格式
-            const cookiesArray = platformCookies.map(c => ({
-              name: c.name,
-              value: c.value,
-              domain: c.domain,
-              path: c.path,
-              secure: c.secure,
-              httpOnly: c.httpOnly,
-              sameSite: c.sameSite,
-              expirationDate: c.expirationDate
-            }));
-
-            // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-            let apiOrigin = config.apiBaseUrl;
-            if (browserView && !browserView.webContents.isDestroyed()) {
-              try {
-                const mainUrl = browserView.webContents.getURL();
-                const urlObj = new URL(mainUrl);
-                if (urlObj.origin && !urlObj.origin.includes('file://')) {
-                  apiOrigin = urlObj.origin;
-                }
-              } catch (urlErr) {
-                console.error('[Window Manager] 解析主窗口 URL 失败:', urlErr);
-              }
-            }
-
-            console.log('[Window Manager] 后台 API 域名:', apiOrigin);
-            console.log('[Window Manager] 保存接口路径:', saveSessionApi);
-            console.log('[Window Manager] 账号 ID:', backendAccountId);
-
-            // 直接调用后台接口保存 cookies
-            const https = require('https');
-            const http = require('http');
-
-            const postData = JSON.stringify({
-              id: backendAccountId,
-              cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
+          // 通知首页：会话数据已更新
+          if (browserView && !browserView.webContents.isDestroyed() && result.success) {
+            const publishDataKey = `publish_data_window_${windowId}`;
+            const publishData = globalStorage[publishDataKey];
+            browserView.webContents.send('session-updated', {
+              windowId: windowId,
+              platform: accountInfo.platform,
+              accountId: accountInfo.accountId,
+              success: result.success,
+              cookieCount: result.cookieCount,
+              publishData: publishData,
+              timestamp: Date.now()
             });
-
-            const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
-            const protocol = apiUrl.protocol === 'https:' ? https : http;
-
-            const req = protocol.request({
-              hostname: apiUrl.hostname,
-              port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
-              path: apiUrl.pathname,
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData)
-              }
-            }, (res) => {
-              let data = '';
-              res.on('data', chunk => data += chunk);
-              res.on('end', () => {
-                console.log('[Window Manager] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
-              });
-            });
-
-            req.on('error', (err) => {
-              console.error('[Window Manager] ❌ 保存会话数据到后台失败:', err.message);
-            });
-
-            req.write(postData);
-            req.end();
-          } else {
-            console.log('[Window Manager] ⚠️ 未找到账号 ID 或 cookies 为空，跳过保存');
+            console.log('[Window Manager] ✅ 已通知首页会话数据已更新');
           }
         } catch (err) {
-          console.error('[Window Manager] ❌ 获取会话数据失败:', err);
+          console.error('[Window Manager] ❌ 保存会话数据时出错:', err);
+        } finally {
+          // 保存完成（无论成功失败），销毁窗口
+          console.log('[Window Manager] 保存完成，销毁窗口');
+          newWindow.destroy();
         }
       }
+      // 非多账号模式窗口直接关闭，不做处理
     });
 
     // 监听窗口关闭事件
@@ -3425,14 +3363,6 @@ ipcMain.handle('get-main-url', async () => {
       const url = browserView.webContents.getURL();
       // 解析出域名
       const urlObj = new URL(url);
-
-      // 🔑 修复：file:// 协议的 origin 是 null，需要特殊处理
-      // 当 URL 是 file:// 时，返回 success: false，让前端使用默认值
-      if (urlObj.protocol === 'file:' || urlObj.origin === null) {
-        console.log('[Main] get-main-url: URL 是本地文件，返回 false');
-        return { success: false, error: 'URL 是本地文件' };
-      }
-
       return {
         success: true,
         url: url,
@@ -3983,6 +3913,177 @@ ipcMain.handle('trigger-download', async (event, url) => {
     return { success: false, error: err.message };
   }
 });
+
+// ========== 第三方窗口关闭前保存登录信息的公共函数 ==========
+// 用于在窗口关闭前自动上传最新的登录信息到后台
+
+/**
+ * 保存窗口的登录信息到后台
+ * @param {BrowserWindow} targetWindow - 要保存的窗口
+ * @param {number} windowId - 窗口 ID
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function saveWindowSessionToBackend(targetWindow, windowId) {
+  console.log('[Save Session] ========== 窗口关闭前保存登录信息 ==========');
+  console.log('[Save Session] windowId:', windowId);
+
+  try {
+    // 检查窗口是否还有效
+    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+      console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
+      return { success: false, error: '窗口已销毁' };
+    }
+
+    // 检查是否是多账号模式的窗口
+    const accountInfo = windowAccountMap.get(windowId);
+    if (!accountInfo) {
+      console.log('[Save Session] ⚠️ 该窗口没有关联账号（非多账号模式），跳过保存');
+      return { success: false, error: '非多账号模式窗口' };
+    }
+
+    console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
+
+    // 获取发布数据中的账号信息
+    const publishDataKey = `publish_data_window_${windowId}`;
+    const publishData = globalStorage[publishDataKey];
+    const backendAccountId = publishData?.element?.account_info?.id;
+
+    // 优先从 element 获取配置，否则使用配置文件
+    const saveSessionApi = publishData?.element?.saveSessionApi
+      || publishData?.element?.save_session_api
+      || config.platformApis[accountInfo.platform];
+
+    // 从 element.cookies 提取 domain，否则使用配置文件
+    let cookieDomains = config.platformDomains[accountInfo.platform] || [];
+    const elementCookies = publishData?.element?.cookies;
+    if (elementCookies) {
+      try {
+        const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
+        if (cookiesData.domain) {
+          cookieDomains = [cookiesData.domain];
+          console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
+        }
+      } catch (parseErr) {
+        console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
+      }
+    }
+
+    if (!saveSessionApi) {
+      console.log('[Save Session] ⚠️ 未找到保存接口配置，跳过保存');
+      return { success: false, error: '未找到保存接口配置' };
+    }
+
+    if (cookieDomains.length === 0) {
+      console.log('[Save Session] ⚠️ 未找到 cookie domain 配置，跳过保存');
+      return { success: false, error: '未找到 cookie domain 配置' };
+    }
+
+    if (!backendAccountId) {
+      console.log('[Save Session] ⚠️ 未找到账号 ID（account_info.id），跳过保存');
+      return { success: false, error: '未找到账号 ID' };
+    }
+
+    // 获取该窗口 session 的最新 cookies
+    const windowSession = targetWindow.webContents.session;
+    const allCookies = await windowSession.cookies.get({});
+
+    // 根据 domains 过滤 cookies
+    const platformCookies = allCookies.filter(cookie => {
+      const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+      return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
+    });
+
+    console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
+
+    if (platformCookies.length === 0) {
+      console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
+      return { success: false, error: '未找到平台相关 cookies' };
+    }
+
+    // 转换为可序列化的格式
+    const cookiesArray = platformCookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      secure: c.secure,
+      httpOnly: c.httpOnly,
+      sameSite: c.sameSite,
+      expirationDate: c.expirationDate
+    }));
+
+    // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
+    let apiOrigin = config.apiBaseUrl;
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      try {
+        const mainUrl = browserView.webContents.getURL();
+        const urlObj = new URL(mainUrl);
+        if (urlObj.origin && !urlObj.origin.includes('file://')) {
+          apiOrigin = urlObj.origin;
+        }
+      } catch (urlErr) {
+        console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
+      }
+    }
+
+    console.log('[Save Session] 后台 API 域名:', apiOrigin);
+    console.log('[Save Session] 保存接口路径:', saveSessionApi);
+    console.log('[Save Session] 账号 ID:', backendAccountId);
+
+    // 调用后台接口保存 cookies（使用 Promise 包装，等待完成）
+    const https = require('https');
+    const http = require('http');
+
+    const postData = JSON.stringify({
+      id: backendAccountId,
+      cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
+    });
+
+    const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
+    const protocol = apiUrl.protocol === 'https:' ? https : http;
+
+    const result = await new Promise((resolve) => {
+      const req = protocol.request({
+        hostname: apiUrl.hostname,
+        port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
+        path: apiUrl.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: 10000 // 10秒超时
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          console.log('[Save Session] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
+          resolve({ success: true, cookieCount: cookiesArray.length });
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
+        resolve({ success: false, error: err.message });
+      });
+
+      req.on('timeout', () => {
+        console.error('[Save Session] ❌ 保存请求超时');
+        req.destroy();
+        resolve({ success: false, error: '请求超时' });
+      });
+
+      req.write(postData);
+      req.end();
+    });
+
+    console.log('[Save Session] ========== 保存完成 ==========');
+    return result;
+  } catch (err) {
+    console.error('[Save Session] ❌ 保存失败:', err);
+    return { success: false, error: err.message };
+  }
+}
 
 // ========== 多账号管理功能 ==========
 // 账号 Session 缓存（避免重复创建）
