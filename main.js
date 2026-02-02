@@ -3425,6 +3425,14 @@ ipcMain.handle('get-main-url', async () => {
       const url = browserView.webContents.getURL();
       // 解析出域名
       const urlObj = new URL(url);
+
+      // 🔑 修复：file:// 协议的 origin 是 null，需要特殊处理
+      // 当 URL 是 file:// 时，返回 success: false，让前端使用默认值
+      if (urlObj.protocol === 'file:' || urlObj.origin === null) {
+        console.log('[Main] get-main-url: URL 是本地文件，返回 false');
+        return { success: false, error: 'URL 是本地文件' };
+      }
+
       return {
         success: true,
         url: url,

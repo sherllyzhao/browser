@@ -74,7 +74,8 @@
       "Bash(omc --version:*)",
       "SlashCommand(/oh-my-claudecode:mcp-setup)",
       "Bash(gh auth:*)",
-      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/xinlang-publish.js)"
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/xinlang-publish.js)",
+      "Skill(oh-my-claudecode:deepsearch)"
     ],
     "deny": [],
     "ask": []
