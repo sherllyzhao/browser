@@ -1248,7 +1248,31 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     /**
-     * 从全局存储加载发布数据（刷新页面后使用）
+     * 保存发布数据到全局存储（收到数据时立即调用，用于登录跳转后恢复）
+     * @param {Object} messageData - 发布数据
+     * @param {string} logPrefix - 日志前缀
+     * @returns {Promise<boolean>} 是否保存成功
+     */
+    window.savePublishDataToGlobalStorage = async function (messageData, logPrefix = "[发布]") {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log(`${logPrefix} ❌ 无法获取窗口 ID，跳过保存`);
+                return false;
+            }
+
+            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+            console.log(`${logPrefix} 💾 已保存发布数据到 globalData (窗口 ${windowId})`);
+            return true;
+        } catch (e) {
+            console.error(`${logPrefix} ❌ 保存发布数据到 globalData 失败:`, e);
+            return false;
+        }
+    };
+
+    /**
+     * 从全局存储加载发布数据（刷新页面或登录跳转后使用）
+     * 注意：此函数不会删除数据，需要在发布完成后调用 clearPublishDataFromGlobalStorage
      * @param {string} logPrefix - 日志前缀
      * @returns {Promise<Object|null>} 发布数据，无数据返回 null
      */
@@ -1265,16 +1289,35 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
             console.log(`${logPrefix} 📦 从全局存储读取 publish_data_window_${windowId}:`, publishData ? "有数据" : "无数据");
 
-            if (publishData) {
-                // 清除已使用的数据，避免重复处理
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log(`${logPrefix} 🗑️ 已清除全局存储中的发布数据`);
-            }
+            // 🔑 不在这里删除数据，而是在发布完成后调用 clearPublishDataFromGlobalStorage 删除
+            // 这样即使中途跳转到登录页，数据也不会丢失
 
             return publishData;
         } catch (e) {
             console.error(`${logPrefix} ❌ 从全局存储加载数据失败:`, e);
             return null;
+        }
+    };
+
+    /**
+     * 清除全局存储中的发布数据（发布完成或失败后调用）
+     * @param {string} logPrefix - 日志前缀
+     * @returns {Promise<boolean>} 是否清除成功
+     */
+    window.clearPublishDataFromGlobalStorage = async function (logPrefix = "[发布]") {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log(`${logPrefix} ❌ 无法获取窗口 ID，跳过清除`);
+                return false;
+            }
+
+            await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+            console.log(`${logPrefix} 🗑️ 已清除 globalData 中的发布数据 (窗口 ${windowId})`);
+            return true;
+        } catch (e) {
+            console.error(`${logPrefix} ❌ 清除 globalData 发布数据失败:`, e);
+            return false;
         }
     };
 
