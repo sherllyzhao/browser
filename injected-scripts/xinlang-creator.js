@@ -118,23 +118,32 @@
                 throw new Error('获取用户信息失败: ' + (result.msg || 'Unknown error'));
             }
 
-            const user = result.data;
+            const user = result.data?.userInfo;
+            console.log("🚀 ~ processAuthorization ~ user: ", user);
 
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
             let cookiesData = '';
             try {
                 // 新浪涉及多个域名，需要获取 sina.com.cn 和 weibo.com 的 cookies
-                const sessionResult = await window.browserAPI.getFullSessionData('sina.com.cn');
-                if (sessionResult.success) {
-                    cookiesData = JSON.stringify(sessionResult.data);
-                    console.log(`[新浪授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
-                } else {
-                    console.warn('[新浪授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
-                    const cookieResult = await window.browserAPI.getDomainCookies('sina.com.cn');
-                    if (cookieResult.success && cookieResult.cookies) {
-                        cookiesData = cookieResult.cookies;
+                const domains = ['sina.com.cn', 'weibo.com', 'sina.cn'];
+                const allCookies = [];
+
+                for (const domain of domains) {
+                    const sessionResult = await window.browserAPI.getFullSessionData(domain);
+                    if (sessionResult.success && sessionResult.data?.cookies?.length > 0) {
+                        allCookies.push(...sessionResult.data.cookies);
+                        console.log(`[新浪授权] ✅ ${domain} 会话数据获取成功，${sessionResult.data.cookies.length} 个 cookies`);
                     }
+                }
+
+                if (allCookies.length > 0) {
+                    // 合并所有域名的 cookies
+                    cookiesData = JSON.stringify({ cookies: allCookies });
+                    console.log(`[新浪授权] ✅ 所有域名会话数据获取完成，共 ${allCookies.length} 个 cookies`);
+                } else {
+                    console.warn('[新浪授权] ⚠️ 未获取到任何会话数据');
+                    cookiesData = document.cookie;
                 }
             } catch (sessionError) {
                 console.error('[新浪授权] ⚠️ 获取会话数据异常:', sessionError);
@@ -143,12 +152,12 @@
 
             const scanData = {
                 data: JSON.stringify({
-                    nickname: userInfo.m_fname || '',
+                    nickname: user.m_fname || '',
                     avatar: user.m_logo || '',
-                    follow: user.follow_count || 0,
-                    follower_count: user.fans_count || user.follower_count || 0,
-                    video: user.article_count || user.content_count || 0,
-                    uid: user.uid || user.id || '',
+                    follow: 0,
+                    follower_count: 0,
+                    video: 0,
+                    uid: user.uid || '',
                     favoriting_count: 0,
                     total_favorited: 0,
                     company_id: storedCompanyId,
@@ -185,15 +194,25 @@
 
                 hasProcessed = true;
 
-                // 🔑 迁移登录 Cookies 到持久化 session
+                // 🔑 迁移登录 Cookies 到持久化 session（新浪涉及多个域名）
                 try {
                     console.log('[新浪授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent('sina.com.cn');
-                    if (migrateResult.success) {
-                        console.log(`[新浪授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
-                    } else {
-                        console.error('[新浪授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+
+                    // 新浪/微博涉及多个域名，都需要迁移
+                    const domains = ['sina.com.cn', 'weibo.com', 'sina.cn'];
+                    let totalMigrated = 0;
+
+                    for (const domain of domains) {
+                        const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                        if (migrateResult.success && migrateResult.migratedCount > 0) {
+                            console.log(`[新浪授权] ✅ ${domain} Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                            totalMigrated += migrateResult.migratedCount;
+                        } else if (!migrateResult.success) {
+                            console.warn(`[新浪授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                        }
                     }
+
+                    console.log(`[新浪授权] ✅ 所有域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
                 } catch (migrateError) {
                     console.error('[新浪授权] ⚠️ Cookies 迁移异常:', migrateError);
                 }

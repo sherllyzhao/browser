@@ -9,9 +9,13 @@
  * - 抖音: https://creator.douyin.com/creator-micro/content/manage?enter_from=publish
  * - 小红书: https://creator.xiaohongshu.com/publish/success*
  * - 视频号: https://channels.weixin.qq.com/platform/post/list*
+ * - 网易号: https://mp.163.com/subscribe_v4/index.html#/content-manage*
+ * - 企鹅号: https://om.qq.com/main/management/articleManage
+ * - 百家号: https://baijiahao.baidu.com/builder/rc/clue*
+ * - 新浪: https://card.weibo.com/article/v5/editor#/draft/*
  */
 
-(function() {
+(async function() {
   'use strict';
 
   // 防止脚本重复注入
@@ -27,44 +31,89 @@
   console.log('🕐 注入时间:', new Date().toLocaleString());
   console.log('═══════════════════════════════════════');
 
+  // 获取当前窗口 ID（提前获取，用于后续检测）
+  let windowId = null;
+  try {
+    windowId = await window.browserAPI.getWindowId();
+    console.log('[发布成功] 当前窗口 ID:', windowId);
+  } catch (e) {
+    console.error('[发布成功] ❌ 获取窗口 ID 失败:', e);
+  }
+
+  // 🔴 先检查是否有发布成功标记，没有就不执行后续逻辑
+  // 这样可以避免干扰正常的页面浏览
+  // 🔑 检查多种可能的标记来源（localStorage + globalData）
+  const allLocalStorageKeys = Object.keys(localStorage);
+  const hasPublishSuccessKey = allLocalStorageKeys.some(k => k.startsWith('PUBLISH_SUCCESS_DATA_'));
+
+  // 🔑 同时检查 globalData（更可靠，不受域名隔离限制）
+  let hasGlobalDataFlag = false;
+  let globalPublishData = null;
+  if (windowId && window.browserAPI && window.browserAPI.getGlobalData) {
+    try {
+      globalPublishData = await window.browserAPI.getGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`);
+      hasGlobalDataFlag = !!globalPublishData;
+      console.log('[发布成功] 🔍 globalData 检测:', hasGlobalDataFlag ? '有数据' : '无数据');
+    } catch (e) {
+      console.log('[发布成功] ⚠️ globalData 检测失败:', e.message);
+    }
+  }
+
+  console.log('[发布成功] 🔍 检测发布标记...');
+  console.log('[发布成功] - sohuPublishSuccessFlag:', !!window.__sohuPublishSuccessFlag);
+  console.log('[发布成功] - PUBLISH_SUCCESS_DATA:', !!localStorage.getItem('PUBLISH_SUCCESS_DATA'));
+  console.log('[发布成功] - PUBLISH_SUCCESS_DATA_* keys:', hasPublishSuccessKey);
+  console.log('[发布成功] - globalData flag:', hasGlobalDataFlag);
+  if (hasPublishSuccessKey) {
+    const matchedKeys = allLocalStorageKeys.filter(k => k.startsWith('PUBLISH_SUCCESS_DATA_'));
+    console.log('[发布成功] - 匹配的 localStorage keys:', matchedKeys);
+  }
+
+  const hasPublishFlag = window.__sohuPublishSuccessFlag ||
+                         localStorage.getItem('PUBLISH_SUCCESS_DATA') ||
+                         hasPublishSuccessKey ||
+                         hasGlobalDataFlag;
+
+  if (!hasPublishFlag) {
+    console.log('[发布成功] ℹ️ 未检测到发布成功标记，可能是正常浏览，跳过处理');
+    return;
+  }
+
   // 延迟执行，确保页面完全加载
   setTimeout(async () => {
     console.log('[发布成功] 🎉 检测到发布成功页，开始处理...');
 
-    // 获取当前窗口 ID（用于读取窗口专属数据，避免多窗口冲突）
-    let windowId = null;
-    try {
-      windowId = await window.browserAPI.getWindowId();
-      console.log('[发布成功] 当前窗口 ID:', windowId);
-    } catch (e) {
-      console.error('[发布成功] ❌ 获取窗口 ID 失败:', e);
-    }
-
-    // 读取保存的发布数据（优先使用窗口专属 key，兼容旧的通用 key）
+    // 读取保存的发布数据
+    // 优先级：globalData > 窗口专属 localStorage > 通用 localStorage
     let publishData = null;
-    let usedKey = null;
+    let usedSource = null;
     try {
-      // 优先尝试窗口专属 key
-      if (windowId) {
+      // 1. 优先使用 globalData（最可靠）
+      if (globalPublishData) {
+        publishData = globalPublishData;
+        usedSource = 'globalData';
+        console.log('[发布成功] 📦 从 globalData 读取到数据:', publishData);
+      }
+
+      // 2. 尝试窗口专属 localStorage key
+      if (!publishData && windowId) {
         const windowSpecificKey = `PUBLISH_SUCCESS_DATA_${windowId}`;
         console.log('[发布成功] 🔍 尝试读取窗口专属 key:', windowSpecificKey);
         const savedData = localStorage.getItem(windowSpecificKey);
-        console.log('[发布成功] 🔍 窗口专属数据:', savedData);
         if (savedData) {
           publishData = JSON.parse(savedData);
-          usedKey = windowSpecificKey;
+          usedSource = `localStorage:${windowSpecificKey}`;
           console.log('[发布成功] 📦 读取到窗口专属数据:', publishData);
         }
       }
 
-      // 如果没有窗口专属数据，尝试通用 key（兼容旧版本）
+      // 3. 尝试通用 localStorage key（兼容旧版本）
       if (!publishData) {
         console.log('[发布成功] 🔍 尝试读取通用 key: PUBLISH_SUCCESS_DATA');
         const savedData = localStorage.getItem('PUBLISH_SUCCESS_DATA');
-        console.log('[发布成功] 🔍 通用数据:', savedData);
         if (savedData) {
           publishData = JSON.parse(savedData);
-          usedKey = 'PUBLISH_SUCCESS_DATA';
+          usedSource = 'localStorage:PUBLISH_SUCCESS_DATA';
           console.log('[发布成功] 📦 读取到通用数据:', publishData);
         }
       }
@@ -81,7 +130,7 @@
       console.error('[发布成功] ❌ 读取数据失败:', e);
     }
 
-    console.log('[发布成功] 📋 最终使用的 key:', usedKey);
+    console.log('[发布成功] 📋 数据来源:', usedSource);
     console.log('[发布成功] 📋 最终 publishId:', publishData?.publishId);
 
     // 发送统计接口
@@ -126,12 +175,17 @@
 
     // 清除临时数据
     try {
-      // 清除使用过的 key
-      if (usedKey) {
-        localStorage.removeItem(usedKey);
-        console.log('[发布成功] 🗑️ 已清除:', usedKey);
+      // 🔑 清除 globalData
+      if (windowId && window.browserAPI && window.browserAPI.removeGlobalData) {
+        try {
+          await window.browserAPI.removeGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`);
+          console.log('[发布成功] 🗑️ 已清除 globalData: PUBLISH_SUCCESS_DATA_' + windowId);
+        } catch (e) {
+          console.log('[发布成功] ⚠️ 清除 globalData 失败:', e.message);
+        }
       }
-      // 也清除窗口专属 key（如果有 windowId）
+
+      // 清除 localStorage 数据
       if (windowId) {
         localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
         // 清除窗口专属的平台数据
@@ -139,10 +193,16 @@
         localStorage.removeItem(`SHIPINHAO_PUBLISH_URL_${windowId}`);
       }
       // 清除其他平台数据（兼容旧版本）
+      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
       localStorage.removeItem('DOUYIN_PUBLISH_DATA');
       localStorage.removeItem('XHS_PUBLISH_DATA');
       localStorage.removeItem('SHIPINHAO_PUBLISH_DATA');
       localStorage.removeItem('BJH_PUBLISH_DATA');
+
+      // 🔑 不要清除 toPath，保持它为发布页路径
+      // 这样下次打开发布页时，搜狐号会根据 toPath 跳转到发布页，而不是首页
+      console.log('[发布成功] 💡 保留 toPath，防止下次打开发布页时跳转到首页');
+
       console.log('[发布成功] 🗑️ 已清除临时数据');
     } catch (e) {
       // 忽略清除失败

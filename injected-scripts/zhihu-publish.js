@@ -55,7 +55,10 @@
             // 回退方案：使用本地配置
             errorListener = createErrorListener({
                 logPrefix: "[知乎发布]",
-                selectors: [{ containerClass: "omui-message", textSelector: ".omui-message__desc", recursiveSelector: ".omui-message" }],
+                selectors: [
+                    { containerClass: "WriteIndexMain", textSelector: ".WriteIndex-LengthStatus-warning", recursiveSelector: ".WriteIndexMain" },
+                    { containerClass: "Notification", textSelector: ".Notification-textsection", recursiveSelector: ".Notification" },
+                ],
             });
             console.log("[知乎发布] ⚠️ 使用本地错误监听器配置");
         }
@@ -566,11 +569,12 @@
                                                     return { type: "error", message: errorMsg };
                                                 }
 
-                                                // 2. 再检查图片元素是否出现
-                                                const imageEle = coverBtn.previousSibling;
-                                                console.log("🚀 ~ waitForImageOrError ~ imageEle: ", imageEle);
-                                                if (imageEle) {
-                                                    const imgEle = imageEle.querySelector("img");
+                                                // 2. 再检查图片元素是否出现（知乎的封面区域是 .UploadPicture-wrapper 的父元素）
+                                                const coverWrapper = document.querySelector(".UploadPicture-wrapper");
+                                                const coverParent = coverWrapper?.parentElement;
+                                                console.log("🚀 ~ waitForImageOrError ~ coverParent: ", coverParent);
+                                                if (coverParent) {
+                                                    const imgEle = coverParent.querySelector("img");
                                                     if (imgEle && imgEle.getAttribute("src")) {
                                                         // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
                                                         // 因为 MutationObserver 是异步的，错误信息可能还在路上
@@ -581,7 +585,7 @@
                                                             console.log("[知乎发布] ⚠️ 确认期间检测到错误:", confirmError);
                                                             return { type: "error", message: confirmError };
                                                         }
-                                                        return { type: "success", element: imageEle };
+                                                        return { type: "success", element: coverParent };
                                                     }
 
                                                     // 等待下一次检查
@@ -698,7 +702,6 @@
 
                                             // 优先使用全局错误监听器捕获的错误
                                             const errorMessage = getLatestError();
-                                            console.log(`[知乎发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
                                             console.log(`[知乎发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
 
                                             // 🔴 有错误信息就直接走失败接口，不再重试
@@ -725,7 +728,7 @@
                                                 await delay(2000);
 
                                                 // 重新触发文件上传
-                                                const input = document.querySelector(".cheetah-upload input");
+                                                const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
                                                 if (input) {
                                                     input.files = dataTransfer.files;
                                                     const event = new Event("change", { bubbles: true });

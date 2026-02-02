@@ -908,7 +908,6 @@
 
                             // 优先使用全局错误监听器捕获的错误
                             const errorMessage = getLatestError();
-                            console.log(`[百家号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
                             console.log(`[百家号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
 
                             // 🔴 有错误信息就直接走失败接口，不再重试

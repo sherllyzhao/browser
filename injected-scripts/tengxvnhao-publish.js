@@ -786,70 +786,67 @@
 
                                                                             // 解析定时发布时间
                                                                             const sendTime = dataObj.video?.formData?.send_time;
-                                                                            if (sendTime) {
-                                                                                console.log("[腾讯号发布] ⏰ 开始选择定时发布时间:", sendTime);
 
-                                                                                if (!sendTime) {
-                                                                                    console.error("[腾讯号发布] ❌ 解析定时时间失败");
-                                                                                    stopErrorListener();
-                                                                                    await closeWindowWithMessage("定时时间解析失败", 1000);
-                                                                                    return;
-                                                                                }
+                                                                            if (!sendTime) {
+                                                                                console.error("[腾讯号发布] ❌ 解析定时时间失败");
+                                                                                stopErrorListener();
+                                                                                await closeWindowWithMessage("定时时间解析失败", 1000);
+                                                                                return;
+                                                                            }
 
-                                                                                // 调用选择时间函数
-                                                                                const timeSelectSuccess = await selectScheduledTime(sendTime);
+                                                                            console.log("[腾讯号发布] ⏰ 开始选择定时发布时间:", sendTime)
 
-                                                                                if (!timeSelectSuccess) {
-                                                                                    console.error("[腾讯号发布] ❌ 时间选择失败");
-                                                                                    stopErrorListener();
-                                                                                    await closeWindowWithMessage("定时时间选择失败", 1000);
-                                                                                    return;
-                                                                                }
+                                                                            // 调用选择时间函数
+                                                                            const timeSelectSuccess = await selectScheduledTime(sendTime);
 
-                                                                                // 点击确定发布按钮
-                                                                                await delay(500);
-                                                                                const confirmBtn = document.querySelector(".omui-button--primary");
+                                                                            if (!timeSelectSuccess) {
+                                                                                console.error("[腾讯号发布] ❌ 时间选择失败");
+                                                                                stopErrorListener();
+                                                                                await closeWindowWithMessage("定时时间选择失败", 1000);
+                                                                                return;
+                                                                            }
 
-                                                                                if (confirmBtn) {
-                                                                                    console.log("[腾讯号发布] ✅ 点击确定定时发布");
+                                                                            // 点击确定发布按钮
+                                                                            await delay(500);
+                                                                            const confirmBtn = document.querySelector(".omui-button--primary");
 
-                                                                                    // 🔑 在点击定时发布前保存 publishId，让首页可以调用统计接口
-                                                                                    const publishId = dataObj.video?.dyPlatform?.id;
-                                                                                    if (publishId) {
-                                                                                        try {
-                                                                                            // 同时设置全局变量和 localStorage，确保标志能被检测到
-                                                                                            window.__sohuPublishSuccessFlag = true;
-                                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
-                                                                                            console.log("[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
+                                                                            if (confirmBtn) {
+                                                                                console.log("[腾讯号发布] ✅ 点击确定定时发布");
 
-                                                                                            // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
-                                                                                            if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
-                                                                                                console.log('[腾讯号发布] 💾 已保存 publishId 到 globalData');
-                                                                                            }
-                                                                                        } catch (e) {
-                                                                                            console.error("[腾讯号发布] ❌ 保存 publishId 失败:", e);
+                                                                                // 🔑 在点击定时发布前保存 publishId，让首页可以调用统计接口
+                                                                                const publishId = dataObj.video?.dyPlatform?.id;
+                                                                                if (publishId) {
+                                                                                    try {
+                                                                                        // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                                                                        window.__tengxunPublishSuccessFlag = true;
+                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                                        console.log("[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
+
+                                                                                        // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                                                                        if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                                                                            console.log('[腾讯号发布] 💾 已保存 publishId 到 globalData');
                                                                                         }
-                                                                                    } else {
-                                                                                        // 即使没有 publishId，也要设置全局变量允许跳转
-                                                                                        window.__sohuPublishSuccessFlag = true;
-                                                                                        console.log("[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志");
+                                                                                    } catch (e) {
+                                                                                        console.error("[腾讯号发布] ❌ 保存 publishId 失败:", e);
                                                                                     }
-
-                                                                                    confirmBtn.click();
-
-                                                                                    await handleProtocolPopup(() => {
-                                                                                        confirmBtn.click();
-                                                                                    });
-
-                                                                                    // 定时发布点击后会立即跳转到成功页
-                                                                                    console.log("[腾讯号发布] ✅ 等待页面跳转到首页");
-                                                                                    stopErrorListener();
                                                                                 } else {
-                                                                                    console.error("[腾讯号发布] ❌ 未找到确定按钮");
+                                                                                    // 即使没有 publishId，也要设置全局变量允许跳转
+                                                                                    window.__sohuPublishSuccessFlag = true;
+                                                                                    console.log("[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志");
                                                                                 }
+
+                                                                                confirmBtn.click();
+
+                                                                                await handleProtocolPopup(() => {
+                                                                                    confirmBtn.click();
+                                                                                });
+
+                                                                                // 定时发布点击后会立即跳转到成功页
+                                                                                console.log("[腾讯号发布] ✅ 等待页面跳转到首页");
+                                                                                stopErrorListener();
                                                                             } else {
-                                                                                console.warn("[腾讯号发布] ⚠️ 未传入定时发布时间");
+                                                                                console.error("[腾讯号发布] ❌ 未找到确定按钮");
                                                                             }
                                                                         }
                                                                     }
@@ -946,7 +943,6 @@
 
                                                     // 优先使用全局错误监听器捕获的错误
                                                     const errorMessage = getLatestError();
-                                                    console.log(`[腾讯号发布] [窗口${myWindowId}] 📋 当前捕获的所有错误:`, capturedErrors);
                                                     console.log(`[腾讯号发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
 
                                                     // 🔴 有错误信息就直接走失败接口，不再重试
