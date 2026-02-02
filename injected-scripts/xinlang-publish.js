@@ -701,37 +701,26 @@
                                     }
                                     confirmBtn.click();
 
-                                    // 🔴 等待 loading 消失（图片上传可能很慢）
-                                    console.log("[新浪发布] ⏳ 等待图片上传完成...");
-                                    const maxLoadingWait = 60000; // 最多等待 60 秒
-                                    const loadingStartTime = Date.now();
-                                    while (Date.now() - loadingStartTime < maxLoadingWait) {
-                                        const loadingEl = document.querySelector(".n-base-loading__container");
-                                        if (!loadingEl) {
-                                            console.log("[新浪发布] ✅ 图片上传完成（loading 消失）");
-                                            break;
-                                        }
-                                        console.log("[新浪发布] ⏳ 图片上传中...");
-                                        await delay(500);
-                                    }
-                                    await delay(1000); // 额外等待 1 秒确保弹窗渲染
+                                    // 🔴 等待图片裁剪弹窗出现（图片上传可能很慢）
+                                    // 不检测 loading，直接等待最终结果（裁剪弹窗）
+                                    console.log("[新浪发布] ⏳ 等待图片上传完成，裁剪弹窗出现...");
 
-                                    // 图片裁剪弹窗
-                                    const coverCutDialogEle = document.querySelector(".n-dialog");
+                                    await delay(5000);
+                                    // 等待裁剪弹窗出现，最多等 120 秒
+                                    const coverCutDialogEle = await waitForElement(".n-dialog", 120000, 1000);
+                                    console.log("🚀 ~  ~ coverCutDialogEle: ", coverCutDialogEle);
                                     if(!coverCutDialogEle){
-                                        throw Error('[新浪发布]：找不到图片裁剪弹窗');
+                                        throw Error('[新浪发布]：图片上传超时，找不到图片裁剪弹窗');
                                     }
-                                    const coverCutTitle = coverCutDialogEle.querySelector('.n-card-header__main');
-                                    if(!coverCutTitle){
-                                        throw Error('[新浪发布]：找不到图片裁剪弹窗标题');
+                                    console.log("[新浪发布] ✅ 图片上传完成，裁剪弹窗已出现");
+
+                                    await delay(1000);
+                                    const confirmCutBtn = coverCutDialogEle.querySelector(".n-button--primary-type");
+                                    console.log("🚀 ~  ~ confirmCutBtn: ", confirmCutBtn);
+                                    if(!confirmCutBtn){
+                                        throw Error('[新浪发布]：找不到图片裁剪弹窗确认按钮');
                                     }
-                                    if(coverCutTitle.textContent.trim() === '图片裁剪'){
-                                        const confirmCutBtn = coverCutDialogEle.querySelector(".n-button--primary-type");
-                                        if(!confirmCutBtn){
-                                            throw Error('[新浪发布]：找不到图片裁剪弹窗确认按钮');
-                                        }
-                                        confirmCutBtn.click();
-                                    }
+                                    confirmCutBtn.click();
 
                                     await delay(1000);
 
@@ -845,7 +834,7 @@
                                                     stopErrorListener();
                                                     const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                     if (publishIdForError) {
-                                                        await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求", "新浪发布");
+                                                        await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "新浪发布");
                                                     }
                                                     await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                     return;

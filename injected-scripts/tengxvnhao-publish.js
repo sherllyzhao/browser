@@ -864,7 +864,7 @@
                                                                         stopErrorListener();
                                                                         const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                                         if (publishIdForError) {
-                                                                            await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求", "腾讯号发布");
+                                                                            await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "腾讯号发布");
                                                                         }
                                                                         await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                                         return;

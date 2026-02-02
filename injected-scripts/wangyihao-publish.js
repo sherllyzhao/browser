@@ -672,9 +672,9 @@
                             }
 
                             // 扫描表单错误提示
-                            const formErrors = document.querySelectorAll('.ne-easy-form-field-content-container');
+                            const formErrors = document.querySelectorAll('.ne-modal-container');
                             for (const formError of formErrors) {
-                                const errorSpan = formError.querySelector('span:last-child');
+                                const errorSpan = formError.querySelector('.custom-confirm-content');
                                 if (errorSpan) {
                                     const text = (errorSpan.textContent || '').trim();
                                     // 🔑 采集时就过滤掉非错误文本
@@ -1115,7 +1115,7 @@
                                                     stopErrorListener();
                                                     const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                     if (publishIdForError) {
-                                                        await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求', '网易号发布');
+                                                        await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽', '网易号发布');
                                                     }
                                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                     return;
