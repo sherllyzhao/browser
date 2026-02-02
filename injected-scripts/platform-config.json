@@ -1,0 +1,75 @@
+{
+  "platforms": {
+    "souhuhao": {
+      "name": "搜狐号",
+      "publishPagePath": "/contentManagement/news/addarticle",
+      "publishPageUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle",
+      "firstPageUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+      "domain": "mp.sohu.com",
+      "cookies": {
+        "domain": "mp.sohu.com"
+      }
+    },
+    "douyin": {
+      "name": "抖音",
+      "publishPagePath": "/creator-micro/content/upload",
+      "publishPageUrl": "https://creator.douyin.com/creator-micro/content/upload",
+      "domain": "creator.douyin.com",
+      "cookies": {
+        "domain": "douyin.com"
+      }
+    },
+    "xiaohongshu": {
+      "name": "小红书",
+      "publishPagePath": "/publish/publish",
+      "publishPageUrl": "https://creator.xiaohongshu.com/publish/publish",
+      "domain": "creator.xiaohongshu.com",
+      "cookies": {
+        "domain": "xiaohongshu.com"
+      }
+    },
+    "baijiahao": {
+      "name": "百家号",
+      "publishPagePath": "/builder/rc/edit",
+      "publishPageUrl": "https://baijiahao.baidu.com/builder/rc/edit",
+      "domain": "baijiahao.baidu.com",
+      "cookies": {
+        "domain": "baidu.com"
+      }
+    },
+    "wangyihao": {
+      "name": "网易号",
+      "publishPagePath": "/subscribe_v4/index.html#/article-publish",
+      "publishPageUrl": "https://mp.163.com/subscribe_v4/index.html#/article-publish",
+      "domain": "mp.163.com",
+      "cookies": {
+        "domain": "163.com"
+      }
+    },
+    "shipinhao": {
+      "name": "视频号",
+      "publishPagePath": "/platform/post/create",
+      "publishPageUrl": "https://channels.weixin.qq.com/platform/post/create",
+      "domain": "channels.weixin.qq.com",
+      "cookies": {
+        "domain": "weixin.qq.com"
+      }
+    },
+    "tengxvnhao": {
+      "name": "腾讯号",
+      "publishPagePath": "/main/creation/article",
+      "publishPageUrl": "https://om.qq.com/main/creation/article",
+      "domain": "om.qq.com",
+      "cookies": {
+        "domain": "qq.com"
+      }
+    }
+  },
+  "注释": [
+    "这个配置文件存储各个平台的发布页路径和其他配置信息",
+    "publishPagePath: 相对路径，用于 localStorage 中的 toPath",
+    "publishPageUrl: 完整 URL，用于重定向",
+    "domain: 平台的主域名，用于 cookies 操作",
+    "cookies.domain: 用于设置和清除 cookies 的域名"
+  ]
+}

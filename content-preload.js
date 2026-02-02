@@ -1,4 +1,129 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
+
+// 🛡️ 反自动化检测 - 隐藏 Electron/Webdriver 特征
+// 必须在最开始执行，在页面脚本之前
+(function injectAntiDetection() {
+  try {
+    const antiDetectionScript = `
+      (function() {
+        'use strict';
+
+        // 1. 隐藏 webdriver 属性
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: true
+        });
+
+        // 2. 模拟正常的 chrome 对象
+        if (!window.chrome) {
+          window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+          };
+        }
+
+        // 3. 隐藏 Electron 特征
+        delete window.process;
+        delete window.require;
+
+        // 4. 修复 permissions API
+        const originalQuery = window.navigator.permissions?.query;
+        if (originalQuery) {
+          window.navigator.permissions.query = function(parameters) {
+            if (parameters.name === 'notifications') {
+              return Promise.resolve({ state: Notification.permission });
+            }
+            return originalQuery.call(this, parameters);
+          };
+        }
+
+        // 5. 模拟正常的 plugins 数组
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            const plugins = [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ];
+            plugins.length = 3;
+            return plugins;
+          },
+          configurable: true
+        });
+
+        // 6. 模拟正常的 languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['zh-CN', 'zh', 'en'],
+          configurable: true
+        });
+
+        console.log('[AntiDetection] ✅ 反自动化检测已启用');
+      })();
+    `;
+
+    webFrame.executeJavaScript(antiDetectionScript);
+  } catch (e) {
+    console.error('[AntiDetection] 注入失败:', e);
+  }
+})();
+
+// 🔑 搜狐号 toPath 处理 - 在页面脚本执行之前注入
+// 这必须在最开始执行，因为搜狐号的页面代码会在加载时读取 toPath
+(function injectSohuToPathFix() {
+  try {
+    // 检查当前 URL 是否是搜狐号
+    // 注意：preload 脚本执行时 window.location 可能还不可用，所以我们无条件注入
+    // 脚本内部会检查域名
+    const sohuToPathScript = `
+      (function() {
+        'use strict';
+        // 只在搜狐号域名下执行
+        if (!window.location.href.includes('mp.sohu.com')) {
+          return;
+        }
+
+        console.log('[搜狐号-preload] 🛡️ 在页面脚本执行之前设置 toPath');
+
+        try {
+          const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
+          const currentToPath = localStorage.getItem('toPath');
+          console.log('[搜狐号-preload] 当前 toPath:', currentToPath);
+
+          // 🔑 关键修复：无论当前 toPath 是什么值，都强制设置为发布页路径
+          // 这样可以确保第一次打开发布窗口时直接进入发布页
+          if (currentToPath !== PUBLISH_PAGE_PATH) {
+            console.log('[搜狐号-preload] ⚠️ toPath 不是发布页路径，强制设置');
+            localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
+            console.log('[搜狐号-preload] ✅ 已设置 toPath 为发布页路径:', PUBLISH_PAGE_PATH);
+          } else {
+            console.log('[搜狐号-preload] ✅ toPath 已经是发布页路径，无需修改');
+          }
+
+          // 🔑 劫持 localStorage.getItem，确保读取 toPath 时始终返回发布页路径
+          const originalGetItem = localStorage.getItem.bind(localStorage);
+          localStorage.getItem = function(key) {
+            if (key === 'toPath') {
+              console.log('[搜狐号-preload] 🔄 拦截读取 toPath，返回发布页路径');
+              return PUBLISH_PAGE_PATH;
+            }
+            return originalGetItem(key);
+          };
+          console.log('[搜狐号-preload] ✅ 已劫持 localStorage.getItem');
+        } catch (e) {
+          console.error('[搜狐号-preload] ❌ 处理 toPath 失败:', e);
+        }
+      })();
+    `;
+
+    // 使用 webFrame 在主世界中执行脚本（在页面脚本之前）
+    webFrame.executeJavaScript(sohuToPathScript);
+    console.log('[content-preload] ✅ 已注入搜狐号 toPath 修复脚本');
+  } catch (e) {
+    console.error('[content-preload] ❌ 注入搜狐号 toPath 修复脚本失败:', e);
+  }
+})();
 
 // 配置（内联，因为 preload 脚本沙盒环境不能使用 path 模块）
 const config = {
@@ -6,20 +131,35 @@ const config = {
     dy: 'https://creator.douyin.com/creator-micro/content/upload',
     xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
     sph: 'https://channels.weixin.qq.com/platform/post/create',
-    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
+    wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+    shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+    txh: 'https://om.qq.com/main/creation/article',
+    xl: 'https://card.weibo.com/article/v5/editor#/draft',
+    zh: 'https://zhuanlan.zhihu.com/write'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
     4: 'bjh',   // 百家号
     6: 'xhs',   // 小红书
-    7: 'sph'    // 视频号
+    7: 'sph',   // 视频号
+    8: 'wyh',   // 网易号
+    9: 'shh',   // 搜狐号
+    10: 'txh',  // 腾讯号
+    11: 'xl',   // 新浪号
+    12: 'zh',   // 知乎
   },
   platformNameMap: {
     'dy': 'douyin',
     'xhs': 'xiaohongshu',
     'sph': 'shipinhao',
     'bjh': 'baijiahao',
-    'wx': 'weixin'
+    'wx': 'weixin',
+    'wyh': 'wangyihao',
+    'shh': 'sohuhao',
+    'txh': 'tengxunhao',
+    'xl': 'xinlang',
+    'zh': 'zhihu'
   }
 };
 
@@ -369,6 +509,9 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 视频下载 API（通过主进程绕过跨域限制）
   downloadVideo: (url) => ipcRenderer.invoke('download-video', url),
+
+  // 图片下载 API（通过主进程绕过跨域限制）
+  downloadImage: (url) => ipcRenderer.invoke('download-image', url),
 
   // 触发文件下载（会弹出保存对话框）
   triggerDownload: (url) => ipcRenderer.invoke('trigger-download', url),

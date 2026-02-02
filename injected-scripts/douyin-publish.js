@@ -131,48 +131,17 @@ let hasProcessed = false;
           console.log('[抖音发布] ✅ 收到发布数据:', message.data);
           console.log('[抖音发布] ✅✅✅ 进入处理逻辑 ✅✅✅');
 
-          // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
-          if (message.windowId) {
-            const myWindowId = await window.browserAPI.getWindowId();
-            console.log('[抖音发布] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-            if (myWindowId !== message.windowId) {
-              console.log('[抖音发布] ⏭️ 消息不是发给我的，跳过');
-              return;
-            }
-            console.log('[抖音发布] ✅ windowId 匹配，处理消息');
-          }
+          // 使用公共方法检查 windowId 是否匹配
+          const isMatch = await checkWindowIdMatch(message, '[抖音发布]');
+          if (!isMatch) return;
 
-          // 兼容处理：message.data 可能是字符串或对象
-          let messageData;
-          try {
-            messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-          } catch (parseError) {
-            console.error('[抖音发布] ❌ 解析消息数据失败:', parseError);
-            console.error('[抖音发布] 原始数据:', message.data);
-            return;
-          }
+          // 使用公共方法解析消息数据
+          const messageData = parseMessageData(message.data, '[抖音发布]');
+          if (!messageData) return;
 
-          // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
-          if (messageData.cookies) {
-            console.log('[抖音发布] 📦 检测到 cookies 数据，开始恢复会话...');
-            try {
-              const cookiesData = typeof messageData.cookies === 'string' ? messageData.cookies : JSON.stringify(messageData.cookies);
-              const restoreResult = await window.browserAPI.restoreSessionData(cookiesData);
-              if (restoreResult.success) {
-                console.log('[抖音发布] ✅ 会话数据恢复成功:', restoreResult.results);
-                // 恢复 cookies 后需要刷新页面才能生效
-                console.log('[抖音发布] 🔄 刷新页面以应用 cookies...');
-                // 保存消息数据到全局存储，刷新后继续使用
-                await window.browserAPI.setGlobalData(`publish_data_window_${await window.browserAPI.getWindowId()}`, messageData);
-                window.location.reload();
-                return; // 刷新后脚本会重新注入
-              } else {
-                console.warn('[抖音发布] ⚠️ 会话数据恢复失败:', restoreResult.error);
-              }
-            } catch (restoreError) {
-              console.error('[抖音发布] ⚠️ 会话数据恢复异常:', restoreError);
-            }
-          }
+          // 使用公共方法恢复会话数据
+          const needReload = await restoreSessionAndReload(messageData, '[抖音发布]');
+          if (needReload) return; // 已触发刷新，脚本会重新注入
 
           // 防重复检查
           console.log('[抖音发布] 🔍 检查防重复标志: isProcessing=', isProcessing, ', hasProcessed=', hasProcessed);
@@ -416,6 +385,12 @@ async function publishApi(dataObj) {
       const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
       localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
       console.log('[抖音发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
+
+      // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+      if (window.browserAPI && window.browserAPI.setGlobalData) {
+        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, {publishId: publishId});
+        console.log('[抖音发布] 💾 已保存 publishId 到 globalData');
+      }
     } catch (e) {
       console.error('[抖音发布] ❌ 保存 publishId 失败:', e);
     }

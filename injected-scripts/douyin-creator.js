@@ -179,7 +179,7 @@
                   nickname: user.nickname,
                   avatar: user.avatar_thumb.url_list[0],
                   follow: user.following_count,
-                  follower_count: user.follower_count,
+                  follower_count: user.follower_count, // 我关注别人的关注数
                   video: user.aweme_count,
                   uid: user.uid,
                   favoriting_count: user.favoriting_count,
