@@ -91,7 +91,6 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 const HOME_URLS = [
   'http://localhost:5173/',
   'https://dev.china9.cn/aigc_browser/',
-  'https://china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
@@ -509,7 +508,7 @@ function createWindow() {
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
-            ? 'https://china9.cn/aigc_browser/'
+            ? 'https://dev.china9.cn/aigc_browser/'
             : 'http://localhost:5173/';
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
@@ -1053,22 +1052,6 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 🔑 检查 geo 页面权限（优先级最高，在所有检查之前）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        return;
-      }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
-    }
-
     // 检测远程登录页，自动跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
@@ -1077,7 +1060,8 @@ function createWindow() {
       return;
     }
 
-    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 仅在访问自己平台时检测，不影响第三方平台
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1094,6 +1078,22 @@ function createWindow() {
         browserView.webContents.loadURL(LOGIN_URL);
         return;
       }
+    }
+
+    // 🔑 已登录状态下，检查 geo 页面权限
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+      console.log('[Geo Auth Check] siteInfo:', siteInfo);
+      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+
+      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        browserView.webContents.loadURL(notPurchaseUrl);
+        return;
+      }
+      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
     }
 
     mainWindow.webContents.send('url-changed', url);
@@ -1111,22 +1111,6 @@ function createWindow() {
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
 
-    // 🔑 检查 geo 页面权限（优先级最高，在所有检查之前）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        return;
-      }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
-    }
-
     // 检测远程登录页，自动跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
@@ -1135,7 +1119,8 @@ function createWindow() {
       return;
     }
 
-    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 仅在访问自己平台时检测，不影响第三方平台
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1150,7 +1135,24 @@ function createWindow() {
         delete globalStorage.login_gcc;
         saveGlobalStorage();
         browserView.webContents.loadURL(LOGIN_URL);
+        return;
       }
+    }
+
+    // 🔑 已登录状态下，检查 geo 页面权限
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+      console.log('[Geo Auth Check] siteInfo:', siteInfo);
+      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+
+      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        browserView.webContents.loadURL(notPurchaseUrl);
+        return;
+      }
+      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
     }
   });
 
@@ -1288,6 +1290,64 @@ function createWindow() {
     newWindow.webContents.on('will-prevent-unload', (event) => {
       console.log('[Window Manager] 忽略页面的 beforeunload 事件，强制关闭窗口');
       event.preventDefault();
+    });
+
+    // 保存窗口 ID
+    const windowId = newWindow.id;
+    // 标记是否正在保存中（防止重复触发）
+    let isSavingSession = false;
+
+    // 🔑 监听窗口关闭前事件，尝试保存登录信息（如果是多账号模式窗口）
+    newWindow.on('close', async (e) => {
+      console.log('[did-create-window] ========== 窗口关闭前 ==========');
+      console.log('[did-create-window] windowId:', windowId);
+      console.log('[did-create-window] URL:', newWindow.webContents.getURL());
+
+      // 防止重复触发
+      if (isSavingSession) {
+        console.log('[did-create-window] 正在保存中，忽略重复触发');
+        return;
+      }
+
+      // 检查是否是多账号模式的窗口（虽然 did-create-window 创建的窗口通常不是）
+      const accountInfo = windowAccountMap.get(windowId);
+      if (accountInfo) {
+        // 阻止窗口立即关闭，等待保存完成
+        e.preventDefault();
+        isSavingSession = true;
+
+        console.log('[did-create-window] 发现多账号映射，等待保存会话数据完成后再关闭');
+
+        try {
+          // 调用公共函数保存登录信息
+          const result = await saveWindowSessionToBackend(newWindow, windowId);
+          console.log('[did-create-window] 保存结果:', result);
+
+          // 通知首页：会话数据已更新
+          if (browserView && !browserView.webContents.isDestroyed() && result.success) {
+            const publishDataKey = `publish_data_window_${windowId}`;
+            const publishData = globalStorage[publishDataKey];
+            browserView.webContents.send('session-updated', {
+              windowId: windowId,
+              platform: accountInfo.platform,
+              accountId: accountInfo.accountId,
+              success: result.success,
+              cookieCount: result.cookieCount,
+              publishData: publishData,
+              timestamp: Date.now()
+            });
+            console.log('[did-create-window] ✅ 已通知首页会话数据已更新');
+          }
+        } catch (err) {
+          console.error('[did-create-window] ❌ 保存会话数据时出错:', err);
+        } finally {
+          // 保存完成（无论成功失败），销毁窗口
+          console.log('[did-create-window] 保存完成，销毁窗口');
+          newWindow.destroy();
+        }
+      } else {
+        console.log('[did-create-window] 非多账号模式窗口，直接关闭');
+      }
     });
 
     // 监听窗口关闭事件
@@ -2920,6 +2980,24 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             // 格式1：包含 cookies 字段
             cookiesArray = sessionData.cookies;
             console.log('[Window Manager] 检测到数据格式: {cookies: [...]}');
+          } else if (sessionData && typeof sessionData === 'object' && !Array.isArray(sessionData)) {
+            // 格式5：多域名格式 {".163.com": {cookies: [...]}, "mp.163.com": {cookies: [...]}}
+            // 网易号等平台使用多域名存储 cookies
+            const keys = Object.keys(sessionData);
+            let isMultiDomain = false;
+            for (const key of keys) {
+              const val = sessionData[key];
+              if (val && typeof val === 'object' && val.cookies && Array.isArray(val.cookies)) {
+                isMultiDomain = true;
+                cookiesArray = cookiesArray.concat(val.cookies);
+                console.log(`[Window Manager] 从域名 ${key} 提取到 ${val.cookies.length} 个 cookies`);
+              }
+            }
+            if (isMultiDomain) {
+              console.log(`[Window Manager] 检测到数据格式5（多域名）: 共 ${cookiesArray.length} 个 cookies`);
+            } else {
+              console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式, keys:', keys);
+            }
           } else {
             console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式');
           }

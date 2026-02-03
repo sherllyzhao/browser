@@ -277,9 +277,10 @@ let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
 
         console.log('[小红书发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
 
-        // 清除已使用的数据，避免重复处理
-        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-        console.log('[小红书发布] 🗑️ 已清除 publish_data_window_' + windowId);
+        // 🔑 不再立即删除数据，改为在发布完成后删除
+        // 这样如果登录跳转后跳回来，数据仍然可用
+        // 使用 hasProcessed 标记防止重复处理
+        console.log('[小红书发布] 📝 保留 publish_data_window_' + windowId + ' 数据，待发布完成后清理');
 
         // 标记为正在处理
         isProcessing = true;

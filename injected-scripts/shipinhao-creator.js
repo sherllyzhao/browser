@@ -249,5 +249,63 @@
   console.log('  - sendAuthCode(code): 发送授权码');
   console.log('═══════════════════════════════════════');
 
+  // ===========================
+  // 7. 检查是否有发布数据需要恢复（登录跳转后返回首页的情况）
+  // ===========================
+  setTimeout(async () => {
+    try {
+      // 获取当前窗口 ID
+      const windowId = await window.browserAPI.getWindowId();
+      if (!windowId) {
+        console.log('[视频号授权] ℹ️ 无法获取窗口 ID，跳过发布数据检查');
+        return;
+      }
+
+      // 检查是否有保存的发布数据（表示是从发布流程跳过来的）
+      const publishDataKey = `SHIPINHAO_PUBLISH_DATA_${windowId}`;
+      const savedPublishData = localStorage.getItem(publishDataKey);
+
+      // 同时检查 globalData 中是否有发布数据
+      const globalPublishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+
+      console.log('[视频号授权] 🔍 检查发布数据:', {
+        localStorage: savedPublishData ? '有' : '无',
+        globalData: globalPublishData ? '有' : '无',
+        windowId
+      });
+
+      if (savedPublishData || globalPublishData) {
+        console.log('[视频号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
+        console.log('[视频号授权] 🔄 准备自动跳转到发布页...');
+
+        // 等待页面完全加载
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // 查找"发表视频"按钮
+        const publishButton = await waitForElement('button.weui-desktop-btn_primary', 5000);
+
+        if (publishButton) {
+          // 检查按钮文字是否包含"发表视频"
+          const buttonText = publishButton.textContent || publishButton.innerText || '';
+          console.log('[视频号授权] 📍 找到按钮，文字:', buttonText);
+
+          if (buttonText.includes('发表视频') || buttonText.includes('发表')) {
+            console.log('[视频号授权] ✅ 确认是"发表视频"按钮，准备点击...');
+            publishButton.click();
+            console.log('[视频号授权] ✅ 已点击"发表视频"按钮，等待跳转到发布页');
+          } else {
+            console.log('[视频号授权] ⚠️ 按钮文字不匹配，跳过点击');
+          }
+        } else {
+          console.log('[视频号授权] ⚠️ 未找到"发表视频"按钮');
+        }
+      } else {
+        console.log('[视频号授权] ℹ️ 没有发布数据，这是正常的授权流程');
+      }
+    } catch (error) {
+      console.error('[视频号授权] ❌ 检查发布数据失败:', error);
+    }
+  }, 2000); // 延迟2秒，等待页面完全加载
+
 })();
 
