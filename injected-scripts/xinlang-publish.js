@@ -58,7 +58,7 @@
             // 回退方案：使用本地配置
             errorListener = createErrorListener({
                 logPrefix: "[新浪发布]",
-                selectors: [{ containerClass: "omui-message", textSelector: ".omui-message__desc", recursiveSelector: ".omui-message" }],
+                selectors: [{ containerClass: "n-message--error-type", textSelector: ".n-message__content", recursiveSelector: ".n-message--error-type" }],
             });
             console.log("[新浪发布] ⚠️ 使用本地错误监听器配置");
         }
@@ -90,6 +90,134 @@
         console.error("[新浪发布] ❌ common.js 未加载！脚本可能无法正常工作");
     } else {
         console.log("[新浪发布] ✅ common.js 已加载，工具函数可用");
+    }
+
+    // ===========================
+    // 🔴 验证页返回检测：检查是否有保存的发布数据（说明点击过发布按钮后跳转到了验证页）
+    // ===========================
+    // 先获取窗口 ID（赋值给 currentWindowId，后面的代码也会用到）
+    try {
+        currentWindowId = await window.browserAPI?.getWindowId?.();
+        console.log("[新浪发布] 🔑 当前窗口 ID:", currentWindowId);
+    } catch (e) {
+        console.error("[新浪发布] ❌ 获取窗口 ID 失败:", e);
+    }
+
+    // 检查 globalData 中是否有保存的发布数据
+    let savedData = null;
+    if (currentWindowId && window.browserAPI?.getGlobalData) {
+        try {
+            savedData = await window.browserAPI.getGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+            console.log("[新浪发布] 📦 检查保存的发布数据:", savedData);
+        } catch (e) {
+            console.error("[新浪发布] ❌ 获取保存的发布数据失败:", e);
+        }
+    }
+
+    // 如果有保存的数据，说明是从验证页返回的，等待发布弹窗出现并处理
+    if (savedData && savedData.publishId) {
+        console.log("[新浪发布] 🔄 检测到保存的发布数据，可能是从验证页返回，等待发布弹窗...");
+
+        const { publishId, publishTime, sendTime } = savedData;
+        console.log("[新浪发布] 📋 发布类型:", publishTime === 2 ? "定时发布" : "即时发布");
+
+        // 等待发布弹窗出现（最多等 30 秒）
+        const existingDialog = await waitForElement('.n-dialog', 30000, 500);
+        if (existingDialog) {
+            console.log("[新浪发布] ✅ 发布弹窗已出现，继续发布流程...");
+
+            try {
+                const publishBtnArea = existingDialog.querySelector('.n-mention + div .items-center:nth-of-type(2)');
+                if (!publishBtnArea) {
+                    throw new Error('[新浪发布]：找不到发布按钮操作区');
+                }
+
+                if (+publishTime === 2) {
+                    // 定时发布
+                    const timedReleaseButton = publishBtnArea.querySelector('.svg-icon');
+                    if (!timedReleaseButton) {
+                        throw new Error('[新浪发布]：找不到定时发布按钮');
+                    }
+                    timedReleaseButton.dispatchEvent(new MouseEvent("click", { view: window, bubbles: true, cancelable: true }));
+                    console.log("[新浪发布] ✅ 已点击定时发布（验证页返回后）");
+
+                    if (!sendTime) {
+                        console.error("[新浪发布] ❌ 定时时间丢失");
+                        await closeWindowWithMessage("定时时间解析失败", 1000);
+                        return;
+                    }
+
+                    console.log("[新浪发布] ⏰ 开始选择定时发布时间:", sendTime);
+                    const timeSelectSuccess = await selectScheduledTime(sendTime);
+                    if (!timeSelectSuccess) {
+                        console.error("[新浪发布] ❌ 时间选择失败");
+                        await closeWindowWithMessage("定时时间选择失败", 1000);
+                        return;
+                    }
+                } else {
+                    // 即时发布
+                    const publishButtons = publishBtnArea.querySelectorAll('button');
+                    let publishButton = null;
+                    for (let btn of publishButtons) {
+                        if (btn.textContent.trim() === '发布') {
+                            publishButton = btn;
+                            break;
+                        }
+                    }
+                    if (!publishButton) {
+                        throw new Error('[新浪发布]：找不到发布按钮');
+                    }
+
+                    publishButton.dispatchEvent(new MouseEvent("click", { view: window, bubbles: true, cancelable: true }));
+                    console.log("[新浪发布] ✅ 已点击即时发布（验证页返回后）");
+
+                    await delay(1000);
+                    console.log("[新浪发布] 📤 即时发布提交成功，准备上报统计...");
+
+                    if (publishId) {
+                        try {
+                            const successUrl = await getStatisticsUrl();
+                            const scanData = { data: JSON.stringify({ id: publishId }) };
+                            await fetch(successUrl, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(scanData),
+                            });
+                            console.log("[新浪发布] ✅ 即时发布统计上报成功");
+                        } catch (e) {
+                            console.error("[新浪发布] ❌ 统计上报失败:", e);
+                        }
+                    }
+
+                    // 清除保存的标记
+                    try {
+                        localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                        await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                        console.log("[新浪发布] 🗑️ 已清除发布标记");
+                    } catch (e) {
+                        // 忽略清除失败
+                    }
+
+                    await closeWindowWithMessage("发布成功，刷新数据", 1000);
+                }
+
+                return; // 已处理完，退出脚本
+            } catch (e) {
+                console.error("[新浪发布] ❌ 验证页返回后处理失败:", e);
+                // 清除保存的数据，避免下次重试时又走这个流程
+                try {
+                    await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                } catch (e2) {}
+                await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                return;
+            }
+        } else {
+            console.log("[新浪发布] ⚠️ 等待发布弹窗超时，清除保存的数据，继续正常流程");
+            // 清除保存的数据
+            try {
+                await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+            } catch (e) {}
+        }
     }
 
     // ===========================
@@ -679,11 +807,47 @@
                                     input.dispatchEvent(event);
                                     await delay(1000);
 
-                                    // 选中第一项
-                                    const firstImg = await waitForElement('.image-list .image-item:nth-of-type(1)', 30000, 1000, uploadModal);
-                                    console.log("🚀 ~  ~ firstImg: ", firstImg);
-                                    if(firstImg){
-                                        firstImg.click();
+                                    // 选中第一项（带重试验证）
+                                    let selectSuccess = false;
+                                    for (let attempt = 1; attempt <= 5; attempt++) {
+                                        console.log(`[新浪发布] 尝试选中图片，第 ${attempt} 次...`);
+
+                                        // 获取所有图片项
+                                        const imageItems = uploadModal.querySelectorAll('.image-list .image-item');
+                                        console.log(`[新浪发布] 找到 ${imageItems.length} 个图片项`);
+
+                                        if (imageItems.length > 0) {
+                                            const firstImg = imageItems[0];
+                                            console.log("🚀 ~  ~ firstImg: ", firstImg);
+
+                                            // 检查是否已经选中（有 is-selected 类名）
+                                            if (firstImg.classList.contains('is-selected')) {
+                                                console.log('[新浪发布] ✅ 图片已经是选中状态');
+                                                selectSuccess = true;
+                                                break;
+                                            }
+
+                                            // 点击选中
+                                            firstImg.click();
+                                            await delay(500);
+
+                                            // 验证是否选中成功
+                                            if (firstImg.classList.contains('is-selected')) {
+                                                console.log('[新浪发布] ✅ 图片选中成功');
+                                                selectSuccess = true;
+                                                break;
+                                            } else {
+                                                console.log('[新浪发布] ⚠️ 点击后未选中，等待后重试...');
+                                                await delay(1000);
+                                            }
+                                        } else {
+                                            console.log('[新浪发布] ⚠️ 未找到图片项，等待后重试...');
+                                            await delay(1000);
+                                        }
+                                    }
+
+                                    if (!selectSuccess) {
+                                        console.warn('[新浪发布] ⚠️ 图片选中可能失败，继续执行...');
                                     }
 
                                     // 点击确定
@@ -819,13 +983,20 @@
                                             const publishBtns = document.querySelectorAll(".common-footer .footer-item button");
                                             console.log("🚀 ~ tryUploadImage ~ publishBtns: ", publishBtns);
                                             let publishBtn = null;
+                                            let saveBtn = null;
                                             if (publishBtns.length > 0) {
                                                 publishBtns.forEach(btn => {
                                                     if (btn.textContent.trim() === "下一步") {
                                                         publishBtn = btn;
+                                                    }else if(btn.textContent.trim().includes("保存")){
+                                                        saveBtn = btn;
                                                     }
                                                 });
                                             }
+                                            if(saveBtn){
+                                                saveBtn.click();
+                                            }
+                                            await delay(5000);
                                             if (publishBtn) {
                                                 console.log("🚀 ~ tryUploadImage ~ publishBtn: ", publishBtn);
                                                 // 🔑 检查发布按钮是否 disabled
@@ -842,6 +1013,8 @@
 
                                                 // 🔑 在点击发布前保存 publishId，让首页可以调用统计接口
                                                 const publishId = dataObj.video?.dyPlatform?.id;
+                                                const publishTime = dataObj.video?.formData?.send_set; // 1=即时发布, 2=定时发布
+                                                const sendTime = dataObj.video?.formData?.send_time; // 定时发布的时间
                                                 if (publishId) {
                                                     try {
                                                         // 同时设置全局变量和 localStorage，确保标志能被检测到
@@ -851,9 +1024,14 @@
                                                         console.log("[新浪发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
                                                         // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                                        // 同时保存发布类型和定时时间，用于验证页返回后恢复
                                                         if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
-                                                            console.log('[新浪发布] 💾 已保存 publishId 到 globalData');
+                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {
+                                                                publishId: publishId,
+                                                                publishTime: publishTime, // 1=即时, 2=定时
+                                                                sendTime: sendTime // 定时发布的时间
+                                                            });
+                                                            console.log('[新浪发布] 💾 已保存发布数据到 globalData (publishId, publishTime, sendTime)');
                                                         }
                                                     } catch (e) {
                                                         console.error("[新浪发布] ❌ 保存 publishId 失败:", e);
@@ -873,16 +1051,22 @@
                                                 console.log("[新浪发布] ✅ 已点击发布（模拟鼠标事件）");
                                                 await delay(1000);
 
-                                            //    发布弹窗
-                                                const publishDialogEle = document.querySelector('.n-dialog');
+                                                // 可能跳转至拼图验证页（https://security.weibo.com/captcha/geetest?key=...）
+                                                // 验证完成后会自动回到发布页，需要等待发布弹窗出现
+                                                // 使用 waitForElement 等待弹窗，超时时间设置为 120 秒，给用户足够时间完成验证
+                                                console.log("[新浪发布] ⏳ 等待发布弹窗出现（如果跳转到验证页，请完成验证后等待...）");
+
+                                                //    发布弹窗
+                                                const publishDialogEle = await waitForElement('.n-dialog', 120000, 500);
                                                 if(!publishDialogEle){
-                                                    throw new Error('[新浪发布]：找不到发布弹窗');
+                                                    throw new Error('[新浪发布]：找不到发布弹窗（等待超时）');
                                                 }
+                                                console.log("[新浪发布] ✅ 发布弹窗已出现");
                                                 const publishBtnArea = publishDialogEle.querySelector('.n-mention + div .items-center:nth-of-type(2)');
                                                 if(!publishBtnArea){
                                                     throw new Error('[新浪发布]：找不到发布按钮操作区');
                                                 }
-                                                const publishTime = dataObj.video.formData.send_set;
+                                                // publishTime 已在上面声明过（用于保存到 globalData）
                                                 if(+publishTime === 2){
                                                     const timedReleaseButton = publishBtnArea.querySelector('.svg-icon');
                                                     if(!timedReleaseButton){
@@ -896,7 +1080,7 @@
                                                     timedReleaseButton.dispatchEvent(clickEvent);
                                                     console.log("[新浪发布] ✅ 已点击定时发布");
 
-                                                    const sendTime = dataObj.video?.formData?.send_time;
+                                                    // sendTime 已在上面声明过（用于保存到 globalData）
                                                     if (!sendTime) {
                                                         console.error("[新浪发布] ❌ 解析定时时间失败");
                                                         stopErrorListener();
@@ -1140,145 +1324,6 @@
         // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
     }
 })(); // IIFE 结束
-
-/**
- * 选择虚拟列表中的选项
- * @param {HTMLElement} selectElement - select 组件的容器
- * @param {string|number} targetValue - 要选择的值（显示文本）
- * @param targetIndex - 要选择的索引（默认0）
- * @param {number} timeout - 超时时间（毫秒）
- */
-async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0, timeout = 10000) {
-    try {
-        console.log("[新浪发布] 🔍 准备选择:", targetValue);
-
-        // 1. 找到触发器并点击打开下拉
-        // 尝试多种可能的触发器选择器
-        let selectTrigger = selectElement.querySelector(".ne-select-selector") || selectElement.querySelector(".ne-select") || selectElement;
-        console.log("🚀 ~ selectFromVirtualList ~ selectTrigger: ", selectTrigger);
-        if (!selectTrigger) {
-            console.error("[新浪发布] ❌ 找不到 select 触发器");
-            return false;
-        }
-
-        console.log("[新浪发布] ✅ 找到触发器，点击打开下拉列表");
-        selectTrigger.dispatchEvent(new Event("mousedown", { bubbles: true }));
-
-        // 等待下拉出现 - 增加等待时间到 1000ms
-        await new Promise(r => setTimeout(r, 1000));
-
-        // 2. 查找虚拟列表容器（可能有多个位置）
-        const startTime = Date.now();
-        let virtualList = null;
-        let options = [];
-
-        while (Date.now() - startTime < timeout) {
-            // 尝试多种选择器找虚拟列表
-            virtualList = document.querySelectorAll(".rc-virtual-list-holder") || document.querySelectorAll(".ne-select-dropdown .rc-virtual-list") || document.querySelectorAll('[role="listbox"]') || document.querySelectorAll(".ne-select-dropdown");
-
-            if (virtualList && virtualList.length > 0) {
-                console.log("[新浪发布] 📍 找到虚拟列表容器:", virtualList[targetIndex].className);
-
-                // 查找所有可见的选项 - 尝试多种选择器
-                let allOptions = Array.from(virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]'));
-
-                // 如果还是没找到，尝试所有 div
-                if (allOptions.length === 0) {
-                    allOptions = Array.from(virtualList[targetIndex].querySelectorAll("div")).filter(el => {
-                        const text = el.textContent.trim();
-                        // 过滤掉空的和太长的（可能是容器）
-                        return text && text.length < 20 && el.children.length === 0;
-                    });
-                }
-
-                // 滚动到最顶部
-                virtualList[targetIndex].scrollTo(0, 0);
-                await new Promise(r => setTimeout(r, 300));
-
-                options = allOptions.filter(el => el.offsetParent !== null);
-
-                if (options.length > 0) {
-                    console.log("[新浪发布] ✅ 找到虚拟列表，有", options.length, "个选项");
-                    break;
-                } else {
-                    console.log("[新浪发布] ⏳ 虚拟列表已打开但选项还未渲染，等待中...");
-                }
-            } else {
-                console.log("[新浪发布] ⏳ 虚拟列表还未出现，等待中...");
-            }
-
-            await new Promise(r => setTimeout(r, 200));
-        }
-
-        if (options.length === 0) {
-            console.error("[新浪发布] ❌ 未找到任何选项");
-            return false;
-        }
-
-        // 3. 滚动搜索匹配项
-        const targetStr = String(targetValue).trim();
-        let foundOption = null;
-        const seenTexts = new Set();
-        const scrollStep = 100;
-        let currentScroll = 0;
-
-        while (true) {
-            // 获取当前可见选项
-            const currentOptions = Array.from(virtualList[targetIndex].querySelectorAll('[role="option"], .ne-select-item-option, .rc-virtual-list-holder-inner [class*="option"]')).filter(el => el.offsetParent !== null);
-
-            // 检查当前可见选项
-            for (const option of currentOptions) {
-                const optionText = option.textContent.trim();
-                seenTexts.add(optionText);
-
-                if (optionText === targetStr) {
-                    foundOption = option;
-                    console.log("[新浪发布] ✅ 找到匹配的选项:", optionText);
-                    break;
-                }
-            }
-
-            if (foundOption) break;
-
-            // 检查是否到底
-            const scrollHeight = virtualList[targetIndex].scrollHeight;
-            const clientHeight = virtualList[targetIndex].clientHeight;
-            currentScroll += scrollStep;
-
-            if (currentScroll >= scrollHeight - clientHeight) {
-                console.log("[新浪发布] 📍 已滚动到底部");
-                break;
-            }
-
-            // 向下滚动
-            virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 200));
-        }
-
-        if (!foundOption) {
-            console.error("[新浪发布] ❌ 未找到目标选项:", targetStr);
-            console.log("[新浪发布] 📋 已扫描选项数:", seenTexts.size);
-            return false;
-        }
-
-        // 4. 滚动到视图并点击
-        foundOption.scrollIntoView({ behavior: "auto", block: "nearest" });
-        await new Promise(r => setTimeout(r, 300));
-
-        console.log("[新浪发布] 🖱️ 点击选项:", foundOption.textContent.trim());
-        console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
-        foundOption.querySelector(".ne-select-item-option-content").dispatchEvent(new Event("click", { bubbles: true }));
-
-        // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 500));
-
-        console.log("[新浪发布] ✅ 选项选择完成");
-        return true;
-    } catch (error) {
-        console.error("[新浪发布] ❌ selectFromVirtualList 错误:", error);
-        return false;
-    }
-}
 
 
 /**
