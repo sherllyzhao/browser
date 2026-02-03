@@ -382,5 +382,45 @@
     console.log('  - getAuthData()    : 获取授权数据');
     console.log('═══════════════════════════════════════');
 
+    // ===========================
+    // 7. 检查是否有发布数据需要恢复（登录跳转后返回首页的情况）
+    // ===========================
+    setTimeout(async () => {
+        try {
+            // 获取当前窗口 ID
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log('[网易号授权] ℹ️ 无法获取窗口 ID，跳过发布数据检查');
+                return;
+            }
+
+            // 检查 globalData 中是否有发布数据（发布脚本保存的）
+            const globalPublishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+
+            console.log('[网易号授权] 🔍 检查发布数据:', {
+                globalData: globalPublishData ? '有' : '无',
+                windowId
+            });
+
+            if (globalPublishData) {
+                console.log('[网易号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
+                console.log('[网易号授权] 🔄 准备自动跳转到发布页...');
+
+                // 等待页面完全加载
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                // 网易号发布页是 SPA 的 hash 路由，直接修改 hash 即可跳转
+                const publishHash = '#/article-publish';
+                console.log('[网易号授权] 🔗 跳转到发布页:', publishHash);
+                window.location.hash = publishHash;
+                console.log('[网易号授权] ✅ 已跳转到发布页');
+            } else {
+                console.log('[网易号授权] ℹ️ 没有发布数据，这是正常的授权流程');
+            }
+        } catch (error) {
+            console.error('[网易号授权] ❌ 检查发布数据失败:', error);
+        }
+    }, 2000); // 延迟2秒，等待页面完全加载
+
 })();
 

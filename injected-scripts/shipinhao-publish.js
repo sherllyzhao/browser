@@ -683,6 +683,17 @@ async function publishApi(dataObj) {
 
     console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
 
+    // 检测表单是否有错误提示
+    await delay(1000);
+    const errors = document.querySelectorAll('.error-title');
+    if (errors.length > 0) {
+      // 走错误上报
+      const errorStr = '表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', ');
+      await sendStatisticsError(publishId, errorStr || '表单有错误', '视频号发布');
+      throw new Error('表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', '));
+    }
+    await delay(1000);
+
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
       const btn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 5000);

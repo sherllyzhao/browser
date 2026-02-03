@@ -105,6 +105,20 @@
                         try {
                             let cookiesData = messageData.cookies;
 
+                            // 🔑 如果 cookies 数据是 JSON 字符串，先解析为对象
+                            // 授权脚本中 cookies 是 JSON.stringify 后存储的，从后台取回时是字符串
+                            if (typeof cookiesData === 'string') {
+                                try {
+                                    const parsed = JSON.parse(cookiesData);
+                                    if (typeof parsed === 'object' && parsed !== null) {
+                                        cookiesData = parsed;
+                                        console.log('[网易号发布] 🔄 cookies 数据已从字符串解析为对象');
+                                    }
+                                } catch (e) {
+                                    console.log('[网易号发布] ℹ️ cookies 数据不是 JSON 格式，保持原样');
+                                }
+                            }
+
                             // 处理多域名会话数据格式
                             // 如果是对象格式（多域名），需要合并处理
                             if (typeof cookiesData === 'object' && !Array.isArray(cookiesData)) {
@@ -165,6 +179,17 @@
                     // windowId 匹配后才保存消息数据
                     receivedMessageData = messageData;
                     console.log('[网易号发布] 💾 已保存收到的消息数据到 receivedMessageData');
+
+                    // 🔑 同时保存到 globalData（用于登录跳转后恢复）
+                    try {
+                        const windowId = await window.browserAPI.getWindowId();
+                        if (windowId) {
+                            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+                            console.log('[网易号发布] 💾 数据已保存到 globalData, key: publish_data_window_' + windowId);
+                        }
+                    } catch (e) {
+                        console.error('[网易号发布] ❌ 保存数据到 globalData 失败:', e);
+                    }
 
                     console.log('[网易号发布] ✅ 收到发布数据:', messageData);
 

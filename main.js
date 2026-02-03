@@ -2980,6 +2980,24 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
             // 格式1：包含 cookies 字段
             cookiesArray = sessionData.cookies;
             console.log('[Window Manager] 检测到数据格式: {cookies: [...]}');
+          } else if (sessionData && typeof sessionData === 'object' && !Array.isArray(sessionData)) {
+            // 格式5：多域名格式 {".163.com": {cookies: [...]}, "mp.163.com": {cookies: [...]}}
+            // 网易号等平台使用多域名存储 cookies
+            const keys = Object.keys(sessionData);
+            let isMultiDomain = false;
+            for (const key of keys) {
+              const val = sessionData[key];
+              if (val && typeof val === 'object' && val.cookies && Array.isArray(val.cookies)) {
+                isMultiDomain = true;
+                cookiesArray = cookiesArray.concat(val.cookies);
+                console.log(`[Window Manager] 从域名 ${key} 提取到 ${val.cookies.length} 个 cookies`);
+              }
+            }
+            if (isMultiDomain) {
+              console.log(`[Window Manager] 检测到数据格式5（多域名）: 共 ${cookiesArray.length} 个 cookies`);
+            } else {
+              console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式, keys:', keys);
+            }
           } else {
             console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式');
           }
