@@ -1052,22 +1052,6 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 🔑 检查 geo 页面权限（优先级最高，在所有检查之前）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        return;
-      }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
-    }
-
     // 检测远程登录页，自动跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
@@ -1076,7 +1060,8 @@ function createWindow() {
       return;
     }
 
-    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 仅在访问自己平台时检测，不影响第三方平台
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1093,6 +1078,22 @@ function createWindow() {
         browserView.webContents.loadURL(LOGIN_URL);
         return;
       }
+    }
+
+    // 🔑 已登录状态下，检查 geo 页面权限
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+      console.log('[Geo Auth Check] siteInfo:', siteInfo);
+      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+
+      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        browserView.webContents.loadURL(notPurchaseUrl);
+        return;
+      }
+      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
     }
 
     mainWindow.webContents.send('url-changed', url);
@@ -1110,22 +1111,6 @@ function createWindow() {
   browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
 
-    // 🔑 检查 geo 页面权限（优先级最高，在所有检查之前）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        return;
-      }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
-    }
-
     // 检测远程登录页，自动跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
@@ -1134,7 +1119,8 @@ function createWindow() {
       return;
     }
 
-    // 检测 token 有效性（仅在访问自己平台时检测，不影响第三方平台）
+    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 仅在访问自己平台时检测，不影响第三方平台
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1149,7 +1135,24 @@ function createWindow() {
         delete globalStorage.login_gcc;
         saveGlobalStorage();
         browserView.webContents.loadURL(LOGIN_URL);
+        return;
       }
+    }
+
+    // 🔑 已登录状态下，检查 geo 页面权限
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+      console.log('[Geo Auth Check] siteInfo:', siteInfo);
+      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+
+      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        browserView.webContents.loadURL(notPurchaseUrl);
+        return;
+      }
+      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
     }
   });
 
