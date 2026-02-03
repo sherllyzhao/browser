@@ -16,7 +16,7 @@
             return;
         }
 
-        // 创建横幅
+        // 创建横幅容器
         const banner = document.createElement("div");
         banner.id = "xl-captcha-banner";
         banner.style.cssText = `
@@ -25,35 +25,66 @@
             left: 0;
             right: 0;
             z-index: 999999;
-            background: linear-gradient(135deg, #ff6b35, #f7c948);
+            background: linear-gradient(135deg, #ff8c42 0%, #ff5e62 100%);
             color: #fff;
             text-align: center;
-            padding: 14px 20px;
-            font-size: 16px;
-            font-weight: bold;
-            font-family: "Microsoft YaHei", sans-serif;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-            letter-spacing: 1px;
-            animation: bannerPulse 2s ease-in-out infinite;
-        `;
-        banner.innerHTML = `
-            <span style="margin-right: 8px; font-size: 20px;">⚠</span>
-            需要人工操作：请完成下方拼图验证，验证通过后将自动继续发布
-            <span style="margin-left: 8px; font-size: 20px;">⚠</span>
+            padding: 16px 24px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+            box-shadow: 0 4px 15px rgba(255, 94, 98, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
         `;
 
-        // 添加脉冲动画
-        const style = document.createElement("style");
-        style.textContent = `
-            @keyframes bannerPulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.85; }
-            }
+        // 图标
+        const icon = document.createElement("div");
+        icon.style.cssText = `
+            width: 36px;
+            height: 36px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        `;
+        icon.innerHTML = "🔐";
+
+        // 文字容器
+        const textBox = document.createElement("div");
+        textBox.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
         `;
 
-        if (document.head) {
-            document.head.appendChild(style);
-        }
+        // 标题
+        const title = document.createElement("div");
+        title.style.cssText = `
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        `;
+        title.textContent = "需要人工验证";
+
+        // 副标题
+        const subtitle = document.createElement("div");
+        subtitle.style.cssText = `
+            font-size: 13px;
+            opacity: 0.9;
+            font-weight: 400;
+        `;
+        subtitle.textContent = "请完成下方拼图验证，通过后将自动继续发布";
+
+        textBox.appendChild(title);
+        textBox.appendChild(subtitle);
+
+        banner.appendChild(icon);
+        banner.appendChild(textBox);
+
         document.body.appendChild(banner);
 
         console.log("[新浪验证] 已显示人工验证提示横幅");
