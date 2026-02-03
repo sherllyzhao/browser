@@ -90,11 +90,12 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 // 所有可能的首页地址（用于消息路由判断）
 const HOME_URLS = [
   'http://localhost:5173/',
+  'https://china9.cn/aigc_browser/',
   'https://dev.china9.cn/aigc_browser/',
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
-  'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
   'https://zhjzt.china9.cn/jzt_all/#/geo/index',
+  'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
   LOGIN_URL  // 登录页也作为首页处理
 ];
 
@@ -508,7 +509,7 @@ function createWindow() {
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
-            ? 'https://dev.china9.cn/aigc_browser/'
+            ? 'https://china9.cn/aigc_browser/'
             : 'http://localhost:5173/';
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
@@ -850,8 +851,8 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'china9.cn/#/home',
       'dev.china9.cn/#/home',
+      'china9.cn/#/home',
       'dev.china9.cn/aigc_browser/#/login',
       'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
@@ -919,8 +920,8 @@ function createWindow() {
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
     const loginRedirectUrls = [
-      'china9.cn/#/home',
       'dev.china9.cn/#/home',
+      'china9.cn/#/home',
       'dev.china9.cn/aigc_browser/#/login',
       'china9.cn/aigc_browser/#/login',
       'localhost:5173/#/home',
