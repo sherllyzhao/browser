@@ -239,37 +239,35 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
 
         // 如果页面内容包含大量CSS选择器特征，说明渲染异常
-        // 使用通用的CSS语法特征，不依赖特定框架类名
+        // 🔑 只使用真正的 CSS 规则语法特征（必须带大括号或冒号+值的组合）
+        // 不要使用类名前缀（如 .semi-），因为它们在正常 HTML class 属性中也会出现
         const cssPatterns = [
-            // 通用CSS属性（任何网站都会有）
-            "text-decoration:none",
-            "background-color:transparent",
-            "background-color:rgba(",
-            "cursor:pointer",
-            "border-radius:",
-            "font-size:",
-            "line-height:",
-            "padding:",
-            "margin:",
-            "display:block",
-            "display:flex",
-            "position:absolute",
-            "position:relative",
-            // CSS选择器语法特征
-            ".where(",
+            // CSS 规则语法特征（必须有大括号，这是 CSS 规则的标志）
             ":hover{",
             ":focus{",
             "::before{",
             "::after{",
+            ":active{",
+            ":visited{",
+            ".where(",
             "@media ",
-            // 常见框架类名前缀（覆盖多个框架）
-            ".ant-", // Ant Design
-            ".semi-", // Semi Design
-            ".el-", // Element UI
-            ".van-", // Vant
-            ".arco-", // Arco Design
-            ".weui-", // WeUI
-            ".css-", // CSS Modules 生成的类名
+            "@keyframes ",
+            "@font-face{",
+            // CSS 属性:值 的完整组合（不带空格的紧凑写法，通常是压缩后的 CSS）
+            "text-decoration:none",
+            "background-color:transparent",
+            "background-color:rgba(",
+            "cursor:pointer",
+            "display:block",
+            "display:flex",
+            "display:inline-block",
+            "display:none",
+            "position:absolute",
+            "position:relative",
+            "position:fixed",
+            // 🔑 移除了容易误报的模式：
+            // - 类名前缀（.ant-, .semi- 等）会在正常 HTML class 属性中出现
+            // - 简单属性前缀（border-radius:, font-size: 等）可能在页面文本内容中出现
         ];
 
         let cssMatchCount = 0;
@@ -316,7 +314,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     // 页面状态检查并自动刷新（检测到异常时先隐藏页面）
+    // 🔑 只在主窗口检测，子窗口（发布页）跳过检测，避免第三方平台页面误报
     window.checkPageStateAndReload = function (scriptName = "脚本", reloadDelay = 2000) {
+        // 🔑 子窗口跳过检测（发布页是第三方平台，检测容易误报）
+        // 主窗口的 windowId 是 'main'，子窗口是数字
+        if (window.browserAPI && window.browserAPI.getWindowId) {
+            // 异步获取 windowId，但这里需要同步判断
+            // 使用一个简单的标记：如果 URL 不是首页，就跳过检测
+            const currentUrl = window.location.href;
+            const isHomePage = currentUrl.includes('localhost:5173') ||
+                               currentUrl.includes('china9.cn') ||
+                               currentUrl.includes('file://');
+
+            if (!isHomePage) {
+                console.log(`[${scriptName}] ⏭️ 子窗口（第三方平台），跳过页面状态检测`);
+                return true;
+            }
+        }
+
         if (!window.checkPageState(scriptName)) {
             // 立即隐藏页面内容，显示loading动画
             window.hidePageAndShowMask();
@@ -1248,7 +1263,31 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     /**
-     * 从全局存储加载发布数据（刷新页面后使用）
+     * 保存发布数据到全局存储（收到数据时立即调用，用于登录跳转后恢复）
+     * @param {Object} messageData - 发布数据
+     * @param {string} logPrefix - 日志前缀
+     * @returns {Promise<boolean>} 是否保存成功
+     */
+    window.savePublishDataToGlobalStorage = async function (messageData, logPrefix = "[发布]") {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log(`${logPrefix} ❌ 无法获取窗口 ID，跳过保存`);
+                return false;
+            }
+
+            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+            console.log(`${logPrefix} 💾 已保存发布数据到 globalData (窗口 ${windowId})`);
+            return true;
+        } catch (e) {
+            console.error(`${logPrefix} ❌ 保存发布数据到 globalData 失败:`, e);
+            return false;
+        }
+    };
+
+    /**
+     * 从全局存储加载发布数据（刷新页面或登录跳转后使用）
+     * 注意：此函数不会删除数据，需要在发布完成后调用 clearPublishDataFromGlobalStorage
      * @param {string} logPrefix - 日志前缀
      * @returns {Promise<Object|null>} 发布数据，无数据返回 null
      */
@@ -1265,16 +1304,35 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
             console.log(`${logPrefix} 📦 从全局存储读取 publish_data_window_${windowId}:`, publishData ? "有数据" : "无数据");
 
-            if (publishData) {
-                // 清除已使用的数据，避免重复处理
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log(`${logPrefix} 🗑️ 已清除全局存储中的发布数据`);
-            }
+            // 🔑 不在这里删除数据，而是在发布完成后调用 clearPublishDataFromGlobalStorage 删除
+            // 这样即使中途跳转到登录页，数据也不会丢失
 
             return publishData;
         } catch (e) {
             console.error(`${logPrefix} ❌ 从全局存储加载数据失败:`, e);
             return null;
+        }
+    };
+
+    /**
+     * 清除全局存储中的发布数据（发布完成或失败后调用）
+     * @param {string} logPrefix - 日志前缀
+     * @returns {Promise<boolean>} 是否清除成功
+     */
+    window.clearPublishDataFromGlobalStorage = async function (logPrefix = "[发布]") {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log(`${logPrefix} ❌ 无法获取窗口 ID，跳过清除`);
+                return false;
+            }
+
+            await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+            console.log(`${logPrefix} 🗑️ 已清除 globalData 中的发布数据 (窗口 ${windowId})`);
+            return true;
+        } catch (e) {
+            console.error(`${logPrefix} ❌ 清除 globalData 发布数据失败:`, e);
+            return false;
         }
     };
 
@@ -1542,12 +1600,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 发送成功消息并关闭窗口
     // 🔑 增加默认延迟到 2500ms，确保消息有足够时间到达 Vue 应用
+    // 🔑 关闭窗口前自动清除 publish_data_window 数据
     window.closeWindowWithMessage = async function (message = "发布成功，刷新数据", delay = 2500) {
         console.log(`[closeWindow] 发送消息: ${message}`);
         window.sendMessageToParent(message);
 
         // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
         await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 🔑 在关闭窗口前清除发布数据（防止数据残留）
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (windowId) {
+                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+                console.log(`[closeWindow] 🗑️ 已清除 publish_data_window_${windowId}`);
+            }
+        } catch (e) {
+            console.log(`[closeWindow] ⚠️ 清除发布数据失败:`, e.message);
+        }
 
         if (delay > 0) {
             console.log(`[closeWindow] 等待 ${delay}ms 确保消息到达...`);

@@ -175,11 +175,16 @@
 
     // 清除临时数据
     try {
-      // 🔑 清除 globalData
+      // 🔑 清除 globalData（发布成功标记和发布数据）
       if (windowId && window.browserAPI && window.browserAPI.removeGlobalData) {
         try {
+          // 清除发布成功标记
           await window.browserAPI.removeGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`);
           console.log('[发布成功] 🗑️ 已清除 globalData: PUBLISH_SUCCESS_DATA_' + windowId);
+
+          // 🔑 清除发布页数据（登录跳转场景下保留的数据）
+          await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+          console.log('[发布成功] 🗑️ 已清除 globalData: publish_data_window_' + windowId);
         } catch (e) {
           console.log('[发布成功] ⚠️ 清除 globalData 失败:', e.message);
         }

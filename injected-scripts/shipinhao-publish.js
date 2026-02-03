@@ -402,9 +402,10 @@ let hasProcessed = false;
       if (publishData && !isProcessing && !hasProcessed) {
         console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
 
-        // 清除已使用的数据，避免重复处理
-        await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-        console.log('[视频号发布] 🗑️ 已清除 publish_data_window_' + windowId);
+        // 🔑 不再立即删除数据，改为在发布完成后删除
+        // 这样如果登录跳转后跳回来，数据仍然可用
+        // 使用 hasProcessed 标记防止重复处理
+        console.log('[视频号发布] 📝 保留 publish_data_window_' + windowId + ' 数据，待发布完成后清理');
 
         // 标记为正在处理
         isProcessing = true;
@@ -681,6 +682,17 @@ async function publishApi(dataObj) {
     }
 
     console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
+
+    // 检测表单是否有错误提示
+    await delay(1000);
+    const errors = document.querySelectorAll('.error-title');
+    if (errors.length > 0) {
+      // 走错误上报
+      const errorStr = '表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', ');
+      await sendStatisticsError(publishId, errorStr || '表单有错误', '视频号发布');
+      throw new Error('表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', '));
+    }
+    await delay(1000);
 
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
