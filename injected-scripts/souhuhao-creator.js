@@ -5,82 +5,11 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-// 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
-(function() {
-    'use strict';
-
-    // 🔑 在 IIFE 内部定义平台配置，避免与发布脚本的 PLATFORM_CONFIG 冲突
-    const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
-
-    console.log('[搜狐号授权] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location');
-    try {
-        const originalSetItem = localStorage.setItem.bind(localStorage);
-        const originalGetItem = localStorage.getItem.bind(localStorage);
-        const originalRemoveItem = localStorage.removeItem.bind(localStorage);
-
-        // 🔑 首先清除 toPath，然后设置为发布页路径
-        console.log('[搜狐号授权] 🧹 清除旧的 toPath');
-        originalRemoveItem('toPath');
-
-        // 立即设置为发布页路径
-        console.log('[搜狐号授权] ✅ 设置 toPath 为发布页路径');
-        originalSetItem('toPath', PUBLISH_PAGE_PATH);
-        console.log('[搜狐号授权] ✅ 已设置 localStorage.toPath =', PUBLISH_PAGE_PATH);
-
-        // 劫持 setItem，阻止设置 toPath
-        localStorage.setItem = function(key, value) {
-            if (key === 'toPath') {
-                console.log('[搜狐号授权] 🚫 阻止修改 toPath:', value);
-                return; // 直接返回，不执行设置
-            }
-            return originalSetItem(key, value);
-        };
-
-        // 劫持 getItem，toPath 永远返回发布页路径
-        localStorage.getItem = function(key) {
-            if (key === 'toPath') {
-                console.log('[搜狐号授权] 🔄 拦截读取 toPath，返回发布页路径');
-                return PUBLISH_PAGE_PATH; // 返回发布页路径
-            }
-            return originalGetItem(key);
-        };
-
-        // 劫持 removeItem，阻止删除 toPath
-        localStorage.removeItem = function(key) {
-            if (key === 'toPath') {
-                console.log('[搜狐号授权] 🚫 阻止删除 toPath');
-                return; // 直接返回，不执行删除
-            }
-            return originalRemoveItem(key);
-        };
-
-        // 🔑 劫持 window.location 的所有跳转方法，防止跳转到首页
-        const originalPushState = window.history.pushState.bind(window.history);
-        const originalReplaceState = window.history.replaceState.bind(window.history);
-
-        window.history.pushState = function(state, title, url) {
-            console.log('[搜狐号授权] 🚫 检测到 history.pushState:', url);
-            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
-                console.log('[搜狐号授权] 🚫 阻止通过 history.pushState 跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalPushState(state, title, url);
-        };
-
-        window.history.replaceState = function(state, title, url) {
-            console.log('[搜狐号授权] 🚫 检测到 history.replaceState:', url);
-            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
-                console.log('[搜狐号授权] 🚫 阻止通过 history.replaceState 跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalReplaceState(state, title, url);
-        };
-
-        console.log('[搜狐号授权] ✅ localStorage 和 window.location 劫持完成');
-    } catch (e) {
-        console.error('[搜狐号授权] ❌ 劫持失败:', e);
-    }
-})();
+// 🔑 注意：授权脚本不应该设置 toPath
+// 原因：授权流程需要用户停留在首页获取账号信息
+// 如果设置 toPath 为发布页，会导致：
+// - 登录成功后尝试跳转到发布页 → 需要短信验证 → 又跳回验证页 → 循环
+// toPath 的设置应该只在发布脚本（souhuhao-publish.js）中进行
 
 (async function () {
     'use strict';

@@ -79,12 +79,16 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
     const sohuToPathScript = `
       (function() {
         'use strict';
-        // 只在搜狐号域名下执行
-        if (!window.location.href.includes('mp.sohu.com')) {
+        // 只在搜狐号发布页执行，不在首页或其他页面执行
+        // 原因：首页设置 toPath 会导致授权流程出问题
+        // - 授权窗口访问首页 → toPath 被设置为发布页 → 搜狐尝试跳转到发布页 → 需要短信验证 → 循环
+        // 只对发布页进行处理，确保发布窗口能正常工作
+        const url = window.location.href;
+        if (!url.includes('mp.sohu.com') || !url.includes('contentManagement/news/addarticle')) {
           return;
         }
 
-        console.log('[搜狐号-preload] 🛡️ 在页面脚本执行之前设置 toPath');
+        console.log('[搜狐号-preload] 🛡️ 在发布页设置 toPath');
 
         try {
           const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
