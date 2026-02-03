@@ -82,7 +82,9 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" show fccb9e7 --stat)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" show fccb9e7 -- injected-scripts/common.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -20 --all)",
-      "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols"
+      "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff --cached)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-creator.js injected-scripts/wangyihao-creator.js)"
     ],
     "deny": [],
     "ask": []
