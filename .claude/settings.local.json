@@ -75,7 +75,14 @@
       "SlashCommand(/oh-my-claudecode:mcp-setup)",
       "Bash(gh auth:*)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/xinlang-publish.js)",
-      "Skill(oh-my-claudecode:deepsearch)"
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_take_screenshot",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff HEAD~5 -- injected-scripts/wangyihao-publish.js injected-scripts/wangyihao-creator.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline --all --since=\"2 days ago\")",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" show fccb9e7 --stat)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" show fccb9e7 -- injected-scripts/common.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -20 --all)",
+      "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols"
     ],
     "deny": [],
     "ask": []
