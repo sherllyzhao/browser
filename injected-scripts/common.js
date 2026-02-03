@@ -1585,12 +1585,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 发送成功消息并关闭窗口
     // 🔑 增加默认延迟到 2500ms，确保消息有足够时间到达 Vue 应用
+    // 🔑 关闭窗口前自动清除 publish_data_window 数据
     window.closeWindowWithMessage = async function (message = "发布成功，刷新数据", delay = 2500) {
         console.log(`[closeWindow] 发送消息: ${message}`);
         window.sendMessageToParent(message);
 
         // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
         await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 🔑 在关闭窗口前清除发布数据（防止数据残留）
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (windowId) {
+                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+                console.log(`[closeWindow] 🗑️ 已清除 publish_data_window_${windowId}`);
+            }
+        } catch (e) {
+            console.log(`[closeWindow] ⚠️ 清除发布数据失败:`, e.message);
+        }
 
         if (delay > 0) {
             console.log(`[closeWindow] 等待 ${delay}ms 确保消息到达...`);
