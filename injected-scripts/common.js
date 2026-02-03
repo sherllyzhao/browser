@@ -239,37 +239,35 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
 
         // 如果页面内容包含大量CSS选择器特征，说明渲染异常
-        // 使用通用的CSS语法特征，不依赖特定框架类名
+        // 🔑 只使用真正的 CSS 规则语法特征（必须带大括号或冒号+值的组合）
+        // 不要使用类名前缀（如 .semi-），因为它们在正常 HTML class 属性中也会出现
         const cssPatterns = [
-            // 通用CSS属性（任何网站都会有）
-            "text-decoration:none",
-            "background-color:transparent",
-            "background-color:rgba(",
-            "cursor:pointer",
-            "border-radius:",
-            "font-size:",
-            "line-height:",
-            "padding:",
-            "margin:",
-            "display:block",
-            "display:flex",
-            "position:absolute",
-            "position:relative",
-            // CSS选择器语法特征
-            ".where(",
+            // CSS 规则语法特征（必须有大括号，这是 CSS 规则的标志）
             ":hover{",
             ":focus{",
             "::before{",
             "::after{",
+            ":active{",
+            ":visited{",
+            ".where(",
             "@media ",
-            // 常见框架类名前缀（覆盖多个框架）
-            ".ant-", // Ant Design
-            ".semi-", // Semi Design
-            ".el-", // Element UI
-            ".van-", // Vant
-            ".arco-", // Arco Design
-            ".weui-", // WeUI
-            ".css-", // CSS Modules 生成的类名
+            "@keyframes ",
+            "@font-face{",
+            // CSS 属性:值 的完整组合（不带空格的紧凑写法，通常是压缩后的 CSS）
+            "text-decoration:none",
+            "background-color:transparent",
+            "background-color:rgba(",
+            "cursor:pointer",
+            "display:block",
+            "display:flex",
+            "display:inline-block",
+            "display:none",
+            "position:absolute",
+            "position:relative",
+            "position:fixed",
+            // 🔑 移除了容易误报的模式：
+            // - 类名前缀（.ant-, .semi- 等）会在正常 HTML class 属性中出现
+            // - 简单属性前缀（border-radius:, font-size: 等）可能在页面文本内容中出现
         ];
 
         let cssMatchCount = 0;
@@ -316,7 +314,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     // 页面状态检查并自动刷新（检测到异常时先隐藏页面）
+    // 🔑 只在主窗口检测，子窗口（发布页）跳过检测，避免第三方平台页面误报
     window.checkPageStateAndReload = function (scriptName = "脚本", reloadDelay = 2000) {
+        // 🔑 子窗口跳过检测（发布页是第三方平台，检测容易误报）
+        // 主窗口的 windowId 是 'main'，子窗口是数字
+        if (window.browserAPI && window.browserAPI.getWindowId) {
+            // 异步获取 windowId，但这里需要同步判断
+            // 使用一个简单的标记：如果 URL 不是首页，就跳过检测
+            const currentUrl = window.location.href;
+            const isHomePage = currentUrl.includes('localhost:5173') ||
+                               currentUrl.includes('china9.cn') ||
+                               currentUrl.includes('file://');
+
+            if (!isHomePage) {
+                console.log(`[${scriptName}] ⏭️ 子窗口（第三方平台），跳过页面状态检测`);
+                return true;
+            }
+        }
+
         if (!window.checkPageState(scriptName)) {
             // 立即隐藏页面内容，显示loading动画
             window.hidePageAndShowMask();
