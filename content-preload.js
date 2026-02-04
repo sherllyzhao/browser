@@ -646,7 +646,13 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 手动保存会话数据到后台（开发调试用）
   // 在不关闭窗口的情况下保存最新 cookies 到后台
   // 返回: { success: true, cookieCount: 10, response: '...' }
-  saveSessionToBackend: () => ipcRenderer.invoke('save-session-to-backend')
+  saveSessionToBackend: () => ipcRenderer.invoke('save-session-to-backend'),
+
+  // 版本更新
+  // 获取当前应用版本号
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  // 手动检查更新（会弹出更新对话框）
+  checkForUpdate: () => ipcRenderer.invoke('check-for-update')
 });
 
 // 在页面加载时注入通信代码和协议拦截

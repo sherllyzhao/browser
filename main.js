@@ -1,8 +1,13 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
 const ScriptManager = require('./script-manager');
 const config = require('./config');
+
+// 应用版本号（用于自动更新检测）
+const APP_VERSION = '1.0.0';
 
 let mainWindow;
 let browserView;
@@ -146,6 +151,167 @@ function cleanupDestroyedWindows() {
     }
   }
   console.log('[Window Manager] 清理后窗口数量:', childWindows.length);
+}
+
+// ===========================
+// 自动更新功能
+// ===========================
+
+/**
+ * 比较版本号
+ * @param {string} v1 版本号1
+ * @param {string} v2 版本号2
+ * @returns {number} v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
+ */
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const num1 = parts1[i] || 0;
+    const num2 = parts2[i] || 0;
+    if (num1 > num2) return 1;
+    if (num1 < num2) return -1;
+  }
+  return 0;
+}
+
+/**
+ * 获取版本检查 API 地址
+ * @returns {string} API URL
+ */
+function getVersionCheckUrl() {
+  // 开发环境使用本地地址
+  if (!isProduction) {
+    return 'http://localhost:5173/browserVersion.json';
+  }
+  // 生产环境使用正式站地址
+  return 'https://www.china9.cn/aigc_browser/browserVersion.json';
+}
+
+/**
+ * 检查更新
+ * @returns {Promise<{hasUpdate: boolean, version?: string, url?: string, error?: string}>}
+ */
+async function checkForUpdate() {
+  return new Promise((resolve) => {
+    const versionUrl = getVersionCheckUrl();
+    console.log('[Update] 检查更新:', versionUrl);
+
+    const urlObj = new URL(versionUrl);
+    const protocol = urlObj.protocol === 'https:' ? https : http;
+
+    const req = protocol.get(versionUrl, {
+      timeout: 10000,
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          console.log('[Update] 服务器响应:', result);
+
+          if (result.code === 200 && result.data) {
+            const remoteVersion = result.data.version;
+            const downloadUrl = result.data.url;
+
+            console.log(`[Update] 当前版本: ${APP_VERSION}, 服务器版本: ${remoteVersion}`);
+
+            if (compareVersions(remoteVersion, APP_VERSION) > 0) {
+              console.log('[Update] 发现新版本!');
+              resolve({
+                hasUpdate: true,
+                version: remoteVersion,
+                url: downloadUrl
+              });
+            } else {
+              console.log('[Update] 已是最新版本');
+              resolve({ hasUpdate: false });
+            }
+          } else {
+            console.log('[Update] 响应格式错误:', result);
+            resolve({ hasUpdate: false, error: '响应格式错误' });
+          }
+        } catch (err) {
+          console.error('[Update] 解析响应失败:', err.message);
+          resolve({ hasUpdate: false, error: err.message });
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error('[Update] 请求失败:', err.message);
+      resolve({ hasUpdate: false, error: err.message });
+    });
+
+    req.on('timeout', () => {
+      console.error('[Update] 请求超时');
+      req.destroy();
+      resolve({ hasUpdate: false, error: '请求超时' });
+    });
+  });
+}
+
+/**
+ * 显示更新对话框
+ * @param {string} newVersion 新版本号
+ * @param {string} downloadUrl 下载地址
+ */
+async function showUpdateDialog(newVersion, downloadUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    console.log('[Update] 主窗口不可用，无法显示更新对话框');
+    return;
+  }
+
+  console.log('[Update] 显示更新对话框, 新版本:', newVersion);
+
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['稍后更新', '立即下载'],
+    defaultId: 1,
+    cancelId: 0,
+    title: '发现新版本',
+    message: `发现新版本 v${newVersion}`,
+    detail: `当前版本: v${APP_VERSION}\n新版本: v${newVersion}\n\n点击"立即下载"将在浏览器中打开下载链接。\n下载完成后请手动安装新版本。`
+  });
+
+  if (result.response === 1) {
+    // 用户选择立即下载
+    console.log('[Update] 用户选择下载, URL:', downloadUrl);
+
+    // 使用系统默认浏览器打开下载链接
+    shell.openExternal(downloadUrl);
+
+    // 提示用户
+    await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['确定'],
+      title: '下载已开始',
+      message: '下载链接已在浏览器中打开',
+      detail: '下载完成后，请关闭当前程序并运行新版本安装包进行更新。'
+    });
+  } else {
+    console.log('[Update] 用户选择稍后更新');
+  }
+}
+
+/**
+ * 启动时检查更新（延迟执行，避免影响启动速度）
+ */
+function scheduleUpdateCheck() {
+  // 延迟 5 秒后检查更新，避免影响启动速度
+  setTimeout(async () => {
+    console.log('[Update] 开始检查更新...');
+    const updateInfo = await checkForUpdate();
+
+    if (updateInfo.hasUpdate && updateInfo.version && updateInfo.url) {
+      await showUpdateDialog(updateInfo.version, updateInfo.url);
+    }
+  }, 5000);
 }
 
 function createWindow() {
@@ -1667,6 +1833,9 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
 
+  // 启动后检查更新（延迟执行，避免影响启动速度）
+  scheduleUpdateCheck();
+
   // 注册全局快捷键：只打开公共头部（主窗口）的 DevTools (Ctrl+Shift+F11)
   globalShortcut.register('CommandOrControl+Shift+F11', () => {
     console.log('[DevTools] 公共头部 DevTools 快捷键触发');
@@ -1998,6 +2167,23 @@ app.on('window-all-closed', function () {
 });
 
 // IPC 处理程序
+
+// 获取当前应用版本
+ipcMain.handle('get-app-version', () => {
+  return APP_VERSION;
+});
+
+// 手动检查更新（可由前端触发）
+ipcMain.handle('check-for-update', async () => {
+  const updateInfo = await checkForUpdate();
+
+  if (updateInfo.hasUpdate && updateInfo.version && updateInfo.url) {
+    // 显示更新对话框
+    await showUpdateDialog(updateInfo.version, updateInfo.url);
+  }
+
+  return updateInfo;
+});
 
 // 检查 Session 状态（用于检测登录状态是否被清除）
 ipcMain.handle('check-session-status', async () => {
@@ -5231,9 +5417,6 @@ ipcMain.handle('save-session-to-backend', async (event) => {
     console.log('[Save Session] 账号 ID:', backendAccountId);
 
     // 调用后台接口保存 cookies（使用 Promise 包装）
-    const https = require('https');
-    const http = require('http');
-
     const postData = JSON.stringify({
       id: backendAccountId,
       cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })

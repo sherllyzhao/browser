@@ -840,6 +840,68 @@ window.addEventListener('beforeunload', async (e) => {
 2. `clearAccountCookies` 会清空该账号 session 中的所有 cookies，确保下次发布时使用的是从后台恢复的最新会话数据
 3. 建议在发布完成或窗口关闭前调用 `clearAccountCookies`，避免登录状态累积
 
+### 15. 自动更新功能
+
+浏览器启动后会自动检查是否有新版本，如果有新版本会弹出更新对话框。
+
+#### 版本检查接口
+
+| 环境 | 接口地址 |
+|------|---------|
+| 开发环境 | `http://localhost:5173/browserVersion.json` |
+| 生产环境 | `https://www.china9.cn/aigc_browser/browserVersion.json` |
+
+**接口返回格式**：
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "version": "1.0.1",
+    "url": "https://apidev.china9.cn/运营助手 1.0.1.exe"
+  }
+}
+```
+
+#### 更新流程
+
+1. **自动检查**：应用启动 5 秒后自动请求版本接口
+2. **版本比较**：服务器版本 > 本地版本时触发更新提示
+3. **弹出对话框**：显示当前版本和新版本号，提供两个按钮：
+   - "立即下载" - 用系统默认浏览器打开下载链接
+   - "稍后更新" - 关闭对话框，不影响正常使用
+4. **手动安装**：用户下载完成后需关闭当前程序，运行新版本安装包
+
+#### API 接口
+
+```javascript
+// 获取当前应用版本号
+const version = await window.browserAPI.getAppVersion();
+// 返回: '1.0.0'
+
+// 手动触发更新检查（会弹出更新对话框）
+const result = await window.browserAPI.checkForUpdate();
+// 返回: { hasUpdate: true, version: '1.0.1', url: 'https://...' }
+// 或: { hasUpdate: false }
+// 或: { hasUpdate: false, error: '请求超时' }
+```
+
+**注意**：`electronAPI` 和 `browserAPI` 都提供了这两个接口：
+- `window.electronAPI.getAppVersion()` / `window.electronAPI.checkForUpdate()` - 控制面板使用
+- `window.browserAPI.getAppVersion()` / `window.browserAPI.checkForUpdate()` - 内容页面使用
+
+#### 发布新版本
+
+1. 修改 `main.js` 中的 `APP_VERSION` 常量为新版本号
+2. 打包生成新的安装包
+3. 上传安装包到服务器
+4. 更新服务器上的 `browserVersion.json`，设置新版本号和下载链接
+
+**版本号位置**（main.js 第 10 行）：
+```javascript
+const APP_VERSION = '1.0.0';  // 修改这里
+```
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory

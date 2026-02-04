@@ -103,5 +103,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setGlobalData: (key, value) => ipcRenderer.invoke('global-storage-set', key, value),
   getGlobalData: (key) => ipcRenderer.invoke('global-storage-get', key).then(r => r.value),
   removeGlobalData: (key) => ipcRenderer.invoke('global-storage-remove', key),
-  getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data)
+  getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
+
+  // 版本更新
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  checkForUpdate: () => ipcRenderer.invoke('check-for-update')
 });
