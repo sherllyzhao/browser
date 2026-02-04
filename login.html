@@ -451,7 +451,8 @@
       if (window.browserAPI && window.browserAPI.getMainUrl) {
         try {
           const mainInfo = await window.browserAPI.getMainUrl();
-          if (mainInfo.success && mainInfo.origin && !mainInfo.origin.startsWith('file://')) {
+          // 🔑 注意：file:// 协议的 URL 解析后 origin 会返回字符串 "null"，需要过滤
+          if (mainInfo.success && mainInfo.origin && mainInfo.origin !== 'null' && !mainInfo.origin.startsWith('file://')) {
             API_BASE_URL = mainInfo.origin;
             console.log('[Login] API 基础地址:', API_BASE_URL);
             return API_BASE_URL;
