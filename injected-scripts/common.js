@@ -1087,8 +1087,8 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 if (mainInfo.success && mainInfo.host) {
                     const host = mainInfo.host.toLowerCase();
 
-                    // 检查是否是开发环境
-                    const isDev = devHosts.some(devHost => host.includes(devHost) || devHost.includes(host));
+                    // 检查是否是开发环境（精确匹配，避免 china9.cn 被 dev.china9.cn 误匹配）
+                    const isDev = devHosts.some(devHost => host === devHost || host.endsWith('.' + devHost) || devHost === host);
 
                     if (isDev) {
                         apiDomain = "https://apidev.china9.cn";
