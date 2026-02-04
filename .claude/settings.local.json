@@ -84,7 +84,8 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -20 --all)",
       "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff --cached)",
-      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-creator.js injected-scripts/wangyihao-creator.js)"
+      "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-creator.js injected-scripts/wangyihao-creator.js)",
+      "Bash(git -C \"D:\\浏览器\\运营助手\" add injected-scripts/scripts-config.json script-manager.js)"
     ],
     "deny": [],
     "ask": []

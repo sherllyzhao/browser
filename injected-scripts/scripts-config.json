@@ -1,4 +1,12 @@
 {
+  "remoteConfig": {
+    "enabled": true,
+    "baseUrl": "https://www.china9.cn/aigc_browser/injected-scripts/",
+    "devBaseUrl": "http://localhost:5173/injected-scripts/",
+    "cachePolicy": "no-cache",
+    "timeout": 10000,
+    "fallbackToLocal": true
+  },
   "scripts": {
     "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
     "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
