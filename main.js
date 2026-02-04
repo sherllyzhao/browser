@@ -177,15 +177,59 @@ function compareVersions(v1, v2) {
 }
 
 /**
- * 获取版本检查 API 地址
+ * 开发环境域名列表（与 common.js 保持一致）
+ */
+const DEV_HOSTS = [
+  "localhost:5173",
+  "localhost:8080",
+  "127.0.0.1:5173",
+  "127.0.0.1:8080",
+  "dev.china9.cn",
+  "www.dev.china9.cn",
+  "apidev.china9.cn",
+  "172.16.6.17:8080",
+  "jzt_dev_1.china9.cn",
+];
+
+/**
+ * 根据域名判断是否为开发环境
+ * @param {string} host - 域名
+ * @returns {boolean}
+ */
+function isDevHost(host) {
+  if (!host) return false;
+  const h = host.toLowerCase();
+  return DEV_HOSTS.some(devHost => h === devHost || h.endsWith('.' + devHost));
+}
+
+/**
+ * 获取版本检查 API 地址（根据主窗口域名动态判断）
  * @returns {string} API URL
  */
 function getVersionCheckUrl() {
-  // 开发环境使用本地地址
+  // 尝试从 browserView 获取当前 URL
+  if (browserView && browserView.webContents) {
+    try {
+      const currentUrl = browserView.webContents.getURL();
+      if (currentUrl) {
+        const urlObj = new URL(currentUrl);
+        if (isDevHost(urlObj.host)) {
+          console.log('[Update] 检测到开发环境:', urlObj.host);
+          return 'http://localhost:5173/browserVersion.json';
+        } else {
+          console.log('[Update] 检测到生产环境:', urlObj.host);
+          return 'https://www.china9.cn/aigc_browser/browserVersion.json';
+        }
+      }
+    } catch (e) {
+      console.warn('[Update] 解析 URL 失败:', e);
+    }
+  }
+
+  // 回退逻辑：根据打包状态判断
   if (!isProduction) {
     return 'http://localhost:5173/browserVersion.json';
   }
-  // 生产环境使用正式站地址
   return 'https://www.china9.cn/aigc_browser/browserVersion.json';
 }
 
