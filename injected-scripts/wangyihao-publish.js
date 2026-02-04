@@ -27,6 +27,14 @@
 
     window.__WYH_SCRIPT_LOADED__ = true;
 
+    // ===========================
+    // 🔑 等待 React 初始化完成
+    // 延迟执行脚本，避免在 React 渲染过程中干扰 DOM
+    // ===========================
+    console.log('[网易号发布] ⏳ 等待页面渲染完成...');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    console.log('[网易号发布] ✅ 延迟完成，开始执行脚本');
+
     // 变量声明（放在防重复检查之后）
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
@@ -399,19 +407,6 @@
             }
 
             setTimeout(async () => {
-                await retryOperation(async () => {
-                    // 有弹窗先关闭弹窗
-                    try{
-                        const tipDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
-                        if (tipDialogEle) {
-                            const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
-                            tipBtnEle.click()
-                        }
-                    }catch (e) {
-                        console.log('[网易号发布] ❌ 关闭弹窗失败:', e);
-                    }
-                }, 5, 1000)
-
                 // 标题（带重试和验证）
                 try{
                     await retryOperation(async () => {
@@ -605,27 +600,43 @@
                                 htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
                                 console.log('[网易号发布] 🧹 已清理开头所有空白内容');
 
-                                // 清空编辑器
-                                editorEle.innerHTML = '';
+                                // 🔑 检查 editorEle 是否存在
+                                if (!editorEle) {
+                                    console.error('[网易号发布] ❌ 编辑器元素未找到');
+                                    throw new Error('编辑器元素未找到');
+                                }
+                                console.log('[网易号发布] ✅ 编辑器元素已找到:', editorEle.tagName, editorEle.className);
+
+                                // 🔑 Draft.js 兼容方案：只使用粘贴事件，不做任何 DOM 操作
+                                // Draft.js 会自己处理粘贴内容，不会破坏内部状态
 
                                 // 让编辑器获得焦点
                                 editorEle.focus();
+                                await new Promise(resolve => setTimeout(resolve, 300));
 
-                                // 通过粘贴事件插入内容（让 Draft.js 自己处理）
+                                // 🔑 关键：不要清空编辑器！让 Draft.js 自己处理
+                                // 只通过粘贴事件插入内容（追加到现有内容后面）
+                                // 如果编辑器有默认占位内容，粘贴后会自动替换
+
+                                console.log('[网易号发布] 📋 准备通过粘贴事件插入内容...');
+
+                                // 创建粘贴事件
+                                const clipboardData = new DataTransfer();
+                                clipboardData.setData('text/html', htmlContent);
+                                clipboardData.setData('text/plain', tempDiv.textContent);
+
                                 const pasteEvent = new ClipboardEvent('paste', {
-                                    clipboardData: new DataTransfer(),
+                                    clipboardData: clipboardData,
                                     bubbles: true,
                                     cancelable: true
                                 });
 
-                                // 设置粘贴的 HTML 和纯文本内容
-                                pasteEvent.clipboardData.setData('text/html', htmlContent);
-                                pasteEvent.clipboardData.setData('text/plain', tempDiv.textContent);
-
+                                // 触发粘贴事件
                                 editorEle.dispatchEvent(pasteEvent);
+                                console.log('[网易号发布] ✅ 已触发粘贴事件');
 
-                                // 等待编辑器处理粘贴事件
-                                await new Promise(resolve => setTimeout(resolve, 800));
+                                // 等待 Draft.js 处理粘贴内容
+                                await new Promise(resolve => setTimeout(resolve, 1000));
 
                                 console.log('[网易号发布] ✅ 内容填写完成');
                             }, 3, 1000);
