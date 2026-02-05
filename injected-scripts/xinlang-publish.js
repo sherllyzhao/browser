@@ -1208,6 +1208,10 @@
                             const event = new Event("change", {bubbles: true});
                             input.dispatchEvent(event);
 
+                            // 🔑 设置上传标志，防止重试时重复上传
+                            window.__xinlangImageUploaded = true;
+                            console.log('[新浪发布] 🔑 已设置图片上传标志，防止重复上传');
+
                             // 增加等待时间，让文件上传开始处理
                             await delay(2000);
 
@@ -1868,7 +1872,16 @@
 
                                                     await delay(1000);
 
-                                                    // 重新上传文件
+                                                    // 🔑 检查是否已经上传过，防止重复上传
+                                                    if (window.__xinlangImageUploaded) {
+                                                        console.log('[新浪发布] ⚠️ 图片已上传过，不再重复上传，仅重新检查结果...');
+                                                        // 不重新上传，只递归检查结果
+                                                        await delay(3000); // 等待更长时间让上传完成
+                                                        await tryUploadImage(retryCount + 1);
+                                                        return;
+                                                    }
+
+                                                    // 重新上传文件（仅在首次上传失败时）
                                                     const retryInput = retryModal.querySelector("input[type='file']");
                                                     if (retryInput) {
                                                         // 🔴 清空旧文件并重新上传
