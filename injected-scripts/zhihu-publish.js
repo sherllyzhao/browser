@@ -468,27 +468,43 @@
                                 htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
                                 console.log('[知乎发布] 🧹 已清理开头所有空白内容');
 
-                                // 清空编辑器
-                                editorEle.innerHTML = '';
+                                // 🔑 检查 editorEle 是否存在
+                                if (!editorEle) {
+                                    console.error('[知乎发布] ❌ 编辑器元素未找到');
+                                    throw new Error('编辑器元素未找到');
+                                }
+                                console.log('[知乎发布] ✅ 编辑器元素已找到:', editorEle.tagName, editorEle.className);
+
+                                // 🔑 Draft.js 兼容方案：只使用粘贴事件，不做任何 DOM 操作
+                                // Draft.js 会自己处理粘贴内容，不会破坏内部状态
 
                                 // 让编辑器获得焦点
                                 editorEle.focus();
+                                await new Promise(resolve => setTimeout(resolve, 300));
 
-                                // 通过粘贴事件插入内容（让 Draft.js 自己处理）
+                                // 🔑 关键：不要清空编辑器！让 Draft.js 自己处理
+                                // 只通过粘贴事件插入内容（追加到现有内容后面）
+                                // 如果编辑器有默认占位内容，粘贴后会自动替换
+
+                                console.log('[知乎发布] 📋 准备通过粘贴事件插入内容...');
+
+                                // 创建粘贴事件
+                                const clipboardData = new DataTransfer();
+                                clipboardData.setData('text/html', htmlContent);
+                                clipboardData.setData('text/plain', tempDiv.textContent);
+
                                 const pasteEvent = new ClipboardEvent('paste', {
-                                    clipboardData: new DataTransfer(),
+                                    clipboardData: clipboardData,
                                     bubbles: true,
                                     cancelable: true
                                 });
 
-                                // 设置粘贴的 HTML 和纯文本内容
-                                pasteEvent.clipboardData.setData('text/html', htmlContent);
-                                pasteEvent.clipboardData.setData('text/plain', tempDiv.textContent);
-
+                                // 触发粘贴事件
                                 editorEle.dispatchEvent(pasteEvent);
+                                console.log('[知乎发布] ✅ 已触发粘贴事件');
 
-                                // 等待编辑器处理粘贴事件
-                                await new Promise(resolve => setTimeout(resolve, 800));
+                                // 等待 Draft.js 处理粘贴内容
+                                await new Promise(resolve => setTimeout(resolve, 1000));
 
                                 console.log('[知乎发布] ✅ 内容填写完成');
                             }, 3, 1000);
