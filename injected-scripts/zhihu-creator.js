@@ -205,7 +205,7 @@
                 console.log('[知乎授权] 📡 API 地址:', apiUrl);
 
                 // 发送数据到服务器
-                const apiResponse = await fetch(apiUrl, {
+                  const apiResponse = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
