@@ -287,50 +287,6 @@ let hasProcessed = false;
       console.error('[抖音发布] ❌ 从全局存储读取数据失败:', error);
     }
   })();
-
-  // ===========================
-  // 7. 检查是否有保存的发布数据（授权跳转恢复）
-  // ===========================
-  /* setTimeout(async () => {
-    try {
-      const savedData = localStorage.getItem('DOUYIN_PUBLISH_DATA');
-      if (savedData && !isProcessing && !hasProcessed) {
-        console.log('[抖音发布] 🔄 检测到保存的发布数据，准备恢复...');
-        const messageData = JSON.parse(savedData);
-        console.log('[抖音发布] 📦 恢复的数据:', messageData);
-
-        // 标记为正在处理
-        isProcessing = true;
-
-        // 更新全局变量
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: messageData,
-          recoveredAt: Date.now()
-        };
-
-        // 执行上传流程
-        await uploadVideo(messageData);
-        try {
-          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-        } catch (e) {
-          console.log('[抖音发布] ❌ 填写表单数据失败:', e);
-        }
-
-        console.log('[抖音发布] 📤 恢复数据后准备发送数据到接口...');
-        console.log('[抖音发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-        // 重置处理标志
-        isProcessing = false;
-      } else {
-        console.log('[抖音发布] ℹ️ 没有需要恢复的数据');
-      }
-    } catch (error) {
-      console.error('[抖音发布] ❌ 恢复数据失败:', error);
-      isProcessing = false;
-    }
-  }, 2000); // 延迟2秒，等待页面完全加载 */
-
 })();
 
 // ===========================
