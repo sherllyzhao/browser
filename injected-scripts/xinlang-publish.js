@@ -674,11 +674,24 @@
     // 填写表单数据
     async function fillFormData(dataObj) {
         console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
-        // 防止重复执行
-        if (fillFormRunning) {
+
+        // 🔴 使用全局锁防止并发执行
+        if (window.__XL_fillFormRunning) {
+            console.log("[新浪发布] ⚠️ fillFormData 已在运行，忽略重复调用");
             return;
         }
+
+        // 设置全局锁
+        window.__XL_fillFormRunning = true;
         fillFormRunning = true;
+
+        // 原有的防止重复执行检查
+        if (hasProcessed) {
+            console.log("[新浪发布] ⚠️ 已处理过，跳过");
+            window.__XL_fillFormRunning = false;
+            fillFormRunning = false;
+            return;
+        }
 
         try {
             // 🔴 等待 URL 稳定（新浪可能会自动跳转）
@@ -1012,6 +1025,61 @@
 
                             await delay(3000);
 
+                            // 清空所有上传了的图片
+                            // 🔴 上传前清空所有旧文件，确保只上传新文件
+                            console.log('[新浪发布] 🧹 清空旧文件...');
+                            const uploadList = uploadModal.querySelectorAll(".image-item");
+                            console.log("🚀 ~  ~ uploadList: ", uploadList, "数量:", uploadList?.length);
+                            if (uploadList && uploadList.length > 0) {
+                                for (let uploadItem of uploadList) {
+                                    const uploadItemBtn = uploadItem.querySelector(".ico_delpic");
+                                    if (uploadItemBtn) {
+                                        // 🔴 模拟完整的鼠标交互序列
+                                        uploadItem.dispatchEvent(new MouseEvent('mouseenter', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window
+                                        }));
+                                        await delay(100);
+
+                                        uploadItem.dispatchEvent(new MouseEvent('mouseover', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window
+                                        }));
+                                        await delay(500); // 等待删除按钮完全显示
+
+                                        // 🔴 添加 mousedown 和 mouseup 事件
+                                        uploadItemBtn.dispatchEvent(new MouseEvent('mousedown', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window,
+                                            button: 0
+                                        }));
+                                        await delay(50);
+
+                                        uploadItemBtn.dispatchEvent(new MouseEvent('mouseup', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window,
+                                            button: 0
+                                        }));
+                                        await delay(50);
+
+                                        uploadItemBtn.dispatchEvent(new MouseEvent('click', {
+                                            bubbles: true,
+                                            cancelable: true,
+                                            view: window,
+                                            button: 0
+                                        }));
+
+                                        console.log('[新浪发布] 🗑️ 已点击删除按钮');
+                                        await delay(1500); // 等待删除动画完成
+                                    }
+                                }
+                            }
+                            console.log('[新浪发布] 🧹 清空完毕');
+
                             // 上传图片（带重试）
                             let input;
                             // 🔴 重新获取 uploadModal，防止引用失效
@@ -1029,9 +1097,6 @@
                                 console.error("[新浪发布]    2. 弹窗结构改变");
                                 console.error("[新浪发布]    3. 图片库标签未激活");
                             }
-
-                            // 🔴 上传前清空所有旧文件，确保只上传新文件
-                            console.log('[新浪发布] 🧹 清空旧文件...');
 
                             // 方法1：清空 value（对某些浏览器有效）
                             input.value = '';
@@ -1268,8 +1333,6 @@
 
                                     const publishTime = dataObj.video.formData.send_set;
                                     console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
-
-                                    return;
 
                                     // 找发布按钮
                                     const publishBtns = document.querySelectorAll(".common-footer .footer-item button");
@@ -1593,6 +1656,7 @@
                 })();
 
                 fillFormRunning = false;
+                window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');
             }, 10000);
         } catch (error) {
@@ -1605,6 +1669,7 @@
             }
             // 同步错误时重置标记
             fillFormRunning = false;
+            window.__XL_fillFormRunning = false; // 🔴 释放全局锁
             // 填写表单失败也要关闭窗口，不阻塞下一个任务
             await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
         }
