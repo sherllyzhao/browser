@@ -1027,7 +1027,7 @@ async function loadSiteList(url) {
         await window.electronAPI.getGlobalData('current_site_name');
       }
       // 添加 system=geo 参数，让占位页保持 GEO Tab 选中状态
-      const notAvailablePath = 'file:///D:/浏览器/运营助手/not-available.html?system=geo';
+      const notAvailablePath = 'file:///D:/浏览器/资海云运营助手/not-available.html?system=geo';
       await window.electronAPI.navigateCurrentWindow(notAvailablePath);
       return;
     }

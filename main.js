@@ -58,7 +58,7 @@ if (isProduction) {
   if (isPortable) {
     // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
     // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
-    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '运营助手-Portable');
+    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
 
     // 确保目录存在
     if (!fs.existsSync(portableDataPath)) {
@@ -94,21 +94,18 @@ function loadLocalPage(webContents, pageName) {
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
+// 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
 function addContentTypeFix(targetSession, label) {
   targetSession.webRequest.onHeadersReceived((details, callback) => {
     const url = details.url.toLowerCase();
     const responseHeaders = details.responseHeaders || {};
+    const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
 
-    if (url.endsWith('.css') || url.includes('.css?')) {
-      const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
-      if (!ct || (Array.isArray(ct) && !ct.some(v => v.includes('text/css')))) {
+    // 只在服务器没返回 Content-Type 时才补上
+    if (!ct) {
+      if (url.endsWith('.css')) {
         responseHeaders['Content-Type'] = ['text/css; charset=utf-8'];
-      }
-    }
-
-    if (url.endsWith('.js') || url.includes('.js?')) {
-      const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
-      if (!ct || (Array.isArray(ct) && !ct.some(v => v.includes('javascript')))) {
+      } else if (url.endsWith('.js')) {
         responseHeaders['Content-Type'] = ['application/javascript; charset=utf-8'];
       }
     }
@@ -188,7 +185,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: '运营助手',
+    title: '资海云运营助手',
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
