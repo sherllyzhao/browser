@@ -81,9 +81,42 @@ if (isProduction) {
 
 // 登录页地址（本地 HTML 文件）
 const LOGIN_URL = 'file:///' + __dirname.replace(/\\/g, '/') + '/login.html';
+const LOGIN_FILE_PATH = path.join(__dirname, 'login.html'); // 用于 loadFile()，避免 file:// MIME 类型问题
 
 // 首页地址（开发和生产环境都使用登录页）
 const HOME_URL = LOGIN_URL;
+
+// 加载本地页面（使用 loadFile 确保 MIME 类型正确，解决 CSS 渲染成文字的问题）
+function loadLocalPage(webContents, pageName) {
+  const filePath = path.join(__dirname, pageName);
+  console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
+  return webContents.loadFile(filePath);
+}
+
+// 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
+function addContentTypeFix(targetSession, label) {
+  targetSession.webRequest.onHeadersReceived((details, callback) => {
+    const url = details.url.toLowerCase();
+    const responseHeaders = details.responseHeaders || {};
+
+    if (url.endsWith('.css') || url.includes('.css?')) {
+      const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
+      if (!ct || (Array.isArray(ct) && !ct.some(v => v.includes('text/css')))) {
+        responseHeaders['Content-Type'] = ['text/css; charset=utf-8'];
+      }
+    }
+
+    if (url.endsWith('.js') || url.includes('.js?')) {
+      const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
+      if (!ct || (Array.isArray(ct) && !ct.some(v => v.includes('javascript')))) {
+        responseHeaders['Content-Type'] = ['application/javascript; charset=utf-8'];
+      }
+    }
+
+    callback({ responseHeaders });
+  });
+  console.log(`[Session] ✅ ${label} Content-Type 修复拦截器已添加`);
+}
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
@@ -304,6 +337,9 @@ function createWindow() {
     callback({});
   });
   console.log('[Session] ✅ 已添加 webRequest 协议拦截器');
+
+  // 🔴 修复外部页面 CSS/JS 乱码
+  addContentTypeFix(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -535,16 +571,24 @@ function createWindow() {
     isHeaderHidden = startUrl.includes('login.html');
     updateBrowserViewBounds(isScriptPanelOpen);
 
-    browserView.webContents.loadURL(startUrl)
+    // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
+    const loadPage = startUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(startUrl))
+      : browserView.webContents.loadURL(startUrl);
+
+    loadPage
       .then(() => {
-        console.log('[BrowserView] ✅ 页面 loadURL 调用成功');
+        console.log('[BrowserView] ✅ 页面加载调用成功');
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
         // 失败后3秒重试一次
         setTimeout(() => {
           console.log('[BrowserView] 🔄 3秒后重试加载...');
-          browserView.webContents.loadURL(startUrl).catch(e => {
+          const retryLoad = startUrl.startsWith('file://')
+            ? loadLocalPage(browserView.webContents, path.basename(startUrl))
+            : browserView.webContents.loadURL(startUrl);
+          retryLoad.catch(e => {
             console.error('[BrowserView] ❌ 重试失败:', e);
           });
         }, 3000);
@@ -813,7 +857,7 @@ function createWindow() {
           console.log('[Navigation] 系统类型:', systemParam);
 
           // 加载占位页，带上 system 参数
-          browserView.webContents.loadURL(`file://${__dirname}/not-auth.html?system=${systemParam}`);
+          browserView.webContents.loadFile(path.join(__dirname, 'not-auth.html'), { query: { system: systemParam } });
 
           // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
           if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
@@ -869,7 +913,7 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -903,7 +947,7 @@ function createWindow() {
           delete globalStorage.login_gcc;
           saveGlobalStorage();
           // 跳转到登录页
-          browserView.webContents.loadURL(LOGIN_URL);
+          loadLocalPage(browserView.webContents, 'login.html');
           return;
         }
       } catch (err) {
@@ -938,7 +982,7 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -966,7 +1010,7 @@ function createWindow() {
           delete globalStorage.login_expires;
           delete globalStorage.login_gcc;
           saveGlobalStorage();
-          browserView.webContents.loadURL(LOGIN_URL);
+          loadLocalPage(browserView.webContents, 'login.html');
           return;
         }
       } catch (err) {
@@ -1056,7 +1100,7 @@ function createWindow() {
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1075,7 +1119,7 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
-        browserView.webContents.loadURL(LOGIN_URL);
+        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
@@ -1115,7 +1159,7 @@ function createWindow() {
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1134,7 +1178,7 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
-        browserView.webContents.loadURL(LOGIN_URL);
+        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
@@ -2139,7 +2183,7 @@ ipcMain.handle('navigate-to-login', async () => {
       console.error('[Main] ❌ 清除 cookies 失败:', err);
     }
 
-    browserView.webContents.loadURL(LOGIN_URL);
+    loadLocalPage(browserView.webContents, 'login.html');
   }
 });
 
@@ -2153,9 +2197,8 @@ ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
       return { success: false, error: '不允许跳转到该页面' };
     }
 
-    const localUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + pageName;
-    console.log('[Main] 跳转到本地页面:', localUrl);
-    browserView.webContents.loadURL(localUrl);
+    console.log('[Main] 跳转到本地页面:', pageName);
+    loadLocalPage(browserView.webContents, pageName);
     return { success: true };
   }
   return { success: false, error: 'browserView 不可用' };
@@ -3095,6 +3138,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         callback({});
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
+      addContentTypeFix(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4205,6 +4249,7 @@ function getAccountSession(platform, accountId) {
   // 缓存 session
   accountSessions.set(partitionName, accountSession);
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
+  addContentTypeFix(accountSession, `账号 session ${partitionName}`);
 
   return accountSession;
 }
