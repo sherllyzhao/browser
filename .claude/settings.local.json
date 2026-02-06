@@ -83,7 +83,10 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" show fccb9e7 -- injected-scripts/common.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" log --oneline -20 --all)",
       "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols",
-      "mcp__playwright__browser_click"
+      "mcp__playwright__browser_click",
+      "mcp__plugin_oh-my-claudecode_omc-tools__python_repl",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\xinlang-publish.js'' -TotalCount 200 | Select-Object -Skip 1\")",
+      "Bash(powershell:*)"
     ],
     "deny": [],
     "ask": []
