@@ -7,7 +7,7 @@ const ScriptManager = require('./script-manager');
 const config = require('./config');
 
 // 应用版本号（用于自动更新检测）
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 
 let mainWindow;
 let browserView;
