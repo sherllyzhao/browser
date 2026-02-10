@@ -53,13 +53,16 @@ const GEO_URL = isProduction
   : 'http://localhost:8080/#/geo/index';
   //: 'http://172.16.6.17:8080/#/geo/index';
 
+// 占位页面文件名（与 config.js 中 placeholderPages 保持一致）
+const PLACEHOLDER_PAGES = ['not-available.html', 'not-auth.html', 'not-purchase.html', 'login.html'];
+
 // 判断当前系统类型
 function getCurrentSystem(url) {
   if (!url) return 'aigc';
   const urlLower = url.toLowerCase();
 
-  // 检查 not-available.html 的查询参数（用于占位页保持正确的 Tab 选中状态）
-  if (urlLower.includes('not-available.html') || urlLower.includes('not-auth.html?')) {
+  // 检查占位页的查询参数（用于占位页保持正确的 Tab 选中状态）
+  if (PLACEHOLDER_PAGES.some(page => urlLower.includes(page))) {
     try {
       const urlObj = new URL(url);
       const systemParam = urlObj.searchParams.get('system');
@@ -1027,7 +1030,7 @@ async function loadSiteList(url) {
         await window.electronAPI.getGlobalData('current_site_name');
       }
       // 添加 system=geo 参数，让占位页保持 GEO Tab 选中状态
-      const notAvailablePath = 'file:///D:/浏览器/资海云运营助手/not-available.html?system=geo';
+      const notAvailablePath = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + PLACEHOLDER_PAGES[0] + '?system=geo';
       await window.electronAPI.navigateCurrentWindow(notAvailablePath);
       return;
     }

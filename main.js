@@ -702,7 +702,7 @@ function createWindow() {
           // geo 项目首页
           startUrl = isProduction
             ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-            : 'http://localhost:8080/';
+            : 'http://localhost:8080/geo/index';
           console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
           // 默认 aigc 项目首页
@@ -983,7 +983,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate-in-page', (event, url) => {
     console.log(`[Navigation] Hash 路由变化 → ${url}`);
     // 记录 hash 路由变化的 URL（前端路由跳转到的目标页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes('not-available')) {
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes(config.placeholderPages.notAvailable)) {
       pendingNavigationUrl = url;
       lastValidUrl = url;
     }
@@ -1020,7 +1020,7 @@ function createWindow() {
           console.log('[Navigation] 系统类型:', systemParam);
 
           // 加载占位页，带上 system 参数
-          browserView.webContents.loadFile(path.join(__dirname, 'not-auth.html'), { query: { system: systemParam } });
+          browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notAuth), { query: { system: systemParam } });
 
           // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
           if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
@@ -1035,7 +1035,7 @@ function createWindow() {
     }
 
     // 记录有效的 URL（排除本地文件和特殊页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes('not-available') && !url.includes('not-auth'))) {
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes(config.placeholderPages.notAvailable) && !url.includes(config.placeholderPages.notAuth))) {
       lastValidUrl = url;
     }
     // 清空 pendingNavigationUrl（导航成功开始）
@@ -1296,8 +1296,12 @@ function createWindow() {
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
+        // 通知 renderer 更新 Tab 选中状态为 GEO
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('url-changed', notPurchaseUrl);
+        }
         return;
       }
       console.log('[Geo Auth Check] ✅ geo 权限检查通过');
@@ -1355,8 +1359,12 @@ function createWindow() {
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
+        // 通知 renderer 更新 Tab 选中状态为 GEO
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('url-changed', notPurchaseUrl);
+        }
         return;
       }
       console.log('[Geo Auth Check] ✅ geo 权限检查通过');
@@ -2374,7 +2382,7 @@ ipcMain.handle('navigate-to-login', async () => {
 ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
   if (browserView) {
     // 安全检查：只允许跳转到指定的本地页面
-    const allowedPages = ['not-available.html', 'login.html'];
+    const allowedPages = Object.values(config.placeholderPages);
     if (!allowedPages.includes(pageName)) {
       console.log('[Main] ❌ 不允许跳转到未知页面:', pageName);
       return { success: false, error: '不允许跳转到该页面' };
