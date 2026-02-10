@@ -16,6 +16,7 @@ let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
+let openInNewWindow = false; // 新窗口模式状态
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -2231,6 +2232,17 @@ ipcMain.handle('check-for-update', async () => {
   }
 
   return updateInfo;
+});
+
+// 获取新窗口模式状态
+ipcMain.handle('get-new-window-mode', () => {
+  return { openInNewWindow };
+});
+
+// 切换新窗口模式
+ipcMain.handle('toggle-new-window-mode', () => {
+  openInNewWindow = !openInNewWindow;
+  return { openInNewWindow };
 });
 
 // 检查 Session 状态（用于检测登录状态是否被清除）

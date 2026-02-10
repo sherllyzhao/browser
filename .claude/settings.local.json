@@ -87,7 +87,8 @@
       "mcp__plugin_oh-my-claudecode_omc-tools__python_repl",
       "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\xinlang-publish.js'' -TotalCount 200 | Select-Object -Skip 1\")",
       "Bash(powershell:*)",
-      "Bash(npm start)"
+      "Bash(npm start)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

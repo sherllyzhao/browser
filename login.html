@@ -811,7 +811,13 @@
 
             // 把站点id存进去
             await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
+
+            // 检查 web_name 是否存在
+            if (!siteInfo.web_name) {
+              console.warn('[Login] ⚠️ siteInfo.web_name 为空:', siteInfo);
+            }
             await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
+            console.log('[Login] 已存储站点信息 - ID:', siteInfo.id, 'Name:', siteInfo.web_name);
             if (window.browserAPI && window.browserAPI.setCookie) {
               try {
                 // 1. 为 localhost:5173 设置 Cookie（开发环境）

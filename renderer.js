@@ -814,6 +814,8 @@ async function getSiteListApi() {
     siteId = 255;
     companyId = 2
   }
+
+  // 1.1
   const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
@@ -826,7 +828,22 @@ async function getSiteListApi() {
     throw new Error(`HTTP error! status: ${response.status}`);
   }
   const result = await response.json();
-  return result.data || [];
+
+  // 2.0
+  /* const response2 = await fetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': await window.electronAPI.getGlobalData('login_token'),
+      'access_token': await window.electronAPI.getGlobalData('login_token'),
+    }
+  });
+  if (!response2.ok) {
+    throw new Error(`HTTP error! status: ${response2.status}`);
+  }
+  const result2 = await response2.json(); */
+
+  return result.data/* .concat(result2.data) */ || [];
 }
 
 // 渲染站点下拉列表
