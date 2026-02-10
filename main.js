@@ -1288,7 +1288,7 @@ function createWindow() {
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
@@ -1351,7 +1351,7 @@ function createWindow() {
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
