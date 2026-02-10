@@ -6,8 +6,8 @@ const http = require('http');
 const ScriptManager = require('./script-manager');
 const config = require('./config');
 
-// 应用版本号（用于自动更新检测）
-const APP_VERSION = '1.0.1';
+// 应用版本号（从 package.json 读取，改版本只需改 package.json）
+const APP_VERSION = app.getVersion();
 
 let mainWindow;
 let browserView;

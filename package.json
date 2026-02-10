@@ -1,6 +1,6 @@
 {
   "name": "yunying-zhushou",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "资海云运营助手，用于多平台自动化运营管理",
   "main": "main.js",
   "scripts": {
