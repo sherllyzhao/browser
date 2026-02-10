@@ -811,17 +811,33 @@ async function getSiteListApi() {
   let companyId = siteInfo.company_id;
   let siteId = siteInfo?.id;
   if(isDev){
-    siteId = 255;
-    companyId = 2
+    siteId = 198;
+    companyId = 2;
   }
+
+  // 获取BrowserView的cookie
+  const cookieResult = await window.electronAPI.getDomainCookies('china9.cn') || await window.electronAPI.getDomainCookies('localhost');
+  const cookieStr = cookieResult.success ? cookieResult.cookies : '';
+
+  const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
+  console.log('[Site] login_token:', loginToken, 'length:', loginToken.length);
+
+  // 确保 header 值不包含非 ISO-8859-1 字符
+  const safeHeader = (val) => {
+    if (!val) return '';
+    return String(val).replace(/[^\x00-\xff]/g, (ch) => encodeURIComponent(ch));
+  };
+
+  const safeToken = safeHeader(loginToken);
+  const safeCookie = safeHeader(cookieStr);
 
   // 1.1
   const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': await window.electronAPI.getGlobalData('login_token'),
-      'access_token': await window.electronAPI.getGlobalData('login_token'),
+      'token': safeToken,
+      'access_token': safeToken,
     }
   });
   if (!response.ok) {
@@ -830,20 +846,23 @@ async function getSiteListApi() {
   const result = await response.json();
 
   // 2.0
-  /* const response2 = await fetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
+  const userInfo = await window.electronAPI.getGlobalData('user_info')
+  const companyUniqueId = userInfo?.company?.unique_id;
+  const response2 = await fetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}&company_unique_id=${companyUniqueId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': await window.electronAPI.getGlobalData('login_token'),
-      'access_token': await window.electronAPI.getGlobalData('login_token'),
-    }
+      'token': safeToken,
+      'access_token': safeToken,
+      //'Cookie': safeCookie,
+    },
   });
   if (!response2.ok) {
     throw new Error(`HTTP error! status: ${response2.status}`);
   }
-  const result2 = await response2.json(); */
+  const result2 = await response2.json();
 
-  return result.data/* .concat(result2.data) */ || [];
+  return result.data.concat(result2.data) || [];
 }
 
 // 渲染站点下拉列表
@@ -883,6 +902,8 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const token = await window.electronAPI.getGlobalData('login_token');
+  const cookieResult = await window.electronAPI.getDomainCookies('china9.cn');
+  const cookieStr = cookieResult.success ? cookieResult.cookies : '';
 
   const response = await fetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
     method: 'GET',
@@ -890,6 +911,7 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
       'Content-Type': 'application/json',
       'token': token,
       'access_token': token,
+      'Cookie': cookieStr,
     }
   });
 

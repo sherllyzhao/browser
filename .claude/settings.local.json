@@ -88,7 +88,9 @@
       "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\xinlang-publish.js'' -TotalCount 200 | Select-Object -Skip 1\")",
       "Bash(powershell:*)",
       "Bash(npm start)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(chcp 65001)",
+      "mcp__plugin_oh-my-claudecode_omc-tools__ast_grep_search"
     ],
     "deny": [],
     "ask": []

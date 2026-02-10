@@ -2424,7 +2424,11 @@ ipcMain.handle('get-domain-cookies', async (event, domain) => {
     });
 
     // 转换为 cookie 字符串格式：name=value; name2=value2
-    const cookieString = domainCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    // 对包含非 ISO-8859-1 字符的值进行编码，避免 fetch header 报错
+    const cookieString = domainCookies.map(c => {
+      const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+      return `${c.name}=${value}`;
+    }).join('; ');
 
     console.log(`[Get Cookies] 获取 ${domain} 的 cookies: ${domainCookies.length} 个`);
     return { success: true, cookies: cookieString, count: domainCookies.length };
