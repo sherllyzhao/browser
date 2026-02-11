@@ -739,6 +739,34 @@ function createWindow() {
           });
         }
 
+        // 恢复 site_id、china_site_id、company_unique_id、unique_id Cookie
+        const siteInfo = globalStorage.siteInfo;
+        const userInfo = globalStorage.user_info;
+        if (siteInfo && siteInfo.id) {
+          const siteIdStr = String(siteInfo.id);
+          // site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          // china_site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'china_site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+        }
+        if (userInfo && userInfo.company && userInfo.company.unique_id) {
+          const uniqueId = String(userInfo.company.unique_id);
+          // company_unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'company_unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          // unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+        }
+
         await ses.flushStorageData();
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
@@ -748,7 +776,7 @@ function createWindow() {
           // geo 项目首页
           startUrl = isProduction
             ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-            : 'http://localhost:8080/';
+            : 'http://localhost:8080/geo/index';
           console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
           // 默认 aigc 项目首页
@@ -2469,12 +2497,96 @@ ipcMain.handle('get-domain-cookies', async (event, domain) => {
     });
 
     // 转换为 cookie 字符串格式：name=value; name2=value2
-    const cookieString = domainCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    // 对包含非 ISO-8859-1 字符的值进行编码，避免 fetch header 报错
+    const cookieString = domainCookies.map(c => {
+      const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+      return `${c.name}=${value}`;
+    }).join('; ');
 
     console.log(`[Get Cookies] 获取 ${domain} 的 cookies: ${domainCookies.length} 个`);
     return { success: true, cookies: cookieString, count: domainCookies.length };
   } catch (err) {
     console.error('[Get Cookies] 获取失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// 代理 fetch 请求（自动带上 BrowserView session 的 cookies）
+ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
+  try {
+    if (!browserView) {
+      return { success: false, error: 'BrowserView 不存在' };
+    }
+
+    const ses = browserView.webContents.session;
+
+    // 从 session 获取该 URL 对应域名的 cookies（除非 withCookies 为 false）
+    const urlObj = new URL(url);
+    let cookieString = '';
+    if (options.withCookies !== false) {
+      const allCookies = await ses.cookies.get({});
+      const domain = urlObj.hostname;
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      cookieString = domainCookies.map(c => {
+        const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+        return `${c.name}=${value}`;
+      }).join('; ');
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: ${domainCookies.length} 个`);
+    } else {
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: skipped`);
+    }
+
+    // 合并 headers，加上 Cookie 和 User-Agent
+    const headers = { ...(options.headers || {}) };
+    if (cookieString) {
+      headers['Cookie'] = cookieString;
+    }
+    if (!headers['User-Agent']) {
+      headers['User-Agent'] = 'zh.Cloud-browse';
+    }
+
+    // 使用 Node.js http/https 发请求
+    const result = await new Promise((resolve, reject) => {
+      const mod = urlObj.protocol === 'https:' ? https : http;
+      const req = mod.request(url, {
+        method: options.method || 'GET',
+        headers: headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let jsonData;
+          try {
+            jsonData = JSON.parse(data);
+          } catch (e) {
+            jsonData = data;
+          }
+          resolve({
+            success: true,
+            status: res.statusCode,
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            data: jsonData
+          });
+        });
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    });
+
+    console.log(`[Proxy Fetch] 响应状态: ${result.status}`);
+    return result;
+  } catch (err) {
+    console.error('[Proxy Fetch] 请求失败:', err);
     return { success: false, error: err.message };
   }
 });
@@ -2819,8 +2931,8 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
   return new Promise((resolve) => {
     // 获取主窗口的内容区域位置（屏幕坐标）
     const contentBounds = mainWindow.getContentBounds();
-    const menuWidth = 220;
-    const menuHeight = Math.min(sites.length * 48 + 16, 320);
+    const menuWidth = 280;
+    const menuHeight = Math.min(sites.length * 56 + 16, 400);
 
     // 计算菜单位置：对齐站点选择器，header 下方
     const menuX = contentBounds.x + contentBounds.width - menuWidth - 160; // 往左移对齐站点选择器
@@ -2937,9 +3049,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             flex: 1;
             font-size: 14px;
             color: #303133;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            word-break: break-all;
           }
           .menu-item.active .site-name {
             color: #409EFF;
@@ -2970,7 +3080,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             const siteName = site.web_name || site.name || '';
             item.innerHTML = \`
               <div class="site-icon">\${siteName.charAt(0)}</div>
-              <span class="site-name">\${siteName}</span>
+              <span class="site-name" title="\${siteName}">\${siteName}</span>
               <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
                 <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
               </svg>
