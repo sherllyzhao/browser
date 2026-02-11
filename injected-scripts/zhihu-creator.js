@@ -146,6 +146,19 @@
         }
     }
 
+    // 方案4: 从 接口 读取
+    if (!authData) {
+     const authDataResult= await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', {
+         method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+     });
+     const authDataRes = await authDataResult.json();
+      console.log('[知乎授权] ✅ 从接口读取到授权数据:', authData);
+      authData = authDataRes;
+    }
+
     console.log('[知乎授权] 最终 authData:', authData ? '有数据' : 'undefined');
 
     if (authData && authData.timestamp) {
@@ -184,7 +197,7 @@
 
                 const scanData = {
                     data: JSON.stringify({
-                        nickname: result.url_token,
+                        nickname: result.name,
                         avatar: result.avatar_url,
                         follow: result.creation_count,
                         follower_count: 0, //粉丝
