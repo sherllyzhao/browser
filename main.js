@@ -2858,8 +2858,8 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
   return new Promise((resolve) => {
     // 获取主窗口的内容区域位置（屏幕坐标）
     const contentBounds = mainWindow.getContentBounds();
-    const menuWidth = 220;
-    const menuHeight = Math.min(sites.length * 48 + 16, 320);
+    const menuWidth = 280;
+    const menuHeight = Math.min(sites.length * 56 + 16, 400);
 
     // 计算菜单位置：对齐站点选择器，header 下方
     const menuX = contentBounds.x + contentBounds.width - menuWidth - 160; // 往左移对齐站点选择器
@@ -2976,9 +2976,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             flex: 1;
             font-size: 14px;
             color: #303133;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            word-break: break-all;
           }
           .menu-item.active .site-name {
             color: #409EFF;
@@ -3009,7 +3007,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             const siteName = site.web_name || site.name || '';
             item.innerHTML = \`
               <div class="site-icon">\${siteName.charAt(0)}</div>
-              <span class="site-name">\${siteName}</span>
+              <span class="site-name" title="\${siteName}">\${siteName}</span>
               <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
                 <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
               </svg>
