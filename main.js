@@ -694,6 +694,34 @@ function createWindow() {
           });
         }
 
+        // 恢复 site_id、china_site_id、company_unique_id、unique_id Cookie
+        const siteInfo = globalStorage.siteInfo;
+        const userInfo = globalStorage.user_info;
+        if (siteInfo && siteInfo.id) {
+          const siteIdStr = String(siteInfo.id);
+          // site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          // china_site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'china_site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+        }
+        if (userInfo && userInfo.company && userInfo.company.unique_id) {
+          const uniqueId = String(userInfo.company.unique_id);
+          // company_unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'company_unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          // unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+        }
+
         await ses.flushStorageData();
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
