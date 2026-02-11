@@ -3026,6 +3026,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
         <script>
           const { ipcRenderer } = require('electron');
           const sites = ${sitesJson};
+          console.log("🚀 ~  ~ sites: ", sites);
           const currentSiteId = ${currentSiteId};
 
           const menu = document.getElementById('menu');

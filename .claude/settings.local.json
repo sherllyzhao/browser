@@ -91,7 +91,9 @@
       "Bash(ls:*)",
       "Bash(chcp 65001)",
       "mcp__plugin_oh-my-claudecode_omc-tools__ast_grep_search",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(chcp 437)",
+      "Bash(wsl grep -n \"show-site-menu\\\\|showSiteMenu\\\\|site-menu\" \"D:\\\\浏览器\\\\运营助手\\\\renderer.js\")"
     ],
     "deny": [],
     "ask": []

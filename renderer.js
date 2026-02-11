@@ -78,7 +78,8 @@ function getCurrentSystem(url) {
       urlLower.includes('/geo/') ||
       urlLower.includes('/jzt_all/') ||
       urlLower.includes('jzt_dev') ||
-      urlLower.includes('zhjzt')) {
+      urlLower.includes('zhjzt') ||
+      urlLower.includes('jzt')) {
     return 'geo';
   }
 
@@ -847,38 +848,6 @@ async function getSiteListApi() {
   return result.data.concat(result2.data) || [];
 }
 
-// 渲染站点下拉列表
-function renderSiteDropdown(sites) {
-  if (!siteDropdownEl) return;
-
-  if (!sites || sites.length === 0) {
-    siteDropdownEl.innerHTML = '<div style="padding: 10px; color: #909399; text-align: center;">暂无站点</div>';
-    return;
-  }
-
-  // 生成 HTML
-  siteDropdownEl.innerHTML = sites.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}" title="${site.web_name}">
-      <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
-      <span class="site-name" title="${site.web_name}">${site.web_name || ''}</span>
-      <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
-        <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
-      </svg>
-    </div>
-  `).join('');
-
-  // 绑定站点点击事件
-  siteDropdownEl.querySelectorAll('.site-item').forEach(item => {
-    item.addEventListener('click', async () => {
-      const siteId = parseInt(item.dataset.siteId);
-      const site = sites.find(s => s.id === siteId);
-      if (site) {
-        await selectSite(site);
-      }
-    });
-  });
-}
-
 // 切换站点 API
 async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
@@ -976,7 +945,12 @@ async function selectSite(site, skipApiCall = false) {
       // 刷新 BrowserView 页面
       console.log('[Site] 刷新页面...');
       setTimeout(async () => {
-        await window.electronAPI.refreshPage();
+        if(site.tz_url){
+          window.electronAPI.navigateTo(site.tz_url);
+        }else{
+          await window.electronAPI.refreshPage();
+        }
+
         // 刷新后隐藏遮罩、恢复 BrowserView
         setTimeout(async () => {
           await window.electronAPI.hideGlobalLoading();
@@ -1053,9 +1027,6 @@ async function loadSiteList(url) {
       await window.electronAPI.navigateCurrentWindow(notAvailablePath);
       return;
     }
-
-    // 渲染下拉列表
-    renderSiteDropdown(sites);
 
     // 恢复之前选择的站点，或默认选择第一个（跳过接口调用）
     const savedSite = await window.electronAPI.getGlobalData('current_site');
