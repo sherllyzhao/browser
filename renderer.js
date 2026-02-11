@@ -109,16 +109,6 @@ function updateActiveTab(url) {
   console.log('[Common Header] 当前系统:', system);
 }
 
-// 更新导航按钮状态
-async function updateNavButtonsState() {
-  try {
-    // 由于是主进程控制 BrowserView，需要通过 electronAPI 获取状态
-    // 这里暂时不禁用按钮，因为状态获取需要异步操作
-  } catch (err) {
-    console.log('[Common Header] 获取导航状态失败:', err);
-  }
-}
-
 // 公共头部按钮点击事件
 if (headerBackBtn) {
   headerBackBtn.onclick = async function() {
@@ -238,7 +228,7 @@ function renderSiteList() {
   siteDropdown.innerHTML = siteList.map(site => `
     <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-id="${site.id}" title="${site.name}">
       <div class="site-icon">${site.shortName.charAt(0)}</div>
-      <span class="site-name">${site.name}</span>
+      <span class="site-name" title="${site.name}">${site.name}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
         <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
       </svg>
@@ -839,8 +829,6 @@ async function getSiteListApi() {
 
   // 2.0
   const userInfo = await window.electronAPI.getGlobalData('user_info');
-  const companyUniqueId = userInfo?.company?.unique_id;
-  console.log("🚀 ~ getSiteListApi ~ companyUniqueId: ", companyUniqueId);
   const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
@@ -872,7 +860,7 @@ function renderSiteDropdown(sites) {
   siteDropdownEl.innerHTML = sites.map(site => `
     <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}" title="${site.web_name}">
       <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
-      <span class="site-name">${site.web_name || ''}</span>
+      <span class="site-name" title="${site.web_name}">${site.web_name || ''}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
         <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
       </svg>
