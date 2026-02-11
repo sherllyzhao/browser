@@ -389,7 +389,7 @@
     <!-- 登录表单 -->
     <form id="loginForm" class="login-form">
       <div class="form-item">
-        <input type="text" class="input-field" id="username" placeholder="请输入账号">
+        <input type="text" class="input-field" id="username" placeholder="请输入资海云账号">
         <span class="input-icon" id="clearUsername" title="清除">
           <svg class="icon-svg" viewBox="0 0 1024 1024">
             <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm165.4 618.2l-66-.3L512 563.4l-99.3 118.4-66.1.3c-4.4 0-8-3.5-8-8 0-1.9.7-3.7 1.9-5.2l130.1-155L340.5 359c-1.2-1.5-1.9-3.3-1.9-5.2 0-4.4 3.6-8 8-8l66.1.3L512 464.6l99.3-118.4 66-.3c4.4 0 8 3.5 8 8 0 1.9-.7 3.7-1.9 5.2L553.5 514l130 155c1.2 1.5 1.9 3.3 1.9 5.2 0 4.4-3.6 8-8 8z"/>
@@ -398,7 +398,7 @@
       </div>
 
       <div class="form-item">
-        <input type="password" class="input-field" id="password" placeholder="请输入密码">
+        <input type="password" class="input-field" id="password" placeholder="请输入资海云密码">
         <span class="input-icon" id="togglePassword" title="显示密码">
           <svg class="icon-svg" id="eyeIcon" viewBox="0 0 1024 1024">
             <path d="M942.2 486.2C847.4 286.5 704.1 186 512 186c-192.2 0-335.4 100.5-430.2 300.3a60.3 60.3 0 0 0 0 51.5C176.6 737.5 319.9 838 512 838c192.2 0 335.4-100.5 430.2-300.3 7.7-16.2 7.7-35 0-51.5zM512 766c-161.3 0-279.4-81.8-362.7-254C232.6 339.8 350.7 258 512 258c161.3 0 279.4 81.8 362.7 254C791.5 684.2 673.4 766 512 766zm-4-430c-97.2 0-176 78.8-176 176s78.8 176 176 176 176-78.8 176-176-78.8-176-176-176zm0 288c-61.9 0-112-50.1-112-112s50.1-112 112-112 112 50.1 112 112-50.1 112-112 112z"/>
@@ -817,58 +817,134 @@
 
             // 把站点id存进去
             await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
+
+            // 检查 web_name 是否存在
+            if (!siteInfo.web_name) {
+              console.warn('[Login] ⚠️ siteInfo.web_name 为空:', siteInfo);
+            }
             await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
+            console.log('[Login] 已存储站点信息 - ID:', siteInfo.id, 'Name:', siteInfo.web_name);
             if (window.browserAPI && window.browserAPI.setCookie) {
               try {
                 // 1. 为 localhost:5173 设置 Cookie（开发环境）
                 // 注意：localhost 不能设置 domain 参数，否则会失败
-                console.log('[Login] 开始设置 site_id Cookie...');
-                const sevedSiteId1 = await window.browserAPI.setCookie({
+                const uniqueId = String(userInfo.company.unique_id);
+                const siteIdStr = String(siteInfo.id);
+                console.log('[Login] 开始设置 Cookie, siteId:', siteIdStr, 'uniqueId:', uniqueId);
+
+                // 🔑 设置 site_id Cookie（值为 siteInfo.id）
+                await window.browserAPI.setCookie({
                   url: 'http://localhost:5173/',
                   name: 'site_id',
-                  value: String(siteInfo.id),
+                  value: siteIdStr,
                   path: '/',
                   secure: false,
                   sameSite: 'lax'
-                  // localhost 不能设置 domain，否则会失败
                 });
-                console.log('[Login] localhost:5173 site_id 设置结果:', sevedSiteId1);
-
-                const sevedSiteId2 = await window.browserAPI.setCookie({
+                await window.browserAPI.setCookie({
                   url: 'http://localhost:8080/',
                   name: 'site_id',
-                  value: String(siteInfo.id),
+                  value: siteIdStr,
                   path: '/',
                   secure: false,
                   sameSite: 'lax'
-                  // localhost 不能设置 domain，否则会失败
                 });
-                console.log('[Login] localhost:8080 site_id 设置结果:', sevedSiteId2);
-
-                const sevedSiteId3 = await window.browserAPI.setCookie({
+                await window.browserAPI.setCookie({
                   url: 'https://china9.cn',
                   name: 'site_id',
-                  value: String(siteInfo.id),
+                  value: siteIdStr,
                   path: '/',
                   secure: true,
                   sameSite: 'no_restriction',
                   domain: '.china9.cn',
                 });
-                console.log('[Login] china9.cn site_id 设置结果:', sevedSiteId3);
+                console.log('[Login] site_id Cookie 设置完成');
 
-                // 🔑 设置 china_site_id Cookie（后端接口可能需要这个）
-                const sevedChinaSiteId = await window.browserAPI.setCookie({
+                // 🔑 设置 china_site_id Cookie（值为 siteInfo.id）
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'china_site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'china_site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
                   url: 'https://china9.cn',
                   name: 'china_site_id',
-                  value: String(siteInfo.id),
+                  value: siteIdStr,
                   path: '/',
                   secure: true,
                   sameSite: 'no_restriction',
                   domain: '.china9.cn',
                 });
-                console.log('[Login] china9.cn china_site_id 设置结果:', sevedChinaSiteId);
+                console.log('[Login] china_site_id Cookie 设置完成');
 
-                console.log('[Login] ✅ site_id Cookie 设置完成');
+                // 🔑 设置 company_unique_id Cookie（值为 unique_id）
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://china9.cn',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] company_unique_id Cookie 设置完成');
+
+                // 🔑 设置 unique_id Cookie
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://china9.cn',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] unique_id Cookie 设置完成');
+
+                console.log('[Login] ✅ 所有 Cookie 设置完成');
               } catch (e) {
                 console.error('[Login] ❌ siteId保存失败:', e);
               }

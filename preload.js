@@ -56,6 +56,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleNewWindowMode: () => ipcRenderer.invoke('toggle-new-window-mode'),
   getNewWindowMode: () => ipcRenderer.invoke('get-new-window-mode'),
 
+  // 获取BrowserView指定域名的cookies
+  getDomainCookies: (domain) => ipcRenderer.invoke('get-domain-cookies', domain),
+
+  // 代理 fetch 请求（自动带上 BrowserView session cookies）
+  proxyFetch: (url, options) => ipcRenderer.invoke('proxy-fetch', url, options),
+
   // 脚本注入
   setInjectScript: (url, script) => ipcRenderer.invoke('set-inject-script', url, script),
   getInjectScript: (url) => ipcRenderer.invoke('get-inject-script', url),

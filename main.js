@@ -6,8 +6,8 @@ const http = require('http');
 const ScriptManager = require('./script-manager');
 const config = require('./config');
 
-// 应用版本号（用于自动更新检测）
-const APP_VERSION = '1.0.0';
+// 应用版本号（从 package.json 读取，改版本只需改 package.json）
+const APP_VERSION = app.getVersion();
 
 let mainWindow;
 let browserView;
@@ -16,6 +16,7 @@ let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
+let openInNewWindow = false; // 新窗口模式状态
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -63,7 +64,7 @@ if (isProduction) {
   if (isPortable) {
     // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
     // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
-    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '运营助手-Portable');
+    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
 
     // 确保目录存在
     if (!fs.existsSync(portableDataPath)) {
@@ -86,9 +87,39 @@ if (isProduction) {
 
 // 登录页地址（本地 HTML 文件）
 const LOGIN_URL = 'file:///' + __dirname.replace(/\\/g, '/') + '/login.html';
+const LOGIN_FILE_PATH = path.join(__dirname, 'login.html'); // 用于 loadFile()，避免 file:// MIME 类型问题
 
 // 首页地址（开发和生产环境都使用登录页）
 const HOME_URL = LOGIN_URL;
+
+// 加载本地页面（使用 loadFile 确保 MIME 类型正确，解决 CSS 渲染成文字的问题）
+function loadLocalPage(webContents, pageName) {
+  const filePath = path.join(__dirname, pageName);
+  console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
+  return webContents.loadFile(filePath);
+}
+
+// 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
+// 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
+function addContentTypeFix(targetSession, label) {
+  targetSession.webRequest.onHeadersReceived((details, callback) => {
+    const url = details.url.toLowerCase();
+    const responseHeaders = details.responseHeaders || {};
+    const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
+
+    // 只在服务器没返回 Content-Type 时才补上
+    if (!ct) {
+      if (url.endsWith('.css')) {
+        responseHeaders['Content-Type'] = ['text/css; charset=utf-8'];
+      } else if (url.endsWith('.js')) {
+        responseHeaders['Content-Type'] = ['application/javascript; charset=utf-8'];
+      }
+    }
+
+    callback({ responseHeaders });
+  });
+  console.log(`[Session] ✅ ${label} Content-Type 修复拦截器已添加`);
+}
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
@@ -366,7 +397,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: '运营助手',
+    title: '资海云运营助手',
     show: false, // 先隐藏窗口，等内容准备好再显示
     autoHideMenuBar: isProduction, // 生产环境自动隐藏菜单栏
     backgroundColor: '#f2f7fa', // 设置背景色避免白闪
@@ -515,6 +546,9 @@ function createWindow() {
     callback({});
   });
   console.log('[Session] ✅ 已添加 webRequest 协议拦截器');
+
+  // 🔴 修复外部页面 CSS/JS 乱码
+  addContentTypeFix(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -705,6 +739,34 @@ function createWindow() {
           });
         }
 
+        // 恢复 site_id、china_site_id、company_unique_id、unique_id Cookie
+        const siteInfo = globalStorage.siteInfo;
+        const userInfo = globalStorage.user_info;
+        if (siteInfo && siteInfo.id) {
+          const siteIdStr = String(siteInfo.id);
+          // site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          // china_site_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'china_site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+        }
+        if (userInfo && userInfo.company && userInfo.company.unique_id) {
+          const uniqueId = String(userInfo.company.unique_id);
+          // company_unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'company_unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          // unique_id
+          await ses.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+          await ses.cookies.set({ url: 'https://china9.cn', name: 'unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          console.log('[BrowserView] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+        }
+
         await ses.flushStorageData();
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
@@ -714,7 +776,7 @@ function createWindow() {
           // geo 项目首页
           startUrl = isProduction
             ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-            : 'http://localhost:8080/';
+            : 'http://localhost:8080/geo/index';
           console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
           // 默认 aigc 项目首页
@@ -746,16 +808,24 @@ function createWindow() {
     isHeaderHidden = startUrl.includes('login.html');
     updateBrowserViewBounds(isScriptPanelOpen);
 
-    browserView.webContents.loadURL(startUrl)
+    // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
+    const loadPage = startUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(startUrl))
+      : browserView.webContents.loadURL(startUrl);
+
+    loadPage
       .then(() => {
-        console.log('[BrowserView] ✅ 页面 loadURL 调用成功');
+        console.log('[BrowserView] ✅ 页面加载调用成功');
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
         // 失败后3秒重试一次
         setTimeout(() => {
           console.log('[BrowserView] 🔄 3秒后重试加载...');
-          browserView.webContents.loadURL(startUrl).catch(e => {
+          const retryLoad = startUrl.startsWith('file://')
+            ? loadLocalPage(browserView.webContents, path.basename(startUrl))
+            : browserView.webContents.loadURL(startUrl);
+          retryLoad.catch(e => {
             console.error('[BrowserView] ❌ 重试失败:', e);
           });
         }, 3000);
@@ -987,7 +1057,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate-in-page', (event, url) => {
     console.log(`[Navigation] Hash 路由变化 → ${url}`);
     // 记录 hash 路由变化的 URL（前端路由跳转到的目标页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes('not-available')) {
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes(config.placeholderPages.notAvailable)) {
       pendingNavigationUrl = url;
       lastValidUrl = url;
     }
@@ -1024,7 +1094,7 @@ function createWindow() {
           console.log('[Navigation] 系统类型:', systemParam);
 
           // 加载占位页，带上 system 参数
-          browserView.webContents.loadURL(`file://${__dirname}/not-auth.html?system=${systemParam}`);
+          browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notAuth), { query: { system: systemParam } });
 
           // 🔑 发送目标页面 URL 给 renderer，保持 header 选中状态
           if (mainWindow && !mainWindow.isDestroyed() && urlToSend) {
@@ -1039,7 +1109,7 @@ function createWindow() {
     }
 
     // 记录有效的 URL（排除本地文件和特殊页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes('not-available') && !url.includes('not-auth'))) {
+    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes(config.placeholderPages.notAvailable) && !url.includes(config.placeholderPages.notAuth))) {
       lastValidUrl = url;
     }
     // 清空 pendingNavigationUrl（导航成功开始）
@@ -1080,7 +1150,7 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1114,7 +1184,7 @@ function createWindow() {
           delete globalStorage.login_gcc;
           saveGlobalStorage();
           // 跳转到登录页
-          browserView.webContents.loadURL(LOGIN_URL);
+          loadLocalPage(browserView.webContents, 'login.html');
           return;
         }
       } catch (err) {
@@ -1149,7 +1219,7 @@ function createWindow() {
       delete globalStorage.login_expires;
       delete globalStorage.login_gcc;
       saveGlobalStorage();
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1177,7 +1247,7 @@ function createWindow() {
           delete globalStorage.login_expires;
           delete globalStorage.login_gcc;
           saveGlobalStorage();
-          browserView.webContents.loadURL(LOGIN_URL);
+          loadLocalPage(browserView.webContents, 'login.html');
           return;
         }
       } catch (err) {
@@ -1267,7 +1337,7 @@ function createWindow() {
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1286,13 +1356,13 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
-        browserView.webContents.loadURL(LOGIN_URL);
+        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
@@ -1300,8 +1370,12 @@ function createWindow() {
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
+        // 通知 renderer 更新 Tab 选中状态为 GEO
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('url-changed', notPurchaseUrl);
+        }
         return;
       }
       console.log('[Geo Auth Check] ✅ geo 权限检查通过');
@@ -1326,7 +1400,7 @@ function createWindow() {
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
       console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      browserView.webContents.loadURL(LOGIN_URL);
+      loadLocalPage(browserView.webContents, 'login.html');
       return;
     }
 
@@ -1345,13 +1419,13 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
-        browserView.webContents.loadURL(LOGIN_URL);
+        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
@@ -1359,8 +1433,12 @@ function createWindow() {
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/not-purchase.html';
+        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
+        // 通知 renderer 更新 Tab 选中状态为 GEO
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('url-changed', notPurchaseUrl);
+        }
         return;
       }
       console.log('[Geo Auth Check] ✅ geo 权限检查通过');
@@ -2229,6 +2307,17 @@ ipcMain.handle('check-for-update', async () => {
   return updateInfo;
 });
 
+// 获取新窗口模式状态
+ipcMain.handle('get-new-window-mode', () => {
+  return { openInNewWindow };
+});
+
+// 切换新窗口模式
+ipcMain.handle('toggle-new-window-mode', () => {
+  openInNewWindow = !openInNewWindow;
+  return { openInNewWindow };
+});
+
 // 检查 Session 状态（用于检测登录状态是否被清除）
 ipcMain.handle('check-session-status', async () => {
   try {
@@ -2370,7 +2459,7 @@ ipcMain.handle('navigate-to-login', async () => {
       console.error('[Main] ❌ 清除 cookies 失败:', err);
     }
 
-    browserView.webContents.loadURL(LOGIN_URL);
+    loadLocalPage(browserView.webContents, 'login.html');
   }
 });
 
@@ -2378,15 +2467,14 @@ ipcMain.handle('navigate-to-login', async () => {
 ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
   if (browserView) {
     // 安全检查：只允许跳转到指定的本地页面
-    const allowedPages = ['not-available.html', 'login.html'];
+    const allowedPages = Object.values(config.placeholderPages);
     if (!allowedPages.includes(pageName)) {
       console.log('[Main] ❌ 不允许跳转到未知页面:', pageName);
       return { success: false, error: '不允许跳转到该页面' };
     }
 
-    const localUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + pageName;
-    console.log('[Main] 跳转到本地页面:', localUrl);
-    browserView.webContents.loadURL(localUrl);
+    console.log('[Main] 跳转到本地页面:', pageName);
+    loadLocalPage(browserView.webContents, pageName);
     return { success: true };
   }
   return { success: false, error: 'browserView 不可用' };
@@ -2409,12 +2497,96 @@ ipcMain.handle('get-domain-cookies', async (event, domain) => {
     });
 
     // 转换为 cookie 字符串格式：name=value; name2=value2
-    const cookieString = domainCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    // 对包含非 ISO-8859-1 字符的值进行编码，避免 fetch header 报错
+    const cookieString = domainCookies.map(c => {
+      const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+      return `${c.name}=${value}`;
+    }).join('; ');
 
     console.log(`[Get Cookies] 获取 ${domain} 的 cookies: ${domainCookies.length} 个`);
     return { success: true, cookies: cookieString, count: domainCookies.length };
   } catch (err) {
     console.error('[Get Cookies] 获取失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// 代理 fetch 请求（自动带上 BrowserView session 的 cookies）
+ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
+  try {
+    if (!browserView) {
+      return { success: false, error: 'BrowserView 不存在' };
+    }
+
+    const ses = browserView.webContents.session;
+
+    // 从 session 获取该 URL 对应域名的 cookies（除非 withCookies 为 false）
+    const urlObj = new URL(url);
+    let cookieString = '';
+    if (options.withCookies !== false) {
+      const allCookies = await ses.cookies.get({});
+      const domain = urlObj.hostname;
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      cookieString = domainCookies.map(c => {
+        const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+        return `${c.name}=${value}`;
+      }).join('; ');
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: ${domainCookies.length} 个`);
+    } else {
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: skipped`);
+    }
+
+    // 合并 headers，加上 Cookie 和 User-Agent
+    const headers = { ...(options.headers || {}) };
+    if (cookieString) {
+      headers['Cookie'] = cookieString;
+    }
+    if (!headers['User-Agent']) {
+      headers['User-Agent'] = 'zh.Cloud-browse';
+    }
+
+    // 使用 Node.js http/https 发请求
+    const result = await new Promise((resolve, reject) => {
+      const mod = urlObj.protocol === 'https:' ? https : http;
+      const req = mod.request(url, {
+        method: options.method || 'GET',
+        headers: headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let jsonData;
+          try {
+            jsonData = JSON.parse(data);
+          } catch (e) {
+            jsonData = data;
+          }
+          resolve({
+            success: true,
+            status: res.statusCode,
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            data: jsonData
+          });
+        });
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    });
+
+    console.log(`[Proxy Fetch] 响应状态: ${result.status}`);
+    return result;
+  } catch (err) {
+    console.error('[Proxy Fetch] 请求失败:', err);
     return { success: false, error: err.message };
   }
 });
@@ -2759,8 +2931,8 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
   return new Promise((resolve) => {
     // 获取主窗口的内容区域位置（屏幕坐标）
     const contentBounds = mainWindow.getContentBounds();
-    const menuWidth = 220;
-    const menuHeight = Math.min(sites.length * 48 + 16, 320);
+    const menuWidth = 280;
+    const menuHeight = Math.min(sites.length * 56 + 16, 400);
 
     // 计算菜单位置：对齐站点选择器，header 下方
     const menuX = contentBounds.x + contentBounds.width - menuWidth - 160; // 往左移对齐站点选择器
@@ -2877,9 +3049,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             flex: 1;
             font-size: 14px;
             color: #303133;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            word-break: break-all;
           }
           .menu-item.active .site-name {
             color: #409EFF;
@@ -2910,7 +3080,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
             const siteName = site.web_name || site.name || '';
             item.innerHTML = \`
               <div class="site-icon">\${siteName.charAt(0)}</div>
-              <span class="site-name">\${siteName}</span>
+              <span class="site-name" title="\${siteName}">\${siteName}</span>
               <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
                 <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
               </svg>
@@ -3326,6 +3496,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         callback({});
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
+      addContentTypeFix(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4436,6 +4607,7 @@ function getAccountSession(platform, accountId) {
   // 缓存 session
   accountSessions.set(partitionName, accountSession);
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
+  addContentTypeFix(accountSession, `账号 session ${partitionName}`);
 
   return accountSession;
 }

@@ -53,13 +53,16 @@ const GEO_URL = isProduction
   : 'http://localhost:8080/#/geo/index';
   //: 'http://172.16.6.17:8080/#/geo/index';
 
+// 占位页面文件名（与 config.js 中 placeholderPages 保持一致）
+const PLACEHOLDER_PAGES = ['not-available.html', 'not-auth.html', 'not-purchase.html', 'login.html'];
+
 // 判断当前系统类型
 function getCurrentSystem(url) {
   if (!url) return 'aigc';
   const urlLower = url.toLowerCase();
 
-  // 检查 not-available.html 的查询参数（用于占位页保持正确的 Tab 选中状态）
-  if (urlLower.includes('not-available.html') || urlLower.includes('not-auth.html?')) {
+  // 检查占位页的查询参数（用于占位页保持正确的 Tab 选中状态）
+  if (PLACEHOLDER_PAGES.some(page => urlLower.includes(page))) {
     try {
       const urlObj = new URL(url);
       const systemParam = urlObj.searchParams.get('system');
@@ -104,16 +107,6 @@ function updateActiveTab(url) {
   }
 
   console.log('[Common Header] 当前系统:', system);
-}
-
-// 更新导航按钮状态
-async function updateNavButtonsState() {
-  try {
-    // 由于是主进程控制 BrowserView，需要通过 electronAPI 获取状态
-    // 这里暂时不禁用按钮，因为状态获取需要异步操作
-  } catch (err) {
-    console.log('[Common Header] 获取导航状态失败:', err);
-  }
 }
 
 // 公共头部按钮点击事件
@@ -233,9 +226,9 @@ function renderSiteList() {
   if (!siteDropdown) return;
 
   siteDropdown.innerHTML = siteList.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-id="${site.id}">
+    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-id="${site.id}" title="${site.name}">
       <div class="site-icon">${site.shortName.charAt(0)}</div>
-      <span class="site-name">${site.name}</span>
+      <span class="site-name" title="${site.name}">${site.name}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
         <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
       </svg>
@@ -809,21 +802,49 @@ async function getSiteListApi() {
   let siteId = siteInfo?.id;
   if(isDev){
     siteId = 255;
-    companyId = 2
+    companyId = 2;
   }
-  const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
+
+  const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
+  console.log('[Site] login_token:', loginToken, 'length:', loginToken.length);
+
+  // 1.1
+  const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
+  console.log('[Site] 请求 site/lst:', url1);
+  const response = await fetch(url1, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': await window.electronAPI.getGlobalData('login_token'),
-      'access_token': await window.electronAPI.getGlobalData('login_token'),
+      'token': loginToken,
+      'access_token': loginToken,
     }
   });
+  console.log('[Site] site/lst 响应状态:', response.status);
   if (!response.ok) {
+    const errText = await response.text();
+    console.error('[Site] site/lst 错误响应内容:', errText);
     throw new Error(`HTTP error! status: ${response.status}`);
   }
   const result = await response.json();
-  return result.data || [];
+
+  // 2.0
+  const userInfo = await window.electronAPI.getGlobalData('user_info');
+  const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': loginToken,
+      'access_token': loginToken,
+    },
+  });
+  console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
+  if (!result2Resp.success || !result2Resp.ok) {
+    console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
+    throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
+  }
+  const result2 = result2Resp.data;
+
+  return result.data.concat(result2.data) || [];
 }
 
 // 渲染站点下拉列表
@@ -837,9 +858,9 @@ function renderSiteDropdown(sites) {
 
   // 生成 HTML
   siteDropdownEl.innerHTML = sites.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}">
+    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}" title="${site.web_name}">
       <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
-      <span class="site-name">${site.web_name || ''}</span>
+      <span class="site-name" title="${site.web_name}">${site.web_name || ''}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
         <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
       </svg>
@@ -864,7 +885,7 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const token = await window.electronAPI.getGlobalData('login_token');
 
-  const response = await fetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
+  const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -873,11 +894,11 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
     }
   });
 
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+  if (!resp.success || !resp.ok) {
+    throw new Error(`HTTP error! status: ${resp.status || resp.error}`);
   }
 
-  const result = await response.json();
+  const result = resp.data;
   console.log('[Site] 切换站点接口返回:', result);
   return result;
 }
@@ -896,6 +917,7 @@ async function selectSite(site, skipApiCall = false) {
   if (currentSiteNameEl) {
     if (currentSiteNameEl.textContent !== newName) {
       currentSiteNameEl.textContent = newName;
+      currentSiteNameEl.setAttribute('title', newName);
     }
     currentSiteNameEl.style.visibility = 'visible';
   }
@@ -1027,7 +1049,7 @@ async function loadSiteList(url) {
         await window.electronAPI.getGlobalData('current_site_name');
       }
       // 添加 system=geo 参数，让占位页保持 GEO Tab 选中状态
-      const notAvailablePath = 'file:///D:/浏览器/运营助手/not-available.html?system=geo';
+      const notAvailablePath = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + PLACEHOLDER_PAGES[0] + '?system=geo';
       await window.electronAPI.navigateCurrentWindow(notAvailablePath);
       return;
     }
