@@ -236,7 +236,7 @@ function renderSiteList() {
   if (!siteDropdown) return;
 
   siteDropdown.innerHTML = siteList.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-id="${site.id}">
+    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-id="${site.id}" title="${site.name}">
       <div class="site-icon">${site.shortName.charAt(0)}</div>
       <span class="site-name">${site.name}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
@@ -815,52 +815,46 @@ async function getSiteListApi() {
     companyId = 2;
   }
 
-  // 获取BrowserView的cookie
-  const cookieResult = await window.electronAPI.getDomainCookies('china9.cn') || await window.electronAPI.getDomainCookies('localhost');
-  const cookieStr = cookieResult.success ? cookieResult.cookies : '';
-
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
   console.log('[Site] login_token:', loginToken, 'length:', loginToken.length);
 
-  // 确保 header 值不包含非 ISO-8859-1 字符
-  const safeHeader = (val) => {
-    if (!val) return '';
-    return String(val).replace(/[^\x00-\xff]/g, (ch) => encodeURIComponent(ch));
-  };
-
-  const safeToken = safeHeader(loginToken);
-  const safeCookie = safeHeader(cookieStr);
-
   // 1.1
-  const response = await fetch(`${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`, {
+  const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
+  console.log('[Site] 请求 site/lst:', url1);
+  const response = await fetch(url1, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': safeToken,
-      'access_token': safeToken,
+      'token': loginToken,
+      'access_token': loginToken,
     }
   });
+  console.log('[Site] site/lst 响应状态:', response.status);
   if (!response.ok) {
+    const errText = await response.text();
+    console.error('[Site] site/lst 错误响应内容:', errText);
     throw new Error(`HTTP error! status: ${response.status}`);
   }
   const result = await response.json();
 
   // 2.0
-  const userInfo = await window.electronAPI.getGlobalData('user_info')
+  const userInfo = await window.electronAPI.getGlobalData('user_info');
   const companyUniqueId = userInfo?.company?.unique_id;
-  const response2 = await fetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}&company_unique_id=${companyUniqueId}`, {
+  console.log("🚀 ~ getSiteListApi ~ companyUniqueId: ", companyUniqueId);
+  const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
-      'token': safeToken,
-      'access_token': safeToken,
-      //'Cookie': safeCookie,
+      'token': loginToken,
+      'access_token': loginToken,
     },
   });
-  if (!response2.ok) {
-    throw new Error(`HTTP error! status: ${response2.status}`);
+  console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
+  if (!result2Resp.success || !result2Resp.ok) {
+    console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
+    throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
   }
-  const result2 = await response2.json();
+  const result2 = result2Resp.data;
 
   return result.data.concat(result2.data) || [];
 }
@@ -876,7 +870,7 @@ function renderSiteDropdown(sites) {
 
   // 生成 HTML
   siteDropdownEl.innerHTML = sites.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}">
+    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}" title="${site.web_name}">
       <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
       <span class="site-name">${site.web_name || ''}</span>
       <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
@@ -902,24 +896,21 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
   const token = await window.electronAPI.getGlobalData('login_token');
-  const cookieResult = await window.electronAPI.getDomainCookies('china9.cn');
-  const cookieStr = cookieResult.success ? cookieResult.cookies : '';
 
-  const response = await fetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
+  const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
       'token': token,
       'access_token': token,
-      'Cookie': cookieStr,
     }
   });
 
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+  if (!resp.success || !resp.ok) {
+    throw new Error(`HTTP error! status: ${resp.status || resp.error}`);
   }
 
-  const result = await response.json();
+  const result = resp.data;
   console.log('[Site] 切换站点接口返回:', result);
   return result;
 }
@@ -938,6 +929,7 @@ async function selectSite(site, skipApiCall = false) {
   if (currentSiteNameEl) {
     if (currentSiteNameEl.textContent !== newName) {
       currentSiteNameEl.textContent = newName;
+      currentSiteNameEl.setAttribute('title', newName);
     }
     currentSiteNameEl.style.visibility = 'visible';
   }

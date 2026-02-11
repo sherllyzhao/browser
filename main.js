@@ -2438,6 +2438,86 @@ ipcMain.handle('get-domain-cookies', async (event, domain) => {
   }
 });
 
+// 代理 fetch 请求（自动带上 BrowserView session 的 cookies）
+ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
+  try {
+    if (!browserView) {
+      return { success: false, error: 'BrowserView 不存在' };
+    }
+
+    const ses = browserView.webContents.session;
+
+    // 从 session 获取该 URL 对应域名的 cookies（除非 withCookies 为 false）
+    const urlObj = new URL(url);
+    let cookieString = '';
+    if (options.withCookies !== false) {
+      const allCookies = await ses.cookies.get({});
+      const domain = urlObj.hostname;
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      cookieString = domainCookies.map(c => {
+        const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+        return `${c.name}=${value}`;
+      }).join('; ');
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: ${domainCookies.length} 个`);
+    } else {
+      console.log(`[Proxy Fetch] ${options.method || 'GET'} ${url}, cookies: skipped`);
+    }
+
+    // 合并 headers，加上 Cookie 和 User-Agent
+    const headers = { ...(options.headers || {}) };
+    if (cookieString) {
+      headers['Cookie'] = cookieString;
+    }
+    if (!headers['User-Agent']) {
+      headers['User-Agent'] = 'zh.Cloud-browse';
+    }
+
+    // 使用 Node.js http/https 发请求
+    const result = await new Promise((resolve, reject) => {
+      const mod = urlObj.protocol === 'https:' ? https : http;
+      const req = mod.request(url, {
+        method: options.method || 'GET',
+        headers: headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let jsonData;
+          try {
+            jsonData = JSON.parse(data);
+          } catch (e) {
+            jsonData = data;
+          }
+          resolve({
+            success: true,
+            status: res.statusCode,
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            data: jsonData
+          });
+        });
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    });
+
+    console.log(`[Proxy Fetch] 响应状态: ${result.status}`);
+    return result;
+  } catch (err) {
+    console.error('[Proxy Fetch] 请求失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // 刷新页面
 ipcMain.handle('refresh-page', async () => {
   if (browserView) {

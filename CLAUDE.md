@@ -902,6 +902,50 @@ const result = await window.browserAPI.checkForUpdate();
 const APP_VERSION = '1.0.0';  // 修改这里
 ```
 
+### 16. 代理 Fetch 请求（Proxy Fetch）
+
+控制面板（renderer.js）中的 fetch 请求需要携带 BrowserView session 的 cookies，但 Chromium 会静默忽略手动设置的 `Cookie` header（forbidden header）。因此通过主进程代理发送请求，使用 Electron session 的 `fetch` 方法自动附带 cookies。
+
+```javascript
+// 通过主进程代理发送请求，自动携带 BrowserView session 的 cookies
+const result = await window.electronAPI.proxyFetch(url, {
+  method: 'GET',  // 或 'POST'
+  headers: {
+    'Content-Type': 'application/json',
+    'token': 'your_token',
+    'access_token': 'your_token',
+  },
+  body: JSON.stringify({ key: 'value' }),  // POST 时使用
+});
+
+// 返回值
+// {
+//   success: true,
+//   status: 200,
+//   ok: true,
+//   data: { ... }  // 已解析的 JSON 数据（如果不是 JSON 则返回原始文本）
+// }
+// 或
+// { success: false, error: '错误信息' }
+
+if (result.success && result.ok) {
+  console.log('数据:', result.data);
+}
+```
+
+**参数说明**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| url | string | 是 | 请求 URL |
+| options | object | 否 | 请求选项 |
+| options.method | string | 否 | HTTP 方法，默认 'GET' |
+| options.headers | object | 否 | 自定义请求头（token 等） |
+| options.body | string | 否 | 请求体（POST 时使用） |
+
+**实现原理**：主进程通过 `browserView.webContents.session.cookies.get()` 获取对应域名的 cookies，手动拼接为 Cookie header，然后使用 Node.js 的 `https`/`http` 模块发送请求。这样绕过了渲染进程 Chromium 的 forbidden header 限制（注意：`session.fetch()` 需要 Electron 28+，本项目使用 Electron 21，因此使用 Node http 模块）。
+
+**使用场景**：renderer.js 中需要调用后台 API 且需要携带 BrowserView session cookies 的场景（如站点列表、站点切换等接口）。
+
 ## Script Storage
 
 - **Location**: `injected-scripts/` directory
