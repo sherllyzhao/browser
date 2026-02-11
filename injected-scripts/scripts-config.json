@@ -17,7 +17,7 @@
     "https://channels.weixin.qq.com/login.html": ["common.js", "shipinhao-login.js"],
     "https://baijiahao.baidu.com/builder/rc/home": ["common.js", "baijiahao-creator.js"],
     "https://baijiahao.baidu.com/": ["common.js", "baijiahao-creator.js"],
-    "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "kuaishou-creator.js"],
+    "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
     "https://creator.douyin.com/creator-micro/content/upload*": ["common.js", "douyin-publish.js"],
     "https://creator.xiaohongshu.com/publish/publish*": ["common.js", "xiaohongshu-publish.js"],
     "https://creator.xiaohongshu.com/publish/success*": ["common.js", "publish-success.js"],
