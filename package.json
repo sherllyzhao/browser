@@ -1,7 +1,7 @@
 {
   "name": "yunying-zhushou",
-  "version": "1.0.0",
-  "description": "运营助手，用于运营抖音、小红书、视频号等平台",
+  "version": "1.0.1",
+  "description": "资海云运营助手，用于多平台自动化运营管理",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -11,7 +11,7 @@
   },
   "build": {
     "appId": "com.zhcloud.browser",
-    "productName": "运营助手",
+    "productName": "资海云运营助手",
     "directories": {
       "output": "dist"
     },
@@ -44,7 +44,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "运营助手",
+      "shortcutName": "资海云运营助手",
       "deleteAppDataOnUninstall": true,
       "include": "installer.nsh"
     }

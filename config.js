@@ -71,5 +71,13 @@ module.exports = {
     xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
     sph: 'https://channels.weixin.qq.com/platform/post/create',
     bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+  },
+
+  // 占位页面文件名（用于权限检查、未登录等场景）
+  placeholderPages: {
+    notAvailable: 'not-available.html',  // 功能暂未开放页面
+    notAuth: 'not-auth.html',            // 未登录页面
+    notPurchase: 'not-purchase.html',    // 未购买产品页面
+    login: 'login.html'                  // 登录页面
   }
 };
