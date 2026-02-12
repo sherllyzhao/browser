@@ -840,7 +840,7 @@ async function getSiteListApi() {
   }
 
   // 2.0
-  try {
+  /* try {
     const url2 = `${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`;
     console.log('[Site] 请求 site/lsttwo:', url2);
     const result2Resp = await window.electronAPI.proxyFetch(url2, {
@@ -860,7 +860,7 @@ async function getSiteListApi() {
     }
   } catch (err) {
     console.error('[Site] site/lsttwo 请求异常:', err);
-  }
+  } */
 
   console.log('[Site] 1.1站点数量:', list1.length, '2.0站点数量:', list2.length);
   return list1.concat(list2);
