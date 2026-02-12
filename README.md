@@ -154,6 +154,7 @@ const allData = await window.browserAPI.getAllGlobalData();
 const status = await window.browserAPI.checkSessionStatus();
 // 返回: { hasSession, cookieCount, platforms: { douyin: { count, loggedIn }, ... } }
 
+
 // 获取完整会话数据（用于存储到后台）
 const result = await window.browserAPI.getFullSessionData('douyin.com');
 

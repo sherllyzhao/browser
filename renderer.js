@@ -78,7 +78,8 @@ function getCurrentSystem(url) {
       urlLower.includes('/geo/') ||
       urlLower.includes('/jzt_all/') ||
       urlLower.includes('jzt_dev') ||
-      urlLower.includes('zhjzt')) {
+      urlLower.includes('zhjzt') ||
+      urlLower.includes('jzt')) {
     return 'geo';
   }
 
@@ -791,6 +792,8 @@ const siteDropdownEl = document.getElementById('siteDropdown');
 
 // 当前站点列表缓存
 let siteListCache = [];
+// 站点切换导航中标记（防止 URL 变化时误隐藏站点管理）
+let isSwitchingSiteNav = false;
 
 // 获取站点列表 API
 async function getSiteListApi() {
@@ -808,75 +811,59 @@ async function getSiteListApi() {
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
   console.log('[Site] login_token:', loginToken, 'length:', loginToken.length);
 
+  // 1.1 和 2.0 独立请求，互不影响
+  let list1 = [];
+  let list2 = [];
+
   // 1.1
-  const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
-  console.log('[Site] 请求 site/lst:', url1);
-  const response = await fetch(url1, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'token': loginToken,
-      'access_token': loginToken,
-    }
-  });
-  console.log('[Site] site/lst 响应状态:', response.status);
-  if (!response.ok) {
-    const errText = await response.text();
-    console.error('[Site] site/lst 错误响应内容:', errText);
-    throw new Error(`HTTP error! status: ${response.status}`);
-  }
-  const result = await response.json();
-
-  // 2.0
-  /* const userInfo = await window.electronAPI.getGlobalData('user_info');
-  const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'token': loginToken,
-      'access_token': loginToken,
-    },
-  });
-  console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
-  if (!result2Resp.success || !result2Resp.ok) {
-    console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
-    throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
-  }
-  const result2 = result2Resp.data; */
-
-  return result.data/* .concat(result2.data) */ || [];
-}
-
-// 渲染站点下拉列表
-function renderSiteDropdown(sites) {
-  if (!siteDropdownEl) return;
-
-  if (!sites || sites.length === 0) {
-    siteDropdownEl.innerHTML = '<div style="padding: 10px; color: #909399; text-align: center;">暂无站点</div>';
-    return;
-  }
-
-  // 生成 HTML
-  siteDropdownEl.innerHTML = sites.map(site => `
-    <div class="site-item${site.id === currentSiteId ? ' active' : ''}" data-site-id="${site.id}" title="${site.web_name}">
-      <div class="site-icon">${(site.web_name || '').charAt(0)}</div>
-      <span class="site-name" title="${site.web_name}">${site.web_name || ''}</span>
-      <svg class="check-icon" viewBox="0 0 1024 1024" fill="#409EFF">
-        <path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>
-      </svg>
-    </div>
-  `).join('');
-
-  // 绑定站点点击事件
-  siteDropdownEl.querySelectorAll('.site-item').forEach(item => {
-    item.addEventListener('click', async () => {
-      const siteId = parseInt(item.dataset.siteId);
-      const site = sites.find(s => s.id === siteId);
-      if (site) {
-        await selectSite(site);
+  try {
+    const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
+    console.log('[Site] 请求 site/lst:', url1);
+    const response = await fetch(url1, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': loginToken,
+        'access_token': loginToken,
       }
     });
-  });
+    console.log('[Site] site/lst 响应状态:', response.status);
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error('[Site] site/lst 错误响应内容:', errText);
+    } else {
+      const result = await response.json();
+      list1 = Array.isArray(result.data) ? result.data : [];
+    }
+  } catch (err) {
+    console.error('[Site] site/lst 请求异常:', err);
+  }
+
+  // 2.0
+  /* try {
+    const url2 = `${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`;
+    console.log('[Site] 请求 site/lsttwo:', url2);
+    const result2Resp = await window.electronAPI.proxyFetch(url2, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': loginToken,
+        'access_token': loginToken,
+      },
+    });
+    console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
+    if (result2Resp.success && result2Resp.ok) {
+      const result2 = result2Resp.data;
+      list2 = Array.isArray(result2.data) ? result2.data : [];
+    } else {
+      console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
+    }
+  } catch (err) {
+    console.error('[Site] site/lsttwo 请求异常:', err);
+  } */
+
+  console.log('[Site] 1.1站点数量:', list1.length, '2.0站点数量:', list2.length);
+  return list1.concat(list2);
 }
 
 // 切换站点 API
@@ -975,21 +962,30 @@ async function selectSite(site, skipApiCall = false) {
 
       // 刷新 BrowserView 页面
       console.log('[Site] 刷新页面...');
+      isSwitchingSiteNav = true; // 标记正在站点切换导航，防止 URL 变化时重新加载站点列表
       setTimeout(async () => {
-        await window.electronAPI.refreshPage();
+        if(site.tz_url){
+          window.electronAPI.navigateTo(site.tz_url);
+        }else{
+          await window.electronAPI.refreshPage();
+        }
+
         // 刷新后隐藏遮罩、恢复 BrowserView
         setTimeout(async () => {
           await window.electronAPI.hideGlobalLoading();
           if (loadingMask) {
             loadingMask.classList.remove('show');
           }
+          isSwitchingSiteNav = false; // 导航完成，清除标记
           console.log('[Site] 隐藏加载遮罩，恢复 BrowserView');
         }, 500);
       }, 2000)
     } catch (err) {
       console.error('[Site] 切换站点接口失败:', err);
+      isSwitchingSiteNav = false; // 出错时清除标记
       // 出错时隐藏遮罩、恢复 BrowserView
       await window.electronAPI.hideGlobalLoading();
+
       const loadingMask = document.getElementById('__global_loading_mask__');
       if (loadingMask) {
         loadingMask.classList.remove('show');
@@ -1031,10 +1027,7 @@ async function loadSiteList(url) {
       siteManage.style.display = '';
     }
 
-    // 先清空缓存，确保获取新数据
-    siteListCache = [];
-
-    // 加载站点列表
+    // 加载站点列表（不提前清空缓存，失败时保留旧数据供下拉菜单使用）
     const siteData = await getSiteListApi();
     console.log('[Site] 站点数据:', siteData);
 
@@ -1053,9 +1046,6 @@ async function loadSiteList(url) {
       await window.electronAPI.navigateCurrentWindow(notAvailablePath);
       return;
     }
-
-    // 渲染下拉列表
-    renderSiteDropdown(sites);
 
     // 恢复之前选择的站点，或默认选择第一个（跳过接口调用）
     const savedSite = await window.electronAPI.getGlobalData('current_site');
@@ -1242,6 +1232,14 @@ document.addEventListener('click', (e) => {
       // 如果正在加载中，跳过 API 调用
       if (isLoadingSiteList) {
         console.log('[URL Changed] 跳过 API 调用，正在加载中');
+        return;
+      }
+
+      // 站点切换导航中，不重新加载站点列表（保留已有缓存）
+      if (isSwitchingSiteNav) {
+        console.log('[URL Changed] 站点切换导航中，跳过站点列表重新加载');
+        lastSystem = newSystem;
+        lastLoadTime = now;
         return;
       }
 
