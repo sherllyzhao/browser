@@ -2946,8 +2946,9 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
       resolve({ selected: true, siteId, siteName });
     });
 
-    // 生成菜单 HTML
-    const sitesJson = JSON.stringify(sites);
+    // 生成菜单 HTML（过滤无效站点数据）
+    const validSites = sites.filter(s => s && typeof s === 'object' && (s.web_name || s.name));
+    const sitesJson = JSON.stringify(validSites);
     const menuHtml = `
       <!DOCTYPE html>
       <html>
@@ -3027,7 +3028,7 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
           const { ipcRenderer } = require('electron');
           const sites = ${sitesJson};
           console.log("🚀 ~  ~ sites: ", sites);
-          const currentSiteId = ${currentSiteId};
+          const currentSiteId = ${JSON.stringify(currentSiteId)};
 
           const menu = document.getElementById('menu');
           sites.forEach(site => {
