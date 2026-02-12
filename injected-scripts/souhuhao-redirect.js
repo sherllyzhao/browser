@@ -54,7 +54,7 @@ const PLATFORM_CONFIG = {
                     if (typeof getStatisticsUrl === 'function') {
                         apiUrl = await getStatisticsUrl(false);
                     } else {
-                        apiUrl = 'https://apidev.china9.cn/api/mediaauth/tjlog';
+                        apiUrl = 'https://api.china9.cn/api/mediaauth/tjlog';
                     }
                     console.log('[搜狐号重定向] 📤 API 地址:', apiUrl);
                     const scanData = { data: JSON.stringify({ id: publishId }) };
