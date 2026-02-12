@@ -969,6 +969,7 @@ async function selectSite(site, skipApiCall = false) {
       isSwitchingSiteNav = false; // 出错时清除标记
       // 出错时隐藏遮罩、恢复 BrowserView
       await window.electronAPI.hideGlobalLoading();
+
       const loadingMask = document.getElementById('__global_loading_mask__');
       if (loadingMask) {
         loadingMask.classList.remove('show');
