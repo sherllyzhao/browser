@@ -93,7 +93,10 @@
       "mcp__plugin_oh-my-claudecode_omc-tools__ast_grep_search",
       "Bash(cd:*)",
       "Bash(chcp 437)",
-      "Bash(wsl grep -n \"show-site-menu\\\\|showSiteMenu\\\\|site-menu\" \"D:\\\\浏览器\\\\运营助手\\\\renderer.js\")"
+      "Bash(wsl grep -n \"show-site-menu\\\\|showSiteMenu\\\\|site-menu\" \"D:\\\\浏览器\\\\运营助手\\\\renderer.js\")",
+      "Bash(wsl grep -n \"siteListCache\" \"D:\\\\浏览器\\\\运营助手\\\\renderer.js\")",
+      "Bash(powershell.exe -NoProfile -Command:*)",
+      "Bash(powershell.exe -NoProfile -EncodedCommand \"UwBlAGwAZQBjAHQALQBTAHQAcgBpAG4AZwAgAC0AUABhAHQAaAAgACcARAA6AFwA5rWP6KeI5ZmoAFwA6L+Q6JCl5Yqp5omLAFwAcgBlAG4AZABlAHIAZQByAC4AagBzACcAIAAtAFAAYQB0AHQAZQByAG4AIAAnAHMAaQB0AGUATABpAHMAdABDAGEAYwBoAGUAJwAgAC0AUwBpAG0AcABsAGUATQBhAHQAYwBoAA==\")"
     ],
     "deny": [],
     "ask": []

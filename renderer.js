@@ -792,6 +792,8 @@ const siteDropdownEl = document.getElementById('siteDropdown');
 
 // 当前站点列表缓存
 let siteListCache = [];
+// 站点切换导航中标记（防止 URL 变化时误隐藏站点管理）
+let isSwitchingSiteNav = false;
 
 // 获取站点列表 API
 async function getSiteListApi() {
@@ -829,7 +831,7 @@ async function getSiteListApi() {
   const result = await response.json();
 
   // 2.0
-  /* const userInfo = await window.electronAPI.getGlobalData('user_info');
+  const userInfo = await window.electronAPI.getGlobalData('user_info');
   const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
@@ -843,9 +845,9 @@ async function getSiteListApi() {
     console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
     throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
   }
-  const result2 = result2Resp.data; */
+  const result2 = result2Resp.data;
 
-  return result.data/* .concat(result2.data) */ || [];
+  return result.data.concat(result2.data) || [];
 }
 
 // 切换站点 API
@@ -944,6 +946,7 @@ async function selectSite(site, skipApiCall = false) {
 
       // 刷新 BrowserView 页面
       console.log('[Site] 刷新页面...');
+      isSwitchingSiteNav = true; // 标记正在站点切换导航，防止 URL 变化时重新加载站点列表
       setTimeout(async () => {
         if(site.tz_url){
           window.electronAPI.navigateTo(site.tz_url);
@@ -957,11 +960,13 @@ async function selectSite(site, skipApiCall = false) {
           if (loadingMask) {
             loadingMask.classList.remove('show');
           }
+          isSwitchingSiteNav = false; // 导航完成，清除标记
           console.log('[Site] 隐藏加载遮罩，恢复 BrowserView');
         }, 500);
       }, 2000)
     } catch (err) {
       console.error('[Site] 切换站点接口失败:', err);
+      isSwitchingSiteNav = false; // 出错时清除标记
       // 出错时隐藏遮罩、恢复 BrowserView
       await window.electronAPI.hideGlobalLoading();
       const loadingMask = document.getElementById('__global_loading_mask__');
@@ -1005,10 +1010,7 @@ async function loadSiteList(url) {
       siteManage.style.display = '';
     }
 
-    // 先清空缓存，确保获取新数据
-    siteListCache = [];
-
-    // 加载站点列表
+    // 加载站点列表（不提前清空缓存，失败时保留旧数据供下拉菜单使用）
     const siteData = await getSiteListApi();
     console.log('[Site] 站点数据:', siteData);
 
@@ -1213,6 +1215,14 @@ document.addEventListener('click', (e) => {
       // 如果正在加载中，跳过 API 调用
       if (isLoadingSiteList) {
         console.log('[URL Changed] 跳过 API 调用，正在加载中');
+        return;
+      }
+
+      // 站点切换导航中，不重新加载站点列表（保留已有缓存）
+      if (isSwitchingSiteNav) {
+        console.log('[URL Changed] 站点切换导航中，跳过站点列表重新加载');
+        lastSystem = newSystem;
+        lastLoadTime = now;
         return;
       }
 
