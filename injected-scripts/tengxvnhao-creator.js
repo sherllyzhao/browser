@@ -209,6 +209,13 @@
                                 console.log("🚀 ~  ~ userInfoRes: ", userInfoRes);
                                 if(userInfoRes.data && userInfoRes.data.cpInfo){
                                     const userInfo = userInfoRes.data.cpInfo;
+                                    if (!userInfo){
+                                        throw new Error('User info not found in response');
+                                    }
+                                    if(userInfo.header){
+                                        // 直接使用腾讯原始头像 URL，前端展示时用 referrerpolicy="no-referrer" 即可
+                                        console.log('[腾讯号授权] 使用原始头像 URL:', userInfo.header);
+                                    }
                                     const fansCountResult = await fetch('https://om.qq.com/mstatistic/ommixin/getFansTotalStatistic?app=&relogin=1', {
                                         method: 'GET',
                                         credentials: 'include' // 带上 cookies

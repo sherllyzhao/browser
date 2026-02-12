@@ -4373,6 +4373,107 @@ ipcMain.handle('download-video', async (event, url) => {
   }
 });
 
+// ========== 图片下载功能（通过主进程绕过跨域限制） ==========
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
+
+ipcMain.handle('download-image', async (event, url) => {
+  console.log('[Image Download] 开始下载:', url);
+
+  if (!url) {
+    return { success: false, error: 'No URL provided' };
+  }
+
+  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
+    return new Promise((resolve) => {
+      if (redirectCount > 5) {
+        resolve({ success: false, error: 'Too many redirects' });
+        return;
+      }
+
+      const protocol = downloadUrl.startsWith('https') ? https : http;
+
+      const request = protocol.get(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      }, (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          let redirectUrl = response.headers.location;
+          if (!redirectUrl.startsWith('http')) {
+            const urlObj = new URL(downloadUrl);
+            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+          }
+          console.log('[Image Download] 重定向到:', redirectUrl);
+          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
+          return;
+        }
+
+        const contentLength = parseInt(response.headers['content-length'], 10);
+        if (contentLength && contentLength > MAX_IMAGE_SIZE) {
+          response.destroy();
+          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB)` });
+          return;
+        }
+
+        const chunks = [];
+        let totalSize = 0;
+        const contentType = response.headers['content-type'] || 'image/jpeg';
+
+        response.on('data', (chunk) => {
+          totalSize += chunk.length;
+          if (totalSize > MAX_IMAGE_SIZE) {
+            response.destroy();
+            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const base64Data = buffer.toString('base64');
+          console.log('[Image Download] 下载完成，大小:', buffer.length, 'bytes');
+          chunks.length = 0;
+
+          resolve({
+            success: true,
+            data: base64Data,
+            contentType: contentType,
+            size: buffer.length
+          });
+        });
+
+        response.on('error', (err) => {
+          console.error('[Image Download] 响应错误:', err);
+          resolve({ success: false, error: err.message });
+        });
+      });
+
+      request.on('error', (err) => {
+        console.error('[Image Download] 请求错误:', err);
+        resolve({ success: false, error: err.message });
+      });
+
+      request.setTimeout(30000, () => {
+        request.destroy();
+        resolve({ success: false, error: 'Download timeout (30s)' });
+      });
+    });
+  };
+
+  try {
+    return await downloadWithRedirect(url);
+  } catch (err) {
+    console.error('[Image Download] 异常:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 文件下载功能（从内容页面触发） ==========
 ipcMain.handle('trigger-download', async (event, url) => {
   console.log('[Trigger Download] 收到下载请求:', url);
