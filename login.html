@@ -451,7 +451,8 @@
       if (window.browserAPI && window.browserAPI.getMainUrl) {
         try {
           const mainInfo = await window.browserAPI.getMainUrl();
-          if (mainInfo.success) {
+          // origin 为 "null" 时说明是 file:// 协议（login.html 自身），需要跳过
+          if (mainInfo.success && mainInfo.origin && mainInfo.origin !== 'null' && mainInfo.protocol !== 'file:') {
             API_BASE_URL = mainInfo.origin;
             console.log('[Login] API 基础地址:', API_BASE_URL);
             return API_BASE_URL;
