@@ -811,43 +811,59 @@ async function getSiteListApi() {
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
   console.log('[Site] login_token:', loginToken, 'length:', loginToken.length);
 
+  // 1.1 和 2.0 独立请求，互不影响
+  let list1 = [];
+  let list2 = [];
+
   // 1.1
-  const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
-  console.log('[Site] 请求 site/lst:', url1);
-  const response = await fetch(url1, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'token': loginToken,
-      'access_token': loginToken,
+  try {
+    const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
+    console.log('[Site] 请求 site/lst:', url1);
+    const response = await fetch(url1, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': loginToken,
+        'access_token': loginToken,
+      }
+    });
+    console.log('[Site] site/lst 响应状态:', response.status);
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error('[Site] site/lst 错误响应内容:', errText);
+    } else {
+      const result = await response.json();
+      list1 = Array.isArray(result.data) ? result.data : [];
     }
-  });
-  console.log('[Site] site/lst 响应状态:', response.status);
-  if (!response.ok) {
-    const errText = await response.text();
-    console.error('[Site] site/lst 错误响应内容:', errText);
-    throw new Error(`HTTP error! status: ${response.status}`);
+  } catch (err) {
+    console.error('[Site] site/lst 请求异常:', err);
   }
-  const result = await response.json();
 
   // 2.0
-  const userInfo = await window.electronAPI.getGlobalData('user_info');
-  const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'token': loginToken,
-      'access_token': loginToken,
-    },
-  });
-  console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
-  if (!result2Resp.success || !result2Resp.ok) {
-    console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
-    throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
+  try {
+    const url2 = `${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`;
+    console.log('[Site] 请求 site/lsttwo:', url2);
+    const result2Resp = await window.electronAPI.proxyFetch(url2, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': loginToken,
+        'access_token': loginToken,
+      },
+    });
+    console.log('[Site] site/lsttwo proxyFetch 结果:', result2Resp);
+    if (result2Resp.success && result2Resp.ok) {
+      const result2 = result2Resp.data;
+      list2 = Array.isArray(result2.data) ? result2.data : [];
+    } else {
+      console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
+    }
+  } catch (err) {
+    console.error('[Site] site/lsttwo 请求异常:', err);
   }
-  const result2 = result2Resp.data;
 
-  return result.data.concat(result2.data) || [];
+  console.log('[Site] 1.1站点数量:', list1.length, '2.0站点数量:', list2.length);
+  return list1.concat(list2);
 }
 
 // 切换站点 API
@@ -969,6 +985,7 @@ async function selectSite(site, skipApiCall = false) {
       isSwitchingSiteNav = false; // 出错时清除标记
       // 出错时隐藏遮罩、恢复 BrowserView
       await window.electronAPI.hideGlobalLoading();
+
       const loadingMask = document.getElementById('__global_loading_mask__');
       if (loadingMask) {
         loadingMask.classList.remove('show');
