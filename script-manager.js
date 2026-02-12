@@ -278,10 +278,10 @@ class ScriptManager {
 
       console.log(`[ScriptManager] 加载脚本:`, filenames);
 
-      // 🔑 检查是否启用远程加载
+      // 🔑 检查是否启用远程加载（主进程 fetch + executeJavaScript 注入，绕过 CSP）
       if (this.remoteConfig && this.remoteConfig.enabled) {
-        console.log(`[ScriptManager] 🌐 使用远程加载模式`);
-        return this.generateRemoteLoader(filenames);
+        console.log(`[ScriptManager] 🌐 使用远程加载模式（主进程 fetch）`);
+        return this.fetchRemoteScripts(filenames);
       }
 
       // 本地加载模式：按顺序读取所有脚本文件，并连接内容
@@ -306,7 +306,90 @@ class ScriptManager {
     }
   }
 
-  // 🔑 生成远程脚本加载器
+  // 🔑 从远程服务器获取单个脚本的文本内容（主进程级别，绕过 CSP）
+  fetchRemoteScript(scriptUrl) {
+    const timeout = this.remoteConfig.timeout || 10000;
+
+    return new Promise((resolve, reject) => {
+      const { net } = require('electron');
+      const request = net.request(scriptUrl);
+      let data = '';
+
+      request.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode} for ${scriptUrl}`));
+          return;
+        }
+
+        response.on('data', (chunk) => {
+          data += chunk.toString();
+        });
+
+        response.on('end', () => {
+          resolve(data);
+        });
+      });
+
+      request.on('error', (error) => {
+        reject(error);
+      });
+
+      const timer = setTimeout(() => {
+        request.abort();
+        reject(new Error(`Timeout loading ${scriptUrl}`));
+      }, timeout);
+
+      request.on('close', () => {
+        clearTimeout(timer);
+      });
+
+      request.end();
+    });
+  }
+
+  // 🔑 从远程服务器按顺序获取多个脚本并拼接为文本
+  async fetchRemoteScripts(filenames) {
+    const isDevMode = !require('electron').app.isPackaged;
+    const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
+      ? this.remoteConfig.devBaseUrl
+      : this.remoteConfig.baseUrl;
+
+    console.log(`[ScriptManager] 🌐 主进程 fetch 远程脚本, baseUrl: ${baseUrl}, files: ${filenames.join(', ')}`);
+
+    const scriptContents = [];
+    let loadedCount = 0;
+    let failedCount = 0;
+
+    for (const filename of filenames) {
+      const scriptUrl = baseUrl + filename + '?v=' + Date.now();
+      try {
+        const content = await this.fetchRemoteScript(scriptUrl);
+        scriptContents.push(`// ===== ${filename} (remote) =====\n${content}`);
+        loadedCount++;
+        console.log(`[ScriptManager] ✅ 远程加载成功: ${filename} (${content.length} chars)`);
+      } catch (err) {
+        failedCount++;
+        console.error(`[ScriptManager] ❌ 远程加载失败: ${filename}:`, err.message);
+
+        // 如果配置了回退到本地，尝试读取本地文件
+        if (this.remoteConfig.fallbackToLocal !== false) {
+          const localPath = path.join(this.scriptsDir, filename);
+          if (fs.existsSync(localPath)) {
+            const localContent = await fs.readFile(localPath, 'utf-8');
+            scriptContents.push(`// ===== ${filename} (local fallback) =====\n${localContent}`);
+            console.log(`[ScriptManager] 🔄 回退到本地: ${filename} (${localContent.length} chars)`);
+          } else {
+            console.warn(`[ScriptManager] ⚠️ 本地文件也不存在: ${filename}`);
+          }
+        }
+      }
+    }
+
+    console.log(`[ScriptManager] 📊 远程加载完成: 成功 ${loadedCount}, 失败 ${failedCount}`);
+    return scriptContents.join('\n\n');
+  }
+
+  // 🔑 生成远程脚本加载器（已废弃，保留兼容）
   generateRemoteLoader(filenames) {
     // 根据环境选择 baseUrl
     // 通过检查是否在开发模式下运行来决定使用哪个 URL
