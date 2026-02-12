@@ -829,7 +829,7 @@ async function getSiteListApi() {
   const result = await response.json();
 
   // 2.0
-  const userInfo = await window.electronAPI.getGlobalData('user_info');
+  /* const userInfo = await window.electronAPI.getGlobalData('user_info');
   const result2Resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/lsttwo?site_id=${siteId}&company_id=${companyId}`, {
     method: 'GET',
     headers: {
@@ -843,9 +843,9 @@ async function getSiteListApi() {
     console.error('[Site] site/lsttwo 错误详情:', JSON.stringify(result2Resp.data));
     throw new Error(`HTTP error! status: ${result2Resp.status || result2Resp.error}`);
   }
-  const result2 = result2Resp.data;
+  const result2 = result2Resp.data; */
 
-  return result.data.concat(result2.data) || [];
+  return result.data/* .concat(result2.data) */ || [];
 }
 
 // 切换站点 API
