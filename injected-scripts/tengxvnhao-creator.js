@@ -213,32 +213,8 @@
                                         throw new Error('User info not found in response');
                                     }
                                     if(userInfo.header){
-                                        // 通过主进程下载头像（绕过跨域限制）
-                                        const imgResult = await window.browserAPI.downloadImage(userInfo.header);
-                                        if (imgResult.success) {
-                                            // 将 base64 转为 Blob 再上传
-                                            const byteChars = atob(imgResult.data);
-                                            const byteArray = new Uint8Array(byteChars.length);
-                                            for (let i = 0; i < byteChars.length; i++) {
-                                                byteArray[i] = byteChars.charCodeAt(i);
-                                            }
-                                            const avatarBlob = new Blob([byteArray], { type: imgResult.contentType });
-
-                                            const uploadFormData = new FormData();
-                                            uploadFormData.append('file', avatarBlob, 'avatar.jpg');
-                                            const token = await window.browserAPI.getGlobalData('login_token');
-                                            uploadFormData.append('access_token', token);
-                                            uploadFormData.append('token', token);
-                                            const uploadAvatarResult = await fetch('https://api.china9.cn/api/bucket/uploadall', {
-                                                method: 'POST',
-                                                body: uploadFormData
-                                            });
-                                            const uploadAvatarRes = await uploadAvatarResult.json();
-                                            console.log("🚀 ~  ~ uploadAvatarRes: ", uploadAvatarRes);
-                                            userInfo.header = 'https://images.china9.cn/' + uploadAvatarRes?.data;
-                                        } else {
-                                            console.error('[腾讯号授权] ⚠️ 头像下载失败:', imgResult.error, '，使用原始 URL');
-                                        }
+                                        // 直接使用腾讯原始头像 URL，前端展示时用 referrerpolicy="no-referrer" 即可
+                                        console.log('[腾讯号授权] 使用原始头像 URL:', userInfo.header);
                                     }
                                     const fansCountResult = await fetch('https://om.qq.com/mstatistic/ommixin/getFansTotalStatistic?app=&relogin=1', {
                                         method: 'GET',
@@ -328,7 +304,7 @@
 
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
-                                            //window.browserAPI.closeCurrentWindow();
+                                            window.browserAPI.closeCurrentWindow();
                                         }, 1000);
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
