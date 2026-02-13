@@ -116,9 +116,22 @@ function addContentTypeFix(targetSession, label) {
       }
     }
 
+    // 修复跨站 Set-Cookie 被屏蔽的问题：
+    // Chromium 对缺少 SameSite 的 cookie 默认用 Lax，跨站请求时会被屏蔽
+    // 自动补上 SameSite=None; Secure 使 cookie 能正常存储到对应域名
+    const cookieKey = Object.keys(responseHeaders).find(k => k.toLowerCase() === 'set-cookie');
+    if (cookieKey) {
+      responseHeaders[cookieKey] = responseHeaders[cookieKey].map(cookie => {
+        if (!/SameSite/i.test(cookie)) {
+          cookie += '; SameSite=None; Secure';
+        }
+        return cookie;
+      });
+    }
+
     callback({ responseHeaders });
   });
-  console.log(`[Session] ✅ ${label} Content-Type 修复拦截器已添加`);
+  console.log(`[Session] ✅ ${label} Content-Type 修复 + Set-Cookie SameSite 修复拦截器已添加`);
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -389,6 +402,79 @@ function scheduleUpdateCheck() {
   }, 5000);
 }
 
+/**
+ * 获取建站通站点信息（从服务器获取最新数据）
+ * 每次导航到 GEO 页面前调用，确保 is_geo 状态为最新
+ * @returns {Promise<{success: boolean, data?: object, error?: string}>}
+ */
+function fetchSiteInfo() {
+  console.log('============================================');
+  console.log('[fetchSiteInfo] 🚀 开始获取站点信息...');
+  return new Promise((resolve) => {
+    const userInfo = globalStorage.user_info;
+    const companyUniqueId = userInfo?.company?.unique_id;
+    console.log('[fetchSiteInfo] user_info:', userInfo ? '存在' : '不存在');
+    console.log('[fetchSiteInfo] company_unique_id:', companyUniqueId || '无');
+
+    if (!companyUniqueId) {
+      console.log('[fetchSiteInfo] ⚠️ 无 company_unique_id，无法获取站点信息');
+      console.log('============================================');
+      resolve({ success: false, error: '无 company_unique_id' });
+      return;
+    }
+
+    const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
+    const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
+    console.log('[fetchSiteInfo] 🌐 请求地址:', requestUrl);
+    console.log('[fetchSiteInfo] 环境:', isProduction ? '生产' : '开发');
+
+    const urlObj = new URL(requestUrl);
+    const reqProtocol = urlObj.protocol === 'https:' ? https : http;
+
+    const req = reqProtocol.get(requestUrl, { timeout: 10000 }, (res) => {
+      console.log('[fetchSiteInfo] 📥 收到响应, 状态码:', res.statusCode);
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          console.log('[fetchSiteInfo] 📦 响应内容:', JSON.stringify(result).substring(0, 300));
+          if (result.data) {
+            console.log('[fetchSiteInfo] ✅ 获取成功, is_geo:', result.data.is_geo, ', web_name:', result.data.web_name);
+            // 更新 globalStorage 缓存
+            globalStorage.siteInfo = result.data;
+            saveGlobalStorage();
+            console.log('[fetchSiteInfo] 💾 已更新 globalStorage.siteInfo');
+            console.log('============================================');
+            resolve({ success: true, data: result.data });
+          } else {
+            console.log('[fetchSiteInfo] ⚠️ 响应无 data 字段');
+            console.log('============================================');
+            resolve({ success: false, error: '响应无 data 字段' });
+          }
+        } catch (err) {
+          console.error('[fetchSiteInfo] ❌ 解析响应失败:', err.message);
+          console.log('============================================');
+          resolve({ success: false, error: err.message });
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error('[fetchSiteInfo] ❌ 请求失败:', err.message);
+      console.log('============================================');
+      resolve({ success: false, error: err.message });
+    });
+
+    req.on('timeout', () => {
+      console.error('[fetchSiteInfo] ❌ 请求超时 (10秒)');
+      req.destroy();
+      console.log('============================================');
+      resolve({ success: false, error: '请求超时' });
+    });
+  });
+}
+
 function createWindow() {
   // 使用 nativeImage 创建图标（支持高 DPI）
   const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
@@ -515,23 +601,35 @@ function createWindow() {
   const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
   // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
+  // 添加 5 秒超时保护，防止 clearCache 在某些电脑上挂起导致页面永远不加载
   let cacheCleared = false;
-  const clearCachePromise = (async () => {
-    try {
-      // 清理 HTTP 缓存
-      await persistentSession.clearCache();
-      console.log('[Session] ✅ HTTP 缓存已清理');
+  const clearCachePromise = Promise.race([
+    (async () => {
+      try {
+        // 清理 HTTP 缓存
+        await persistentSession.clearCache();
+        console.log('[Session] ✅ HTTP 缓存已清理');
 
-      // 清理 Code Cache（JavaScript 编译缓存）
-      await persistentSession.clearCodeCaches({});
-      console.log('[Session] ✅ Code Cache 已清理');
+        // 清理 Code Cache（JavaScript 编译缓存）
+        await persistentSession.clearCodeCaches({});
+        console.log('[Session] ✅ Code Cache 已清理');
 
-      cacheCleared = true;
-    } catch (err) {
-      console.error('[Session] ⚠️ 清理缓存失败:', err);
-      cacheCleared = true; // 即使失败也继续
-    }
-  })();
+        cacheCleared = true;
+      } catch (err) {
+        console.error('[Session] ⚠️ 清理缓存失败:', err);
+        cacheCleared = true; // 即使失败也继续
+      }
+    })(),
+    new Promise((resolve) => {
+      setTimeout(() => {
+        if (!cacheCleared) {
+          console.warn('[Session] ⚠️ 清理缓存超时（5秒），跳过继续加载页面');
+          cacheCleared = true;
+        }
+        resolve();
+      }, 5000);
+    })
+  ]);
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -641,6 +739,39 @@ function createWindow() {
 
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
+
+  // 🔍 P3: 渲染进程崩溃监听 - 方便远程排查白屏问题
+  browserView.webContents.on('render-process-gone', (event, details) => {
+    console.error('[BrowserView] ❌ 渲染进程已退出！');
+    console.error('[BrowserView] 退出原因:', details.reason);
+    console.error('[BrowserView] 退出码:', details.exitCode);
+    // 尝试重新加载
+    if (details.reason !== 'killed') {
+      console.log('[BrowserView] 🔄 尝试重新加载页面...');
+      setTimeout(() => {
+        if (browserView && !browserView.webContents.isDestroyed()) {
+          loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+            console.error('[BrowserView] ❌ 重新加载失败:', err);
+          });
+        }
+      }, 1000);
+    }
+  });
+
+  browserView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[BrowserView] ❌ 页面加载失败！');
+    console.error('[BrowserView] 错误码:', errorCode);
+    console.error('[BrowserView] 错误描述:', errorDescription);
+    console.error('[BrowserView] 失败 URL:', validatedURL);
+  });
+
+  browserView.webContents.on('unresponsive', () => {
+    console.warn('[BrowserView] ⚠️ 页面无响应！');
+  });
+
+  browserView.webContents.on('responsive', () => {
+    console.log('[BrowserView] ✅ 页面已恢复响应');
+  });
 
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
@@ -773,11 +904,22 @@ function createWindow() {
         // 🔑 根据上次退出的项目类型，跳转到对应首页
         const savedProject = globalStorage.last_project;
         if (savedProject === 'geo') {
-          // geo 项目首页
-          startUrl = isProduction
-            ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-            : 'http://localhost:8080/geo/index';
-          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
+          // 先调 API 获取最新 siteInfo，检查 is_geo
+          console.log('[BrowserView] 📍 上次退出时在 geo 项目，重新检查 geo 权限...');
+          const siteResult = await fetchSiteInfo();
+          const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
+
+          if (siteInfo && siteInfo.is_geo === 1) {
+            // geo 权限通过，跳转到 geo 首页
+            startUrl = isProduction
+              ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+              : 'http://localhost:8080/geo/index';
+            console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
+          } else {
+            // geo 权限不通过，跳转到未购买页面
+            console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
+            startUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
+          }
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
@@ -816,6 +958,26 @@ function createWindow() {
     loadPage
       .then(() => {
         console.log('[BrowserView] ✅ 页面加载调用成功');
+        // 🔍 白屏检测：loadFile 可能回调成功但 GPU 渲染失败导致页面实际为空
+        // 10秒后检查页面是否有内容，没有则重新加载
+        setTimeout(async () => {
+          if (!browserView || browserView.webContents.isDestroyed()) return;
+          try {
+            const bodyHTML = await browserView.webContents.executeJavaScript(
+              'document.body ? document.body.innerHTML.trim().length : 0'
+            );
+            if (bodyHTML === 0) {
+              console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
+              loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+                console.error('[BrowserView] ❌ 白屏恢复重载失败:', err);
+              });
+            } else {
+              console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
+            }
+          } catch (e) {
+            console.warn('[BrowserView] ⚠️ 白屏检测执行失败（渲染进程可能已崩溃）:', e.message);
+          }
+        }, 10000);
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
@@ -1361,10 +1523,11 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限
-    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+    // 🔑 已登录状态下，检查 geo 页面权限（每次都重新调 API 获取最新 siteInfo）
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
+      const siteResult = await fetchSiteInfo();
+      const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
       console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
 
@@ -1393,7 +1556,7 @@ function createWindow() {
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
   // 监听完整页面导航，检测远程登录页和 token 有效性
-  browserView.webContents.on('did-navigate', (event, url) => {
+  browserView.webContents.on('did-navigate', async (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
 
     // 检测远程登录页，自动跳转到本地登录页
@@ -1424,10 +1587,11 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限
-    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
+    // 🔑 已登录状态下，检查 geo 页面权限（每次都重新调 API 获取最新 siteInfo）
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
+      const siteResult = await fetchSiteInfo();
+      const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
       console.log('[Geo Auth Check] siteInfo:', siteInfo);
       console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
 
@@ -1824,6 +1988,11 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
+// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
+// 必须在 app.whenReady() 之前调用
+app.disableHardwareAcceleration();
+console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
@@ -1831,7 +2000,10 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('disable-extensions');
 // 使用正常的渲染模式
 app.commandLine.appendSwitch('disable-dev-shm-usage');
+// 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
+app.commandLine.appendSwitch('no-sandbox');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
+console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
