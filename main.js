@@ -402,74 +402,72 @@ function scheduleUpdateCheck() {
   }, 5000);
 }
 
+// 简易文件日志（用于打包后调试 fetchSiteInfo）
+const geoLogPath = path.join(app.getPath('userData'), 'geo-check.log');
+function geoLog(msg) {
+  const timestamp = new Date().toLocaleString('zh-CN');
+  const line = `[${timestamp}] ${msg}\n`;
+  console.log('[fetchSiteInfo]', msg);
+  try { fs.appendFileSync(geoLogPath, line, 'utf8'); } catch (e) { /* ignore */ }
+}
+
 /**
  * 获取建站通站点信息（从服务器获取最新数据）
  * 每次导航到 GEO 页面前调用，确保 is_geo 状态为最新
  * @returns {Promise<{success: boolean, data?: object, error?: string}>}
  */
 function fetchSiteInfo() {
-  console.log('============================================');
-  console.log('[fetchSiteInfo] 🚀 开始获取站点信息...');
+  geoLog('🚀 开始获取站点信息...');
   return new Promise((resolve) => {
     const userInfo = globalStorage.user_info;
     const companyUniqueId = userInfo?.company?.unique_id;
-    console.log('[fetchSiteInfo] user_info:', userInfo ? '存在' : '不存在');
-    console.log('[fetchSiteInfo] company_unique_id:', companyUniqueId || '无');
+    geoLog('company_unique_id: ' + (companyUniqueId || '无'));
 
     if (!companyUniqueId) {
-      console.log('[fetchSiteInfo] ⚠️ 无 company_unique_id，无法获取站点信息');
-      console.log('============================================');
+      geoLog('⚠️ 无 company_unique_id，无法获取站点信息');
       resolve({ success: false, error: '无 company_unique_id' });
       return;
     }
 
     const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
     const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
-    console.log('[fetchSiteInfo] 🌐 请求地址:', requestUrl);
-    console.log('[fetchSiteInfo] 环境:', isProduction ? '生产' : '开发');
+    geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
 
     const urlObj = new URL(requestUrl);
     const reqProtocol = urlObj.protocol === 'https:' ? https : http;
 
     const req = reqProtocol.get(requestUrl, { timeout: 10000 }, (res) => {
-      console.log('[fetchSiteInfo] 📥 收到响应, 状态码:', res.statusCode);
+      geoLog('📥 响应状态码: ' + res.statusCode);
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
           const result = JSON.parse(data);
-          console.log('[fetchSiteInfo] 📦 响应内容:', JSON.stringify(result).substring(0, 300));
           if (result.data) {
-            console.log('[fetchSiteInfo] ✅ 获取成功, is_geo:', result.data.is_geo, ', web_name:', result.data.web_name);
-            // 更新 globalStorage 缓存
+            geoLog('✅ 获取成功, is_geo=' + result.data.is_geo + ', web_name=' + result.data.web_name);
             globalStorage.siteInfo = result.data;
             saveGlobalStorage();
-            console.log('[fetchSiteInfo] 💾 已更新 globalStorage.siteInfo');
-            console.log('============================================');
+            geoLog('💾 已更新 globalStorage.siteInfo');
             resolve({ success: true, data: result.data });
           } else {
-            console.log('[fetchSiteInfo] ⚠️ 响应无 data 字段');
-            console.log('============================================');
+            geoLog('⚠️ 响应无 data 字段: ' + JSON.stringify(result).substring(0, 200));
             resolve({ success: false, error: '响应无 data 字段' });
           }
         } catch (err) {
-          console.error('[fetchSiteInfo] ❌ 解析响应失败:', err.message);
-          console.log('============================================');
+          geoLog('❌ 解析响应失败: ' + err.message);
           resolve({ success: false, error: err.message });
         }
       });
     });
 
     req.on('error', (err) => {
-      console.error('[fetchSiteInfo] ❌ 请求失败:', err.message);
-      console.log('============================================');
+      geoLog('❌ 请求失败: ' + err.message);
       resolve({ success: false, error: err.message });
     });
 
     req.on('timeout', () => {
-      console.error('[fetchSiteInfo] ❌ 请求超时 (10秒)');
+      geoLog('❌ 请求超时 (10秒)');
       req.destroy();
-      console.log('============================================');
       resolve({ success: false, error: '请求超时' });
     });
   });
@@ -916,9 +914,9 @@ function createWindow() {
               : 'http://localhost:8080/geo/index';
             console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
           } else {
-            // geo 权限不通过，跳转到未购买页面
+            // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
             console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
-            startUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
+            startUrl = '__LOCAL_NOT_PURCHASE_GEO__';
           }
         } else {
           // 默认 aigc 项目首页
@@ -951,9 +949,15 @@ function createWindow() {
     updateBrowserViewBounds(isScriptPanelOpen);
 
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
-    const loadPage = startUrl.startsWith('file://')
-      ? loadLocalPage(browserView.webContents, path.basename(startUrl))
-      : browserView.webContents.loadURL(startUrl);
+    let loadPage;
+    if (startUrl === '__LOCAL_NOT_PURCHASE_GEO__') {
+      // GEO 权限不通过，使用 loadFile + query 参数正确加载本地页面
+      loadPage = browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notPurchase), { query: { system: 'geo' } });
+    } else if (startUrl.startsWith('file://')) {
+      loadPage = loadLocalPage(browserView.webContents, path.basename(startUrl));
+    } else {
+      loadPage = browserView.webContents.loadURL(startUrl);
+    }
 
     loadPage
       .then(() => {
@@ -1556,7 +1560,7 @@ function createWindow() {
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
   // 监听完整页面导航，检测远程登录页和 token 有效性
-  browserView.webContents.on('did-navigate', async (event, url) => {
+  browserView.webContents.on('did-navigate', (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
 
     // 检测远程登录页，自动跳转到本地登录页
@@ -1587,25 +1591,34 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（每次都重新调 API 获取最新 siteInfo）
+    // 🔑 已登录状态下，检查 geo 页面权限（使用缓存，实时检查在 did-navigate-in-page 中执行）
     if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
-      console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
-      const siteResult = await fetchSiteInfo();
-      const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+      console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
+      const siteInfo = globalStorage.siteInfo;
+      console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        console.log('[Geo Auth Check - did-navigate] ⚠️ 缓存显示未购买 geo 产品，跳转到未购买页面');
         const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
-        // 通知 renderer 更新 Tab 选中状态为 GEO
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('url-changed', notPurchaseUrl);
         }
         return;
       }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
+      console.log('[Geo Auth Check - did-navigate] ✅ 缓存显示 geo 权限通过');
+
+      // 后台异步刷新 siteInfo 缓存（不阻塞导航）
+      fetchSiteInfo().then(result => {
+        if (result.success && result.data && (!result.data.is_geo || result.data.is_geo !== 1)) {
+          console.log('[Geo Auth Check - did-navigate] ⚠️ 最新数据显示 geo 权限已失效，跳转到未购买页面');
+          const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
+          browserView.webContents.loadURL(notPurchaseUrl);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('url-changed', notPurchaseUrl);
+          }
+        }
+      }).catch(() => {});
     }
   });
 
