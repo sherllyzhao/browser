@@ -3222,6 +3222,191 @@ ipcMain.handle('show-user-menu', async (event) => {
   });
 });
 
+// 公司切换菜单窗口
+let companyMenuWindow = null;
+
+ipcMain.handle('show-company-menu', async (event, companies, currentUniqueId) => {
+  // 如果已有菜单窗口，先关闭
+  if (companyMenuWindow && !companyMenuWindow.isDestroyed()) {
+    companyMenuWindow.close();
+    companyMenuWindow = null;
+    return { selected: false };
+  }
+
+  return new Promise((resolve) => {
+    const contentBounds = mainWindow.getContentBounds();
+    const menuWidth = 320;
+    const menuHeight = Math.min(companies.length * 56 + 16, 400);
+
+    // 计算菜单位置：对齐公司切换按钮
+    const menuX = contentBounds.x + contentBounds.width - menuWidth - 300;
+    const menuY = contentBounds.y + 55;
+
+    console.log('[Company Menu] Creating menu window at:', menuX, menuY);
+
+    companyMenuWindow = new BrowserWindow({
+      width: menuWidth,
+      height: menuHeight,
+      x: menuX,
+      y: menuY,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      show: false,
+      parent: mainWindow,
+      modal: false,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    });
+
+    companyMenuWindow.once('ready-to-show', () => {
+      if (companyMenuWindow && !companyMenuWindow.isDestroyed()) {
+        companyMenuWindow.show();
+        companyMenuWindow.focus();
+        console.log('[Company Menu] Window shown');
+      }
+    });
+
+    companyMenuWindow.on('blur', () => {
+      if (companyMenuWindow && !companyMenuWindow.isDestroyed()) {
+        companyMenuWindow.close();
+        companyMenuWindow = null;
+        resolve({ selected: false });
+      }
+    });
+
+    companyMenuWindow.on('closed', () => {
+      companyMenuWindow = null;
+    });
+
+    ipcMain.once('company-selected', (e, uniqueId, companyName) => {
+      if (companyMenuWindow && !companyMenuWindow.isDestroyed()) {
+        companyMenuWindow.close();
+        companyMenuWindow = null;
+      }
+      resolve({ selected: true, uniqueId, companyName });
+    });
+
+    const validCompanies = companies.filter(c => c && typeof c === 'object' && (c.name || c.abbreviation));
+    const companiesJson = JSON.stringify(validCompanies);
+    const menuHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          html, body {
+            background: transparent !important;
+            overflow: hidden;
+          }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+          }
+          .menu {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            padding: 8px 0;
+            max-height: 384px;
+            overflow-y: auto;
+          }
+          .menu-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.15s;
+          }
+          .menu-item:hover {
+            background: #F5F7FA;
+          }
+          .menu-item.active {
+            background: #FFF7ED;
+          }
+          .company-logo {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            background: #E4E7ED;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: #909399;
+            margin-right: 12px;
+            flex-shrink: 0;
+            overflow: hidden;
+          }
+          .company-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+          }
+          .menu-item.active .company-logo {
+            background: #FF8C00;
+            color: #fff;
+          }
+          .company-name {
+            flex: 1;
+            font-size: 14px;
+            color: #303133;
+            word-break: break-all;
+          }
+          .menu-item.active .company-name {
+            color: #FF8C00;
+            font-weight: 500;
+          }
+          .check-icon {
+            width: 16px;
+            height: 16px;
+            margin-left: 8px;
+            opacity: 0;
+          }
+          .menu-item.active .check-icon {
+            opacity: 1;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="menu" id="menu"></div>
+        <script>
+          const { ipcRenderer } = require('electron');
+          const companies = ${companiesJson};
+          const currentUniqueId = ${JSON.stringify(currentUniqueId)};
+
+          const menu = document.getElementById('menu');
+          companies.forEach(company => {
+            const item = document.createElement('div');
+            item.className = 'menu-item' + (company.unique_id === currentUniqueId ? ' active' : '');
+            const displayName = company.abbreviation || company.name || '';
+            const logoHtml = company.logo
+              ? '<img src="' + company.logo + '" alt="">'
+              : displayName.charAt(0);
+            item.innerHTML =
+              '<div class="company-logo">' + logoHtml + '</div>' +
+              '<span class="company-name" title="' + (company.name || '') + '">' + displayName + '</span>' +
+              '<svg class="check-icon" viewBox="0 0 1024 1024" fill="#FF8C00">' +
+                '<path d="M912 190h-69.9c-9.8 0-19.1 4.5-25.1 12.2L404.7 724.5 207 474a32 32 0 0 0-25.1-12.2H112c-6.7 0-10.4 7.7-6.3 12.9l273.9 347c12.8 16.2 37.4 16.2 50.3 0l488.4-618.9c4.1-5.1.4-12.8-6.3-12.8z"/>' +
+              '</svg>';
+            item.onclick = () => {
+              ipcRenderer.send('company-selected', company.unique_id, displayName);
+            };
+            menu.appendChild(item);
+          });
+        </script>
+      </body>
+      </html>
+    `;
+
+    companyMenuWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(menuHtml));
+  });
+});
+
 // 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
 // options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）

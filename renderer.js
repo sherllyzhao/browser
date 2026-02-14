@@ -1092,6 +1092,314 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// ========== 公司切换管理 ==========
+const companyManageEl = document.querySelector('.company-manage');
+const currentCompanyEl = document.getElementById('currentCompany');
+const currentCompanyNameEl = document.getElementById('currentCompanyName');
+
+// 当前公司列表缓存
+let companyListCache = [];
+let currentCompanyUniqueId = '';
+
+// 获取公司列表 API
+async function getCompanyListApi() {
+  const token = await window.electronAPI.getGlobalData('login_token');
+  if (!token) {
+    console.log('[Company] 无 token，跳过获取公司列表');
+    return [];
+  }
+
+  const isDev = window.electronAPI && !window.electronAPI.isProduction;
+  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://china9.cn';
+
+  try {
+    const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/switchCompanyData`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': token,
+        'access_token': token,
+      },
+      body: JSON.stringify({ enterpriseSide: 'pc' })
+    });
+
+    console.log('[Company] switchCompanyData 响应:', resp);
+    if (resp.success && resp.ok && resp.data && resp.data.code === 200) {
+      return Array.isArray(resp.data.data) ? resp.data.data : [];
+    } else {
+      console.error('[Company] switchCompanyData 失败:', resp);
+      return [];
+    }
+  } catch (err) {
+    console.error('[Company] switchCompanyData 异常:', err);
+    return [];
+  }
+}
+
+// 切换公司 API
+async function switchCompanyApi(uniqueId) {
+  const token = await window.electronAPI.getGlobalData('login_token');
+  const isDev = window.electronAPI && !window.electronAPI.isProduction;
+  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://china9.cn';
+
+  const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/cutNew`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': token,
+      'access_token': token,
+    },
+    body: JSON.stringify({ enterpriseSide: 'pc', unique_id: uniqueId })
+  });
+
+  console.log('[Company] cutNew 响应:', resp);
+  if (!resp.success || !resp.ok) {
+    throw new Error('HTTP error! status: ' + (resp.status || resp.error));
+  }
+
+  const result = resp.data;
+  if (result.code !== 200) {
+    throw new Error('API error: ' + (result.message || 'unknown'));
+  }
+
+  return result.data; // { token, expires_in, gcc }
+}
+
+// 更新所有 token（globalStorage + cookies）
+async function updateAllTokens(newToken, expiresIn, gcc) {
+  // 1. 更新 globalStorage
+  await window.electronAPI.setGlobalData('login_token', newToken);
+  await window.electronAPI.setGlobalData('login_expires', expiresIn);
+  if (gcc) {
+    await window.electronAPI.setGlobalData('login_gcc', gcc);
+  }
+  console.log('[Company] ✅ 已更新 globalStorage token');
+
+  // 2. 更新 localhost cookies（开发环境）
+  const localCookieBase = { path: '/', secure: false, sameSite: 'lax' };
+
+  await window.electronAPI.setCookie({
+    url: 'http://localhost:5173/',
+    name: 'token',
+    value: newToken,
+    ...localCookieBase
+  });
+  await window.electronAPI.setCookie({
+    url: 'http://localhost:5173/',
+    name: 'access_token',
+    value: newToken,
+    ...localCookieBase
+  });
+  await window.electronAPI.setCookie({
+    url: 'http://localhost:8080/',
+    name: 'token',
+    value: newToken,
+    ...localCookieBase
+  });
+  await window.electronAPI.setCookie({
+    url: 'http://localhost:8080/',
+    name: 'access_token',
+    value: newToken,
+    ...localCookieBase
+  });
+  if (gcc) {
+    await window.electronAPI.setCookie({
+      url: 'http://localhost:5173/',
+      name: 'gcc',
+      value: encodeURIComponent(gcc),
+      ...localCookieBase
+    });
+    await window.electronAPI.setCookie({
+      url: 'http://localhost:8080/',
+      name: 'gcc',
+      value: encodeURIComponent(gcc),
+      ...localCookieBase
+    });
+  }
+  console.log('[Company] ✅ 已更新 localhost cookies');
+
+  // 3. 更新 .china9.cn cookies（生产环境）
+  const chinaCookieBase = { domain: '.china9.cn', path: '/', secure: true };
+
+  await window.electronAPI.setCookie({
+    url: 'https://china9.cn',
+    name: 'token',
+    value: newToken,
+    ...chinaCookieBase
+  });
+  await window.electronAPI.setCookie({
+    url: 'https://china9.cn',
+    name: 'access_token',
+    value: newToken,
+    ...chinaCookieBase
+  });
+  if (gcc) {
+    await window.electronAPI.setCookie({
+      url: 'https://china9.cn',
+      name: 'gcc',
+      value: encodeURIComponent(gcc),
+      ...chinaCookieBase
+    });
+  }
+  console.log('[Company] ✅ 已更新 .china9.cn cookies');
+}
+
+// 选择公司并切换
+async function selectCompany(company) {
+  if (company.unique_id === currentCompanyUniqueId) {
+    console.log('[Company] 选中的是当前公司，不切换');
+    return;
+  }
+
+  try {
+    console.log('[Company] 开始切换公司:', company.name);
+
+    // 显示加载遮罩
+    const loadingMask = document.getElementById('__global_loading_mask__');
+    const loadingText = loadingMask ? loadingMask.querySelector('.loading-text') : null;
+    if (loadingText) loadingText.textContent = '正在切换公司...';
+    if (loadingMask) loadingMask.classList.add('show');
+    await window.electronAPI.showGlobalLoading();
+
+    // 调用切换接口
+    const result = await switchCompanyApi(company.unique_id);
+    console.log('[Company] 切换成功:', result);
+
+    // 更新所有 token
+    await updateAllTokens(result.token, result.expires_in, result.gcc);
+
+    // 更新当前公司信息
+    currentCompanyUniqueId = company.unique_id;
+    if (currentCompanyNameEl) {
+      const displayName = company.abbreviation || company.name || '';
+      currentCompanyNameEl.textContent = displayName;
+      currentCompanyNameEl.setAttribute('title', company.name || '');
+      currentCompanyNameEl.style.visibility = 'visible';
+    }
+
+    // 保存当前公司到 globalStorage
+    await window.electronAPI.setGlobalData('current_company', company);
+
+    // 刷新页面
+    console.log('[Company] 刷新页面...');
+    setTimeout(async () => {
+      await window.electronAPI.refreshPage();
+
+      // 刷新后隐藏遮罩
+      setTimeout(async () => {
+        await window.electronAPI.hideGlobalLoading();
+        if (loadingMask) loadingMask.classList.remove('show');
+        if (loadingText) loadingText.textContent = '正在切换站点...';
+        console.log('[Company] 切换完成，已刷新页面');
+      }, 500);
+    }, 1000);
+
+  } catch (err) {
+    console.error('[Company] 切换公司失败:', err);
+    // 出错时隐藏遮罩
+    await window.electronAPI.hideGlobalLoading();
+    const loadingMask = document.getElementById('__global_loading_mask__');
+    if (loadingMask) loadingMask.classList.remove('show');
+  }
+}
+
+// 加载公司列表
+async function loadCompanyList() {
+  try {
+    const companies = await getCompanyListApi();
+    console.log('[Company] 公司列表:', companies);
+
+    if (companies.length === 0) {
+      if (companyManageEl) companyManageEl.style.display = 'none';
+      return;
+    }
+
+    // 只有多于1个公司时才显示切换按钮
+    if (companies.length <= 1) {
+      if (companies.length === 1) {
+        const displayName = companies[0].abbreviation || companies[0].name || '';
+        if (currentCompanyNameEl) {
+          currentCompanyNameEl.textContent = displayName;
+          currentCompanyNameEl.setAttribute('title', companies[0].name || '');
+          currentCompanyNameEl.style.visibility = 'visible';
+        }
+        currentCompanyUniqueId = companies[0].unique_id;
+      }
+      const switchBtn = document.getElementById('switchCompanyBtn');
+      if (switchBtn) switchBtn.style.display = 'none';
+      if (companyManageEl) companyManageEl.style.display = '';
+      return;
+    }
+
+    companyListCache = companies;
+    if (companyManageEl) companyManageEl.style.display = '';
+
+    // 尝试恢复之前选中的公司
+    const savedCompany = await window.electronAPI.getGlobalData('current_company');
+    const userInfo = await window.electronAPI.getGlobalData('user_info');
+
+    if (savedCompany && companies.find(c => c.unique_id === savedCompany.unique_id)) {
+      currentCompanyUniqueId = savedCompany.unique_id;
+      const displayName = savedCompany.abbreviation || savedCompany.name || '';
+      if (currentCompanyNameEl) {
+        currentCompanyNameEl.textContent = displayName;
+        currentCompanyNameEl.setAttribute('title', savedCompany.name || '');
+        currentCompanyNameEl.style.visibility = 'visible';
+      }
+    } else if (userInfo && userInfo.company && userInfo.company.unique_id) {
+      const matched = companies.find(c => c.unique_id === userInfo.company.unique_id);
+      if (matched) {
+        currentCompanyUniqueId = matched.unique_id;
+        const displayName = matched.abbreviation || matched.name || '';
+        if (currentCompanyNameEl) {
+          currentCompanyNameEl.textContent = displayName;
+          currentCompanyNameEl.setAttribute('title', matched.name || '');
+          currentCompanyNameEl.style.visibility = 'visible';
+        }
+        await window.electronAPI.setGlobalData('current_company', matched);
+      }
+    }
+
+    // 如果还没匹配到，默认显示第一个
+    if (!currentCompanyUniqueId && companies.length > 0) {
+      currentCompanyUniqueId = companies[0].unique_id;
+      const displayName = companies[0].abbreviation || companies[0].name || '';
+      if (currentCompanyNameEl) {
+        currentCompanyNameEl.textContent = displayName;
+        currentCompanyNameEl.setAttribute('title', companies[0].name || '');
+        currentCompanyNameEl.style.visibility = 'visible';
+      }
+      await window.electronAPI.setGlobalData('current_company', companies[0]);
+    }
+
+    console.log('[Company] 当前公司:', currentCompanyUniqueId);
+  } catch (err) {
+    console.error('[Company] loadCompanyList 出错:', err);
+  }
+}
+
+// 公司切换菜单点击事件 - 使用原生菜单
+if (currentCompanyEl) {
+  currentCompanyEl.addEventListener('click', async (e) => {
+    e.stopPropagation();
+
+    if (window.electronAPI && window.electronAPI.showCompanyMenu && companyListCache.length > 0) {
+      console.log('[Company Dropdown] 显示原生菜单, 公司数量:', companyListCache.length);
+      const result = await window.electronAPI.showCompanyMenu(companyListCache, currentCompanyUniqueId);
+      console.log('[Company Dropdown] 菜单选择结果:', result);
+
+      if (result && result.selected) {
+        const selectedCompany = companyListCache.find(c => c.unique_id === result.uniqueId);
+        if (selectedCompany) {
+          await selectCompany(selectedCompany);
+        }
+      }
+    } else {
+      console.log('[Company Dropdown] 原生菜单不可用或公司列表为空');
+    }
+  });
+}
+
 // 初始化
 (async () => {
   console.log('[初始化] 开始...');
@@ -1173,6 +1481,15 @@ document.addEventListener('click', (e) => {
       console.log('[初始化] loadSiteList 完成');
     } catch (err) {
       console.error('[初始化] loadSiteList 失败:', err);
+    }
+
+    // 加载公司列表
+    try {
+      console.log('[初始化] 准备调用 loadCompanyList');
+      await loadCompanyList();
+      console.log('[初始化] loadCompanyList 完成');
+    } catch (err) {
+      console.error('[初始化] loadCompanyList 失败:', err);
     }
 
     try {

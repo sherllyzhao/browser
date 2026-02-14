@@ -98,6 +98,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 显示用户菜单（退出登录等）
   showUserMenu: () => ipcRenderer.invoke('show-user-menu'),
 
+  // 显示公司切换原生菜单
+  showCompanyMenu: (companies, currentUniqueId) => ipcRenderer.invoke('show-company-menu', companies, currentUniqueId),
+
   // Cookie 功能
   getCookies: () => ipcRenderer.invoke('get-cookies'),
   setCookie: (cookieDetails) => ipcRenderer.invoke('set-cookie', cookieDetails),
