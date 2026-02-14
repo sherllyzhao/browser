@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -416,61 +416,130 @@ function geoLog(msg) {
  * 每次导航到 GEO 页面前调用，确保 is_geo 状态为最新
  * @returns {Promise<{success: boolean, data?: object, error?: string}>}
  */
-function fetchSiteInfo() {
+async function fetchSiteInfo() {
   geoLog('🚀 开始获取站点信息...');
-  return new Promise((resolve) => {
-    const userInfo = globalStorage.user_info;
-    const companyUniqueId = userInfo?.company?.unique_id;
-    geoLog('company_unique_id: ' + (companyUniqueId || '无'));
+  const userInfo = globalStorage.user_info;
+  const companyUniqueId = userInfo?.company?.unique_id;
+  geoLog('company_unique_id: ' + (companyUniqueId || '无'));
 
-    if (!companyUniqueId) {
-      geoLog('⚠️ 无 company_unique_id，无法获取站点信息');
-      resolve({ success: false, error: '无 company_unique_id' });
-      return;
+  if (!companyUniqueId) {
+    geoLog('⚠️ 无 company_unique_id，无法获取站点信息');
+    return { success: false, error: '无 company_unique_id' };
+  }
+
+  const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
+  const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
+  geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
+
+  // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
+  // 通过 partition 指定使用 persist:browserview session，自动携带正确的 .china9.cn cookies
+  function doRequest() {
+    return new Promise((resolve) => {
+      try {
+        const request = net.request({
+          method: 'GET',
+          url: requestUrl,
+          partition: 'persist:browserview'
+        });
+
+        request.setHeader('Accept', 'application/json, text/plain, */*');
+        request.setHeader('User-Agent', 'Mozilla/5.0 zh.Cloud-browse');
+
+        let responseData = '';
+        let timeoutId = setTimeout(() => {
+          geoLog('❌ 请求超时 (10秒)');
+          request.abort();
+          resolve({ success: false, error: '请求超时' });
+        }, 10000);
+
+        request.on('response', (response) => {
+          geoLog('📥 响应状态码: ' + response.statusCode);
+          response.on('data', (chunk) => {
+            responseData += chunk.toString();
+          });
+          response.on('end', () => {
+            clearTimeout(timeoutId);
+            try {
+              const result = JSON.parse(responseData);
+              if (result.data) {
+                resolve({ success: true, data: result.data });
+              } else {
+                geoLog('⚠️ 响应无 data 字段: ' + JSON.stringify(result).substring(0, 200));
+                resolve({ success: false, error: '响应无 data 字段' });
+              }
+            } catch (err) {
+              geoLog('❌ 解析响应失败: ' + err.message);
+              resolve({ success: false, error: err.message });
+            }
+          });
+        });
+
+        request.on('error', (err) => {
+          clearTimeout(timeoutId);
+          geoLog('❌ 请求失败: ' + err.message);
+          resolve({ success: false, error: err.message });
+        });
+
+        request.end();
+      } catch (err) {
+        geoLog('❌ 创建请求失败: ' + err.message);
+        resolve({ success: false, error: err.message });
+      }
+    });
+  }
+
+  // 带重试逻辑：如果返回的 is_geo 为 null 且无 web_name，视为不完整数据，最多重试 2 次
+  const MAX_RETRIES = 2;
+  let lastResult = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      geoLog('🔄 第 ' + attempt + ' 次重试（上次返回 is_geo 为 null）...');
+      await new Promise(r => setTimeout(r, 1000)); // 重试间隔 1 秒
     }
 
-    const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
-    const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
-    geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
+    lastResult = await doRequest();
 
-    const urlObj = new URL(requestUrl);
-    const reqProtocol = urlObj.protocol === 'https:' ? https : http;
+    if (!lastResult.success) {
+      geoLog('❌ 第 ' + (attempt + 1) + ' 次请求失败: ' + lastResult.error);
+      continue;
+    }
 
-    const req = reqProtocol.get(requestUrl, { timeout: 10000 }, (res) => {
-      geoLog('📥 响应状态码: ' + res.statusCode);
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const result = JSON.parse(data);
-          if (result.data) {
-            geoLog('✅ 获取成功, is_geo=' + result.data.is_geo + ', web_name=' + result.data.web_name);
-            globalStorage.siteInfo = result.data;
-            saveGlobalStorage();
-            geoLog('💾 已更新 globalStorage.siteInfo');
-            resolve({ success: true, data: result.data });
-          } else {
-            geoLog('⚠️ 响应无 data 字段: ' + JSON.stringify(result).substring(0, 200));
-            resolve({ success: false, error: '响应无 data 字段' });
-          }
-        } catch (err) {
-          geoLog('❌ 解析响应失败: ' + err.message);
-          resolve({ success: false, error: err.message });
-        }
-      });
-    });
+    const data = lastResult.data;
+    geoLog('📦 第 ' + (attempt + 1) + ' 次响应: is_geo=' + data.is_geo + ', web_name=' + (data.web_name || '无') + ', id=' + (data.id || '无'));
 
-    req.on('error', (err) => {
-      geoLog('❌ 请求失败: ' + err.message);
-      resolve({ success: false, error: err.message });
-    });
+    // 如果返回了完整数据（有 id 和 web_name），立即使用
+    if (data.id && data.web_name) {
+      geoLog('✅ 获取到完整站点数据');
+      globalStorage.siteInfo = data;
+      saveGlobalStorage();
+      geoLog('💾 已更新 globalStorage.siteInfo');
+      return { success: true, data: data };
+    }
 
-    req.on('timeout', () => {
-      geoLog('❌ 请求超时 (10秒)');
-      req.destroy();
-      resolve({ success: false, error: '请求超时' });
-    });
-  });
+    // 如果 is_geo 不为 null（即明确为 0 或 1），也可以使用（可能是部分数据但权限字段有效）
+    if (data.is_geo !== null && data.is_geo !== undefined) {
+      geoLog('✅ is_geo 有明确值: ' + data.is_geo + '（数据不完整但权限字段有效）');
+      globalStorage.siteInfo = data;
+      saveGlobalStorage();
+      geoLog('💾 已更新 globalStorage.siteInfo');
+      return { success: true, data: data };
+    }
+
+    // is_geo 为 null 且无完整数据，继续重试
+    geoLog('⚠️ 返回数据不完整 (is_geo=null, 无id/web_name)，可能命中了数据不全的节点');
+  }
+
+  // 所有重试完毕，使用最后一次的结果
+  if (lastResult && lastResult.success) {
+    geoLog('⚠️ 重试 ' + MAX_RETRIES + ' 次后仍返回不完整数据，使用最后一次结果');
+    globalStorage.siteInfo = lastResult.data;
+    saveGlobalStorage();
+    return { success: true, data: lastResult.data };
+  }
+
+  geoLog('❌ 所有请求均失败');
+  return lastResult || { success: false, error: '所有请求均失败' };
 }
 
 function createWindow() {
@@ -1532,8 +1601,8 @@ function createWindow() {
       console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
       const siteResult = await fetchSiteInfo();
       const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+      geoLog('[did-navigate-in-page] URL: ' + url);
+      geoLog('[did-navigate-in-page] siteResult.success=' + siteResult.success + ', is_geo=' + siteInfo?.is_geo);
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
@@ -2651,15 +2720,29 @@ ipcMain.handle('navigate-to-login', async () => {
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
 ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
   if (browserView) {
+    // 解析 query 参数（如 'not-purchase.html?system=geo'）
+    const [baseName, queryString] = pageName.split('?');
+    const query = {};
+    if (queryString) {
+      queryString.split('&').forEach(pair => {
+        const [key, val] = pair.split('=');
+        if (key) query[key] = val || '';
+      });
+    }
+
     // 安全检查：只允许跳转到指定的本地页面
     const allowedPages = Object.values(config.placeholderPages);
-    if (!allowedPages.includes(pageName)) {
-      console.log('[Main] ❌ 不允许跳转到未知页面:', pageName);
+    if (!allowedPages.includes(baseName)) {
+      console.log('[Main] ❌ 不允许跳转到未知页面:', baseName);
       return { success: false, error: '不允许跳转到该页面' };
     }
 
-    console.log('[Main] 跳转到本地页面:', pageName);
-    loadLocalPage(browserView.webContents, pageName);
+    console.log('[Main] 跳转到本地页面:', baseName, 'query:', query);
+    if (Object.keys(query).length > 0) {
+      browserView.webContents.loadFile(path.join(__dirname, baseName), { query });
+    } else {
+      loadLocalPage(browserView.webContents, baseName);
+    }
     return { success: true };
   }
   return { success: false, error: 'browserView 不可用' };
