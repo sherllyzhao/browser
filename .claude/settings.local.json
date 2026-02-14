@@ -86,7 +86,9 @@
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff --cached)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-creator.js injected-scripts/wangyihao-creator.js)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" add injected-scripts/scripts-config.json script-manager.js)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(more:*)",
+      "Bash(powershell.exe -NoProfile -File - <<'PSEOF'\nSelect-String -Path \"D:\\\\浏览器\\\\运营助手\\\\renderer.js\" -Pattern \"switchSite|siteList|siteInfo|currentSite|getSiteList\" | Select-Object -First 60 | ForEach-Object { \"$\\($_.LineNumber\\):$\\($_.Line.Trim\\(\\).Substring\\(0, [Math]::Min\\(120, $_.Line.Trim\\(\\).Length\\)\\)\\)\" }\nPSEOF)"
     ],
     "deny": [],
     "ask": []

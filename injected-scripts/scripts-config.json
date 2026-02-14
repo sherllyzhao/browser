@@ -1,0 +1,51 @@
+{
+  "remoteConfig": {
+    "enabled": true,
+    "baseUrl": "https://china9.cn/aigc_browser/injected-scripts/",
+    "devBaseUrl": "http://localhost:5173/injected-scripts/",
+    "timeout": 10000,
+    "fallbackToLocal": true
+  },
+  "scripts": {
+    "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
+    "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
+    "https://creator.douyin.com/creator-micro/content/manage?enter_from=publish": ["common.js", "publish-success.js"],
+    "https://creator.xiaohongshu.com/new/home": ["common.js", "xiaohongshu-creator.js"],
+    "https://channels.weixin.qq.com/platform/": ["common.js", "shipinhao-creator.js"],
+    "https://channels.weixin.qq.com/platform/account": ["common.js", "shipinhao-creator.js"],
+    "https://channels.weixin.qq.com/login.html": ["common.js", "shipinhao-login.js"],
+    "https://baijiahao.baidu.com/builder/rc/home": ["common.js", "baijiahao-creator.js"],
+    "https://baijiahao.baidu.com/": ["common.js", "baijiahao-creator.js"],
+    "https://api.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
+    "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
+    "https://creator.douyin.com/creator-micro/content/upload*": ["common.js", "douyin-publish.js"],
+    "https://creator.xiaohongshu.com/publish/publish*": ["common.js", "xiaohongshu-publish.js"],
+    "https://creator.xiaohongshu.com/publish/success*": ["common.js", "publish-success.js"],
+    "https://channels.weixin.qq.com/platform/post/create*": ["common.js", "shipinhao-publish.js"],
+    "https://channels.weixin.qq.com/platform/post/list*": ["common.js", "publish-success.js"],
+    "https://baijiahao.baidu.com/builder/rc/edit*": ["common.js", "baijiahao-publish.js"],
+    "https://baijiahao.baidu.com/builder/rc/clue*": ["common.js", "publish-success.js"],
+    "https://mp.163.com/subscribe_v4/index.html": ["common.js", "wangyihao-creator.js"],
+    "http://mp.163.com/subscribe_v4/index.html#/": ["common.js", "wangyihao-creator.js"],
+    "https://mp.163.com/subscribe_v4/index.html#/": ["common.js", "wangyihao-creator.js"],
+    "https://mp.163.com/subscribe_v4/index.html#/article-publish*": ["common.js", "wangyihao-publish.js"],
+    "https://mp.163.com/subscribe_v4/index.html#/content-manage*": ["common.js", "publish-success.js"],
+    "https://om.qq.com/main": ["common.js", "tengxvnhao-creator.js"],
+    "https://om.qq.com/main/creation/article": ["common.js", "tengxvnhao-publish.js"],
+    "https://mp.sohu.com/mpfe/v4/contentManagement/first/page*": ["common.js", "souhuhao-redirect.js", "souhuhao-creator.js"],
+    "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle*": ["common.js", "souhuhao-publish.js"],
+    "https://om.qq.com/main/management/articleManage": ["common.js", "publish-success.js"],
+    "https://zhuanlan.zhihu.com/write": ["common.js", "zhihu-publish.js"],
+    "https://www.zhihu.com/": ["common.js", "zhihu-redirect.js"],
+    "https://www.zhihu.com/*/*": ["common.js", "zhihu-creator.js"],
+    "https://zhuanlan.zhihu.com/*/*": ["common.js", "publish-success.js"],
+    "https://mp.sina.com.cn/#/Home/Notice": ["common.js", "xinlang-creator.js"],
+    "https://card.weibo.com/article/v5/editor#/draft": ["common.js", "xinlang-publish.js"],
+    "https://card.weibo.com/article/v5/editor#/draft/*": ["common.js", "xinlang-publish.js"],
+    "https://card.weibo.com/article/v5/editor#/history/*": ["common.js", "publish-success.js"],
+    "https://security.weibo.com/captcha/geetest*": ["xinlang-captcha.js"]
+  },
+  "dependencies": {
+    "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"
+  }
+}
