@@ -2084,8 +2084,17 @@ app.commandLine.appendSwitch('disable-extensions');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 // 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
 app.commandLine.appendSwitch('no-sandbox');
+// 🛡️ 安全软件兼容性优化（电脑管家/360等）
+// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
+app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+app.commandLine.appendSwitch('in-process-gpu');
+// 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
+console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
