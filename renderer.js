@@ -1269,6 +1269,20 @@ async function selectCompany(company) {
     // 更新所有 token
     await updateAllTokens(result.token, result.expires_in, result.gcc);
 
+    // 更新 company_unique_id 和 unique_id cookie（切换公司时必须同步更新，否则前端读到旧值会导致掉线）
+    const newUniqueId = String(company.unique_id);
+    const uniqueIdCookieBase = { path: '/', secure: false, sameSite: 'lax' };
+    // localhost:5173
+    await window.electronAPI.setCookie({ url: 'http://localhost:5173/', name: 'company_unique_id', value: newUniqueId, ...uniqueIdCookieBase });
+    await window.electronAPI.setCookie({ url: 'http://localhost:5173/', name: 'unique_id', value: newUniqueId, ...uniqueIdCookieBase });
+    // localhost:8080
+    await window.electronAPI.setCookie({ url: 'http://localhost:8080/', name: 'company_unique_id', value: newUniqueId, ...uniqueIdCookieBase });
+    await window.electronAPI.setCookie({ url: 'http://localhost:8080/', name: 'unique_id', value: newUniqueId, ...uniqueIdCookieBase });
+    // .china9.cn（生产环境）
+    await window.electronAPI.setCookie({ url: 'https://china9.cn', name: 'company_unique_id', value: newUniqueId, domain: '.china9.cn', path: '/', secure: true });
+    await window.electronAPI.setCookie({ url: 'https://china9.cn', name: 'unique_id', value: newUniqueId, domain: '.china9.cn', path: '/', secure: true });
+    console.log('[Company] ✅ 已更新 company_unique_id/unique_id cookie:', newUniqueId);
+
     // 更新当前公司信息
     currentCompanyUniqueId = company.unique_id;
     if (currentCompanyNameEl) {
@@ -1578,8 +1592,8 @@ if (currentCompanyEl) {
         return;
       }
 
-      // 重新加载公司列表（解决重启时 session 未就绪的问题，AIGC/GEO 都需要）
-      if (!isLoadingCompanyList && companyListCache.length === 0) {
+      // 重新加载公司列表（每次 URL 变化都重新拉取，解决重启时首次加载数据不正确的问题）
+      if (!isLoadingCompanyList) {
         isLoadingCompanyList = true;
         loadCompanyList()
           .catch(err => {
