@@ -167,6 +167,7 @@ if (userInfoEl) {
               await window.electronAPI.removeGlobalData('current_site');
               await window.electronAPI.removeGlobalData('current_site_id');
               await window.electronAPI.removeGlobalData('current_site_name');
+              await window.electronAPI.removeGlobalData('current_company');
               console.log('[Logout] ✅ 已清除用户信息');
             }
 
@@ -1116,11 +1117,11 @@ async function getCompanyListApi() {
     const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/switchCompanyData`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'token': token,
         'access_token': token,
       },
-      body: JSON.stringify({ enterpriseSide: 'pc' })
+      body: 'enterpriseSide=pc'
     });
 
     console.log('[Company] switchCompanyData 响应:', resp);
@@ -1145,11 +1146,11 @@ async function switchCompanyApi(uniqueId) {
   const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/cutNew`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
       'token': token,
       'access_token': token,
     },
-    body: JSON.stringify({ enterpriseSide: 'pc', unique_id: uniqueId })
+    body: `enterpriseSide=pc&unique_id=${encodeURIComponent(uniqueId)}`
   });
 
   console.log('[Company] cutNew 响应:', resp);
@@ -1280,6 +1281,15 @@ async function selectCompany(company) {
     // 保存当前公司到 globalStorage
     await window.electronAPI.setGlobalData('current_company', company);
 
+    // 同步更新 user_info 中的 company 信息，避免重启后不一致
+    const userInfo = await window.electronAPI.getGlobalData('user_info');
+    if (userInfo) {
+      userInfo.company = { ...userInfo.company, unique_id: company.unique_id, name: company.name };
+      userInfo.companyName = company.abbreviation || company.name || '';
+      await window.electronAPI.setGlobalData('user_info', userInfo);
+      console.log('[Company] ✅ 已同步更新 user_info.company');
+    }
+
     // 刷新页面
     console.log('[Company] 刷新页面...');
     setTimeout(async () => {
@@ -1334,10 +1344,8 @@ async function loadCompanyList() {
     companyListCache = companies;
     if (companyManageEl) companyManageEl.style.display = '';
 
-    // 尝试恢复之前选中的公司
+    // 优先级1: 从 current_company 缓存恢复（切换公司后保存的，退出登录时已清除）
     const savedCompany = await window.electronAPI.getGlobalData('current_company');
-    const userInfo = await window.electronAPI.getGlobalData('user_info');
-
     if (savedCompany && companies.find(c => c.unique_id === savedCompany.unique_id)) {
       currentCompanyUniqueId = savedCompany.unique_id;
       const displayName = savedCompany.abbreviation || savedCompany.name || '';
@@ -1346,8 +1354,17 @@ async function loadCompanyList() {
         currentCompanyNameEl.setAttribute('title', savedCompany.name || '');
         currentCompanyNameEl.style.visibility = 'visible';
       }
-    } else if (userInfo && userInfo.company && userInfo.company.unique_id) {
-      const matched = companies.find(c => c.unique_id === userInfo.company.unique_id);
+      console.log('[Company] 当前公司（来自缓存）:', displayName);
+      return;
+    }
+
+    // 优先级2: 从 user_info.company.unique_id 匹配（登录时存储）
+    const userInfo = await window.electronAPI.getGlobalData('user_info');
+    const activeUniqueId = userInfo && userInfo.company ? userInfo.company.unique_id : null;
+    console.log('[Company] user_info.company.unique_id:', activeUniqueId);
+
+    if (activeUniqueId) {
+      const matched = companies.find(c => c.unique_id === activeUniqueId);
       if (matched) {
         currentCompanyUniqueId = matched.unique_id;
         const displayName = matched.abbreviation || matched.name || '';
@@ -1357,22 +1374,22 @@ async function loadCompanyList() {
           currentCompanyNameEl.style.visibility = 'visible';
         }
         await window.electronAPI.setGlobalData('current_company', matched);
+        console.log('[Company] 当前公司（来自 user_info）:', displayName);
+        return;
       }
     }
 
-    // 如果还没匹配到，默认显示第一个
-    if (!currentCompanyUniqueId && companies.length > 0) {
-      currentCompanyUniqueId = companies[0].unique_id;
-      const displayName = companies[0].abbreviation || companies[0].name || '';
-      if (currentCompanyNameEl) {
-        currentCompanyNameEl.textContent = displayName;
-        currentCompanyNameEl.setAttribute('title', companies[0].name || '');
-        currentCompanyNameEl.style.visibility = 'visible';
-      }
-      await window.electronAPI.setGlobalData('current_company', companies[0]);
+    // fallback: 默认显示第一个
+    currentCompanyUniqueId = companies[0].unique_id;
+    const displayName = companies[0].abbreviation || companies[0].name || '';
+    if (currentCompanyNameEl) {
+      currentCompanyNameEl.textContent = displayName;
+      currentCompanyNameEl.setAttribute('title', companies[0].name || '');
+      currentCompanyNameEl.style.visibility = 'visible';
     }
+    await window.electronAPI.setGlobalData('current_company', companies[0]);
 
-    console.log('[Company] 当前公司:', currentCompanyUniqueId);
+    console.log('[Company] 当前公司（fallback）:', currentCompanyUniqueId);
   } catch (err) {
     console.error('[Company] loadCompanyList 出错:', err);
   }
@@ -1509,6 +1526,7 @@ if (currentCompanyEl) {
   let lastSystem = url ? getCurrentSystem(url) : '';
   let lastLoadTime = Date.now();
   let isLoadingSiteList = false;
+  let isLoadingCompanyList = false;
 
   // 监听 URL 变化事件
   if (window.electronAPI && window.electronAPI.onUrlChanged) {
@@ -1558,6 +1576,18 @@ if (currentCompanyEl) {
         lastSystem = newSystem;
         lastLoadTime = now;
         return;
+      }
+
+      // 重新加载公司列表（解决重启时 session 未就绪的问题，AIGC/GEO 都需要）
+      if (!isLoadingCompanyList && companyListCache.length === 0) {
+        isLoadingCompanyList = true;
+        loadCompanyList()
+          .catch(err => {
+            console.error('[URL Changed] loadCompanyList 失败:', err);
+          })
+          .finally(() => {
+            isLoadingCompanyList = false;
+          });
       }
 
       // 只有 GEO 系统才需要加载站点列表
