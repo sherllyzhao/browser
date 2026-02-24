@@ -1043,8 +1043,7 @@ async function loadSiteList(url) {
         await window.electronAPI.getGlobalData('current_site_name');
       }
       // 添加 system=geo 参数，让占位页保持 GEO Tab 选中状态
-      const notAvailablePath = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + PLACEHOLDER_PAGES[0] + '?system=geo';
-      await window.electronAPI.navigateCurrentWindow(notAvailablePath);
+      await window.electronAPI.navigateToLocalPage(PLACEHOLDER_PAGES[0] + '?system=geo');
       return;
     }
 
