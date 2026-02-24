@@ -954,6 +954,24 @@
             // 登录成功，跳转到首页
             console.log('[Login] 准备跳转，activeTab:', activeTab);
 
+            // 🔑 GEO Tab 登录时，检查 is_geo 权限
+            if (activeTab === 'geo') {
+              const siteInfo = await window.browserAPI.getGlobalData('siteInfo');
+              console.log('[Login] GEO 权限检查 - is_geo:', siteInfo?.is_geo);
+              if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+                console.log('[Login] ⚠️ 未购买 GEO 产品，跳转到未购买页面');
+                // 等待 Cookie 写入
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (window.browserAPI && window.browserAPI.navigateToLocalPage) {
+                  await window.browserAPI.navigateToLocalPage('not-purchase.html?system=geo');
+                }
+                loginBtn.disabled = false;
+                loginBtn.classList.remove('loading');
+                return;
+              }
+              console.log('[Login] ✅ GEO 权限检查通过');
+            }
+
             // 等待一小段时间确保 Cookie 写入
             await new Promise(resolve => setTimeout(resolve, 5000));
 

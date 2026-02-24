@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -116,9 +116,22 @@ function addContentTypeFix(targetSession, label) {
       }
     }
 
+    // 修复跨站 Set-Cookie 被屏蔽的问题：
+    // Chromium 对缺少 SameSite 的 cookie 默认用 Lax，跨站请求时会被屏蔽
+    // 自动补上 SameSite=None; Secure 使 cookie 能正常存储到对应域名
+    const cookieKey = Object.keys(responseHeaders).find(k => k.toLowerCase() === 'set-cookie');
+    if (cookieKey) {
+      responseHeaders[cookieKey] = responseHeaders[cookieKey].map(cookie => {
+        if (!/SameSite/i.test(cookie)) {
+          cookie += '; SameSite=None; Secure';
+        }
+        return cookie;
+      });
+    }
+
     callback({ responseHeaders });
   });
-  console.log(`[Session] ✅ ${label} Content-Type 修复拦截器已添加`);
+  console.log(`[Session] ✅ ${label} Content-Type 修复 + Set-Cookie SameSite 修复拦截器已添加`);
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -389,6 +402,146 @@ function scheduleUpdateCheck() {
   }, 5000);
 }
 
+// 简易文件日志（用于打包后调试 fetchSiteInfo）
+const geoLogPath = path.join(app.getPath('userData'), 'geo-check.log');
+function geoLog(msg) {
+  const timestamp = new Date().toLocaleString('zh-CN');
+  const line = `[${timestamp}] ${msg}\n`;
+  console.log('[fetchSiteInfo]', msg);
+  try { fs.appendFileSync(geoLogPath, line, 'utf8'); } catch (e) { /* ignore */ }
+}
+
+/**
+ * 获取建站通站点信息（从服务器获取最新数据）
+ * 每次导航到 GEO 页面前调用，确保 is_geo 状态为最新
+ * @returns {Promise<{success: boolean, data?: object, error?: string}>}
+ */
+async function fetchSiteInfo() {
+  geoLog('🚀 开始获取站点信息...');
+  const userInfo = globalStorage.user_info;
+  const companyUniqueId = userInfo?.company?.unique_id;
+  geoLog('company_unique_id: ' + (companyUniqueId || '无'));
+
+  if (!companyUniqueId) {
+    geoLog('⚠️ 无 company_unique_id，无法获取站点信息');
+    return { success: false, error: '无 company_unique_id' };
+  }
+
+  const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
+  const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
+  geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
+
+  // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
+  // 通过 partition 指定使用 persist:browserview session，自动携带正确的 .china9.cn cookies
+  function doRequest() {
+    return new Promise((resolve) => {
+      try {
+        const request = net.request({
+          method: 'GET',
+          url: requestUrl,
+          partition: 'persist:browserview'
+        });
+
+        request.setHeader('Accept', 'application/json, text/plain, */*');
+        request.setHeader('User-Agent', 'Mozilla/5.0 zh.Cloud-browse');
+
+        let responseData = '';
+        let timeoutId = setTimeout(() => {
+          geoLog('❌ 请求超时 (10秒)');
+          request.abort();
+          resolve({ success: false, error: '请求超时' });
+        }, 10000);
+
+        request.on('response', (response) => {
+          geoLog('📥 响应状态码: ' + response.statusCode);
+          response.on('data', (chunk) => {
+            responseData += chunk.toString();
+          });
+          response.on('end', () => {
+            clearTimeout(timeoutId);
+            try {
+              const result = JSON.parse(responseData);
+              if (result.data) {
+                resolve({ success: true, data: result.data });
+              } else {
+                geoLog('⚠️ 响应无 data 字段: ' + JSON.stringify(result).substring(0, 200));
+                resolve({ success: false, error: '响应无 data 字段' });
+              }
+            } catch (err) {
+              geoLog('❌ 解析响应失败: ' + err.message);
+              resolve({ success: false, error: err.message });
+            }
+          });
+        });
+
+        request.on('error', (err) => {
+          clearTimeout(timeoutId);
+          geoLog('❌ 请求失败: ' + err.message);
+          resolve({ success: false, error: err.message });
+        });
+
+        request.end();
+      } catch (err) {
+        geoLog('❌ 创建请求失败: ' + err.message);
+        resolve({ success: false, error: err.message });
+      }
+    });
+  }
+
+  // 带重试逻辑：如果返回的 is_geo 为 null 且无 web_name，视为不完整数据，最多重试 2 次
+  const MAX_RETRIES = 2;
+  let lastResult = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      geoLog('🔄 第 ' + attempt + ' 次重试（上次返回 is_geo 为 null）...');
+      await new Promise(r => setTimeout(r, 1000)); // 重试间隔 1 秒
+    }
+
+    lastResult = await doRequest();
+
+    if (!lastResult.success) {
+      geoLog('❌ 第 ' + (attempt + 1) + ' 次请求失败: ' + lastResult.error);
+      continue;
+    }
+
+    const data = lastResult.data;
+    geoLog('📦 第 ' + (attempt + 1) + ' 次响应: is_geo=' + data.is_geo + ', web_name=' + (data.web_name || '无') + ', id=' + (data.id || '无'));
+
+    // 如果返回了完整数据（有 id 和 web_name），立即使用
+    if (data.id && data.web_name) {
+      geoLog('✅ 获取到完整站点数据');
+      globalStorage.siteInfo = data;
+      saveGlobalStorage();
+      geoLog('💾 已更新 globalStorage.siteInfo');
+      return { success: true, data: data };
+    }
+
+    // 如果 is_geo 不为 null（即明确为 0 或 1），也可以使用（可能是部分数据但权限字段有效）
+    if (data.is_geo !== null && data.is_geo !== undefined) {
+      geoLog('✅ is_geo 有明确值: ' + data.is_geo + '（数据不完整但权限字段有效）');
+      globalStorage.siteInfo = data;
+      saveGlobalStorage();
+      geoLog('💾 已更新 globalStorage.siteInfo');
+      return { success: true, data: data };
+    }
+
+    // is_geo 为 null 且无完整数据，继续重试
+    geoLog('⚠️ 返回数据不完整 (is_geo=null, 无id/web_name)，可能命中了数据不全的节点');
+  }
+
+  // 所有重试完毕，使用最后一次的结果
+  if (lastResult && lastResult.success) {
+    geoLog('⚠️ 重试 ' + MAX_RETRIES + ' 次后仍返回不完整数据，使用最后一次结果');
+    globalStorage.siteInfo = lastResult.data;
+    saveGlobalStorage();
+    return { success: true, data: lastResult.data };
+  }
+
+  geoLog('❌ 所有请求均失败');
+  return lastResult || { success: false, error: '所有请求均失败' };
+}
+
 function createWindow() {
   // 使用 nativeImage 创建图标（支持高 DPI）
   const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
@@ -515,23 +668,35 @@ function createWindow() {
   const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
   // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
+  // 添加 5 秒超时保护，防止 clearCache 在某些电脑上挂起导致页面永远不加载
   let cacheCleared = false;
-  const clearCachePromise = (async () => {
-    try {
-      // 清理 HTTP 缓存
-      await persistentSession.clearCache();
-      console.log('[Session] ✅ HTTP 缓存已清理');
+  const clearCachePromise = Promise.race([
+    (async () => {
+      try {
+        // 清理 HTTP 缓存
+        await persistentSession.clearCache();
+        console.log('[Session] ✅ HTTP 缓存已清理');
 
-      // 清理 Code Cache（JavaScript 编译缓存）
-      await persistentSession.clearCodeCaches({});
-      console.log('[Session] ✅ Code Cache 已清理');
+        // 清理 Code Cache（JavaScript 编译缓存）
+        await persistentSession.clearCodeCaches({});
+        console.log('[Session] ✅ Code Cache 已清理');
 
-      cacheCleared = true;
-    } catch (err) {
-      console.error('[Session] ⚠️ 清理缓存失败:', err);
-      cacheCleared = true; // 即使失败也继续
-    }
-  })();
+        cacheCleared = true;
+      } catch (err) {
+        console.error('[Session] ⚠️ 清理缓存失败:', err);
+        cacheCleared = true; // 即使失败也继续
+      }
+    })(),
+    new Promise((resolve) => {
+      setTimeout(() => {
+        if (!cacheCleared) {
+          console.warn('[Session] ⚠️ 清理缓存超时（5秒），跳过继续加载页面');
+          cacheCleared = true;
+        }
+        resolve();
+      }, 5000);
+    })
+  ]);
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -641,6 +806,39 @@ function createWindow() {
 
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
+
+  // 🔍 P3: 渲染进程崩溃监听 - 方便远程排查白屏问题
+  browserView.webContents.on('render-process-gone', (event, details) => {
+    console.error('[BrowserView] ❌ 渲染进程已退出！');
+    console.error('[BrowserView] 退出原因:', details.reason);
+    console.error('[BrowserView] 退出码:', details.exitCode);
+    // 尝试重新加载
+    if (details.reason !== 'killed') {
+      console.log('[BrowserView] 🔄 尝试重新加载页面...');
+      setTimeout(() => {
+        if (browserView && !browserView.webContents.isDestroyed()) {
+          loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+            console.error('[BrowserView] ❌ 重新加载失败:', err);
+          });
+        }
+      }, 1000);
+    }
+  });
+
+  browserView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[BrowserView] ❌ 页面加载失败！');
+    console.error('[BrowserView] 错误码:', errorCode);
+    console.error('[BrowserView] 错误描述:', errorDescription);
+    console.error('[BrowserView] 失败 URL:', validatedURL);
+  });
+
+  browserView.webContents.on('unresponsive', () => {
+    console.warn('[BrowserView] ⚠️ 页面无响应！');
+  });
+
+  browserView.webContents.on('responsive', () => {
+    console.log('[BrowserView] ✅ 页面已恢复响应');
+  });
 
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
@@ -773,11 +971,22 @@ function createWindow() {
         // 🔑 根据上次退出的项目类型，跳转到对应首页
         const savedProject = globalStorage.last_project;
         if (savedProject === 'geo') {
-          // geo 项目首页
-          startUrl = isProduction
-            ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-            : 'http://localhost:8080/geo/index';
-          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
+          // 先调 API 获取最新 siteInfo，检查 is_geo
+          console.log('[BrowserView] 📍 上次退出时在 geo 项目，重新检查 geo 权限...');
+          const siteResult = await fetchSiteInfo();
+          const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
+
+          if (siteInfo && siteInfo.is_geo === 1) {
+            // geo 权限通过，跳转到 geo 首页
+            startUrl = isProduction
+              ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+              : 'http://localhost:8080/geo/index';
+            console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
+          } else {
+            // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
+            console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
+            startUrl = '__LOCAL_NOT_PURCHASE_GEO__';
+          }
         } else {
           // 默认 aigc 项目首页
           startUrl = isProduction
@@ -809,13 +1018,39 @@ function createWindow() {
     updateBrowserViewBounds(isScriptPanelOpen);
 
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
-    const loadPage = startUrl.startsWith('file://')
-      ? loadLocalPage(browserView.webContents, path.basename(startUrl))
-      : browserView.webContents.loadURL(startUrl);
+    let loadPage;
+    if (startUrl === '__LOCAL_NOT_PURCHASE_GEO__') {
+      // GEO 权限不通过，使用 loadFile + query 参数正确加载本地页面
+      loadPage = browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notPurchase), { query: { system: 'geo' } });
+    } else if (startUrl.startsWith('file://')) {
+      loadPage = loadLocalPage(browserView.webContents, path.basename(startUrl));
+    } else {
+      loadPage = browserView.webContents.loadURL(startUrl);
+    }
 
     loadPage
       .then(() => {
         console.log('[BrowserView] ✅ 页面加载调用成功');
+        // 🔍 白屏检测：loadFile 可能回调成功但 GPU 渲染失败导致页面实际为空
+        // 10秒后检查页面是否有内容，没有则重新加载
+        setTimeout(async () => {
+          if (!browserView || browserView.webContents.isDestroyed()) return;
+          try {
+            const bodyHTML = await browserView.webContents.executeJavaScript(
+              'document.body ? document.body.innerHTML.trim().length : 0'
+            );
+            if (bodyHTML === 0) {
+              console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
+              loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+                console.error('[BrowserView] ❌ 白屏恢复重载失败:', err);
+              });
+            } else {
+              console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
+            }
+          } catch (e) {
+            console.warn('[BrowserView] ⚠️ 白屏检测执行失败（渲染进程可能已崩溃）:', e.message);
+          }
+        }, 10000);
       })
       .catch(err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
@@ -1361,12 +1596,13 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限
-    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+    // 🔑 已登录状态下，检查 geo 页面权限（每次都重新调 API 获取最新 siteInfo）
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
+      const siteResult = await fetchSiteInfo();
+      const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
+      geoLog('[did-navigate-in-page] URL: ' + url);
+      geoLog('[did-navigate-in-page] siteResult.success=' + siteResult.success + ', is_geo=' + siteInfo?.is_geo);
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
         console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
@@ -1424,24 +1660,34 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限
-    if ((url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) && isProduction) {
+    // 🔑 已登录状态下，检查 geo 页面权限（使用缓存，实时检查在 did-navigate-in-page 中执行）
+    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+      console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
       const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check] 检测到 geo 页面，检查权限...');
-      console.log('[Geo Auth Check] siteInfo:', siteInfo);
-      console.log('[Geo Auth Check] is_geo:', siteInfo?.is_geo);
+      console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
 
       if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
+        console.log('[Geo Auth Check - did-navigate] ⚠️ 缓存显示未购买 geo 产品，跳转到未购买页面');
         const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
         browserView.webContents.loadURL(notPurchaseUrl);
-        // 通知 renderer 更新 Tab 选中状态为 GEO
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('url-changed', notPurchaseUrl);
         }
         return;
       }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
+      console.log('[Geo Auth Check - did-navigate] ✅ 缓存显示 geo 权限通过');
+
+      // 后台异步刷新 siteInfo 缓存（不阻塞导航）
+      fetchSiteInfo().then(result => {
+        if (result.success && result.data && (!result.data.is_geo || result.data.is_geo !== 1)) {
+          console.log('[Geo Auth Check - did-navigate] ⚠️ 最新数据显示 geo 权限已失效，跳转到未购买页面');
+          const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
+          browserView.webContents.loadURL(notPurchaseUrl);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('url-changed', notPurchaseUrl);
+          }
+        }
+      }).catch(() => {});
     }
   });
 
@@ -1824,6 +2070,11 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
+// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
+// 必须在 app.whenReady() 之前调用
+app.disableHardwareAcceleration();
+console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
@@ -1831,7 +2082,19 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('disable-extensions');
 // 使用正常的渲染模式
 app.commandLine.appendSwitch('disable-dev-shm-usage');
+// 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
+app.commandLine.appendSwitch('no-sandbox');
+// 🛡️ 安全软件兼容性优化（电脑管家/360等）
+// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
+app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+app.commandLine.appendSwitch('in-process-gpu');
+// 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
+console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
+console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -2466,15 +2729,29 @@ ipcMain.handle('navigate-to-login', async () => {
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
 ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
   if (browserView) {
+    // 解析 query 参数（如 'not-purchase.html?system=geo'）
+    const [baseName, queryString] = pageName.split('?');
+    const query = {};
+    if (queryString) {
+      queryString.split('&').forEach(pair => {
+        const [key, val] = pair.split('=');
+        if (key) query[key] = val || '';
+      });
+    }
+
     // 安全检查：只允许跳转到指定的本地页面
     const allowedPages = Object.values(config.placeholderPages);
-    if (!allowedPages.includes(pageName)) {
-      console.log('[Main] ❌ 不允许跳转到未知页面:', pageName);
+    if (!allowedPages.includes(baseName)) {
+      console.log('[Main] ❌ 不允许跳转到未知页面:', baseName);
       return { success: false, error: '不允许跳转到该页面' };
     }
 
-    console.log('[Main] 跳转到本地页面:', pageName);
-    loadLocalPage(browserView.webContents, pageName);
+    console.log('[Main] 跳转到本地页面:', baseName, 'query:', query);
+    if (Object.keys(query).length > 0) {
+      browserView.webContents.loadFile(path.join(__dirname, baseName), { query });
+    } else {
+      loadLocalPage(browserView.webContents, baseName);
+    }
     return { success: true };
   }
   return { success: false, error: 'browserView 不可用' };
