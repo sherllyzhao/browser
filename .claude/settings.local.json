@@ -85,7 +85,8 @@
       "mcp__plugin_oh-my-claudecode_omc-tools__lsp_document_symbols",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff --cached)",
       "Bash(git -C \"D:\\浏览器\\运营助手\" diff injected-scripts/shipinhao-creator.js injected-scripts/wangyihao-creator.js)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__plugin_oh-my-claudecode_omc-tools__ast_grep_search"
     ],
     "deny": [],
     "ask": []

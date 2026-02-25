@@ -796,6 +796,35 @@ let siteListCache = [];
 // 站点切换导航中标记（防止 URL 变化时误隐藏站点管理）
 let isSwitchingSiteNav = false;
 
+// Token 过期自动跳转登录页（防重复跳转）
+let isRedirectingToLogin = false;
+async function handleTokenExpired() {
+  if (isRedirectingToLogin) return;
+  isRedirectingToLogin = true;
+  console.warn('[Auth] Token 已过期，自动跳转登录页...');
+  try {
+    if (window.electronAPI && window.electronAPI.removeGlobalData) {
+      await window.electronAPI.removeGlobalData('user_info');
+      await window.electronAPI.removeGlobalData('login_token');
+      await window.electronAPI.removeGlobalData('login_expires');
+      await window.electronAPI.removeGlobalData('login_gcc');
+      await window.electronAPI.removeGlobalData('company_id');
+      await window.electronAPI.removeGlobalData('siteInfo');
+      await window.electronAPI.removeGlobalData('current_site');
+      await window.electronAPI.removeGlobalData('current_site_id');
+      await window.electronAPI.removeGlobalData('current_site_name');
+      await window.electronAPI.removeGlobalData('current_company');
+    }
+    if (window.electronAPI && window.electronAPI.clearDomainCookies) {
+      await window.electronAPI.clearDomainCookies('china9.cn');
+    }
+    await window.electronAPI.navigateToLogin();
+  } catch (err) {
+    console.error('[Auth] 跳转登录页失败:', err);
+    isRedirectingToLogin = false;
+  }
+}
+
 // 获取站点列表 API
 async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
@@ -834,6 +863,7 @@ async function getSiteListApi() {
       console.error('[Site] site/lst 错误响应内容:', errText);
     } else {
       const result = await response.json();
+      if (result.code === 401) { await handleTokenExpired(); return []; }
       list1 = Array.isArray(result.data) ? result.data : [];
     }
   } catch (err) {
@@ -887,6 +917,7 @@ async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   }
 
   const result = resp.data;
+  if (result && result.code === 401) { await handleTokenExpired(); return null; }
   console.log('[Site] 切换站点接口返回:', result);
   return result;
 }
@@ -1127,6 +1158,7 @@ async function getCompanyListApi() {
     if (resp.success && resp.ok && resp.data && resp.data.code === 200) {
       return Array.isArray(resp.data.data) ? resp.data.data : [];
     } else {
+      if (resp.data && resp.data.code === 401) { await handleTokenExpired(); return []; }
       console.error('[Company] switchCompanyData 失败:', resp);
       return [];
     }
@@ -1134,6 +1166,20 @@ async function getCompanyListApi() {
     console.error('[Company] switchCompanyData 异常:', err);
     return [];
   }
+}
+
+// 获取站点基础信息 API（切换公司后需重新获取）
+async function getSiteInfoApi(companyUniqueId) {
+  const isDev = window.electronAPI && !window.electronAPI.isProduction;
+  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+  const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`, {
+    method: 'GET'
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+  const result = await response.json();
+  return result.data;
 }
 
 // 切换公司 API
@@ -1158,6 +1204,7 @@ async function switchCompanyApi(uniqueId) {
   }
 
   const result = resp.data;
+  if (result.code === 401) { await handleTokenExpired(); return null; }
   if (result.code !== 200) {
     throw new Error('API error: ' + (result.message || 'unknown'));
   }
@@ -1303,13 +1350,32 @@ async function selectCompany(company) {
       console.log('[Company] ✅ 已同步更新 user_info.company');
     }
 
+    // 重新获取新公司的站点信息（siteInfo.company_id 会变，站点列表依赖它）
+    try {
+      const newSiteInfo = await getSiteInfoApi(company.unique_id);
+      console.log('[Company] ✅ 新公司站点信息:', newSiteInfo);
+      await window.electronAPI.setGlobalData('siteInfo', newSiteInfo);
+      await window.electronAPI.setGlobalData('current_site_id', newSiteInfo.id);
+      await window.electronAPI.setGlobalData('current_site_name', newSiteInfo.web_name);
+      // 清除旧公司的站点选择，让 loadSiteList 重新选择第一个站点
+      await window.electronAPI.removeGlobalData('current_site');
+    } catch (siteInfoErr) {
+      console.error('[Company] 获取新公司站点信息失败:', siteInfoErr);
+    }
+
     // 刷新页面
     console.log('[Company] 刷新页面...');
     setTimeout(async () => {
       await window.electronAPI.refreshPage();
 
-      // 刷新后隐藏遮罩
+      // 刷新后重新加载站点列表并隐藏遮罩
       setTimeout(async () => {
+        try {
+          await loadSiteList();
+          console.log('[Company] ✅ 站点列表已刷新');
+        } catch (siteErr) {
+          console.error('[Company] 刷新站点列表失败:', siteErr);
+        }
         await window.electronAPI.hideGlobalLoading();
         if (loadingMask) loadingMask.classList.remove('show');
         if (loadingText) loadingText.textContent = '正在切换站点...';
