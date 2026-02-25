@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 导航控制
   navigateTo: (url) => ipcRenderer.invoke('navigate-to', url),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
+  navigateToLocalPage: (pageName) => ipcRenderer.invoke('navigate-to-local-page', pageName),
   navigateToLogin: () => ipcRenderer.invoke('navigate-to-login'),
   refreshPage: () => ipcRenderer.invoke('refresh-page'),
   openDevTools: () => ipcRenderer.invoke('open-devtools'),
