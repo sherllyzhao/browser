@@ -6,6 +6,13 @@ if (toolbar) toolbar.style.display = 'none';
 if (toggleScript) toggleScript.style.display = 'none';
 if (scriptPanel) scriptPanel.style.display = 'none';
 
+// 监听主进程日志，转发到 renderer 控制台
+if (window.electronAPI && window.electronAPI.onMainLog) {
+  window.electronAPI.onMainLog((msg) => {
+    console.log('[Main]', msg);
+  });
+}
+
 // ========== 公共头部显示/隐藏 ==========
 const commonHeader = document.getElementById('__browser_common_header__');
 
@@ -849,22 +856,22 @@ async function getSiteListApi() {
   try {
     const url1 = `${apiBaseUrl}newapi/site/lst?site_id=${siteId}&company_id=${companyId}`;
     console.log('[Site] 请求 site/lst:', url1);
-    const response = await fetch(url1, {
+    const result1Resp = await window.electronAPI.proxyFetch(url1, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
         'token': loginToken,
         'access_token': loginToken,
-      }
+      },
     });
-    console.log('[Site] site/lst 响应状态:', response.status);
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('[Site] site/lst 错误响应内容:', errText);
-    } else {
-      const result = await response.json();
+    console.log('[Site] site/lst proxyFetch 结果:', result1Resp);
+    console.log('[Site] site/lst 携带的 cookie:', result1Resp.cookieString);
+    if (result1Resp.success && result1Resp.ok) {
+      const result = result1Resp.data;
       if (result.code === 401) { await handleTokenExpired(); return []; }
       list1 = Array.isArray(result.data) ? result.data : [];
+    } else {
+      console.error('[Site] site/lst 错误:', result1Resp.error || `状态码 ${result1Resp.status}`);
     }
   } catch (err) {
     console.error('[Site] site/lst 请求异常:', err);
@@ -1172,13 +1179,23 @@ async function getCompanyListApi() {
 async function getSiteInfoApi(companyUniqueId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
   const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
-  const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`, {
-    method: 'GET'
+  const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
+  const url = `${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`;
+  console.log('[SiteInfo] 请求 site/info:', url);
+  const resp = await window.electronAPI.proxyFetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'token': loginToken,
+      'access_token': loginToken,
+    },
   });
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+  console.log('[SiteInfo] site/info proxyFetch 结果:', resp);
+  console.log('[SiteInfo] site/info 携带的 cookie:', resp.cookieString);
+  if (!resp.success || !resp.ok) {
+    throw new Error(`HTTP error! status: ${resp.status || resp.error}`);
   }
-  const result = await response.json();
+  const result = resp.data;
   return result.data;
 }
 
@@ -1671,6 +1688,14 @@ if (currentCompanyEl) {
 
       // 只有 GEO 系统才需要加载站点列表
       if (newSystem !== 'geo') {
+        lastSystem = newSystem;
+        lastLoadTime = now;
+        return;
+      }
+
+      // 占位页不重新加载站点列表（避免空列表 → 导航占位页 → URL变化 → 再加载的死循环）
+      if (PLACEHOLDER_PAGES.some(page => newUrl.toLowerCase().includes(page))) {
+        console.log('[URL Changed] 占位页，跳过站点列表加载');
         lastSystem = newSystem;
         lastLoadTime = now;
         return;

@@ -849,7 +849,7 @@ window.addEventListener('beforeunload', async (e) => {
 | 环境 | 接口地址 |
 |------|---------|
 | 开发环境 | `http://localhost:5173/browserVersion.json` |
-| 生产环境 | `https://www.china9.cn/aigc_browser/browserVersion.json` |
+| 生产环境 | `https://api.china9.cn/api/newmedia/downloadyunexe` |
 
 **接口返回格式**：
 ```json
