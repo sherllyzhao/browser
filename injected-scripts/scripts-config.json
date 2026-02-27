@@ -43,7 +43,8 @@
     "https://card.weibo.com/article/v5/editor#/draft": ["common.js", "xinlang-publish.js"],
     "https://card.weibo.com/article/v5/editor#/draft/*": ["common.js", "xinlang-publish.js"],
     "https://card.weibo.com/article/v5/editor#/history/*": ["common.js", "publish-success.js"],
-    "https://security.weibo.com/captcha/geetest*": ["xinlang-captcha.js"]
+    "https://security.weibo.com/captcha/geetest*": ["xinlang-captcha.js"],
+    "https://weibo.com/?sudaref=card.weibo.com*": ["common.js", "xinlang-redirect.js"]
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"

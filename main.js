@@ -4098,7 +4098,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       });
     });
 
-    // 页面完全加载后通知首页
+    // 页面完全加载后通知首页 + 补充脚本注入（作为 dom-ready 的保底机制）
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
@@ -4112,20 +4112,16 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         });
         console.log('[New Window API] 已通知首页窗口加载完成');
       }
+
+      // 🔑 补充脚本注入（与 did-create-window 保持一致）
+      // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
+      await injectScriptForUrl(newWindow.webContents, currentURL);
     });
 
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
-      const script = await scriptManager.getScript(navUrl);
-      if (script) {
-        try {
-          await newWindow.webContents.executeJavaScript(script);
-          console.log('[New Window API] Script re-injected on navigation');
-        } catch (err) {
-          console.error('[New Window API] Script re-injection error:', err);
-        }
-      }
+      await injectScriptForUrl(newWindow.webContents, navUrl);
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
