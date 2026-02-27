@@ -2698,6 +2698,40 @@ ipcMain.handle('check-session-status', async () => {
   }
 });
 
+// 原生鼠标点击（通过 CDP 发送可信事件，用于自动化点击 Vue 组件等场景）
+ipcMain.handle('native-click', async (event, x, y) => {
+  try {
+    const webContents = event.sender;
+    if (!webContents || webContents.isDestroyed()) {
+      return { success: false, error: 'webContents 不可用' };
+    }
+
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+
+    // 使用 Chrome DevTools Protocol 发送鼠标事件（最可靠的方式）
+    const dbg = webContents.debugger;
+    try { dbg.attach('1.3'); } catch (e) { /* 可能已 attach */ }
+
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: xi, y: yi
+    });
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: xi, y: yi, button: 'left', clickCount: 1
+    });
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: xi, y: yi, button: 'left', clickCount: 1
+    });
+
+    try { dbg.detach(); } catch (e) { /* ignore */ }
+
+    return { success: true, x: xi, y: yi };
+  } catch (err) {
+    console.error('[Native Click] 失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
   if (browserView) {
