@@ -753,23 +753,17 @@ async function fillFormData(dataObj) {
     if (+publishTime === 2) {
       try {
         // 定时发布
-        const immediateRadio = await waitForElement(".formbox > .flexbox:nth-of-type(3) .el-radio-group input[type='radio'][value='0']", 3000);
-        const scheduleRadio = await waitForElement(".formbox > .flexbox:nth-of-type(3) .el-radio-group input[type='radio'][value='1']", 3000);
-        // alert(immediateRadio, 'immediateRadio');
-
-        setNativeValue(immediateRadio, false);
+        const scheduleRadio = await waitForElement(".publish-page-content-settings-content .post-time-switch-container .custom-switch-switch [type='checkbox']", 3000);
         setNativeValue(scheduleRadio, true);
 
         // 设置日期时间
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const dateInput = await waitForElement(".formbox > .flexbox:nth-of-type(3) .date-picker input", 3000);
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 多次设置确保生效
-        for (let i = 0; i < 2; i++) {
-          if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-            break;
-          }
-          await new Promise(resolve => setTimeout(resolve, 300));
+        const timeSelectSuccess = await selectScheduledTime(publishTime);
+        if (!timeSelectSuccess) {
+          console.error("[小红书发布] ❌ 时间选择失败");
+          await closeWindowWithMessage("定时时间选择失败", 1000);
+          return;
         }
       } catch (error) {
         // alert('⚠️ Schedule time setting failed: ' + error.message);
@@ -794,5 +788,230 @@ async function fillFormData(dataObj) {
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;
+  }
+}
+
+/**
+ * 选择定时发布的日期和时间
+ * @param sendTime
+ */
+async function selectScheduledTime(sendTime) {
+  console.log("🚀 ~ selectScheduledTime ~ sendTime: ", sendTime);
+  try {
+    const modal = document.querySelector(".publish-page-content-settings-content .d-datepicker-input-filter.show");
+    if (!modal) {
+      console.error("[小红书发布] ❌ 找不到定时发布弹窗");
+      return false;
+    }
+
+    // 解析目标日期时间
+    const [datePart, timePart] = sendTime.split(' ');
+    const [year, month, day] = datePart.split('-');
+    console.log("🚀 ~ selectScheduledTime ~ day: ", day);
+
+    await delay(1000);
+
+    // 1. 点击日期输入框打开日历
+    const dateInput = modal.querySelector("input.d-text");
+    if (!dateInput) {
+      console.error("[小红书发布] ❌ 找不到日期输入框");
+      return false;
+    }
+    dateInput.click();
+    await delay(300);
+    console.log("[小红书发布] 🔧 开始选择定时发布时间...");
+
+    const picker = document.querySelector(".post-time-date-picker-popover-class");
+    if (!picker) {
+      console.error("[小红书发布] ❌ 找不到日期选择器");
+      return false;
+    }
+
+    // 2. 导航到目标月份（处理跨月情况）
+    for (let i = 0; i < 24; i++) { // 最多尝试24个月
+      // 小红书日期选择器: 年份和月份是两个独立的 <h6> 元素
+      const headerH6s = picker.querySelectorAll(".d-datepicker-header-main h6");
+      if (headerH6s.length < 2) {
+        console.error("[小红书发布] ❌ 找不到年月显示元素, 找到", headerH6s.length, "个 h6");
+        break;
+      }
+
+      const yearMatch = headerH6s[0].textContent.trim().match(/(\d+)/);
+      const monthMatch = headerH6s[1].textContent.trim().match(/(\d+)/);
+      if (!yearMatch || !monthMatch) {
+        console.error("[小红书发布] ❌ 无法解析年月:", headerH6s[0].textContent, headerH6s[1].textContent);
+        break;
+      }
+
+      const currYear = parseInt(yearMatch[1], 10);
+      const currMonth = parseInt(monthMatch[1], 10);
+      console.log(`[小红书发布] 📅 当前显示: ${currYear}-${currMonth}, 目标: ${year}-${month}`);
+
+      if (currYear === parseInt(year) && currMonth === parseInt(month)) {
+        console.log("[小红书发布] ✅ 已到达目标月份");
+        break; // 已到达目标月份
+      }
+
+      // 判断需要前进还是后退
+      const targetDate = new Date(year, month - 1);
+      const currentDate = new Date(currYear, currMonth - 1);
+
+      if (targetDate > currentDate) {
+        // 点击下一月 > (omui-calendar-nav 和 next-m 是同一元素的 class)
+        const nextBtn = picker.querySelector(".n-date-panel-month__next");
+        if (nextBtn) {
+          nextBtn.click();
+          console.log("[小红书发布] ➡️ 点击下一月");
+        }
+      } else {
+        // 点击上一月 < (omui-calendar-nav 和 prev-m 是同一元素的 class)
+        const prevBtn = picker.querySelector(".n-date-panel-month__prev");
+        if (prevBtn) {
+          prevBtn.click();
+          console.log("[小红书发布] ⬅️ 点击上一月");
+        }
+      }
+      await delay(200);
+    }
+    await delay(200);
+
+    // 3. 选择日期 - 找到目标日期的 td 并点击
+    let dateSelected = false;
+    const allDayCells = picker.querySelectorAll(".n-date-panel-date");
+    console.log(`[小红书发布] 📅 找到 ${allDayCells.length} 个日期单元格`);
+
+    for (const td of allDayCells) {
+      // 跳过不可选的日期（有 disabled 类，表示过去的日期）
+      if (td.classList.contains("n-date-panel-date--disabled")) continue;
+
+      // 跳过非当前月份的日期（上月/下月的灰色日期）
+      if (td.classList.contains("n-date-panel-date--excluded")) continue;
+
+      // 尝试多种方式获取日期数字
+      let dayText = '';
+      const trigger = td.querySelector(".n-date-panel-date__trigger");
+      if (trigger) {
+        dayText = trigger.textContent.trim();
+      }
+      // 如果 trigger 内容不是数字，尝试直接从 td 获取
+      if (!dayText || isNaN(parseInt(dayText, 10))) {
+        // 可能日期数字直接在 td 的文本节点中
+        dayText = td.textContent.trim();
+      }
+
+      const dayNum = parseInt(dayText, 10);
+      const targetDay = parseInt(day, 10);
+      console.log(`[小红书发布] 📅 检查日期: text="${dayText}", dayNum=${dayNum}, targetDay=${targetDay}, match=${dayNum === targetDay}`);
+
+      if (!isNaN(dayNum) && dayNum === targetDay) {
+        // 点击整个单元格或 trigger
+        if (trigger) {
+          trigger.click();
+        } else {
+          td.click();
+        }
+        dateSelected = true;
+        console.log(`[小红书发布] ✅ 选择日期: ${year}-${month}-${day}`);
+        break;
+      }
+    }
+
+    if (!dateSelected) {
+      console.error(`[小红书发布] ❌ 未能选择日期 ${day} 号`);
+    }
+    await delay(300);
+
+    // 4. 设置时间 - 点击时间输入框打开下拉，然后选择小时和分钟
+    const [hour, minute] = timePart.split(':');
+    console.log(`[小红书发布] ⏰ 目标时间: ${hour}:${minute}`);
+
+    const inputs = modal.querySelectorAll(".n-select");
+    console.log("🚀 ~ selectScheduledTime ~ inputs: ", inputs);
+    for (let i = 0; i < inputs.length; i++) {
+      // 点击时间输入框打开下拉面板
+      const hourInput = inputs[i].querySelector(".n-base-selection-label");
+      if (hourInput) {
+        hourInput.click();
+        await delay(1000);
+
+        // 找到时间选择面板
+        const timePanels = document.querySelectorAll(".n-base-select-menu-option-wrapper");
+        const timePanel = timePanels[i];
+        await delay(1000);
+        if (timePanel) {
+          const hourItems = timePanel.querySelectorAll(".n-base-select-option__content");
+          const targetValue = i === 0 ? hour : minute;
+          for (const li of hourItems) {
+            if (li.textContent.trim() === targetValue + (i === 0 ? '时' : '分')) {
+              li.click();
+              console.log(`[小红书发布] ✅ 选择时间${i}: ${targetValue}`);
+              break;
+            }
+          }
+          await delay(200);
+        } else {
+          console.warn("[小红书发布] ⚠️ 未找到时间选择面板");
+        }
+      } else {
+        console.warn("[小红书发布] ⚠️ 未找到" + i + "输入框");
+      }
+      await delay(1000);
+    }
+    await delay(200);
+
+    // 点击发布
+    const publishBtn = modal.querySelector(".timing-setting + div .n-button--primary-type");
+    if (publishBtn) {
+      publishBtn.click();
+      console.log("[小红书发布] ✅ 已点击定时发布按钮");
+
+      // 等待发布请求完成（检测弹窗是否关闭）
+      await delay(1000);
+
+      // 🔑 定时发布成功后直接上报并关闭窗口，不等页面跳转
+      // 这样可以避免小红书跳转到草稿页导致的各种问题
+      console.log("[小红书发布] ⏰ 定时发布提交成功，准备上报统计...");
+
+      // 获取 publishId 并上报成功
+      const publishIdForTimer = window.__xinlangPublishId ||
+          (await window.browserAPI?.getGlobalData?.(`PUBLISH_SUCCESS_DATA_${await window.browserAPI?.getWindowId()}`))?.publishId;
+
+      if (publishIdForTimer) {
+        try {
+          const successUrl = await getStatisticsUrl();
+          const scanData = {data: JSON.stringify({id: publishIdForTimer})};
+          await fetch(successUrl, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(scanData),
+          });
+          console.log("[小红书发布] ✅ 定时发布统计上报成功");
+        } catch (e) {
+          console.error("[小红书发布] ❌ 统计上报失败:", e);
+        }
+      }
+
+      // 清除保存的标记（避免 publish-success.js 重复处理）
+      try {
+        const wid = await window.browserAPI?.getWindowId();
+        if (wid) {
+          localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${wid}`);
+          await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${wid}`);
+          console.log("[小红书发布] 🗑️ 已清除发布标记");
+        }
+      } catch (e) {
+        // 忽略清除失败
+      }
+
+      // 关闭窗口
+      await closeWindowWithMessage("发布成功，刷新数据", 1000);
+      return true;
+    } else {
+      console.error("[小红书发布] ❌ 未找到发布按钮");
+    }
+    return false;
+  } catch (error) {
+    console.error("[小红书发布] ❌ selectScheduledTime 错误:", error);
+    return false;
   }
 }
