@@ -262,7 +262,7 @@ function getVersionCheckUrl() {
           return 'http://localhost:5173/browserVersion.json';
         } else {
           console.log('[Update] 检测到生产环境:', urlObj.host);
-          return 'https://www.china9.cn/aigc_browser/browserVersion.json';
+          return 'https://api.china9.cn/api/newmedia/downloadyunexe';
         }
       }
     } catch (e) {
@@ -274,7 +274,7 @@ function getVersionCheckUrl() {
   if (!isProduction) {
     return 'http://localhost:5173/browserVersion.json';
   }
-  return 'https://www.china9.cn/aigc_browser/browserVersion.json';
+  return 'https://api.china9.cn/api/newmedia/downloadyunexe';
 }
 
 /**
@@ -284,18 +284,28 @@ function getVersionCheckUrl() {
 async function checkForUpdate() {
   return new Promise((resolve) => {
     const versionUrl = getVersionCheckUrl();
-    console.log('[Update] 检查更新:', versionUrl);
+    const isLocal = versionUrl.startsWith('http://localhost');
+    const method = isLocal ? 'GET' : 'POST';
+    console.log('[Update] 检查更新:', versionUrl, '方法:', method);
 
     const urlObj = new URL(versionUrl);
-    const protocol = urlObj.protocol === 'https:' ? https : http;
+    const httpModule = urlObj.protocol === 'https:' ? https : http;
 
-    const req = protocol.get(versionUrl, {
+    const requestOptions = {
+      method: method,
       timeout: 10000,
       headers: {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
       }
-    }, (res) => {
+    };
+
+    // POST 请求需要设置 Content-Type
+    if (!isLocal) {
+      requestOptions.headers['Content-Type'] = 'application/json';
+    }
+
+    const req = httpModule.request(versionUrl, requestOptions, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -341,6 +351,9 @@ async function checkForUpdate() {
       req.destroy();
       resolve({ hasUpdate: false, error: '请求超时' });
     });
+
+    // http.request() 需要手动调用 end()（http.get() 会自动调用）
+    req.end();
   });
 }
 
@@ -432,8 +445,32 @@ async function fetchSiteInfo() {
   geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
 
   // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
-  // 通过 partition 指定使用 persist:browserview session，自动携带正确的 .china9.cn cookies
-  function doRequest() {
+  // 手动从 persist:browserview session 获取 cookies 并附加到请求头
+  async function doRequest() {
+    // 先从 session 获取对应域名的 cookies
+    const ses = session.fromPartition('persist:browserview');
+    const urlObj = new URL(requestUrl);
+    const domain = urlObj.hostname;
+    let cookieString = '';
+    try {
+      const allCookies = await ses.cookies.get({});
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      cookieString = domainCookies.map(c => {
+        const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+        return `${c.name}=${value}`;
+      }).join('; ');
+      geoLog('🍪 cookies: ' + domainCookies.length + ' 个, cookieString: ' + cookieString.substring(0, 200));
+      // 同步发送到 renderer 控制台
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('main-log', '[fetchSiteInfo] 🍪 cookies: ' + domainCookies.length + ' 个, cookieString: ' + cookieString.substring(0, 200));
+      }
+    } catch (cookieErr) {
+      geoLog('⚠️ 获取 cookies 失败: ' + cookieErr.message);
+    }
+
     return new Promise((resolve) => {
       try {
         const request = net.request({
@@ -444,6 +481,9 @@ async function fetchSiteInfo() {
 
         request.setHeader('Accept', 'application/json, text/plain, */*');
         request.setHeader('User-Agent', 'Mozilla/5.0 zh.Cloud-browse');
+        if (cookieString) {
+          request.setHeader('Cookie', cookieString);
+        }
 
         let responseData = '';
         let timeoutId = setTimeout(() => {
@@ -2845,7 +2885,8 @@ ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
             success: true,
             status: res.statusCode,
             ok: res.statusCode >= 200 && res.statusCode < 300,
-            data: jsonData
+            data: jsonData,
+            cookieString: cookieString || ''
           });
         });
       });

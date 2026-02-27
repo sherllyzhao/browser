@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 导航控制
   navigateTo: (url) => ipcRenderer.invoke('navigate-to', url),
   navigateCurrentWindow: (url) => ipcRenderer.invoke('navigate-current-window', url),
+  navigateToLocalPage: (pageName) => ipcRenderer.invoke('navigate-to-local-page', pageName),
   navigateToLogin: () => ipcRenderer.invoke('navigate-to-login'),
   refreshPage: () => ipcRenderer.invoke('refresh-page'),
   openDevTools: () => ipcRenderer.invoke('open-devtools'),
@@ -78,6 +79,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 事件监听
   onUrlChanged: (callback) => ipcRenderer.on('url-changed', (event, url) => callback(url)),
   onToggleHeader: (callback) => ipcRenderer.on('toggle-header', (event, show) => callback(show)),
+  onMainLog: (callback) => ipcRenderer.on('main-log', (event, msg) => callback(msg)),
 
   // 消息通信
   sendToContent: (message) => ipcRenderer.send('main-to-content', message),
