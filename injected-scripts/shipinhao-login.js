@@ -26,14 +26,24 @@
         // 1. 清空 localStorage（保留必要的数据）
         try {
           const keysToKeep = ['_shipinhao_session_backup']; // 保留会话备份
+          // 🔑 同时保留发布数据相关的 key（授权掉后重新登录需要恢复发布流程）
+          const prefixesToKeep = ['SHIPINHAO_PUBLISH_DATA_', 'SHIPINHAO_PUBLISH_URL_'];
           const tempData = {};
 
-          // 备份需要保留的数据
+          // 备份需要保留的数据（精确匹配）
           keysToKeep.forEach(key => {
             if (localStorage.getItem(key)) {
               tempData[key] = localStorage.getItem(key);
             }
           });
+
+          // 备份需要保留的数据（前缀匹配，保留发布数据）
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (prefixesToKeep.some(prefix => key.startsWith(prefix))) {
+              tempData[key] = localStorage.getItem(key);
+            }
+          }
 
           // 清空 localStorage
           localStorage.clear();
