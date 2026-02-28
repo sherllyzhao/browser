@@ -771,18 +771,24 @@ if (location.search.includes("published=true")) {
                     if (!timeSelectSuccess) {
                         console.error("[小红书发布] ❌ 时间选择失败");
                         await closeWindowWithMessage("定时时间选择失败", 1000);
-                        return;
                     }
+                    // 🔑 定时发布流程已在 selectScheduledTime 内完成（上报+关闭窗口），直接 return
+                    return;
                 } catch (error) {
-                    // alert('⚠️ Schedule time setting failed: ' + error.message);
+                    console.error("[小红书发布] ❌ 定时发布流程出错:", error);
+                    const errPublishId = dataObj?.video?.dyPlatform?.id;
+                    if (errPublishId) {
+                        await sendStatisticsError(errPublishId, error.message || "定时发布流程出错", "小红书发布");
+                    }
+                    await closeWindowWithMessage("定时发布失败，刷新数据", 1000);
+                    return;
                 }
             }
 
             // 等待表单填写完成
             await new Promise(resolve => setTimeout(resolve, 6000));
 
-            // 发布
-            return;
+            // 即时发布
             await publishApi(dataObj);
         } catch (error) {
             console.error("[小红书发布] fillFormData 错误:", error);
@@ -985,32 +991,72 @@ if (location.search.includes("published=true")) {
             // 点击定时发布按钮（新版小红书没有单独的确认按钮，直接点击主发布按钮）
             const publishBtn = document.querySelector(".publish-page-publish-btn .custom-button.bg-red");
             if (publishBtn) {
+                console.log("[小红书发布] ⏰ publishId:", publishId);
+
+                // 点击发布按钮
                 publishBtn.click();
                 console.log("[小红书发布] ✅ 已点击定时发布按钮");
 
-                // 等待发布请求完成（检测弹窗是否关闭）
-                await delay(1000);
+                // 等待 2 秒，检测是否有错误提示
+                await delay(2000);
 
-                // 🔑 定时发布成功后直接上报并关闭窗口，不等页面跳转
-                // 这样可以避免小红书跳转到草稿页导致的各种问题
-                console.log("[小红书发布] ⏰ 定时发布提交成功，准备上报统计...");
-                console.log("[小红书发布] ⏰ publishId:", publishId);
+                // 检测是否有错误提示（如果有错误，不发送统计）
+                let hasError = false;
+                try {
+                    const errorSelectors = [
+                        ".d-toast-description",  // toast 提示
+                        ".d-message-content",    // 消息提示
+                        ".error-message",        // 错误消息
+                    ];
 
-                // 使用传入的 publishId 上报成功
-                if (publishId) {
+                    for (const selector of errorSelectors) {
+                        const errorEl = document.querySelector(selector);
+                        if (errorEl) {
+                            const errorText = (errorEl.textContent || "").trim();
+                            // 过滤掉成功消息
+                            const successKeywords = ["成功", "提交成功", "发布成功"];
+                            const isSuccess = successKeywords.some(keyword => errorText.includes(keyword));
+                            if (errorText && !isSuccess) {
+                                hasError = true;
+                                console.error("[小红书发布] ❌ 检测到错误提示:", errorText);
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log("[小红书发布] ⚠️ 错误检测失败:", e);
+                }
+
+                // 如果没有错误，发送统计请求
+                if (!hasError && publishId) {
                     try {
                         const successUrl = await getStatisticsUrl();
                         const scanData = { data: JSON.stringify({ id: publishId }) };
-                        console.log("[小红书发布] 📤 发送统计请求:", successUrl, scanData);
-                        const response = await fetch(successUrl, {
+                        console.log("[小红书发布] 📤 统计接口地址:", successUrl);
+                        console.log("[小红书发布] 📤 请求参数:", JSON.stringify(scanData));
+
+                        // 🔑 使用 fetch 的 keepalive 选项，确保页面跳转时请求不被中断
+                        // keepalive 会让浏览器在页面卸载后继续完成请求
+                        fetch(successUrl, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify(scanData),
+                            keepalive: true,  // 关键：页面卸载后继续请求
+                        }).then(async response => {
+                            const text = await response.text();
+                            console.log("[小红书发布] ✅ 定时发布统计上报成功, 响应状态:", response.status);
+                            console.log("[小红书发布] ✅ 响应内容:", text);
+                        }).catch(e => {
+                            console.error("[小红书发布] ❌ 统计上报失败:", e);
                         });
-                        console.log("[小红书发布] ✅ 定时发布统计上报成功, 响应状态:", response.status);
+
+                        // 不等待 fetch 完成，立即继续执行
+                        console.log("[小红书发布] 📊 统计请求已发送（keepalive 模式）");
                     } catch (e) {
                         console.error("[小红书发布] ❌ 统计上报失败:", e);
                     }
+                } else if (hasError) {
+                    console.error("[小红书发布] ❌ 检测到错误，不发送统计");
                 } else {
                     console.error("[小红书发布] ❌ publishId 为空，无法上报统计");
                 }
@@ -1026,6 +1072,9 @@ if (location.search.includes("published=true")) {
                 } catch (e) {
                     // 忽略清除失败
                 }
+
+                // 等待一小段时间让统计请求发送出去
+                await delay(500);
 
                 // 关闭窗口
                 await closeWindowWithMessage("发布成功，刷新数据", 1000);
