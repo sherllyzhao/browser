@@ -655,7 +655,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 获取当前应用版本号
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   // 手动检查更新（会弹出更新对话框）
-  checkForUpdate: () => ipcRenderer.invoke('check-for-update')
+  checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
+
+  // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
+  nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y)
 });
 
 // 在页面加载时注入通信代码和协议拦截
