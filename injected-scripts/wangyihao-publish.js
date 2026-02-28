@@ -27,6 +27,11 @@
 
     window.__WYH_SCRIPT_LOADED__ = true;
 
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === 'function') {
+        showOperationBanner('正在自动发布中，请勿操作此页面...');
+    }
+
     // ===========================
     // 🔑 等待 React 初始化完成
     // 延迟执行脚本，避免在 React 渲染过程中干扰 DOM

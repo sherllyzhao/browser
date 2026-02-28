@@ -29,6 +29,11 @@
 
     window.__XL_SCRIPT_LOADED__ = true;
 
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === "function") {
+        showOperationBanner("正在自动发布中，请勿操作此页面...");
+    }
+
     // 变量声明（只在第一次加载时初始化）
     if (isFirstLoad) {
         window.__XL_fillFormRunning = false; // 标记 fillFormData 是否正在执行

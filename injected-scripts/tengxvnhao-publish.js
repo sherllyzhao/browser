@@ -28,6 +28,11 @@
 
     window.__TXH_SCRIPT_LOADED__ = true;
 
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === "function") {
+        showOperationBanner("正在自动发布中，请勿操作此页面...");
+    }
+
     // 变量声明（放在防重复检查之后）
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
 
