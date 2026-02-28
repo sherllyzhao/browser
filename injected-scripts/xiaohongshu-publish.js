@@ -766,7 +766,8 @@ if (location.search.includes("published=true")) {
                     // 设置日期时间
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     const sendTime = dataObj.video?.formData?.send_time;
-                    const timeSelectSuccess = await selectScheduledTime(sendTime);
+                    const publishId = dataObj.video.dyPlatform.id;
+                    const timeSelectSuccess = await selectScheduledTime(sendTime, publishId);
                     if (!timeSelectSuccess) {
                         console.error("[小红书发布] ❌ 时间选择失败");
                         await closeWindowWithMessage("定时时间选择失败", 1000);
@@ -781,6 +782,7 @@ if (location.search.includes("published=true")) {
             await new Promise(resolve => setTimeout(resolve, 6000));
 
             // 发布
+            return;
             await publishApi(dataObj);
         } catch (error) {
             console.error("[小红书发布] fillFormData 错误:", error);
@@ -800,9 +802,11 @@ if (location.search.includes("published=true")) {
     /**
      * 选择定时发布的日期和时间
      * @param sendTime
+     * @param publishId
      */
-    async function selectScheduledTime(sendTime) {
+    async function selectScheduledTime(sendTime, publishId) {
         console.log("🚀 ~ selectScheduledTime ~ sendTime: ", sendTime);
+        console.log("🚀 ~ selectScheduledTime ~ publishId: ", publishId);
         try {
             const modal = document.querySelector(".date-picker-container");
             if (!modal) {
@@ -951,7 +955,7 @@ if (location.search.includes("published=true")) {
             const [hour, minute] = timePart.split(":");
             console.log(`[小红书发布] ⏰ 目标时间: ${hour}:${minute}`);
 
-            const timebars = modal.querySelectorAll(".d-timepicker-body .d-timepicker-timebar");
+            const timebars = document.querySelectorAll(".d-timepicker-body .d-timepicker-timebar");
             console.log(`[小红书发布] ⏰ 找到 ${timebars.length} 个时间滚动列表`);
 
             for (let i = 0; i < timebars.length; i++) {
@@ -990,23 +994,25 @@ if (location.search.includes("published=true")) {
                 // 🔑 定时发布成功后直接上报并关闭窗口，不等页面跳转
                 // 这样可以避免小红书跳转到草稿页导致的各种问题
                 console.log("[小红书发布] ⏰ 定时发布提交成功，准备上报统计...");
+                console.log("[小红书发布] ⏰ publishId:", publishId);
 
-                // 获取 publishId 并上报成功
-                const publishIdForTimer = window.__xinlangPublishId || (await window.browserAPI?.getGlobalData?.(`PUBLISH_SUCCESS_DATA_${await window.browserAPI?.getWindowId()}`))?.publishId;
-
-                if (publishIdForTimer) {
+                // 使用传入的 publishId 上报成功
+                if (publishId) {
                     try {
                         const successUrl = await getStatisticsUrl();
-                        const scanData = { data: JSON.stringify({ id: publishIdForTimer }) };
-                        await fetch(successUrl, {
+                        const scanData = { data: JSON.stringify({ id: publishId }) };
+                        console.log("[小红书发布] 📤 发送统计请求:", successUrl, scanData);
+                        const response = await fetch(successUrl, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify(scanData),
                         });
-                        console.log("[小红书发布] ✅ 定时发布统计上报成功");
+                        console.log("[小红书发布] ✅ 定时发布统计上报成功, 响应状态:", response.status);
                     } catch (e) {
                         console.error("[小红书发布] ❌ 统计上报失败:", e);
                     }
+                } else {
+                    console.error("[小红书发布] ❌ publishId 为空，无法上报统计");
                 }
 
                 // 清除保存的标记（避免 publish-success.js 重复处理）

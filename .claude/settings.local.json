@@ -90,7 +90,9 @@
       "mcp__puppeteer__puppeteer_navigate",
       "mcp__puppeteer__puppeteer_evaluate",
       "mcp__puppeteer__puppeteer_click",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(del \"\\\\?\\\\D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\nul\")",
+      "Bash(rd /s /q \"D:\\\\浏览器\\\\运营助手\\\\dist\")"
     ],
     "deny": [],
     "ask": []
