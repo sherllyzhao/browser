@@ -41,6 +41,11 @@ if (location.search.includes("published=true")) {
 
         window.__XHS_SCRIPT_LOADED__ = true;
 
+        // 显示操作提示横幅
+        if (typeof showOperationBanner === "function") {
+            showOperationBanner("正在自动发布中，请勿操作此页面...");
+        }
+
         console.log("═══════════════════════════════════════");
         console.log("✅ 小红书发布脚本已注入");
         console.log("📍 当前 URL:", window.location.href);
