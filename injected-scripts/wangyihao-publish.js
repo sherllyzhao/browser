@@ -28,62 +28,6 @@
     window.__WYH_SCRIPT_LOADED__ = true;
 
     // ===========================
-    // 🔑 安全网：监听 hash 变化到 #/content-manage（发布成功页）
-    // 正常情况下 publish-success.js 会通过 Electron 脚本注入执行
-    // 如果注入失败，此监听器作为后备，确保发布成功逻辑一定执行
-    // ===========================
-    window.addEventListener('hashchange', async () => {
-        const newHash = window.location.hash;
-        if (!newHash.includes('/content-manage')) return;
-
-        console.log('[网易号发布] 🔄 检测到 hash 变化到 content-manage，等待 publish-success.js 注入...');
-
-        // 等 5 秒，给 publish-success.js 通过正常注入机制执行的机会
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
-        // 如果 publish-success.js 已经执行了，安全网不介入
-        if (window.__PUBLISH_SUCCESS_LOADED__) {
-            console.log('[网易号发布] ✅ publish-success.js 已正常执行，安全网不介入');
-            return;
-        }
-
-        console.log('[网易号发布] ⚠️ publish-success.js 未注入，安全网接管发布成功逻辑');
-
-        // 读取 publishId
-        let publishId = null;
-        try {
-            const windowId = await window.browserAPI.getWindowId();
-            if (windowId) {
-                const data = await window.browserAPI.getGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`);
-                if (data && data.publishId) {
-                    publishId = data.publishId;
-                }
-            }
-        } catch (e) {
-            console.error('[网易号发布] 安全网读取 publishId 失败:', e);
-        }
-
-        // 发送成功统计
-        if (publishId && typeof getStatisticsUrl === 'function') {
-            try {
-                const scanData = { data: JSON.stringify({ id: publishId }) };
-                const url = await getStatisticsUrl();
-                await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(scanData),
-                });
-                console.log('[网易号发布] ✅ 安全网：成功统计已发送');
-            } catch (e) {
-                console.error('[网易号发布] 安全网：统计接口失败:', e);
-            }
-        }
-
-        // 通知首页 + 关闭窗口
-        await closeWindowWithMessage('发布成功，刷新数据', 1000);
-    });
-
-    // ===========================
     // 🔑 等待 React 初始化完成
     // 延迟执行脚本，避免在 React 渲染过程中干扰 DOM
     // ===========================
@@ -806,6 +750,9 @@
                         return null;
                     };
 
+                    // 立即启动错误监听
+                    startErrorListener();
+
                     // 设置封面（使用主进程下载绕过跨域）
                     await (async () => {
                         try {
@@ -837,9 +784,6 @@
                                         coverBtn.click();
                                         console.log('[网易号发布] ✅ 已点击"选择封面"按钮');
                                     }
-
-                                    // 立即启动错误监听
-                                    startErrorListener();
 
                                     await retryOperation(async () => {
                                         // 有弹窗先关闭弹窗

@@ -4196,6 +4196,15 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      const script = await scriptManager.getScript(navUrl);
+      if (script) {
+        try {
+          await newWindow.webContents.executeJavaScript(script);
+          console.log('[New Window API] Script re-injected on navigation');
+        } catch (err) {
+          console.error('[New Window API] Script re-injection error:', err);
+        }
+      }
       await injectScriptForUrl(newWindow.webContents, navUrl);
     });
 

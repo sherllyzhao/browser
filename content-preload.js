@@ -223,10 +223,7 @@ ipcRenderer.on('window-loaded', (event, data) => {
   // 检查是否有待发送的消息
   if (pendingMessages.has(windowId)) {
     const messageData = pendingMessages.get(windowId);
-    // 🔑 不删除 pendingMessages，保留消息以便窗口重定向后重发
-    // 场景：登录过期 → 跳登录页 → window-loaded 触发但脚本没监听 → 消息丢失
-    // 保留后：登录完成 → 跳回发布页 → window-loaded 再次触发 → 重发消息
-    // 发布脚本自带防重复处理（isProcessing/hasProcessed），不会重复执行
+    pendingMessages.delete(windowId);
 
     // 发送消息到目标窗口
     setTimeout(() => {

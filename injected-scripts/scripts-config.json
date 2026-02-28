@@ -1,11 +1,4 @@
 {
-  "remoteConfig": {
-    "enabled": true,
-    "baseUrl": "https://china9.cn/aigc_browser/injected-scripts/",
-    "devBaseUrl": "http://localhost:5173/injected-scripts/",
-    "timeout": 10000,
-    "fallbackToLocal": true
-  },
   "scripts": {
     "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
     "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
@@ -50,5 +43,20 @@
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"
-  }
+  },
+  "注释": [
+    "在这里配置 URL 和对应的脚本文件",
+    "URL 支持通配符 * 匹配任意字符",
+    "例如: https://www.douyin.com/* 匹配所有抖音页面",
+    "或精确匹配: http://localhost:5173/#/short-video/auth",
+    "",
+    "脚本支持两种格式：",
+    "1. 单个脚本：\"URL\": \"script.js\"",
+    "2. 多个脚本（依赖注入）：\"URL\": [\"dependency.js\", \"main.js\"]",
+    "   数组中的脚本会按顺序注入，前面的脚本可以被后面的脚本使用",
+    "",
+    "脚本文件放在同一目录下",
+    "支持相对路径",
+    "修改后需要重启应用才能生效"
+  ]
 }
