@@ -268,37 +268,36 @@
       // 同时检查 globalData 中是否有发布数据
       const globalPublishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
 
+      // 🔑 检查保存的发布页 URL（优先 localStorage，备选 globalData）
+      const publishUrlKey = `SHIPINHAO_PUBLISH_URL_${windowId}`;
+      let savedPublishUrl = localStorage.getItem(publishUrlKey);
+      if (!savedPublishUrl) {
+        savedPublishUrl = await window.browserAPI.getGlobalData(`SHIPINHAO_PUBLISH_URL_${windowId}`);
+      }
+
       console.log('[视频号授权] 🔍 检查发布数据:', {
         localStorage: savedPublishData ? '有' : '无',
         globalData: globalPublishData ? '有' : '无',
+        savedPublishUrl: savedPublishUrl || '无',
         windowId
       });
 
       if (savedPublishData || globalPublishData) {
         console.log('[视频号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
-        console.log('[视频号授权] 🔄 准备自动跳转到发布页...');
 
         // 等待页面完全加载
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 查找"发表视频"按钮
-        const publishButton = await waitForElement('button.weui-desktop-btn_primary', 5000);
-
-        if (publishButton) {
-          // 检查按钮文字是否包含"发表视频"
-          const buttonText = publishButton.textContent || publishButton.innerText || '';
-          console.log('[视频号授权] 📍 找到按钮，文字:', buttonText);
-
-          if (buttonText.includes('发表视频') || buttonText.includes('发表')) {
-            console.log('[视频号授权] ✅ 确认是"发表视频"按钮，准备点击...');
-            publishButton.click();
-            console.log('[视频号授权] ✅ 已点击"发表视频"按钮，等待跳转到发布页');
-          } else {
-            console.log('[视频号授权] ⚠️ 按钮文字不匹配，跳过点击');
-          }
-        } else {
-          console.log('[视频号授权] ⚠️ 未找到"发表视频"按钮');
+        // 🔑 优先使用保存的发布页 URL 直接跳转（更可靠，保留 URL 参数）
+        if (savedPublishUrl && savedPublishUrl.includes('/platform/post/create')) {
+          console.log('[视频号授权] 🔄 使用保存的发布页 URL 直接跳转:', savedPublishUrl);
+          window.location.href = savedPublishUrl;
+          return;
         }
+
+        // 🔑 备选方案：跳转到默认发布页
+        console.log('[视频号授权] 🔄 没有保存的发布页 URL，跳转到默认发布页...');
+        window.location.href = 'https://channels.weixin.qq.com/platform/post/create';
       } else {
         console.log('[视频号授权] ℹ️ 没有发布数据，这是正常的授权流程');
       }

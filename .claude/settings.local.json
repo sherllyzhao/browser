@@ -92,7 +92,11 @@
       "mcp__puppeteer__puppeteer_click",
       "Bash(find:*)",
       "Bash(del \"\\\\?\\\\D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\nul\")",
-      "Bash(rd /s /q \"D:\\\\浏览器\\\\运营助手\\\\dist\")"
+      "Bash(rd /s /q \"D:\\\\浏览器\\\\运营助手\\\\dist\")",
+      "Bash(git log:*)",
+      "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-login.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-login.js\")",
+      "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-creator.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-creator.js\")",
+      "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-publish.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-publish.js\")"
     ],
     "deny": [],
     "ask": []

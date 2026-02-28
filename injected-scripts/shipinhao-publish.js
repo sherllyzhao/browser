@@ -187,6 +187,16 @@ let hasProcessed = false;
                 console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
               }
 
+              // 🔖 同时保存发布页 URL 到 globalData（备份，防止 localStorage 被登录页清空）
+              try {
+                if (currentWindowId) {
+                  await window.browserAPI.setGlobalData(`SHIPINHAO_PUBLISH_URL_${currentWindowId}`, window.location.href);
+                  console.log('[视频号发布] 🔖 已保存发布页URL到 globalData');
+                }
+              } catch (e) {
+                console.error('[视频号发布] ❌ 保存发布页URL到 globalData 失败:', e);
+              }
+
               // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
               const currentUrl = window.location.href;
               const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
