@@ -53,8 +53,8 @@
 
     // 初始化错误监听器
     const initErrorListener = () => {
-        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.tengxun) {
-            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.tengxun);
+        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.zhihu) {
+            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.zhihu);
             console.log("[知乎发布] ✅ 使用公共错误监听器配置");
         } else {
             // 回退方案：使用本地配置
@@ -62,7 +62,7 @@
                 logPrefix: "[知乎发布]",
                 selectors: [
                     { containerClass: "WriteIndexMain", textSelector: ".WriteIndex-LengthStatus-warning", recursiveSelector: ".WriteIndexMain" },
-                    { containerClass: "Notification", textSelector: ".Notification-textsection", recursiveSelector: ".Notification" },
+                    { containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }
                 ],
             });
             console.log("[知乎发布] ⚠️ 使用本地错误监听器配置");
@@ -377,6 +377,14 @@
                                 const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
                                 let htmlContent = dataObj.video.video.content;
 
+                                // 🔑 如果没有文字内容（只有图片没有文字），跳过内容填写
+                                // 避免对空内容触发粘贴事件导致 Draft.js handlePastedText 报错:
+                                // "Cannot read properties of null (reading 'trim')"
+                                if (!htmlContent || !htmlContent.trim()) {
+                                    console.log('[知乎发布] ℹ️ 无文字内容（content 为空），跳过内容填写');
+                                    return;
+                                }
+
                                 // 解析 HTML 中的图片，通过知乎 dumpproxy 接口上传
                                 const tempDiv = document.createElement('div');
                                 tempDiv.innerHTML = htmlContent;
@@ -397,15 +405,14 @@
                                     }
 
                                     try {
+                                        // 使用 FormData 表单提交（与浏览器正常上传一致）
+                                        const formData = new FormData();
+                                        formData.append('url', originalSrc);
+                                        formData.append('source', 'article');
+
                                         const response = await fetch('https://zhuanlan.zhihu.com/api/uploaded_images', {
                                             method: 'POST',
-                                            headers: {
-                                                'Content-Type': 'application/json',
-                                            },
-                                            body: {
-                                                url: originalSrc,
-                                                source: 'article'
-                                            },
+                                            body: formData,
                                             credentials: 'include' // 带上 cookies
                                         });
 
@@ -707,6 +714,23 @@
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
+
+                                                // 🔴 等待 2 秒后检查是否有错误消息
+                                                await delay(2000);
+                                                const publishErrorMsg = getLatestError();
+                                                if (publishErrorMsg) {
+                                                    console.log("[知乎发布] ❌ 点击发布后检测到错误:", publishErrorMsg);
+                                                    stopErrorListener();
+                                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                                    if (publishId) {
+                                                        await sendStatisticsError(publishId, publishErrorMsg, "知乎发布");
+                                                    }
+                                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                    return;
+                                                } else {
+                                                    console.log("[知乎发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）");
+                                                    stopErrorListener();
+                                                }
                                             } else {
                                                 console.error("[知乎发布] ❌ 找不到发布按钮，上报失败");
                                                 stopErrorListener();

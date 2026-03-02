@@ -1142,6 +1142,19 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     if (specialUrlMap[mainInfo.host]) {
                         return specialUrlMap[mainInfo.host];
                     }
+
+                    // AIGC 域名下访问 /geo/ 路径时，也走 GEO 上报域名
+                    if (mainInfo.url && (mainInfo.url.includes('/geo/') || mainInfo.url.includes('#/geo'))) {
+                        const devHosts = [
+                            "localhost:5173", "127.0.0.1:5173",
+                            "dev.china9.cn", "www.dev.china9.cn",
+                        ];
+                        const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
+                        const geoDomain = isDev
+                            ? `https://jzt_dev_1.china9.cn`
+                            : `https://zhjzt.china9.cn`;
+                        return `${geoDomain}/api/geo/${endpoint}`;
+                    }
                 }
             }
         } catch (e) {
@@ -1877,6 +1890,11 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         wangyi: {
             logPrefix: "[网易号发布]",
             selectors: [{ containerClass: "el-message--error", textSelector: ".el-message__content", recursiveSelector: ".el-message.el-message--error" }],
+        },
+        // 知乎
+        zhihu: {
+            logPrefix: "[知乎发布]",
+            selectors: [{ containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }],
         },
     };
 
