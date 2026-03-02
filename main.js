@@ -1636,8 +1636,8 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（每次都重新调 API 获取最新 siteInfo）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
+    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
       console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
       const siteResult = await fetchSiteInfo();
       const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
@@ -1700,8 +1700,8 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（使用缓存，实时检查在 did-navigate-in-page 中执行）
-    if (url.includes('/geo/') || url.includes('#/geo') || url.includes('geo/index')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
+    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
       console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
