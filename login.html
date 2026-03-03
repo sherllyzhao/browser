@@ -420,8 +420,8 @@
 
     // 跳转目标地址（根据环境自动选择）
     const TARGET_URLS = {
-      aigc: isDev ? 'http://localhost:5173/' : 'https://china9.cn/aigc_browser/',
-      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+      aigc: isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/',
+      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index'
       //geo: isDev ? 'http://172.16.6.17:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
     };
 
@@ -465,7 +465,7 @@
       // 检测是否是开发环境（通过检查 browserAPI.isProduction）
       const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
       // 默认使用开发环境，生产环境用 china9.cn
-      API_BASE_URL = isProduction ? 'https://china9.cn' : 'https://dev.china9.cn';
+      API_BASE_URL = isProduction ? 'https://dev.china9.cn' : 'https://dev.china9.cn';
       console.log('[Login] 使用默认 API 基础地址:', API_BASE_URL);
       return API_BASE_URL;
     }
@@ -557,7 +557,7 @@
     async function getSiteInfoApi(company_unique_id) {
         // 是否是开发环境
       const isDev = window.browserAPI && window.browserAPI.isProduction === false;
-      const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+      const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://jzt_dev_1.china9.cn/';
         const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
           method: 'GET'
         });
@@ -728,7 +728,7 @@
             // 2. 为 .china9.cn 设置 Cookie（生产环境）
             console.log('[Login] 开始设置 china9.cn Cookie...');
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: 'https://dev.china9.cn',
               name: 'token',
               value: loginData.token,
               domain: '.china9.cn',
@@ -737,7 +737,7 @@
               secure: true
             });
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: 'https://dev.china9.cn',
               name: 'access_token',
               value: loginData.token,
               domain: '.china9.cn',
@@ -746,7 +746,7 @@
               secure: true
             });
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: 'https://dev.china9.cn',
               name: 'employee_token',
               value: loginData.user.token,
               domain: '.china9.cn',
@@ -756,7 +756,7 @@
             });
             if (loginData.gcc) {
               await window.browserAPI.setCookie({
-                url: 'https://china9.cn',
+                url: 'https://dev.china9.cn',
                 name: 'gcc',
                 value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
                 domain: '.china9.cn',
@@ -778,7 +778,7 @@
         console.log('[Login] 用户信息:', userInfo);
         if (userInfo.company && userInfo.company.unique_id) {
           await window.browserAPI.setCookie({
-            url: 'https://china9.cn',
+            url: 'https://dev.china9.cn',
             name: 'company_unique_id',
             value: userInfo.company.unique_id,
             domain: '.china9.cn',
@@ -791,7 +791,7 @@
         // 🔑 设置 users_unique_id Cookie（用户唯一标识，后端可能根据这个判断权限）
         if (userInfo.unique_id) {
           await window.browserAPI.setCookie({
-            url: 'https://china9.cn',
+            url: 'https://dev.china9.cn',
             name: 'users_unique_id',
             value: userInfo.unique_id,
             domain: '.china9.cn',
@@ -851,7 +851,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'site_id',
                   value: siteIdStr,
                   path: '/',
@@ -879,7 +879,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'china_site_id',
                   value: siteIdStr,
                   path: '/',
@@ -907,7 +907,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'company_unique_id',
                   value: uniqueId,
                   path: '/',
@@ -935,7 +935,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'unique_id',
                   value: uniqueId,
                   path: '/',

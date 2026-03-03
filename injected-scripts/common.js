@@ -1110,7 +1110,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                         console.log("[getApiDomain] 检测到开发环境:", host, "→", apiDomain);
                     } else {
                         // 生产环境
-                        apiDomain = "https://api.china9.cn";
+                        apiDomain = "https://apidev.china9.cn";
                         console.log("[getApiDomain] 检测到生产环境:", host, "→", apiDomain);
                     }
                 }

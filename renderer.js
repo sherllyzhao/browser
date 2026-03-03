@@ -53,10 +53,10 @@ const tabGeo = document.getElementById('__tab_geo__');
 // AIGC 和 GEO 的 URL（根据环境）
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 const AIGC_URL = isProduction
-  ? 'https://china9.cn/aigc_browser/'
+  ? 'https://dev.china9.cn/aigc_browser/'
   : 'http://localhost:5173/';
 const GEO_URL = isProduction
-  ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
+  ? 'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
   //: 'http://172.16.6.17:8080/#/geo/index';
 
@@ -835,7 +835,7 @@ async function handleTokenExpired() {
 // 获取站点列表 API
 async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://jzt_dev_1.china9.cn/';
   const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
   console.log("🚀 ~ getSiteListApi ~ siteInfo: ", siteInfo);
   let companyId = siteInfo.company_id;
@@ -907,7 +907,7 @@ async function getSiteListApi() {
 // 切换站点 API
 async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://jzt_dev_1.china9.cn/';
   const token = await window.electronAPI.getGlobalData('login_token');
 
   const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
@@ -979,7 +979,7 @@ async function selectSite(site, skipApiCall = false) {
 
       // 更新 Cookie 中的 site_id
       const cookieDomain = '.china9.cn';
-      const cookieUrl = 'https://zhjzt.china9.cn';
+      const cookieUrl = 'https://jzt_dev_1.china9.cn';
       await window.electronAPI.setCookie({
         url: cookieUrl,
         name: 'site_id',
@@ -1148,7 +1148,7 @@ async function getCompanyListApi() {
   }
 
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://china9.cn';
+  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://dev.china9.cn';
 
   try {
     const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/switchCompanyData`, {
@@ -1178,7 +1178,7 @@ async function getCompanyListApi() {
 // 获取站点基础信息 API（切换公司后需重新获取）
 async function getSiteInfoApi(companyUniqueId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://jzt_dev_1.china9.cn/';
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
   const url = `${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`;
   console.log('[SiteInfo] 请求 site/info:', url);
@@ -1203,7 +1203,7 @@ async function getSiteInfoApi(companyUniqueId) {
 async function switchCompanyApi(uniqueId) {
   const token = await window.electronAPI.getGlobalData('login_token');
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://china9.cn';
+  const apiBaseUrl = isDev ? 'https://dev.china9.cn' : 'https://dev.china9.cn';
 
   const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/cutNew`, {
     method: 'POST',
@@ -1286,20 +1286,20 @@ async function updateAllTokens(newToken, expiresIn, gcc) {
   const chinaCookieBase = { domain: '.china9.cn', path: '/', secure: true };
 
   await window.electronAPI.setCookie({
-    url: 'https://china9.cn',
+    url: 'https://dev.china9.cn',
     name: 'token',
     value: newToken,
     ...chinaCookieBase
   });
   await window.electronAPI.setCookie({
-    url: 'https://china9.cn',
+    url: 'https://dev.china9.cn',
     name: 'access_token',
     value: newToken,
     ...chinaCookieBase
   });
   if (gcc) {
     await window.electronAPI.setCookie({
-      url: 'https://china9.cn',
+      url: 'https://dev.china9.cn',
       name: 'gcc',
       value: encodeURIComponent(gcc),
       ...chinaCookieBase

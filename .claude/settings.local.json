@@ -96,7 +96,14 @@
       "Bash(git log:*)",
       "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-login.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-login.js\")",
       "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-creator.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-creator.js\")",
-      "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-publish.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-publish.js\")"
+      "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-publish.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-publish.js\")",
+      "Bash(powershell -NoProfile -Command \"sls ''api\\\\.china9\\\\.cn'' -Path \\(gci ''D:\\\\浏览器\\\\运营助手分支\\\\*.js'',''D:\\\\浏览器\\\\运营助手分支\\\\*.html'',''D:\\\\浏览器\\\\运营助手分支\\\\*.json'' -Recurse | ? { -not \\($_FullName -match ''node_modules''\\) }\\) | ? { $_Line -notmatch ''apidev'' } | ft Path, LineNumber, Line -Wrap\")",
+      "Bash(powershell -NoProfile -Command \"sls ''zhjzt\\\\.china9\\\\.cn'' -Path \\(gci ''D:\\\\浏览器\\\\运营助手分支\\\\*.js'',''D:\\\\浏览器\\\\运营助手分支\\\\*.html'',''D:\\\\浏览器\\\\运营助手分支\\\\*.json'' -Recurse | ? { -not \\($_FullName -match ''node_modules''\\) }\\) | ft Path, LineNumber, Line -Wrap\")",
+      "Bash(powershell -NoProfile -Command \"sls ''www\\\\.china9\\\\.cn'' -Path \\(gci ''D:\\\\浏览器\\\\运营助手分支\\\\*.js'',''D:\\\\浏览器\\\\运营助手分支\\\\*.html'',''D:\\\\浏览器\\\\运营助手分支\\\\*.json'' -Recurse | ? { -not \\($_FullName -match ''node_modules''\\) }\\) | ft Path, LineNumber, Line -Wrap\")",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手分支\\\\main.js'' | Select-String ''loginRedirectUrl'' | Format-Table -AutoSize LineNumber,Line\")",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手分支\\\\main.js'' | Select-String ''china9'' | Format-Table -AutoSize LineNumber,Line\")",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手分支\\\\renderer.js'' | Select-String ''china9'' | Format-Table -AutoSize LineNumber,Line\")",
+      "Bash(powershell -NoProfile -Command \"Get-Content ''D:\\\\浏览器\\\\运营助手分支\\\\login.html'' | Select-String ''china9'' | Format-Table -AutoSize LineNumber,Line\")"
     ],
     "deny": [],
     "ask": []
