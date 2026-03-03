@@ -1360,8 +1360,7 @@ function createWindow() {
             if (urlLower.includes(':8080') ||
                 urlLower.includes('/geo/') ||
                 urlLower.includes('/jzt_all/') ||
-                urlLower.includes('jzt_dev') ||
-                urlLower.includes('zhjzt')) {
+                urlLower.includes('jzt_dev')) {
               systemParam = 'geo';
             }
           }

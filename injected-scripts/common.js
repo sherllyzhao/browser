@@ -1917,7 +1917,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
 
         // GEO 系统特征
-        if (urlLower.includes(":8080") || urlLower.includes("/geo/") || urlLower.includes("/jzt_all/") || urlLower.includes("jzt_dev") || urlLower.includes("zhjzt")) {
+        if (urlLower.includes(":8080") || urlLower.includes("/geo/") || urlLower.includes("/jzt_all/") || urlLower.includes("jzt_dev")) {
             return "geo";
         }
 
