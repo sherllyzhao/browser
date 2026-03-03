@@ -92,7 +92,6 @@ function getCurrentSystem(url) {
       urlLower.includes('/geo/') ||
       urlLower.includes('/jzt_all/') ||
       urlLower.includes('jzt_dev') ||
-      urlLower.includes('zhjzt') ||
       urlLower.includes('jzt')) {
     return 'geo';
   }

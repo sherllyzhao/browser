@@ -1129,7 +1129,6 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         // 特殊域名映射（GEO 系统等）
         const specialUrlMap = {
             "jzt_dev_1.china9.cn": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
-            "zhjzt.china9.cn": `https://zhjzt.china9.cn/api/geo/${endpoint}`,
             "172.16.6.17:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
             "localhost:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
         };
@@ -1150,9 +1149,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                             "dev.china9.cn", "www.dev.china9.cn",
                         ];
                         const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
-                        const geoDomain = isDev
-                            ? `https://jzt_dev_1.china9.cn`
-                            : `https://zhjzt.china9.cn`;
+                        const geoDomain = `https://jzt_dev_1.china9.cn`;
                         return `${geoDomain}/api/geo/${endpoint}`;
                     }
                 }

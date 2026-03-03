@@ -415,17 +415,55 @@
     // API 基础地址（会根据环境自动获取）
     let API_BASE_URL = '';
 
+    // 🔑 域名配置（从集中配置获取）
+    let domainConfig = null;
+
+    // 初始化域名配置
+    async function initDomainConfig() {
+      if (domainConfig) return domainConfig;
+      if (window.browserAPI && window.browserAPI.getDomainConfig) {
+        try {
+          domainConfig = await window.browserAPI.getDomainConfig();
+          console.log('[Login] 已加载域名配置:', domainConfig);
+          return domainConfig;
+        } catch (err) {
+          console.error('[Login] 加载域名配置失败:', err);
+        }
+      }
+      // fallback 默认配置
+      domainConfig = {
+        isProduction: false,
+        aigcUrl: 'http://localhost:5173/',
+        geoUrl: 'http://localhost:8080/geo/index',
+        cookieUrl: 'https://dev.china9.cn',
+        cookieDomain: '.china9.cn',
+        domains: {
+          aigcPage: 'https://dev.china9.cn',
+          geoPage: 'https://jzt_dev_1.china9.cn',
+          apiDomain: 'https://apidev.china9.cn'
+        }
+      };
+      return domainConfig;
+    }
+
     // 判断是否开发环境（通过 browserAPI.isProduction）
     const isDev = window.browserAPI && window.browserAPI.isProduction === false;
 
-    // 跳转目标地址（根据环境自动选择）
-    const TARGET_URLS = {
-      aigc: isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/',
-      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index'
-      //geo: isDev ? 'http://172.16.6.17:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-    };
+    // 🔑 跳转目标地址（异步获取，初始为 null，在 initDomainConfig 后赋值）
+    let TARGET_URLS = null;
 
-    console.log('[Login] 环境:', isDev ? '开发' : '生产', 'TARGET_URLS:', TARGET_URLS);
+    async function getTargetUrls() {
+      if (TARGET_URLS) return TARGET_URLS;
+      const cfg = await initDomainConfig();
+      TARGET_URLS = {
+        aigc: cfg.aigcUrl,
+        geo: cfg.geoUrl
+      };
+      console.log('[Login] TARGET_URLS:', TARGET_URLS);
+      return TARGET_URLS;
+    }
+
+    console.log('[Login] 环境:', isDev ? '开发' : '生产');
 
     // ========== 工具函数 ==========
     // 设置 Cookie
@@ -464,8 +502,9 @@
 
       // 检测是否是开发环境（通过检查 browserAPI.isProduction）
       const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
-      // 默认使用开发环境，生产环境用 china9.cn
-      API_BASE_URL = isProduction ? 'https://dev.china9.cn' : 'https://dev.china9.cn';
+      // 🔑 使用集中配置的域名
+      const cfg = await initDomainConfig();
+      API_BASE_URL = cfg.domains.aigcPage || (isProduction ? 'https://dev.china9.cn' : 'https://dev.china9.cn');
       console.log('[Login] 使用默认 API 基础地址:', API_BASE_URL);
       return API_BASE_URL;
     }
@@ -555,9 +594,9 @@
 
     // 获取建站通站点信息
     async function getSiteInfoApi(company_unique_id) {
-        // 是否是开发环境
-      const isDev = window.browserAPI && window.browserAPI.isProduction === false;
-      const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://jzt_dev_1.china9.cn/';
+      // 🔑 使用集中配置的 GEO 域名
+      const cfg = await initDomainConfig();
+      const apiBaseUrl = cfg.domains.geoPage + '/';
         const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
           method: 'GET'
         });
@@ -674,7 +713,11 @@
         console.log('[Login] expirationDate:', expirationDate, '对应时间:', new Date(expirationDate * 1000).toLocaleString());
 
         // 根据目标 URL 决定 Cookie 的 domain
-        const targetUrl = activeTab === 'geo' ? TARGET_URLS.geo : TARGET_URLS.aigc;
+        const targets = await getTargetUrls();
+        const targetUrl = activeTab === 'geo' ? targets.geo : targets.aigc;
+        const cfg = await initDomainConfig();
+        const cookieUrl = cfg.cookieUrl;
+        const cookieDomain = cfg.cookieDomain;
         console.log('[Login] 目标 URL:', targetUrl);
         console.log('[Login] isDev:', isDev, 'browserAPI.isProduction:', window.browserAPI?.isProduction);
 
@@ -728,10 +771,10 @@
             // 2. 为 .china9.cn 设置 Cookie（生产环境）
             console.log('[Login] 开始设置 china9.cn Cookie...');
             await window.browserAPI.setCookie({
-              url: 'https://dev.china9.cn',
+              url: cookieUrl,
               name: 'token',
               value: loginData.token,
-              domain: '.china9.cn',
+              domain: cookieDomain,
               path: '/',
               expirationDate: expirationDate,
               secure: true

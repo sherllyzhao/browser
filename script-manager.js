@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
+const { domains } = require('./config');
 
 class ScriptManager {
   constructor(baseDir) {
@@ -70,11 +71,8 @@ class ScriptManager {
     }
 
     try {
-      // 确定配置文件 URL
-      const isDevMode = !require('electron').app.isPackaged;
-      const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
-        ? this.remoteConfig.devBaseUrl
-        : this.remoteConfig.baseUrl;
+      // 🔑 使用集中配置的远程脚本 baseUrl
+      const baseUrl = domains.remoteScriptsBase;
 
       const configUrl = baseUrl + 'scripts-config.json?v=' + Date.now();
 
@@ -349,10 +347,8 @@ class ScriptManager {
 
   // 🔑 从远程服务器按顺序获取多个脚本并拼接为文本
   async fetchRemoteScripts(filenames) {
-    const isDevMode = !require('electron').app.isPackaged;
-    const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
-      ? this.remoteConfig.devBaseUrl
-      : this.remoteConfig.baseUrl;
+    // 🔑 使用集中配置的远程脚本 baseUrl
+    const baseUrl = domains.remoteScriptsBase;
 
     console.log(`[ScriptManager] 🌐 主进程 fetch 远程脚本, baseUrl: ${baseUrl}, files: ${filenames.join(', ')}`);
 

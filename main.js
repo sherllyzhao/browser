@@ -1404,16 +1404,7 @@ function createWindow() {
     updateHeaderVisibility(url);
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
-    const loginRedirectUrls = [
-      'dev.china9.cn/#/home',
-      'china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
-      'localhost:5173/#/home',
-      'localhost:5173/#/login',
-      'localhost:8080/#/home',
-      'localhost:8080/#/login'
-    ];
+    const loginRedirectUrls = getLoginRedirectUrls();
 
     // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
@@ -1473,16 +1464,7 @@ function createWindow() {
     console.log(`[DOM Ready] 页面准备完成 → ${url}`);
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
-    const loginRedirectUrls = [
-      'dev.china9.cn/#/home',
-      'china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
-      'localhost:5173/#/home',
-      'localhost:5173/#/login',
-      'localhost:8080/#/home',
-      'localhost:8080/#/login'
-    ];
+    const loginRedirectUrls = getLoginRedirectUrls();
 
     // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
@@ -1635,8 +1617,9 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
-    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
+    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
+    if (url.includes(':8080') || url.includes(geoHost)) {
       console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
       const siteResult = await fetchSiteInfo();
       const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
@@ -1699,8 +1682,9 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
-    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
+    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
+    if (url.includes(':8080') || url.includes(geoHost)) {
       console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
@@ -2591,6 +2575,22 @@ app.on('window-all-closed', function () {
 });
 
 // IPC 处理程序
+
+// 🔑 获取域名配置（供渲染进程使用）
+ipcMain.handle('get-domain-config', () => {
+  return {
+    ENV: config.ENV,
+    isProduction: isProduction,
+    domains: config.domains,
+    // 便捷 URL（已根据 isProduction 计算好）
+    aigcUrl: config.getAigcUrl(isProduction),
+    geoUrl: config.getGeoUrl(isProduction),
+    apiDomain: config.getApiDomainUrl(),
+    cookieUrl: config.getCookieUrl(),
+    cookieDomain: config.getCookieDomain(),
+    DEV_HOSTS: config.DEV_HOSTS
+  };
+});
 
 // 获取当前应用版本
 ipcMain.handle('get-app-version', () => {

@@ -657,6 +657,9 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 手动检查更新（会弹出更新对话框）
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
 
+  // 🔑 获取域名配置（集中配置）
+  getDomainConfig: () => ipcRenderer.invoke('get-domain-config'),
+
   // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
   nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y)
 });

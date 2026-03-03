@@ -99,7 +99,10 @@
       "Bash(copy /Y \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\shipinhao-publish.js\" \"E:\\\\项目\\\\资海云\\\\master\\\\zihaiyunVue\\\\public\\\\aigc_browser\\\\injected-scripts\\\\shipinhao-publish.js\")",
       "mcp__plugin_oh-my-claudecode_omc-tools__lsp_workspace_symbols",
       "Bash(grep:*)",
-      "WebFetch(domain:zcloud.obs.cn-north-4.myhuaweicloud.com)"
+      "WebFetch(domain:zcloud.obs.cn-north-4.myhuaweicloud.com)",
+      "Bash(powershell -NoProfile -Command \"Get-Content main.js | Select-String ''ipcMain.handle'' | Select-Object -First 5 | ForEach-Object { $_LineNumber.ToString\\(\\) + '': '' + $_Line.Trim\\(\\) }\")",
+      "Bash(powershell -NoProfile -Command \"\\(Get-Content content-preload.js | Select-String -Pattern ''getDomainConfig|getAppVersion|checkForUpdate'' -Context 2,2\\).Line\")",
+      "Bash(powershell -NoProfile -Command:*)"
     ],
     "deny": [],
     "ask": []
