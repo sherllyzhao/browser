@@ -58,7 +58,6 @@ const AIGC_URL = isProduction
 const GEO_URL = isProduction
   ? 'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index'
   : 'http://localhost:8080/#/geo/index';
-  //: 'http://172.16.6.17:8080/#/geo/index';
 
 // 占位页面文件名（与 config.js 中 placeholderPages 保持一致）
 const PLACEHOLDER_PAGES = ['not-available.html', 'not-auth.html', 'not-purchase.html', 'login.html'];

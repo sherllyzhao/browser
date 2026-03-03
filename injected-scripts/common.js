@@ -1158,7 +1158,10 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.warn("[统计接口] 获取主窗口 URL 失败:", e);
         }
 
-        // 使用通用的 API 域名
+        // 使用通用的 API 域名（从集中配置获取）
+        if (window.DOMAIN_CONFIG && window.DOMAIN_CONFIG.getApiDomainUrl) {
+            return `${window.DOMAIN_CONFIG.getApiDomainUrl()}/api/geo/${endpoint}`;
+        }
         const apiDomain = await window.getApiDomain();
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };

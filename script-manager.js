@@ -1,7 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
-const { domains } = require('./config');
+const { domains } = require('./domain-config');
 
 class ScriptManager {
   constructor(baseDir) {
