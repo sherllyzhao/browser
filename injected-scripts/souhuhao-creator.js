@@ -43,6 +43,11 @@
 
     window.__SOUHUHAO_SCRIPT_LOADED__ = true;
 
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === 'function') {
+        showOperationBanner('正在自动授权中，请勿操作此页面...');
+    }
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);

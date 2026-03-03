@@ -27,6 +27,11 @@
 
     window.__WANGYIHAO_SCRIPT_LOADED__ = true;
 
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === 'function') {
+        showOperationBanner('正在自动授权中，请勿操作此页面...');
+    }
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 网易号授权脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
@@ -405,17 +410,28 @@
             });
 
             if (globalPublishData) {
-                console.log('[网易号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
-                console.log('[网易号授权] 🔄 准备自动跳转到发布页...');
+                // 检查是否为授权窗口（main.js 在临时 session 窗口打开时设置此标记）
+                const isAuthWindow = await window.browserAPI.getGlobalData(`auth_mode_window_${windowId}`);
+                if (isAuthWindow) {
+                    // 🔑 授权流程：publish_data 是残留脏数据（窗口 ID 复用），清除并跳过
+                    console.log('[网易号授权] ⚠️ 授权窗口中检测到残留的发布数据，清除它');
+                    await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+                    console.log('[网易号授权] 🗑️ 已清除残留的 publish_data_window_' + windowId);
+                    console.log('[网易号授权] ℹ️ 继续正常授权流程');
+                } else {
+                    // 🔑 发布掉登录恢复（URL 无 transfer_id）：跳回发布页继续发布
+                    console.log('[网易号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
+                    console.log('[网易号授权] 🔄 准备自动跳转到发布页...');
 
-                // 等待页面完全加载
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                    // 等待页面完全加载
+                    await new Promise(resolve => setTimeout(resolve, 1000));
 
-                // 网易号发布页是 SPA 的 hash 路由，直接修改 hash 即可跳转
-                const publishHash = '#/article-publish';
-                console.log('[网易号授权] 🔗 跳转到发布页:', publishHash);
-                window.location.hash = publishHash;
-                console.log('[网易号授权] ✅ 已跳转到发布页');
+                    // 网易号发布页是 SPA 的 hash 路由，直接修改 hash 即可跳转
+                    const publishHash = '#/article-publish';
+                    console.log('[网易号授权] 🔗 跳转到发布页:', publishHash);
+                    window.location.hash = publishHash;
+                    console.log('[网易号授权] ✅ 已跳转到发布页');
+                }
             } else {
                 console.log('[网易号授权] ℹ️ 没有发布数据，这是正常的授权流程');
             }

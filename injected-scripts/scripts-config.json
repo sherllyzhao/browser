@@ -1,7 +1,7 @@
 {
   "remoteConfig": {
     "enabled": true,
-    "baseUrl": "https://dev.china9.cn/aigc_browser/injected-scripts/",
+    "baseUrl": "https://www.china9.cn/aigc_browser/injected-scripts/",
     "devBaseUrl": "http://localhost:5173/injected-scripts/",
     "cachePolicy": "no-cache",
     "timeout": 10000,
@@ -17,6 +17,7 @@
     "https://channels.weixin.qq.com/login.html": ["common.js", "shipinhao-login.js"],
     "https://baijiahao.baidu.com/builder/rc/home": ["common.js", "baijiahao-creator.js"],
     "https://baijiahao.baidu.com/": ["common.js", "baijiahao-creator.js"],
+    "https://api.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
     "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
     "https://creator.douyin.com/creator-micro/content/upload*": ["common.js", "douyin-publish.js"],
     "https://creator.xiaohongshu.com/publish/publish*": ["common.js", "xiaohongshu-publish.js"],

@@ -1151,3 +1151,24 @@ window.browserAPI.onCookiesCleared((data) => {
 const status = await window.browserAPI.checkSessionStatus();
 // status = { hasSession: true, cookieCount: 100, platforms: { douyin: 10, xiaohongshu: 5, ... } }
 ```
+
+### 新窗口加载时短暂显示平台 favicon logo
+
+**现象**: 打开发布/授权窗口时，所有平台在页面加载前会短暂显示一个平台 logo（深色背景 + 平台图标）。
+
+**原因**: 当 `openNewWindow` 传入了 `sessionData`（包含 `localStorage` 数据）时，代码需要先在目标域名下预设 localStorage。由于 `about:blank` 无法设置跨域 localStorage，所以先加载了目标域的 `/favicon.ico` 作为中间页（main.js:4247）：
+
+```javascript
+await newWindow.loadURL(`${targetOrigin}/favicon.ico`).catch(() => {});
+```
+
+浏览器将 favicon.ico 作为页面显示，因此用户会短暂看到各平台的 favicon 图标。
+
+**影响**: 仅视觉体验，不影响功能。所有平台都有此现象。
+
+**如需修复的方案**:
+1. **隐藏窗口加载**（推荐）: 创建窗口时 `show: false`，等实际 URL 开始加载后再 `window.show()`
+2. **改用空白 HTML**: 将 `/favicon.ico` 改为加载一个同域的空白 HTML（如 `${targetOrigin}/robots.txt` 或自定义空白页）
+3. **Preload 注入**: 在 `content-preload.js` 中根据目标 URL 预设 localStorage（类似搜狐号 toPath 的处理方式），避免中间页
+
+**代码位置**: main.js:4237-4283（`openNewWindow` 的 localStorage 预设逻辑）

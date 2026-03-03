@@ -1142,6 +1142,19 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     if (specialUrlMap[mainInfo.host]) {
                         return specialUrlMap[mainInfo.host];
                     }
+
+                    // AIGC 域名下访问 /geo/ 路径时，也走 GEO 上报域名
+                    if (mainInfo.url && (mainInfo.url.includes('/geo/') || mainInfo.url.includes('#/geo'))) {
+                        const devHosts = [
+                            "localhost:5173", "127.0.0.1:5173",
+                            "dev.china9.cn", "www.dev.china9.cn",
+                        ];
+                        const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
+                        const geoDomain = isDev
+                            ? `https://jzt_dev_1.china9.cn`
+                            : `https://zhjzt.china9.cn`;
+                        return `${geoDomain}/api/geo/${endpoint}`;
+                    }
                 }
             }
         } catch (e) {
@@ -1878,6 +1891,11 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             logPrefix: "[网易号发布]",
             selectors: [{ containerClass: "el-message--error", textSelector: ".el-message__content", recursiveSelector: ".el-message.el-message--error" }],
         },
+        // 知乎
+        zhihu: {
+            logPrefix: "[知乎发布]",
+            selectors: [{ containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }],
+        },
     };
 
     // 判断当前系统类型
@@ -1912,8 +1930,145 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return "aigc";
     };
 
+    // ===========================
+    // 🔔 操作提示横幅（自动化运行时提醒用户勿操作）
+    // ===========================
+
+    /**
+     * 显示操作提示横幅（固定在页面顶部，推开页面内容）
+     * - 橙黄色渐变背景 + 扫描线动画 + 呼吸脉冲指示灯
+     * - 用于发布/授权等自动化流程中提示用户不要手动操作
+     * @param {string} text - 横幅文案
+     */
+    window.showOperationBanner = function (text) {
+        text = text || "自动操作进行中，请勿操作此页面...";
+
+        // 防止重复创建（如果已存在则更新文案）
+        if (document.getElementById("__operation_banner__")) {
+            var textEl = document.querySelector("#__operation_banner__ .__ob_text__");
+            if (textEl) textEl.textContent = text;
+            return;
+        }
+
+        // 注入样式
+        var style = document.createElement("style");
+        style.id = "__operation_banner_style__";
+        style.textContent = [
+            "/* 呼吸脉冲动画（状态指示灯） */",
+            "@keyframes __ob_breath__ {",
+            "  0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(255, 160, 0, 0.5); }",
+            "  50% { opacity: 0.45; box-shadow: 0 0 3px rgba(255, 160, 0, 0.2); }",
+            "}",
+            "/* 扫描线动画 */",
+            "@keyframes __ob_scan__ {",
+            "  0% { transform: translateX(-100%); }",
+            "  100% { transform: translateX(400%); }",
+            "}",
+            "/* 入场滑入动画 */",
+            "@keyframes __ob_slide__ {",
+            "  0% { transform: translateY(-100%); opacity: 0; }",
+            "  100% { transform: translateY(0); opacity: 1; }",
+            "}",
+            "/* 横幅主体 */",
+            "#__operation_banner__ {",
+            "  position: fixed;",
+            "  top: 0; left: 0; right: 0;",
+            "  z-index: 2147483647;",
+            "  height: 40px;",
+            "  background: linear-gradient(135deg, #e8870e 0%, #f5a623 40%, #f7c948 100%);",
+            "  border-bottom: 1px solid rgba(0, 0, 0, 0.08);",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  gap: 10px;",
+            "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;",
+            "  font-size: 14px;",
+            "  font-weight: 600;",
+            "  color: #fff;",
+            "  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);",
+            "  box-shadow: 0 2px 12px rgba(232, 135, 14, 0.3);",
+            "  overflow: hidden;",
+            "  animation: __ob_slide__ 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;",
+            "  user-select: none;",
+            "  -webkit-user-select: none;",
+            "}",
+            "/* 扫描线伪元素 */",
+            "#__operation_banner__::before {",
+            "  content: '';",
+            "  position: absolute;",
+            "  top: 0; left: 0;",
+            "  width: 25%;",
+            "  height: 100%;",
+            "  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);",
+            "  animation: __ob_scan__ 3s ease-in-out infinite;",
+            "  pointer-events: none;",
+            "}",
+            "/* 状态指示灯 */",
+            ".__ob_dot__ {",
+            "  width: 8px; height: 8px;",
+            "  border-radius: 50%;",
+            "  background: #fff;",
+            "  flex-shrink: 0;",
+            "  animation: __ob_breath__ 2s ease-in-out infinite;",
+            "}",
+            "/* 文案 */",
+            ".__ob_text__ {",
+            "  letter-spacing: 0.5px;",
+            "  white-space: nowrap;",
+            "}",
+            "/* 占位元素（推开页面内容） */",
+            "#__operation_banner_spacer__ {",
+            "  height: 40px;",
+            "  width: 100%;",
+            "  flex-shrink: 0;",
+            "}",
+        ].join("\n");
+        (document.head || document.documentElement).appendChild(style);
+
+        // 创建横幅
+        var banner = document.createElement("div");
+        banner.id = "__operation_banner__";
+
+        var dot = document.createElement("span");
+        dot.className = "__ob_dot__";
+
+        var span = document.createElement("span");
+        span.className = "__ob_text__";
+        span.textContent = text;
+
+        banner.appendChild(dot);
+        banner.appendChild(span);
+
+        // 创建占位元素（推开页面内容，防止横幅遮挡顶部区域）
+        var spacer = document.createElement("div");
+        spacer.id = "__operation_banner_spacer__";
+
+        // 插入到页面
+        document.documentElement.appendChild(banner);
+        if (document.body) {
+            document.body.insertBefore(spacer, document.body.firstChild);
+        }
+
+        console.log("[横幅] ✅ 操作提示横幅已显示:", text);
+    };
+
+    /**
+     * 移除操作提示横幅
+     */
+    window.hideOperationBanner = function () {
+        var banner = document.getElementById("__operation_banner__");
+        var spacer = document.getElementById("__operation_banner_spacer__");
+        var style = document.getElementById("__operation_banner_style__");
+
+        if (banner) banner.remove();
+        if (spacer) spacer.remove();
+        if (style) style.remove();
+
+        console.log("[横幅] 🗑️ 操作提示横幅已移除");
+    };
+
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -1995,6 +2150,8 @@ if (typeof getCurrentWindowId === "undefined") window.getCurrentWindowId && (get
 if (typeof extractAfterHash === "undefined") window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
 if (typeof removeHashTags === "undefined") window.removeHashTags && (removeHashTags = window.removeHashTags);
 if (typeof getCurrentSystem === "undefined") window.getCurrentSystem && (getCurrentSystem = window.getCurrentSystem);
+if (typeof showOperationBanner === "undefined") window.showOperationBanner && (showOperationBanner = window.showOperationBanner);
+if (typeof hideOperationBanner === "undefined") window.hideOperationBanner && (hideOperationBanner = window.hideOperationBanner);
 
 // ===========================
 // 前端拦截自定义协议（如 bitbrowser://）
