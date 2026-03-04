@@ -12,8 +12,8 @@
 // ===========================
 // 🔑 唯一环境开关 — 改这一个值，全部切换
 // ===========================
-// 优先使用打包时的环境变量，如果没有则默认为 'dev'
-const ENV = process.env.BUILD_ENV || 'dev'; // 'dev' | 'prod'
+// 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
+const ENV = 'dev'; // 'dev' | 'prod'
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
@@ -74,7 +74,7 @@ const DOMAINS = {
     authRedirect:      'account.china9.cn',
 
     // 远程脚本 baseUrl
-    remoteScriptsBase: 'https://dev.china9.cn/aigc_browser/injected-scripts/',
+    remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/',
 
     // 统计接口特殊域名映射
     statisticsHosts: {
@@ -107,22 +107,18 @@ const DEV_HOSTS = [
 
 /**
  * 获取 AIGC 首页完整 URL
- * @param {boolean} isProduction - 是否为打包环境（app.isPackaged）
  * @returns {string}
  */
-function getAigcUrl(isProduction) {
-  if (!isProduction) return 'http://localhost:5173/';
+function getAigcUrl() {
   return domains.aigcPage + domains.aigcPath;
 }
 
 /**
  * 获取 GEO 首页完整 URL
- * @param {boolean} isProduction - 是否为打包环境
  * @returns {string}
  */
-function getGeoUrl(isProduction) {
-  if (!isProduction) return 'http://localhost:8080/geo/index';
-  return domains.geoPage + domains.geoPath;
+function getGeoUrl() {
+  return domains.aigcPage + domains.aigcPath + '#/geo/index';
 }
 
 /**

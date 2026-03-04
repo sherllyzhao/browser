@@ -139,10 +139,10 @@ console.log('[Config] LOGIN_URL:', LOGIN_URL);
 // 所有可能的首页地址（用于消息路由判断，从 config 集中配置构建）
 const HOME_URLS = [
   'http://localhost:5173/',
-  config.getAigcUrl(true),             // 打包环境 AIGC 首页
+  config.getAigcUrl(),             // AIGC 首页
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
-  config.getGeoUrl(true),              // 打包环境 GEO 首页
+  config.getGeoUrl(),              // GEO 首页
   LOGIN_URL  // 登录页也作为首页处理
 ];
 
@@ -1021,7 +1021,7 @@ function createWindow() {
 
           if (siteInfo && siteInfo.is_geo === 1) {
             // geo 权限通过，跳转到 geo 首页
-            startUrl = config.getGeoUrl(isProduction);
+            startUrl = config.getGeoUrl();
             console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
           } else {
             // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
@@ -1030,7 +1030,7 @@ function createWindow() {
           }
         } else {
           // 默认 aigc 项目首页
-          startUrl = config.getAigcUrl(isProduction);
+          startUrl = config.getAigcUrl();
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
       } catch (err) {
@@ -2581,9 +2581,9 @@ ipcMain.handle('get-domain-config', () => {
     ENV: config.ENV,
     isProduction: isProduction,
     domains: config.domains,
-    // 便捷 URL（已根据 isProduction 计算好）
-    aigcUrl: config.getAigcUrl(isProduction),
-    geoUrl: config.getGeoUrl(isProduction),
+    // 便捷 URL（根据 ENV 配置）
+    aigcUrl: config.getAigcUrl(),
+    geoUrl: config.getGeoUrl(),
     apiDomain: config.getApiDomainUrl(),
     cookieUrl: config.getCookieUrl(),
     cookieDomain: config.getCookieDomain(),

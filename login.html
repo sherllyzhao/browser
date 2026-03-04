@@ -430,7 +430,7 @@
           console.error('[Login] 加载域名配置失败:', err);
         }
       }
-      // fallback 默认配置
+                                                                                                                                                                              // fallback 默认配置
       domainConfig = {
         isProduction: false,
         aigcUrl: 'http://localhost:5173/',
@@ -457,9 +457,9 @@
       const cfg = await initDomainConfig();
       TARGET_URLS = {
         aigc: cfg.aigcUrl,
-        geo: cfg.geoUrl
+        geo: 'https://dev.china9.cn/aigc_browser/#/geo/index'
       };
-      console.log('[Login] TARGET_URLS:', TARGET_URLS);
+      console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
       return TARGET_URLS;
     }
 
@@ -504,8 +504,8 @@
       const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
       // 🔑 使用集中配置的域名
       const cfg = await initDomainConfig();
-      API_BASE_URL = cfg.domains.aigcPage || (isProduction ? 'https://dev.china9.cn' : 'https://dev.china9.cn');
-      console.log('[Login] 使用默认 API 基础地址:', API_BASE_URL);
+      API_BASE_URL = cfg.domains.aigcPage;
+      console.log('[Login] 使用 API 基础地址:', API_BASE_URL);
       return API_BASE_URL;
     }
 
@@ -854,6 +854,7 @@
           await window.browserAPI.setGlobalData('company_id', companyId.id);
 
           if (userInfo.company?.unique_id) {
+            /* [已注释] 获取站点信息和设置站点Cookie - GEO不再需要独立域名判断
             //  获取建站通站点信息
             const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
             console.log('[Login] 站点信息:', siteInfo);
@@ -993,10 +994,12 @@
                 console.error('[Login] ❌ siteId保存失败:', e);
               }
             }
+            [已注释结束] */
 
             // 登录成功，跳转到首页
             console.log('[Login] 准备跳转，activeTab:', activeTab);
 
+            /* [已注释] GEO权限检查 - GEO不再走独立域名，不需要在登录时检查
             // 🔑 GEO Tab 登录时，检查 is_geo 权限
             if (activeTab === 'geo') {
               const siteInfo = await window.browserAPI.getGlobalData('siteInfo');
@@ -1014,6 +1017,7 @@
               }
               console.log('[Login] ✅ GEO 权限检查通过');
             }
+            [已注释结束] */
 
             // 等待一小段时间确保 Cookie 写入
             await new Promise(resolve => setTimeout(resolve, 5000));
