@@ -79,20 +79,21 @@ function getCurrentSystem(url) {
     }
   }
 
-  // AIGC 系统特征（优先判断，避免 AIGC 路径中含 /geo/ 被误判）
-  if (urlLower.includes(':5173') ||
-      urlLower.includes('/aigc_browser/') ||
-      urlLower.includes('aigc')) {
-    return 'aigc';
-  }
-
-  // GEO 系统特征
-  if (urlLower.includes(':8080') ||
+  // GEO 系统特征（优先判断，避免被 AIGC 特征误判）
+  if (urlLower.includes('#/geo') ||
+      urlLower.includes(':8080') ||
       urlLower.includes('/geo/') ||
       urlLower.includes('/jzt_all/') ||
       urlLower.includes('jzt_dev') ||
       urlLower.includes('jzt')) {
     return 'geo';
+  }
+
+  // AIGC 系统特征
+  if (urlLower.includes(':5173') ||
+      urlLower.includes('/aigc_browser/') ||
+      urlLower.includes('aigc')) {
+    return 'aigc';
   }
 
   // 默认返回 aigc

@@ -1,7 +1,7 @@
 {
   "remoteConfig": {
     "enabled": true,
-    "baseUrl": "https://www.china9.cn/aigc_browser/injected-scripts/",
+    "baseUrl": "https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/",
     "devBaseUrl": "http://localhost:5173/injected-scripts/",
     "cachePolicy": "no-cache",
     "timeout": 10000,

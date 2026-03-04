@@ -41,7 +41,7 @@ const DOMAINS = {
     authRedirect:      'account.china9.cn',
 
     // 远程脚本 baseUrl
-    remoteScriptsBase: 'https://dev.china9.cn/aigc_browser/injected-scripts/',
+    remoteScriptsBase: 'http://localhost:5173/injected-scripts/',
 
     // 统计接口特殊域名映射
     statisticsHosts: {
@@ -73,7 +73,7 @@ const DOMAINS = {
     authRedirect:      'account.china9.cn',
 
     // 远程脚本 baseUrl
-    remoteScriptsBase: 'https://www.china9.cn/aigc_browser/injected-scripts/',
+    remoteScriptsBase: 'https://dev.china9.cn/aigc_browser/injected-scripts/',
 
     // 统计接口特殊域名映射
     statisticsHosts: {
