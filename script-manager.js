@@ -8,6 +8,8 @@ class ScriptManager {
     this.scriptsDir = path.join(baseDir, 'injected-scripts');
     this.manifestPath = path.join(this.scriptsDir, 'manifest.json');
     this.manifest = {};
+    this.configLoaded = false; // 标记配置是否已加载
+    this.configLoadPromise = null; // 配置加载 Promise（用于等待异步加载完成）
 
     this.init();
   }
@@ -26,8 +28,11 @@ class ScriptManager {
         this.saveManifest();
       }
 
-      // 加载 scripts-config.json 配置
-      this.loadScriptsConfig();
+      // 先同步加载本地配置（确保有基础配置）
+      this.loadLocalConfig();
+
+      // 然后异步加载远程配置（如果启用了远程模式）
+      this.configLoadPromise = this.loadRemoteConfigAsync();
 
       console.log('ScriptManager initialized:', this.scriptsDir);
       console.log('Loaded scripts:', Object.keys(this.manifest.scripts).length);
@@ -36,56 +41,156 @@ class ScriptManager {
     }
   }
 
-  // 加载 scripts-config.json 配置文件
-  loadScriptsConfig() {
+  // 🔑 加载本地配置文件（同步）
+  loadLocalConfig() {
     try {
       const configPath = path.join(this.scriptsDir, 'scripts-config.json');
 
       if (!fs.existsSync(configPath)) {
-        console.log('scripts-config.json not found, skipping...');
+        console.log('[ScriptManager] scripts-config.json not found locally');
+        this.remoteConfig = { enabled: false };
         return;
       }
 
       const config = fs.readJsonSync(configPath);
+      this.applyConfig(config, 'local');
+    } catch (err) {
+      console.error('[ScriptManager] Failed to load local config:', err);
+      this.remoteConfig = { enabled: false };
+    }
+  }
+
+  // 🔑 异步加载远程配置文件
+  async loadRemoteConfigAsync() {
+    // 如果没有启用远程模式，直接返回
+    if (!this.remoteConfig || !this.remoteConfig.enabled) {
+      console.log('[ScriptManager] 远程配置未启用，跳过远程加载');
+      this.configLoaded = true;
+      return;
+    }
+
+    try {
+      // 确定配置文件 URL
+      const isDevMode = !require('electron').app.isPackaged;
+      const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
+        ? this.remoteConfig.devBaseUrl
+        : this.remoteConfig.baseUrl;
+
+      const configUrl = baseUrl + 'scripts-config.json?v=' + Date.now();
+
+      console.log('[ScriptManager] 🌐 开始加载远程配置:', configUrl);
+
+      // 使用 fetch 加载远程配置
+      const { net } = require('electron');
+      const request = net.request(configUrl);
+
+      const remoteConfig = await new Promise((resolve, reject) => {
+        let data = '';
+
+        request.on('response', (response) => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`HTTP ${response.statusCode}`));
+            return;
+          }
+
+          response.on('data', (chunk) => {
+            data += chunk.toString();
+          });
+
+          response.on('end', () => {
+            try {
+              const config = JSON.parse(data);
+              resolve(config);
+            } catch (e) {
+              reject(new Error('Invalid JSON: ' + e.message));
+            }
+          });
+        });
+
+        request.on('error', (error) => {
+          reject(error);
+        });
+
+        // 设置超时
+        setTimeout(() => {
+          request.abort();
+          reject(new Error('Request timeout'));
+        }, this.remoteConfig.timeout || 10000);
+
+        request.end();
+      });
+
+      // 应用远程配置
+      this.applyConfig(remoteConfig, 'remote');
+      console.log('[ScriptManager] ✅ 远程配置加载成功');
+      this.configLoaded = true;
+    } catch (err) {
+      console.error('[ScriptManager] ❌ 远程配置加载失败，使用本地配置:', err.message);
+      this.configLoaded = true;
+      // 失败时已经有本地配置作为后备
+    }
+  }
+
+  // 🔑 应用配置（统一处理本地和远程配置）
+  applyConfig(config, source = 'unknown') {
+    try {
+      // 加载远程配置设置
+      if (config.remoteConfig) {
+        this.remoteConfig = config.remoteConfig;
+        console.log(`[ScriptManager] Remote config loaded from ${source}:`, this.remoteConfig.enabled ? 'ENABLED' : 'DISABLED');
+      }
 
       if (config.scripts && typeof config.scripts === 'object') {
-        console.log(`Loading ${Object.keys(config.scripts).length} scripts from scripts-config.json`);
+        console.log(`[ScriptManager] Loading ${Object.keys(config.scripts).length} scripts from ${source} config`);
 
         // 将配置文件中的脚本加载到 manifest
         for (const [url, scriptFile] of Object.entries(config.scripts)) {
           // 支持两种格式：字符串（单个脚本）和数组（多个脚本，依赖注入）
           const scriptFiles = Array.isArray(scriptFile) ? scriptFile : [scriptFile];
 
-          // 验证所有脚本文件是否存在
-          const allFilesExist = scriptFiles.every(file => {
-            const scriptPath = path.join(this.scriptsDir, file);
-            return fs.existsSync(scriptPath);
-          });
-
-          if (allFilesExist) {
-            // 使用配置文件中的文件名，不重新生成哈希
+          // 远程模式下不验证本地文件是否存在
+          if (this.remoteConfig && this.remoteConfig.enabled) {
             this.manifest.scripts[url] = {
-              filename: scriptFiles, // 可以是字符串或数组
+              filename: scriptFiles,
               url: url,
               savedAt: new Date().toISOString(),
-              source: 'config' // 标记这是从配置文件加载的
+              source: source
             };
             const filesDisplay = Array.isArray(scriptFiles)
               ? scriptFiles.join(' -> ')
               : scriptFiles;
-            console.log(`✓ Loaded: ${url} -> ${filesDisplay}`);
+            console.log(`[ScriptManager] ✓ Loaded: ${url} -> ${filesDisplay}`);
           } else {
-            const missingFiles = scriptFiles.filter(file => {
+            // 本地模式下验证文件是否存在
+            const allFilesExist = scriptFiles.every(file => {
               const scriptPath = path.join(this.scriptsDir, file);
-              return !fs.existsSync(scriptPath);
+              return fs.existsSync(scriptPath);
             });
-            console.warn(`✗ Script file(s) not found for URL: ${url}`);
-            console.warn(`  Missing: ${missingFiles.join(', ')}`);
+
+            if (allFilesExist) {
+              this.manifest.scripts[url] = {
+                filename: scriptFiles,
+                url: url,
+                savedAt: new Date().toISOString(),
+                source: source
+              };
+              const filesDisplay = Array.isArray(scriptFiles)
+                ? scriptFiles.join(' -> ')
+                : scriptFiles;
+              console.log(`[ScriptManager] ✓ Loaded: ${url} -> ${filesDisplay}`);
+            } else {
+              const missingFiles = scriptFiles.filter(file => {
+                const scriptPath = path.join(this.scriptsDir, file);
+                return !fs.existsSync(scriptPath);
+              });
+              console.warn(`[ScriptManager] ✗ Script file(s) not found for URL: ${url}`);
+              console.warn(`[ScriptManager]   Missing: ${missingFiles.join(', ')}`);
+            }
           }
         }
       }
     } catch (err) {
-      console.error('Failed to load scripts-config.json:', err);
+      console.error(`[ScriptManager] Failed to apply config from ${source}:`, err);
     }
   }
 
@@ -138,9 +243,16 @@ class ScriptManager {
     }
   }
 
-  // 从文件读取脚本
+  // 从文件读取脚本（或生成远程加载器）
   async getScript(url) {
     try {
+      // 🔑 等待远程配置加载完成（如果正在加载）
+      if (this.configLoadPromise && !this.configLoaded) {
+        console.log('[ScriptManager] ⏳ 等待远程配置加载完成...');
+        await this.configLoadPromise;
+        console.log('[ScriptManager] ✅ 远程配置加载完成，继续获取脚本');
+      }
+
       // 1. 首先尝试精确匹配
       let scriptInfo = this.manifest.scripts[url];
 
@@ -166,7 +278,13 @@ class ScriptManager {
 
       console.log(`[ScriptManager] 加载脚本:`, filenames);
 
-      // 按顺序读取所有脚本文件，并连接内容
+      // 🔑 检查是否启用远程加载（主进程 fetch + executeJavaScript 注入，绕过 CSP）
+      if (this.remoteConfig && this.remoteConfig.enabled) {
+        console.log(`[ScriptManager] 🌐 使用远程加载模式（主进程 fetch）`);
+        return this.fetchRemoteScripts(filenames);
+      }
+
+      // 本地加载模式：按顺序读取所有脚本文件，并连接内容
       const scriptContents = [];
       for (const filename of filenames) {
         const filepath = path.join(this.scriptsDir, filename);
@@ -186,6 +304,89 @@ class ScriptManager {
       console.error('Failed to read script:', err);
       return '';
     }
+  }
+
+  // 🔑 从远程服务器获取单个脚本的文本内容（主进程级别，绕过 CSP）
+  fetchRemoteScript(scriptUrl) {
+    const timeout = this.remoteConfig.timeout || 10000;
+
+    return new Promise((resolve, reject) => {
+      const { net } = require('electron');
+      const request = net.request(scriptUrl);
+      let data = '';
+
+      request.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode} for ${scriptUrl}`));
+          return;
+        }
+
+        response.on('data', (chunk) => {
+          data += chunk.toString();
+        });
+
+        response.on('end', () => {
+          resolve(data);
+        });
+      });
+
+      request.on('error', (error) => {
+        reject(error);
+      });
+
+      const timer = setTimeout(() => {
+        request.abort();
+        reject(new Error(`Timeout loading ${scriptUrl}`));
+      }, timeout);
+
+      request.on('close', () => {
+        clearTimeout(timer);
+      });
+
+      request.end();
+    });
+  }
+
+  // 🔑 从远程服务器按顺序获取多个脚本并拼接为文本
+  async fetchRemoteScripts(filenames) {
+    const isDevMode = !require('electron').app.isPackaged;
+    const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
+      ? this.remoteConfig.devBaseUrl
+      : this.remoteConfig.baseUrl;
+
+    console.log(`[ScriptManager] 🌐 主进程 fetch 远程脚本, baseUrl: ${baseUrl}, files: ${filenames.join(', ')}`);
+
+    const scriptContents = [];
+    let loadedCount = 0;
+    let failedCount = 0;
+
+    for (const filename of filenames) {
+      const scriptUrl = baseUrl + filename + '?v=' + Date.now();
+      try {
+        const content = await this.fetchRemoteScript(scriptUrl);
+        scriptContents.push(`// ===== ${filename} (remote) =====\n${content}`);
+        loadedCount++;
+        console.log(`[ScriptManager] ✅ 远程加载成功: ${filename} (${content.length} chars)`);
+      } catch (err) {
+        failedCount++;
+        console.error(`[ScriptManager] ❌ 远程加载失败: ${filename}:`, err.message);
+
+        // 如果配置了回退到本地，尝试读取本地文件
+        if (this.remoteConfig.fallbackToLocal !== false) {
+          const localPath = path.join(this.scriptsDir, filename);
+          if (fs.existsSync(localPath)) {
+            const localContent = await fs.readFile(localPath, 'utf-8');
+            scriptContents.push(`// ===== ${filename} (local fallback) =====\n${localContent}`);
+            console.log(`[ScriptManager] 🔄 回退到本地: ${filename} (${localContent.length} chars)`);
+          } else {
+            console.warn(`[ScriptManager] ⚠️ 本地文件也不存在: ${filename}`);
+          }
+        }
+      }
+    }
+
+    console.log(`[ScriptManager] 📊 远程加载完成: 成功 ${loadedCount}, 失败 ${failedCount}`);
+    return scriptContents.join('\n\n');
   }
 
   // URL 模式匹配

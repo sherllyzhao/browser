@@ -4146,11 +4146,73 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         windowAccountMap.delete(windowId);
         console.log(`[Window Manager] 清理窗口账号映射: windowId=${windowId}`);
       }
+      // 清理授权窗口标记
+      const authFlagKey = `auth_mode_window_${windowId}`;
+      if (globalStorage[authFlagKey]) {
+        delete globalStorage[authFlagKey];
+        saveGlobalStorage();
+        console.log(`[Window Manager] 🏷️ 已清理授权窗口标记: ${authFlagKey}`);
+      }
     });
 
     // 开发环境自动打开 DevTools
     if (!isProduction) {
       newWindow.webContents.openDevTools();
+    }
+
+    // 🔧 HTTP→HTTPS 升级：163.com 的 subscribe_v3 会 302 到 http://mp.163.com/subscribe_v4
+    // HTTP 页面拿不到 Secure cookies → 以为没登录 → 跳登录页 → 死循环
+    // 方案：三重拦截
+    //   1. will-navigate：拦截页面 JS 发起的 HTTP 导航
+    //   2. did-navigate：拦截服务端 302 重定向落地的 HTTP 页面（will-navigate 抓不到 302）
+    //   3. onBeforeRequest：网络层拦截所有 HTTP 子请求（API 调用等），解决 Mixed Content
+    newWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (navUrl.startsWith('http://mp.163.com/')) {
+        const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+        console.log(`[Window Nav] 🔒 HTTP→HTTPS (will-navigate): ${navUrl} → ${httpsUrl}`);
+        event.preventDefault();
+        newWindow.webContents.loadURL(httpsUrl);
+      }
+    });
+    newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      // 302 重定向落地后立刻跳 HTTPS，防止页面 JS 在 HTTP 下执行并触发登录循环
+      if (navUrl.startsWith('http://mp.163.com/')) {
+        const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+        console.log(`[Window Nav] 🔒 HTTP→HTTPS (did-navigate 302 落地): ${navUrl} → ${httpsUrl}`);
+        newWindow.webContents.loadURL(httpsUrl);
+      }
+    });
+
+    // 🔧 163.com Mixed Content 修复：session 网络层拦截所有 HTTP 请求，升级为 HTTPS
+    // 页面在 HTTPS 上运行，但 163.com 自己的 JS 发 HTTP API 请求（如 navinfo.do）被 Mixed Content 拦截
+    // 仅对非共享 session 设置（避免影响主窗口 BrowserView 的其他页面）
+    if (sessionType !== 'persistent') {
+      windowSession.webRequest.onBeforeRequest((details, callback) => {
+        const reqUrl = details.url;
+        // 阻止 bitbrowser:// 协议
+        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
+          console.log('[Window WebRequest] ❌ Blocked bitbrowser:', reqUrl);
+          callback({ cancel: true });
+          return;
+        }
+        // HTTP→HTTPS 升级：163.com 的所有请求（主页面 + API 子请求）
+        if (reqUrl && reqUrl.startsWith('http://mp.163.com/')) {
+          const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+          console.log(`[Window WebRequest] 🔒 HTTP→HTTPS: ${reqUrl}`);
+          callback({ redirectURL: httpsUrl });
+          return;
+        }
+        callback({});
+      });
+    }
+
+    // 🔧 授权窗口标记：供注入脚本区分「授权流程」vs「发布掉登录恢复」
+    // 临时 session = 授权窗口，窗口 ID 可能复用导致残留 publish_data 被误读
+    if (sessionType === 'temporary') {
+      const authFlagKey = `auth_mode_window_${newWindow.id}`;
+      globalStorage[authFlagKey] = true;
+      saveGlobalStorage();
+      console.log(`[Window Manager] 🏷️ 已标记授权窗口: ${authFlagKey}`);
     }
 
     // 🔑 为新窗口添加脚本注入（使用 dom-ready 而不是 did-finish-load，更早注入）
@@ -4173,7 +4235,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       });
     });
 
-    // 页面完全加载后通知首页
+    // 页面完全加载后通知首页 + 补充脚本注入（作为 dom-ready 的保底机制）
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
@@ -4187,6 +4249,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         });
         console.log('[New Window API] 已通知首页窗口加载完成');
       }
+
+      // 🔑 补充脚本注入（与 did-create-window 保持一致）
+      // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
+      await injectScriptForUrl(newWindow.webContents, currentURL);
     });
 
     // 监听新窗口内的导航（SPA 路由）
@@ -4201,6 +4267,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
           console.error('[New Window API] Script re-injection error:', err);
         }
       }
+      await injectScriptForUrl(newWindow.webContents, navUrl);
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
