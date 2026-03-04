@@ -1129,6 +1129,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         // 特殊域名映射（GEO 系统等）
         const specialUrlMap = {
             "jzt_dev_1.china9.cn": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+            "zhjzt.china9.cn": `https://zhjzt.china9.cn/api/geo/${endpoint}`,
             "172.16.6.17:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
             "localhost:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
         };
@@ -1149,13 +1150,26 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                             "dev.china9.cn", "www.dev.china9.cn",
                         ];
                         const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
-                        const geoDomain = `https://jzt_dev_1.china9.cn`;
+                        const geoDomain = isDev ? `https://jzt_dev_1.china9.cn` : `https://zhjzt.china9.cn`;
                         return `${geoDomain}/api/geo/${endpoint}`;
                     }
+
+                    // 非 geo 页面，使用主窗口域名
+                    return `https://${mainInfo.host}/api/geo/${endpoint}`;
                 }
             }
         } catch (e) {
             console.warn("[统计接口] 获取主窗口 URL 失败:", e);
+        }
+
+        // 备用方案：直接检查当前窗口 URL（当 browserAPI 失败时）
+        if (window.location && (window.location.href.includes('/geo/') || window.location.href.includes('#/geo'))) {
+            const currentHost = window.location.host;
+            if (currentHost.includes('dev.china9.cn') || currentHost.includes('localhost') || currentHost.includes('127.0.0.1')) {
+                return `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`;
+            } else if (currentHost.includes('zhjzt.china9.cn')) {
+                return `https://zhjzt.china9.cn/api/geo/${endpoint}`;
+            }
         }
 
         // 使用通用的 API 域名（从集中配置获取）

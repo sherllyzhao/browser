@@ -56,7 +56,7 @@ const DOMAINS = {
     aigcPath:          '/aigc_browser/',                   // AIGC 前端路径
 
     // GEO 系统（建站通）
-    geoPage:           'https://jzt_dev_1.china9.cn',     // GEO 前端页面（测试包用 jzt_dev_1）
+    geoPage:           'https://zhjzt.china9.cn',         // GEO 前端页面
     geoPath:           '/jzt_all/#/geo/index',            // GEO 前端路径
 
     // API 接口
@@ -77,7 +77,7 @@ const DOMAINS = {
 
     // 统计接口特殊域名映射
     statisticsHosts: {
-      'jzt_dev_1.china9.cn': 'https://jzt_dev_1.china9.cn',
+      'zhjzt.china9.cn': 'https://zhjzt.china9.cn',
     },
   },
 };

@@ -102,7 +102,8 @@
       "WebFetch(domain:zcloud.obs.cn-north-4.myhuaweicloud.com)",
       "Bash(powershell -NoProfile -Command \"Get-Content main.js | Select-String ''ipcMain.handle'' | Select-Object -First 5 | ForEach-Object { $_LineNumber.ToString\\(\\) + '': '' + $_Line.Trim\\(\\) }\")",
       "Bash(powershell -NoProfile -Command \"\\(Get-Content content-preload.js | Select-String -Pattern ''getDomainConfig|getAppVersion|checkForUpdate'' -Context 2,2\\).Line\")",
-      "Bash(powershell -NoProfile -Command:*)"
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []
