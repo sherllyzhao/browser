@@ -5,9 +5,13 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win",
+    "build:dev": "cross-env BUILD_ENV=dev electron-builder --win",
+    "build:prod": "cross-env BUILD_ENV=prod electron-builder --win",
+    "build:dev:portable": "cross-env BUILD_ENV=dev electron-builder --win portable --ia32",
+    "build:prod:portable": "cross-env BUILD_ENV=prod electron-builder --win portable --ia32",
+    "build": "npm run build:prod",
     "build:dir": "electron-builder --win --dir",
-    "build:portable": "electron-builder --win portable --ia32"
+    "build:portable": "npm run build:prod:portable"
   },
   "build": {
     "appId": "com.zhcloud.browser",
@@ -53,6 +57,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "electron": "^21.4.4",
     "electron-builder": "^24.6.4"
   },
