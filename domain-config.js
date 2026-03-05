@@ -13,7 +13,7 @@
 // 🔑 唯一环境开关 — 改这一个值，全部切换
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
-const ENV = 'dev'; // 'dev' | 'prod'
+const ENV = 'prod'; // 'dev' | 'prod'
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
@@ -75,6 +75,7 @@ const DOMAINS = {
 
     // 远程脚本 baseUrl
     remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/',
+    //remoteScriptsBase: 'http://localhost:5173/injected-scripts/',
 
     // 统计接口特殊域名映射
     statisticsHosts: {
@@ -118,7 +119,7 @@ function getAigcUrl() {
  * @returns {string}
  */
 function getGeoUrl() {
-  return domains.aigcPage + domains.aigcPath + '#/geo/index';
+  return domains.aigcPage + domains.aigcPath + '#/geo/dashboard';
 }
 
 /**

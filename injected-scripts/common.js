@@ -1126,10 +1126,29 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.getStatisticsUrl = async function (isError = false) {
         const endpoint = isError ? "tjlogerror" : "tjlog";
 
-        // 直接检查当前窗口 URL 来判断是否是 geo 页面
-        const currentUrl = window.location.href || '';
-        const currentHost = window.location.host || '';
-        const urlLower = currentUrl.toLowerCase();
+        // 🔑 获取主窗口的 URL（而不是当前页面的 URL）
+        let mainHost = '';
+        let mainUrl = '';
+
+        if (window.browserAPI && window.browserAPI.getMainUrl) {
+            try {
+                const mainInfo = await window.browserAPI.getMainUrl();
+                if (mainInfo.success) {
+                    mainHost = mainInfo.host || '';
+                    mainUrl = mainInfo.url || '';
+                }
+            } catch (e) {
+                console.error('[getStatisticsUrl] 获取主窗口 URL 失败:', e);
+            }
+        }
+
+        // 🔑 优先使用 DOMAIN_CONFIG 的统一配置
+        if (window.DOMAIN_CONFIG && window.DOMAIN_CONFIG.getStatisticsUrl && mainHost) {
+            return window.DOMAIN_CONFIG.getStatisticsUrl(mainHost, isError);
+        }
+
+        // 🔴 Fallback: 旧逻辑（兼容没有 DOMAIN_CONFIG 或获取主窗口失败的情况）
+        const urlLower = mainUrl.toLowerCase();
 
         // 检查是否是 geo 页面
         const isGeoPage = urlLower.includes('#/geo') ||
@@ -1139,27 +1158,22 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
         if (isGeoPage) {
             // 这是 geo 页面，返回对应的上报域名
-            if (currentHost.includes('dev.china9.cn') ||
-                currentHost.includes('localhost') ||
-                currentHost.includes('127.0.0.1') ||
-                currentHost.includes('172.16')) {
+            if (mainHost.includes('dev.china9.cn') ||
+                mainHost.includes('localhost') ||
+                mainHost.includes('127.0.0.1') ||
+                mainHost.includes('172.16')) {
                 // dev 环境 → jzt_dev_1
                 return `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`;
-            } else if (currentHost.includes('zhjzt.china9.cn') ||
-                       currentHost.includes('jzt_dev')) {
+            } else if (mainHost.includes('zhjzt.china9.cn') ||
+                       mainHost.includes('jzt_dev')) {
                 // prod 环境或直接访问 jzt_dev → 对应的域名
-                return `https://${currentHost.split(':')[0]}/api/geo/${endpoint}`;
+                return `https://${mainHost.split(':')[0]}/api/geo/${endpoint}`;
             }
         }
 
         // 非 geo 页面，使用主窗口域名
-        if (currentHost) {
-            return `https://${currentHost}/api/geo/${endpoint}`;
-        }
-
-        // 最后的 fallback
-        if (window.DOMAIN_CONFIG && window.DOMAIN_CONFIG.getApiDomainUrl) {
-            return `${window.DOMAIN_CONFIG.getApiDomainUrl()}/api/geo/${endpoint}`;
+        if (mainHost) {
+            return `https://${mainHost}/api/geo/${endpoint}`;
         }
 
         return 'https://apidev.china9.cn/api/geo/tjlog';

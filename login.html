@@ -430,17 +430,17 @@
           console.error('[Login] 加载域名配置失败:', err);
         }
       }
-                                                                                                                                                                              // fallback 默认配置
+                                                                                                                                                                                                                                    // fallback 默认配置
       domainConfig = {
-        isProduction: false,
-        aigcUrl: 'http://localhost:5173/',
-        geoUrl: 'http://localhost:8080/geo/index',
-        cookieUrl: 'https://dev.china9.cn',
+        isProduction: true,
+        aigcUrl: 'https://www.china9.cn/aigc_browser/',
+        geoUrl: 'https://zhjzt.china9.cn/jzt_all/#/geo/dashboard',
+        cookieUrl: 'https://www.china9.cn',
         cookieDomain: '.china9.cn',
         domains: {
-          aigcPage: 'https://dev.china9.cn',
-          geoPage: 'https://jzt_dev_1.china9.cn',
-          apiDomain: 'https://apidev.china9.cn'
+          aigcPage: 'https://www.china9.cn',
+          geoPage: 'https://zhjzt.china9.cn',
+          apiDomain: 'https://api.china9.cn'
         }
       };
       return domainConfig;
@@ -457,7 +457,7 @@
       const cfg = await initDomainConfig();
       TARGET_URLS = {
         aigc: cfg.aigcUrl,
-        geo: 'https://dev.china9.cn/aigc_browser/#/geo/index'
+        geo: 'https://dev.china9.cn/aigc_browser/#/geo/dashboard'
       };
       console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
       return TARGET_URLS;

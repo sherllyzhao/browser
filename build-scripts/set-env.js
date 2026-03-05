@@ -52,7 +52,7 @@ const fallbackConfig = env === 'prod'
       domainConfig = {
         isProduction: true,
         aigcUrl: '${config.aigcPage}/aigc_browser/',
-        geoUrl: '${config.geoPage}/jzt_all/#/geo/index',
+        geoUrl: '${config.geoPage}/jzt_all/#/geo/dashboard',
         cookieUrl: '${config.aigcPage}',
         cookieDomain: '.china9.cn',
         domains: {
@@ -65,7 +65,7 @@ const fallbackConfig = env === 'prod'
       domainConfig = {
         isProduction: false,
         aigcUrl: 'http://localhost:5173/',
-        geoUrl: 'http://localhost:8080/geo/index',
+        geoUrl: 'http://localhost:8080/geo/dashboard',
         cookieUrl: 'https://dev.china9.cn',
         cookieDomain: '.china9.cn',
         domains: {
@@ -88,7 +88,7 @@ let rendererContent = fs.readFileSync(rendererPath, 'utf-8');
 
 // 直接替换为固定值（因为打包后 isProduction 总是 true，无法区分 dev/prod）
 const aigcUrl = `${config.aigcPage}/aigc_browser/`;
-const geoUrl = `${config.geoPage}/jzt_all/#/geo/index`;
+const geoUrl = `${config.geoPage}/jzt_all/#/geo/dashboard`;
 
 // 替换 AIGC_URL 和 GEO_URL 的定义（包括三元表达式）
 rendererContent = rendererContent.replace(
