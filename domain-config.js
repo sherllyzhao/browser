@@ -87,6 +87,18 @@ const DOMAINS = {
 // 当前生效的域名配置
 const domains = DOMAINS[ENV] || DOMAINS.dev;
 
+// 🔑 未打包环境（npm start）自动指向 localhost:5173
+// 打包后 app.isPackaged === true，不影响 dev/prod 配置
+try {
+  const { app } = require('electron');
+  if (app && !app.isPackaged) {
+    domains.aigcPage = 'http://localhost:5173';
+    domains.aigcPath = '/';
+  }
+} catch (e) {
+  // 非 Electron 环境（浏览器端引用），忽略
+}
+
 // ===========================
 // 🔑 开发环境域名列表（用于 isDevHost 判断）
 // ===========================
