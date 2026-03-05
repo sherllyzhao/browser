@@ -1110,7 +1110,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                         console.log("[getApiDomain] 检测到开发环境:", host, "→", apiDomain);
                     } else {
                         // 生产环境
-                        apiDomain = "https://api.china9.cn";
+                        apiDomain = "https://apidev.china9.cn";
                         console.log("[getApiDomain] 检测到生产环境:", host, "→", apiDomain);
                     }
                 }
@@ -1126,44 +1126,60 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.getStatisticsUrl = async function (isError = false) {
         const endpoint = isError ? "tjlogerror" : "tjlog";
 
-        // 特殊域名映射（GEO 系统等）
-        const specialUrlMap = {
-            "jzt_dev_1.china9.cn": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
-            "zhjzt.china9.cn": `https://zhjzt.china9.cn/api/geo/${endpoint}`,
-            "172.16.6.17:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
-            "localhost:8080": `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
-        };
+        // 🔑 获取主窗口的 URL（而不是当前页面的 URL）
+        let mainHost = '';
+        let mainUrl = '';
 
-        try {
-            if (window.browserAPI && window.browserAPI.getMainUrl) {
+        if (window.browserAPI && window.browserAPI.getMainUrl) {
+            try {
                 const mainInfo = await window.browserAPI.getMainUrl();
-                if (mainInfo.success && mainInfo.host) {
-                    // 检查特殊域名映射
-                    if (specialUrlMap[mainInfo.host]) {
-                        return specialUrlMap[mainInfo.host];
-                    }
-
-                    // AIGC 域名下访问 /geo/ 路径时，也走 GEO 上报域名
-                    if (mainInfo.url && (mainInfo.url.includes('/geo/') || mainInfo.url.includes('#/geo'))) {
-                        const devHosts = [
-                            "localhost:5173", "127.0.0.1:5173",
-                            "dev.china9.cn", "www.dev.china9.cn",
-                        ];
-                        const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
-                        const geoDomain = isDev
-                            ? `https://jzt_dev_1.china9.cn`
-                            : `https://zhjzt.china9.cn`;
-                        return `${geoDomain}/api/geo/${endpoint}`;
-                    }
+                if (mainInfo.success) {
+                    mainHost = mainInfo.host || '';
+                    mainUrl = mainInfo.url || '';
                 }
+            } catch (e) {
+                console.error('[getStatisticsUrl] 获取主窗口 URL 失败:', e);
             }
-        } catch (e) {
-            console.warn("[统计接口] 获取主窗口 URL 失败:", e);
         }
 
-        // 使用通用的 API 域名
-        const apiDomain = await window.getApiDomain();
-        return `${apiDomain}/api/mediaauth/${endpoint}`;
+        // 🔑 优先使用 DOMAIN_CONFIG 的统一配置
+        if (window.DOMAIN_CONFIG && window.DOMAIN_CONFIG.getStatisticsUrl && mainHost) {
+            return window.DOMAIN_CONFIG.getStatisticsUrl(mainHost, isError);
+        }
+
+        // 🔴 Fallback: 旧逻辑（兼容没有 DOMAIN_CONFIG 或获取主窗口失败的情况）
+        const urlLower = mainUrl.toLowerCase();
+
+        // 检查是否是 geo 页面
+        const isGeoPage = urlLower.includes('#/geo') ||
+                          urlLower.includes('/geo/') ||
+                          urlLower.includes('/jzt_all/') ||
+                          urlLower.includes('jzt_dev');
+
+        if (isGeoPage) {
+            // 这是 geo 页面，返回对应的上报域名
+            if (mainHost.includes('dev.china9.cn') ||
+                mainHost.includes('localhost') ||
+                mainHost.includes('127.0.0.1') ||
+                mainHost.includes('172.16')) {
+                // dev 环境 → jzt_dev_1
+                return `https://zhjzt.china9.cn/api/geo/${endpoint}`;
+            } else {
+                // prod 环境或直接访问 jzt_dev → 对应的域名
+                return `https://zhjzt.china9.cn/api/geo/${endpoint}`;
+            }
+        }
+
+        // 非 geo 页面，使用主窗口域名
+        if (mainHost.includes('dev.china9.cn') ||
+            mainHost.includes('localhost') ||
+            mainHost.includes('127.0.0.1') ||
+            mainHost.includes('172.16')) {
+            // dev 环境 → jzt_dev_1
+            return 'https://apidev.china9.cn/api/mediaauth/' + endpoint;
+        }else{
+            return 'https://api.china9.cn/api/mediaauth/' + endpoint;
+        }
     };
 
     // 发送统计接口（发布成功时调用）
@@ -1916,8 +1932,8 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             }
         }
 
-        // GEO 系统特征
-        if (urlLower.includes(":8080") || urlLower.includes("/geo/") || urlLower.includes("/jzt_all/") || urlLower.includes("jzt_dev") || urlLower.includes("zhjzt")) {
+        // GEO 系统特征（优先检查，防止 aigc_browser 中的 geo 页面被误识别）
+        if (urlLower.includes("#/geo") || urlLower.includes("/geo/") || urlLower.includes("/jzt_all/") || urlLower.includes("jzt_dev")) {
             return "geo";
         }
 

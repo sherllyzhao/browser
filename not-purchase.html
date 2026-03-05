@@ -332,7 +332,7 @@
     function goHome() {
       // 判断是否是开发环境
       var isDev = window.browserAPI && window.browserAPI.isProduction === false;
-      var homeUrl = isDev ? 'http://localhost:5173/' : 'https://www.china9.cn/aigc_browser/';
+      var homeUrl = isDev ? 'http://localhost:5173/' : 'https://dev.china9.cn/aigc_browser/';
 
       // 使用 browserAPI 跳转（如果可用）
       if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
