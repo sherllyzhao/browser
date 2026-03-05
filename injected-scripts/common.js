@@ -1163,7 +1163,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 mainHost.includes('127.0.0.1') ||
                 mainHost.includes('172.16')) {
                 // dev 环境 → jzt_dev_1
-                return `https://zhjzt.china9.cn/api/geo/${endpoint}`;
+                return `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`;
             } else {
                 // prod 环境或直接访问 jzt_dev → 对应的域名
                 return `https://zhjzt.china9.cn/api/geo/${endpoint}`;
