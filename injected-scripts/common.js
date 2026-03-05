@@ -1171,11 +1171,15 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
 
         // 非 geo 页面，使用主窗口域名
-        if (mainHost) {
-            return `https://${mainHost}/api/geo/${endpoint}`;
+        if (mainHost.includes('dev.china9.cn') ||
+            mainHost.includes('localhost') ||
+            mainHost.includes('127.0.0.1') ||
+            mainHost.includes('172.16')) {
+            // dev 环境 → jzt_dev_1
+            return 'https://apidev.china9.cn/api/mediaauth/' + endpoint;
+        }else{
+            return 'https://api.china9.cn/api/mediaauth/' + endpoint;
         }
-
-        return 'https://apidev.china9.cn/api/geo/tjlog';
     };
 
     // 发送统计接口（发布成功时调用）
