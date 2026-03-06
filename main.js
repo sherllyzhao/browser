@@ -18,6 +18,14 @@ const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
 
+// 跨平台图标路径
+function getAppIconPath() {
+  if (process.platform === 'darwin') {
+    return path.join(__dirname, 'icon.png');
+  }
+  return path.join(__dirname, 'icon.ico');
+}
+
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
 const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
@@ -51,18 +59,20 @@ function saveGlobalStorage() {
   }
 }
 
-// 检测是否为便携版（通过检查是否在标准安装目录）
-// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
-const execPathLower = process.execPath.toLowerCase();
-const isInstalled = execPathLower.includes('program files') ||
-                    execPathLower.includes('programdata') ||
-                    execPathLower.includes('\\windows\\');
-const isPortable = isProduction && !isInstalled;
+// 检测是否为便携版（仅 Windows，macOS 不需要便携版概念）
+let isPortable = false;
+if (process.platform === 'win32') {
+  const execPathLower = process.execPath.toLowerCase();
+  const isInstalled = execPathLower.includes('program files') ||
+                      execPathLower.includes('programdata') ||
+                      execPathLower.includes('\\windows\\');
+  isPortable = isProduction && !isInstalled;
+}
 
 // 设置用户数据路径
 if (isProduction) {
-  if (isPortable) {
-    // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
+  if (isPortable && process.platform === 'win32') {
+    // 便携版（仅 Windows）：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
     // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
     const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
 
@@ -587,7 +597,7 @@ async function fetchSiteInfo() {
 
 function createWindow() {
   // 使用 nativeImage 创建图标（支持高 DPI）
-  const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+  const appIcon = nativeImage.createFromPath(getAppIconPath());
 
   // 创建主窗口
   mainWindow = new BrowserWindow({
@@ -770,7 +780,9 @@ function createWindow() {
   console.log('========================================');
 
   // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  const customUA = process.platform === 'darwin'
+    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
+    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
 
@@ -2074,7 +2086,7 @@ async function validateAndCleanupUserData() {
 
 // createTray 创建托盘图标
 function createTray() {
-  const icon = path.join(__dirname, 'icon.ico')
+  const icon = getAppIconPath()
   tray = new Tray(icon)
 
   const contextMenu = Menu.buildFromTemplate([
@@ -2106,11 +2118,13 @@ app.commandLine.appendSwitch('disable-extensions');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 // 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
 app.commandLine.appendSwitch('no-sandbox');
-// 🛡️ 安全软件兼容性优化（电脑管家/360等）
-// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
-app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-app.commandLine.appendSwitch('in-process-gpu');
+if (process.platform === 'win32') {
+  // 🛡️ Windows 安全软件兼容性优化（电脑管家/360等）
+  // 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
+  app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+  app.commandLine.appendSwitch('in-process-gpu');
+}
 // 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
@@ -2334,7 +2348,7 @@ app.whenReady().then(async () => {
 
       // 直接使用简化的prompt对话框
       const { BrowserWindow } = require('electron');
-      const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+      const appIcon = nativeImage.createFromPath(getAppIconPath());
 
       const inputWindow = new BrowserWindow({
         width: 500,
@@ -4018,7 +4032,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      const customUA = process.platform === 'darwin'
+    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
+    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
       windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
@@ -5295,7 +5311,9 @@ function getAccountSession(platform, accountId) {
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  const customUA = process.platform === 'darwin'
+    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
+    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
   accountSession.setUserAgent(customUA);
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）

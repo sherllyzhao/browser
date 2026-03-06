@@ -107,7 +107,8 @@
       "Bash(npx asar:*)",
       "Bash(npm start)",
       "Bash(taskkill /F /IM \"运营助手.exe\")",
-      "Bash(timeout 5 tail:*)"
+      "Bash(timeout 5 tail:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []
