@@ -26,13 +26,18 @@ npm install
 # Run the browser
 npm start
 
-# 打包命令
+# Windows 打包命令
 npm run build:dev              # 打开发环境包（NSIS 安装包）
 npm run build:prod             # 打生产环境包（NSIS 安装包）
 npm run build:dev:portable     # 打开发环境便携版
 npm run build:prod:portable    # 打生产环境便携版
 npm run build                  # 默认打生产环境包（等同于 build:prod）
 npm run build:portable         # 默认打生产环境便携版（等同于 build:prod:portable）
+
+# macOS 打包命令（需要在 Mac 上执行，或通过 GitHub Actions CI）
+npm run build:mac:dev          # 打开发环境 macOS 包（DMG + ZIP）
+npm run build:mac:prod         # 打生产环境 macOS 包（DMG + ZIP）
+npm run build:mac              # 默认打生产环境 macOS 包（等同于 build:mac:prod）
 ```
 
 ### 打包说明
@@ -60,6 +65,84 @@ npm run build:portable         # 默认打生产环境便携版（等同于 buil
 2. 根据需要配置 `scripts-config.json` 中的 `remoteConfig.enabled`：
    - `true`: 从远程服务器加载脚本（开发时从 localhost:5173，生产时从 dev.china9.cn）
    - `false`: 从打包后应用本地的 injected-scripts 目录加载脚本
+
+### macOS 打包说明
+
+**支持的平台和架构：**
+
+| 平台 | 架构 | 打包格式 | 打包命令 |
+|------|------|---------|---------|
+| Windows | x86 (32-bit) | NSIS 安装包 / 便携版 | `npm run build:dev` / `npm run build:prod` |
+| macOS | x64 + ARM64 (Apple Silicon) | DMG + ZIP | `npm run build:mac:dev` / `npm run build:mac:prod` |
+
+**macOS 打包限制：**
+- macOS 包**必须在 macOS 系统上打**，electron-builder 不支持从 Windows 交叉编译 macOS
+- 如果没有 Mac 电脑，可以使用 GitHub Actions CI 自动打包（见下方）
+
+**macOS 代码签名（可选）：**
+- 未签名的 macOS 应用首次打开时会提示"无法验证开发者"
+- 用户需要右键 → 打开来绕过 Gatekeeper
+- 如需签名，需要 Apple Developer 账号（$99/年），并在环境变量中设置：
+  - `CSC_LINK` - 证书文件路径（.p12）
+  - `CSC_KEY_PASSWORD` - 证书密码
+  - `APPLE_ID` - Apple ID 邮箱（公证用）
+  - `APPLE_APP_SPECIFIC_PASSWORD` - 应用专用密码（公证用）
+
+**macOS 图标：**
+- 使用项目根目录的 `icon.png`，electron-builder 会自动转换为 `.icns` 格式
+- 如需自定义图标，替换 `icon.png` 即可（建议 1024x1024 像素）
+
+### GitHub Actions CI 打包（macOS）
+
+项目已配置 `.github/workflows/build-mac.yml`，支持在 GitHub 云端 macOS 服务器上自动打包。
+
+**触发方式：**
+
+| 触发方式 | 说明 |
+|---------|------|
+| 推送到 `main` 或 `ios` 分支 | 自动触发开发环境构建 |
+| 推送 tag（如 `v1.0.7`） | 自动触发生产环境构建，并创建 GitHub Release |
+| 手动触发 | GitHub 仓库 → Actions → Build macOS → Run workflow，可选 dev/prod |
+
+**使用步骤：**
+
+1. 推送代码到 GitHub：
+   ```bash
+   git add .
+   git commit -m "feat: 添加 macOS 支持"
+   git push origin ios
+   ```
+
+2. 等待 Actions 构建完成（约 5-10 分钟）
+
+3. 下载安装包：
+   - GitHub 仓库 → Actions 页面 → 找到对应的 workflow run
+   - 下载 Artifacts 中的 `macos-build-xxx`
+   - 解压后得到 `.dmg` 和 `.zip` 文件
+
+4. 发布正式版本（可选）：
+   ```bash
+   git tag v1.0.7
+   git push --tags
+   ```
+   推送 tag 后会自动创建 GitHub Release 并附带安装包
+
+**CI 费用说明：**
+- 公开仓库：完全免费
+- 私有仓库：每月 2000 分钟免费额度（macOS runner 按 10 倍计算，约 200 分钟实际可用），打一次包约 5-10 分钟
+
+### macOS 跨平台兼容改动说明
+
+以下是为支持 macOS 所做的代码改动，供后续维护参考：
+
+| 改动项 | 文件 | 说明 |
+|--------|------|------|
+| 图标路径跨平台 | `main.js` | 添加 `getAppIconPath()` 函数，Windows 用 `.ico`，macOS 用 `.png` |
+| User-Agent 适配 | `main.js` | 根据 `process.platform` 动态选择 Windows 或 macOS 的 UA 字符串 |
+| 便携版逻辑守卫 | `main.js` | 便携版检测逻辑仅在 `process.platform === 'win32'` 时执行 |
+| Chromium flags 守卫 | `main.js` | `RendererCodeIntegrity` 和 `in-process-gpu` 仅在 Windows 上启用 |
+| 构建配置 | `package.json` | 添加 `build.mac` 和 `build.dmg` 配置，添加 macOS 打包脚本 |
+| CI 配置 | `.github/workflows/build-mac.yml` | GitHub Actions macOS 自动打包 workflow |
 
 ## Architecture
 
