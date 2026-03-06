@@ -108,7 +108,14 @@
       "Bash(npm start)",
       "Bash(taskkill /F /IM \"运营助手.exe\")",
       "Bash(timeout 5 tail:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(python -c \" import sys, json data = json.load\\(sys.stdin\\) for run in data.get\\(''workflow_runs'', []\\): print\\(f\"\"ID: {run[''id'']}\"\"\\) print\\(f\"\"Status: {run[''status'']}\"\"\\) print\\(f\"\"Conclusion: {run[''conclusion'']}\"\"\\) print\\(f\"\"Name: {run[''name'']}\"\"\\) print\\(f\"\"Branch: {run[''head_branch'']}\"\"\\) print\\(f\"\"URL: {run[''html_url'']}\"\"\\) print\\(''---''\\) \")",
+      "Bash(python:*)",
+      "Bash(pip install Pillow)",
+      "Bash(pip3 install:*)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)"
     ],
     "deny": [],
     "ask": []
