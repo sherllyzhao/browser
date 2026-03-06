@@ -4,7 +4,7 @@ const fs = require('fs');
 const https = require('https');
 const http = require('http');
 const ScriptManager = require('./script-manager');
-const config = require('./config');
+const config = require('./domain-config');
 
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
@@ -136,15 +136,13 @@ function addContentTypeFix(targetSession, label) {
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
-// 所有可能的首页地址（用于消息路由判断）
+// 所有可能的首页地址（用于消息路由判断，从 config 集中配置构建）
 const HOME_URLS = [
   'http://localhost:5173/',
-  'https://china9.cn/aigc_browser/',
-  'https://dev.china9.cn/aigc_browser/',
+  config.getAigcUrl(),             // AIGC 首页
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
-  'https://zhjzt.china9.cn/jzt_all/#/geo/index',
-  'https://jzt_dev_1.china9.cn/jzt_all/#/geo/index',
+  config.getGeoUrl(),              // GEO 首页
   LOGIN_URL  // 登录页也作为首页处理
 ];
 
@@ -221,19 +219,27 @@ function compareVersions(v1, v2) {
 }
 
 /**
- * 开发环境域名列表（与 common.js 保持一致）
+ * 开发环境域名列表（从 config.js 集中配置）
  */
-const DEV_HOSTS = [
-  "localhost:5173",
-  "localhost:8080",
-  "127.0.0.1:5173",
-  "127.0.0.1:8080",
-  "dev.china9.cn",
-  "www.dev.china9.cn",
-  "apidev.china9.cn",
-  "172.16.6.17:8080",
-  "jzt_dev_1.china9.cn",
-];
+const DEV_HOSTS = config.DEV_HOSTS;
+
+/**
+ * 获取需要跳转到登录页的 URL 模式列表（从 config 集中配置构建）
+ * @returns {string[]}
+ */
+function getLoginRedirectUrls() {
+  const aigcDomain = config.domains.aigcPage.replace('https://', '').replace('http://', '');
+  return [
+    aigcDomain + '/#/home',
+    'china9.cn/#/home',
+    aigcDomain + '/aigc_browser/#/login',
+    'china9.cn/aigc_browser/#/login',
+    'localhost:5173/#/home',
+    'localhost:5173/#/login',
+    'localhost:8080/#/home',
+    'localhost:8080/#/login'
+  ];
+}
 
 /**
  * 根据域名判断是否为开发环境
@@ -262,7 +268,7 @@ function getVersionCheckUrl() {
           return 'http://localhost:5173/browserVersion.json';
         } else {
           console.log('[Update] 检测到生产环境:', urlObj.host);
-          return 'https://api.china9.cn/api/newmedia/downloadyunexe';
+          return config.domains.versionCheckUrl;
         }
       }
     } catch (e) {
@@ -271,10 +277,7 @@ function getVersionCheckUrl() {
   }
 
   // 回退逻辑：根据打包状态判断
-  if (!isProduction) {
-    return 'http://localhost:5173/browserVersion.json';
-  }
-  return 'https://api.china9.cn/api/newmedia/downloadyunexe';
+  return config.getVersionCheckUrlByEnv(isProduction);
 }
 
 /**
@@ -440,9 +443,9 @@ async function fetchSiteInfo() {
     return { success: false, error: '无 company_unique_id' };
   }
 
-  const apiBaseUrl = isProduction ? 'https://zhjzt.china9.cn' : 'https://jzt_dev_1.china9.cn';
+  const apiBaseUrl = config.domains.geoPage;
   const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
-  geoLog('🌐 请求: ' + requestUrl + ' (' + (isProduction ? '生产' : '开发') + ')');
+  geoLog('🌐 请求: ' + requestUrl + ' (ENV=' + config.ENV + ')');
 
   // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
   // 手动从 persist:browserview session 获取 cookies 并附加到请求头
@@ -937,19 +940,19 @@ function createWindow() {
 
         // 为 .china9.cn 设置 Cookie
         await ses.cookies.set({
-          url: 'https://china9.cn',
+          url: config.getCookieUrl(),
           name: 'token',
           value: savedToken,
-          domain: '.china9.cn',
+          domain: config.getCookieDomain(),
           path: '/',
           expirationDate: savedExpires,
           secure: true
         });
         await ses.cookies.set({
-          url: 'https://china9.cn',
+          url: config.getCookieUrl(),
           name: 'access_token',
           value: savedToken,
-          domain: '.china9.cn',
+          domain: config.getCookieDomain(),
           path: '/',
           expirationDate: savedExpires,
           secure: true
@@ -967,10 +970,10 @@ function createWindow() {
             sameSite: 'lax'
           });
           await ses.cookies.set({
-            url: 'https://china9.cn',
+            url: config.getCookieUrl(),
             name: 'gcc',
             value: globalStorage.login_gcc,
-            domain: '.china9.cn',
+            domain: config.getCookieDomain(),
             path: '/',
             expirationDate: savedExpires,
             secure: true
@@ -985,11 +988,11 @@ function createWindow() {
           // site_id
           await ses.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
           await ses.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
-          await ses.cookies.set({ url: 'https://china9.cn', name: 'site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          await ses.cookies.set({ url: config.getCookieUrl(), name: 'site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
           // china_site_id
           await ses.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
           await ses.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
-          await ses.cookies.set({ url: 'https://china9.cn', name: 'china_site_id', value: siteIdStr, domain: '.china9.cn', path: '/', secure: true });
+          await ses.cookies.set({ url: config.getCookieUrl(), name: 'china_site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
           console.log('[BrowserView] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
         }
         if (userInfo && userInfo.company && userInfo.company.unique_id) {
@@ -997,11 +1000,11 @@ function createWindow() {
           // company_unique_id
           await ses.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
           await ses.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
-          await ses.cookies.set({ url: 'https://china9.cn', name: 'company_unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          await ses.cookies.set({ url: config.getCookieUrl(), name: 'company_unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
           // unique_id
           await ses.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
           await ses.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
-          await ses.cookies.set({ url: 'https://china9.cn', name: 'unique_id', value: uniqueId, domain: '.china9.cn', path: '/', secure: true });
+          await ses.cookies.set({ url: config.getCookieUrl(), name: 'unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
           console.log('[BrowserView] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
         }
 
@@ -1018,9 +1021,7 @@ function createWindow() {
 
           if (siteInfo && siteInfo.is_geo === 1) {
             // geo 权限通过，跳转到 geo 首页
-            startUrl = isProduction
-              ? 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-              : 'http://localhost:8080/geo/index';
+            startUrl = config.getGeoUrl();
             console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
           } else {
             // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
@@ -1029,9 +1030,7 @@ function createWindow() {
           }
         } else {
           // 默认 aigc 项目首页
-          startUrl = isProduction
-            ? 'https://china9.cn/aigc_browser/'
-            : 'http://localhost:5173/';
+          startUrl = config.getAigcUrl();
           console.log('[BrowserView] 📍 恢复到 aigc 项目首页:', startUrl);
         }
       } catch (err) {
@@ -1323,7 +1322,7 @@ function createWindow() {
   browserView.webContents.on('will-navigate', (event, url) => {
     console.log(`[Navigation] 用户点击链接 → ${url}`);
     // 记录用户点击的目标 URL（即使会被重定向）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://')) {
+    if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
     }
   });
@@ -1332,7 +1331,7 @@ function createWindow() {
   browserView.webContents.on('did-navigate-in-page', (event, url) => {
     console.log(`[Navigation] Hash 路由变化 → ${url}`);
     // 记录 hash 路由变化的 URL（前端路由跳转到的目标页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && !url.includes(config.placeholderPages.notAvailable)) {
+    if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://') && !url.includes(config.placeholderPages.notAvailable)) {
       pendingNavigationUrl = url;
       lastValidUrl = url;
     }
@@ -1343,7 +1342,7 @@ function createWindow() {
     console.log(`[Navigation] 导航开始 → ${url}`);
 
     // 🔑 提前拦截 account.china9.cn/login，阻止页面显示
-    if (url.includes('account.china9.cn/login')) {
+    if (url.includes(config.domains.authRedirect + '/login')) {
       console.log('[Navigation] ⚠️ 检测到统一登录页，停止导航');
       console.log('[Navigation] pendingNavigationUrl:', pendingNavigationUrl);
       console.log('[Navigation] lastValidUrl:', lastValidUrl);
@@ -1361,8 +1360,7 @@ function createWindow() {
             if (urlLower.includes(':8080') ||
                 urlLower.includes('/geo/') ||
                 urlLower.includes('/jzt_all/') ||
-                urlLower.includes('jzt_dev') ||
-                urlLower.includes('zhjzt')) {
+                urlLower.includes('jzt_dev')) {
               systemParam = 'geo';
             }
           }
@@ -1384,7 +1382,7 @@ function createWindow() {
     }
 
     // 记录有效的 URL（排除本地文件和特殊页面）
-    if (!url.includes('account.china9.cn') && !url.startsWith('file://') && (!url.includes(config.placeholderPages.notAvailable) && !url.includes(config.placeholderPages.notAuth))) {
+    if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://') && (!url.includes(config.placeholderPages.notAvailable) && !url.includes(config.placeholderPages.notAuth))) {
       lastValidUrl = url;
     }
     // 清空 pendingNavigationUrl（导航成功开始）
@@ -1405,16 +1403,7 @@ function createWindow() {
     updateHeaderVisibility(url);
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
-    const loginRedirectUrls = [
-      'dev.china9.cn/#/home',
-      'china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
-      'localhost:5173/#/home',
-      'localhost:5173/#/login',
-      'localhost:8080/#/home',
-      'localhost:8080/#/login'
-    ];
+    const loginRedirectUrls = getLoginRedirectUrls();
 
     // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
@@ -1474,16 +1463,7 @@ function createWindow() {
     console.log(`[DOM Ready] 页面准备完成 → ${url}`);
 
     // 🔑 检查是否是需要跳转登录页的特定 URL
-    const loginRedirectUrls = [
-      'dev.china9.cn/#/home',
-      'china9.cn/#/home',
-      'dev.china9.cn/aigc_browser/#/login',
-      'china9.cn/aigc_browser/#/login',
-      'localhost:5173/#/home',
-      'localhost:5173/#/login',
-      'localhost:8080/#/home',
-      'localhost:8080/#/login'
-    ];
+    const loginRedirectUrls = getLoginRedirectUrls();
 
     // account.china9.cn/login 已在 did-start-navigation 中提前拦截
 
@@ -1636,8 +1616,9 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
-    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
+    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
+    if (url.includes(':8080') || url.includes(geoHost)) {
       console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
       const siteResult = await fetchSiteInfo();
       const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
@@ -1700,8 +1681,9 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查：:8080 或 zhjzt.china9）
-    if (url.includes(':8080') || url.includes('zhjzt.china9')) {
+    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
+    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
+    if (url.includes(':8080') || url.includes(geoHost)) {
       console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
       const siteInfo = globalStorage.siteInfo;
       console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
@@ -2592,6 +2574,22 @@ app.on('window-all-closed', function () {
 });
 
 // IPC 处理程序
+
+// 🔑 获取域名配置（供渲染进程使用）
+ipcMain.handle('get-domain-config', () => {
+  return {
+    ENV: config.ENV,
+    isProduction: isProduction,
+    domains: config.domains,
+    // 便捷 URL（根据 ENV 配置）
+    aigcUrl: config.getAigcUrl(),
+    geoUrl: config.getGeoUrl(),
+    apiDomain: config.getApiDomainUrl(),
+    cookieUrl: config.getCookieUrl(),
+    cookieDomain: config.getCookieDomain(),
+    DEV_HOSTS: config.DEV_HOSTS
+  };
+});
 
 // 获取当前应用版本
 ipcMain.handle('get-app-version', () => {

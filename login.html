@@ -415,17 +415,55 @@
     // API 基础地址（会根据环境自动获取）
     let API_BASE_URL = '';
 
+    // 🔑 域名配置（从集中配置获取）
+    let domainConfig = null;
+
+    // 初始化域名配置
+    async function initDomainConfig() {
+      if (domainConfig) return domainConfig;
+      if (window.browserAPI && window.browserAPI.getDomainConfig) {
+        try {
+          domainConfig = await window.browserAPI.getDomainConfig();
+          console.log('[Login] 已加载域名配置:', domainConfig);
+          return domainConfig;
+        } catch (err) {
+          console.error('[Login] 加载域名配置失败:', err);
+        }
+      }
+                                                                                                                                                                                                                                                      // fallback 默认配置
+      domainConfig = {
+        isProduction: true,
+        aigcUrl: 'https://www.china9.cn/aigc_browser/',
+        geoUrl: 'https://zhjzt.china9.cn/jzt_all/#/geo/dashboard',
+        cookieUrl: 'https://www.china9.cn',
+        cookieDomain: '.china9.cn',
+        domains: {
+          aigcPage: 'https://www.china9.cn',
+          geoPage: 'https://zhjzt.china9.cn',
+          apiDomain: 'https://api.china9.cn'
+        }
+      };
+      return domainConfig;
+    }
+
     // 判断是否开发环境（通过 browserAPI.isProduction）
     const isDev = window.browserAPI && window.browserAPI.isProduction === false;
 
-    // 跳转目标地址（根据环境自动选择）
-    const TARGET_URLS = {
-      aigc: isDev ? 'http://localhost:5173/' : 'https://china9.cn/aigc_browser/',
-      geo: isDev ? 'http://localhost:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-      //geo: isDev ? 'http://172.16.6.17:8080/#/geo/index' : 'https://zhjzt.china9.cn/jzt_all/#/geo/index'
-    };
+    // 🔑 跳转目标地址（异步获取，初始为 null，在 initDomainConfig 后赋值）
+    let TARGET_URLS = null;
 
-    console.log('[Login] 环境:', isDev ? '开发' : '生产', 'TARGET_URLS:', TARGET_URLS);
+    async function getTargetUrls() {
+      if (TARGET_URLS) return TARGET_URLS;
+      const cfg = await initDomainConfig();
+      TARGET_URLS = {
+        aigc: cfg.aigcUrl,
+        geo: 'https://dev.china9.cn/aigc_browser/#/geo/dashboard'
+      };
+      console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
+      return TARGET_URLS;
+    }
+
+    console.log('[Login] 环境:', isDev ? '开发' : '生产');
 
     // ========== 工具函数 ==========
     // 设置 Cookie
@@ -464,9 +502,10 @@
 
       // 检测是否是开发环境（通过检查 browserAPI.isProduction）
       const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
-      // 默认使用开发环境，生产环境用 china9.cn
-      API_BASE_URL = isProduction ? 'https://china9.cn' : 'https://dev.china9.cn';
-      console.log('[Login] 使用默认 API 基础地址:', API_BASE_URL);
+      // 🔑 使用集中配置的域名
+      const cfg = await initDomainConfig();
+      API_BASE_URL = cfg.domains.aigcPage;
+      console.log('[Login] 使用 API 基础地址:', API_BASE_URL);
       return API_BASE_URL;
     }
 
@@ -555,9 +594,9 @@
 
     // 获取建站通站点信息
     async function getSiteInfoApi(company_unique_id) {
-        // 是否是开发环境
-      const isDev = window.browserAPI && window.browserAPI.isProduction === false;
-      const apiBaseUrl = isDev ? 'https://jzt_dev_1.china9.cn/' : 'https://zhjzt.china9.cn/';
+      // 🔑 使用集中配置的 GEO 域名
+      const cfg = await initDomainConfig();
+      const apiBaseUrl = cfg.domains.geoPage + '/';
         const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
           method: 'GET'
         });
@@ -674,7 +713,11 @@
         console.log('[Login] expirationDate:', expirationDate, '对应时间:', new Date(expirationDate * 1000).toLocaleString());
 
         // 根据目标 URL 决定 Cookie 的 domain
-        const targetUrl = activeTab === 'geo' ? TARGET_URLS.geo : TARGET_URLS.aigc;
+        const targets = await getTargetUrls();
+        const targetUrl = activeTab === 'geo' ? targets.geo : targets.aigc;
+        const cfg = await initDomainConfig();
+        const cookieUrl = cfg.cookieUrl;
+        const cookieDomain = cfg.cookieDomain;
         console.log('[Login] 目标 URL:', targetUrl);
         console.log('[Login] isDev:', isDev, 'browserAPI.isProduction:', window.browserAPI?.isProduction);
 
@@ -728,16 +771,16 @@
             // 2. 为 .china9.cn 设置 Cookie（生产环境）
             console.log('[Login] 开始设置 china9.cn Cookie...');
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: cookieUrl,
               name: 'token',
               value: loginData.token,
-              domain: '.china9.cn',
+              domain: cookieDomain,
               path: '/',
               expirationDate: expirationDate,
               secure: true
             });
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: 'https://dev.china9.cn',
               name: 'access_token',
               value: loginData.token,
               domain: '.china9.cn',
@@ -746,7 +789,7 @@
               secure: true
             });
             await window.browserAPI.setCookie({
-              url: 'https://china9.cn',
+              url: 'https://dev.china9.cn',
               name: 'employee_token',
               value: loginData.user.token,
               domain: '.china9.cn',
@@ -756,7 +799,7 @@
             });
             if (loginData.gcc) {
               await window.browserAPI.setCookie({
-                url: 'https://china9.cn',
+                url: 'https://dev.china9.cn',
                 name: 'gcc',
                 value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
                 domain: '.china9.cn',
@@ -778,7 +821,7 @@
         console.log('[Login] 用户信息:', userInfo);
         if (userInfo.company && userInfo.company.unique_id) {
           await window.browserAPI.setCookie({
-            url: 'https://china9.cn',
+            url: 'https://dev.china9.cn',
             name: 'company_unique_id',
             value: userInfo.company.unique_id,
             domain: '.china9.cn',
@@ -791,7 +834,7 @@
         // 🔑 设置 users_unique_id Cookie（用户唯一标识，后端可能根据这个判断权限）
         if (userInfo.unique_id) {
           await window.browserAPI.setCookie({
-            url: 'https://china9.cn',
+            url: 'https://dev.china9.cn',
             name: 'users_unique_id',
             value: userInfo.unique_id,
             domain: '.china9.cn',
@@ -811,6 +854,7 @@
           await window.browserAPI.setGlobalData('company_id', companyId.id);
 
           if (userInfo.company?.unique_id) {
+            /* [已注释] 获取站点信息和设置站点Cookie - GEO不再需要独立域名判断
             //  获取建站通站点信息
             const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
             console.log('[Login] 站点信息:', siteInfo);
@@ -851,7 +895,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'site_id',
                   value: siteIdStr,
                   path: '/',
@@ -879,7 +923,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'china_site_id',
                   value: siteIdStr,
                   path: '/',
@@ -907,7 +951,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'company_unique_id',
                   value: uniqueId,
                   path: '/',
@@ -935,7 +979,7 @@
                   sameSite: 'lax'
                 });
                 await window.browserAPI.setCookie({
-                  url: 'https://china9.cn',
+                  url: 'https://dev.china9.cn',
                   name: 'unique_id',
                   value: uniqueId,
                   path: '/',
@@ -950,10 +994,12 @@
                 console.error('[Login] ❌ siteId保存失败:', e);
               }
             }
+            [已注释结束] */
 
             // 登录成功，跳转到首页
             console.log('[Login] 准备跳转，activeTab:', activeTab);
 
+            /* [已注释] GEO权限检查 - GEO不再走独立域名，不需要在登录时检查
             // 🔑 GEO Tab 登录时，检查 is_geo 权限
             if (activeTab === 'geo') {
               const siteInfo = await window.browserAPI.getGlobalData('siteInfo');
@@ -971,6 +1017,7 @@
               }
               console.log('[Login] ✅ GEO 权限检查通过');
             }
+            [已注释结束] */
 
             // 等待一小段时间确保 Cookie 写入
             await new Promise(resolve => setTimeout(resolve, 5000));

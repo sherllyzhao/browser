@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
+const { domains } = require('./domain-config');
 
 class ScriptManager {
   constructor(baseDir) {
@@ -70,11 +71,8 @@ class ScriptManager {
     }
 
     try {
-      // 确定配置文件 URL
-      const isDevMode = !require('electron').app.isPackaged;
-      const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
-        ? this.remoteConfig.devBaseUrl
-        : this.remoteConfig.baseUrl;
+      // 🔑 使用集中配置的远程脚本 baseUrl
+      const baseUrl = domains.remoteScriptsBase;
 
       const configUrl = baseUrl + 'scripts-config.json?v=' + Date.now();
 
@@ -279,15 +277,24 @@ class ScriptManager {
       console.log(`[ScriptManager] 加载脚本:`, filenames);
 
       // 🔑 检查是否启用远程加载（主进程 fetch + executeJavaScript 注入，绕过 CSP）
+      console.log(`[ScriptManager] ========================================`);
+      console.log(`[ScriptManager] remoteConfig.enabled: ${this.remoteConfig?.enabled}`);
+      console.log(`[ScriptManager] ========================================`);
+
       if (this.remoteConfig && this.remoteConfig.enabled) {
         console.log(`[ScriptManager] 🌐 使用远程加载模式（主进程 fetch）`);
         return this.fetchRemoteScripts(filenames);
       }
 
       // 本地加载模式：按顺序读取所有脚本文件，并连接内容
+      console.log(`[ScriptManager] 📁 使用本地加载模式`);
+      console.log(`[ScriptManager] 本地脚本目录: ${this.scriptsDir}`);
+
       const scriptContents = [];
       for (const filename of filenames) {
         const filepath = path.join(this.scriptsDir, filename);
+
+        console.log(`[ScriptManager] 尝试加载本地文件: ${filepath}`);
 
         if (fs.existsSync(filepath)) {
           const content = await fs.readFile(filepath, 'utf-8');
@@ -349,12 +356,14 @@ class ScriptManager {
 
   // 🔑 从远程服务器按顺序获取多个脚本并拼接为文本
   async fetchRemoteScripts(filenames) {
-    const isDevMode = !require('electron').app.isPackaged;
-    const baseUrl = isDevMode && this.remoteConfig.devBaseUrl
-      ? this.remoteConfig.devBaseUrl
-      : this.remoteConfig.baseUrl;
+    // 🔑 使用集中配置的远程脚本 baseUrl
+    const baseUrl = domains.remoteScriptsBase;
 
-    console.log(`[ScriptManager] 🌐 主进程 fetch 远程脚本, baseUrl: ${baseUrl}, files: ${filenames.join(', ')}`);
+    console.log(`[ScriptManager] ========================================`);
+    console.log(`[ScriptManager] 🌐 主进程 fetch 远程脚本`);
+    console.log(`[ScriptManager] baseUrl: ${baseUrl}`);
+    console.log(`[ScriptManager] files: ${filenames.join(', ')}`);
+    console.log(`[ScriptManager] ========================================`);
 
     const scriptContents = [];
     let loadedCount = 0;

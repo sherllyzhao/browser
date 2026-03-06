@@ -53,8 +53,10 @@ const PLATFORM_CONFIG = {
                     let apiUrl;
                     if (typeof getStatisticsUrl === 'function') {
                         apiUrl = await getStatisticsUrl(false);
+                    } else if (window.DOMAIN_CONFIG && window.DOMAIN_CONFIG.getApiDomainUrl) {
+                        apiUrl = `${window.DOMAIN_CONFIG.getApiDomainUrl()}/api/mediaauth/tjlog`;
                     } else {
-                        apiUrl = 'https://api.china9.cn/api/mediaauth/tjlog';
+                        apiUrl = 'https://apidev.china9.cn/api/mediaauth/tjlog';
                     }
                     console.log('[搜狐号重定向] 📤 API 地址:', apiUrl);
                     const scanData = { data: JSON.stringify({ id: publishId }) };

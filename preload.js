@@ -118,5 +118,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 版本更新
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  checkForUpdate: () => ipcRenderer.invoke('check-for-update')
+  checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
+
+  // 🔑 获取域名配置（集中配置）
+  getDomainConfig: () => ipcRenderer.invoke('get-domain-config')
 });
