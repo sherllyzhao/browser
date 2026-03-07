@@ -18,6 +18,46 @@ const isProduction = app.isPackaged; // 是否生产环境
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
 
+// 使用与 Electron 内核版本一致的标准 Chrome UA，避免 sec-ch-ua 与 UA 主版本不一致触发风控
+function buildStandardUserAgent() {
+  const chromeVersion = process.versions.chrome || '106.0.0.0';
+  const major = String(chromeVersion).split('.')[0] || '106';
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+const STANDARD_USER_AGENT = buildStandardUserAgent();
+const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
+
+function isFirstPartyHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host === 'localhost' ||
+         host === '127.0.0.1' ||
+         host === '172.16.6.17' ||
+         host === 'china9.cn' ||
+         host.endsWith('.china9.cn');
+}
+
+function isFirstPartyUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isFirstPartyHost(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function setHeaderCaseInsensitive(headers, key, value) {
+  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase()) || key;
+  headers[targetKey] = value;
+}
+
+function removeHeaderCaseInsensitive(headers, key) {
+  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase());
+  if (targetKey) {
+    delete headers[targetKey];
+  }
+}
+
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
 const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
@@ -208,6 +248,24 @@ function addContentTypeFix(targetSession, label) {
     callback({ responseHeaders });
   });
   console.log(`[Session] ✅ ${label} Content-Type 修复 + Set-Cookie SameSite 修复拦截器已添加`);
+}
+
+// 请求头身份策略：
+// 1) 自有域名：保留 zh.Cloud-browse 标记 + 专用识别头（便于后台识别）
+// 2) 第三方域名：强制标准 UA，避免风控把 UA 与 sec-ch-ua 判为异常
+function addIdentityHeaderPolicy(targetSession, label) {
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = details.requestHeaders || {};
+    if (isFirstPartyUrl(details.url)) {
+      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse', '1');
+      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version', APP_VERSION);
+    } else {
+      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse');
+      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version');
+    }
+    callback({ requestHeaders: headers });
+  });
+  console.log(`[Session] ✅ ${label} 身份头策略已添加（自有域名带标记，第三方标准 UA）`);
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -833,6 +891,7 @@ function createWindow() {
 
   // 🔴 修复外部页面 CSS/JS 乱码
   addContentTypeFix(persistentSession, '持久化 session');
+  addIdentityHeaderPolicy(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -845,10 +904,9 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-  persistentSession.setUserAgent(customUA);
-  console.log('User-Agent set to:', customUA);
+  // 主窗口保持带标记 UA，供自有系统识别浏览器来源
+  persistentSession.setUserAgent(TAGGED_USER_AGENT);
+  console.log('User-Agent set to:', TAGGED_USER_AGENT);
 
   // 监听下载事件
   persistentSession.on('will-download', (event, item, webContents) => {
@@ -1857,6 +1915,14 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
+
+    // 子窗口统一使用标准 UA，避免第三方平台风控将其识别为改写浏览器
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Created] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Created] 设置子窗口 User-Agent 失败:', e?.message || e);
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -4103,8 +4169,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-      windowSession.setUserAgent(customUA);
+      windowSession.setUserAgent(STANDARD_USER_AGENT);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
@@ -4119,6 +4184,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
+      addIdentityHeaderPolicy(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4139,6 +4205,14 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
       }
     });
+
+    // open-new-window 创建的发布/授权窗口统一使用标准 UA
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Manager] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Manager] 设置子窗口 User-Agent 失败:', e?.message || e);
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -4372,10 +4446,78 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
         if (!isSameOrigin || !isSamePath) {
           console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
+          const windowId = newWindow.id;
 
+          // 1. 自动上报后台接口（异步，不阻塞）
+          (async () => {
+            try {
+              const publishDataKey = `publish_data_window_${windowId}`;
+              const publishData = globalStorage[publishDataKey];
+              const publishId = publishData?.video?.dyPlatform?.id;
+
+              if (publishId) {
+                const statisticsUrl = `${config.domains.apiDomain}/api/mediaauth/tjlogerror`;
+                const errorData = {
+                  id: publishId,
+                  status_text: `页面被重定向: ${navUrl}`,
+                  context: {
+                    url: navUrl,
+                    expectedUrl: expectedUrl,
+                    timestamp: new Date().toISOString(),
+                    platform: 'redirect-detection',
+                  }
+                };
+                const scanData = { data: JSON.stringify(errorData) };
+                const postData = JSON.stringify(scanData);
+                const urlObj = new URL(statisticsUrl);
+                const requestModule = urlObj.protocol === 'https:' ? https : http;
+
+                const options = {
+                  hostname: urlObj.hostname,
+                  port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                  path: urlObj.pathname,
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(postData),
+                  }
+                };
+
+                const req = requestModule.request(options, (res) => {
+                  console.log(`[Window Redirect] ✅ 上报后台成功, statusCode: ${res.statusCode}`);
+                });
+                req.on('error', (e) => {
+                  console.error(`[Window Redirect] ❌ 上报后台失败:`, e.message);
+                });
+                req.write(postData);
+                req.end();
+
+                console.log(`[Window Redirect] 📤 已上报后台, publishId: ${publishId}`);
+              } else {
+                console.log('[Window Redirect] ⚠️ 未找到 publishId，跳过上报');
+              }
+            } catch (err) {
+              console.error('[Window Redirect] ❌ 上报异常:', err);
+            }
+          })();
+
+          // 2. 通知首页（通过 postMessage，复用现有的 onMessageFromOtherPage 通道）
           if (browserView && !browserView.webContents.isDestroyed()) {
+            const redirectMsg = JSON.stringify({
+              type: 'publish-redirected',
+              windowId: windowId,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            browserView.webContents.executeJavaScript(`
+              window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${redirectMsg} }, '*');
+            `).catch(() => {});
+
+            // 同时发送 window-redirected 事件（供 onWindowRedirected 回调使用）
             browserView.webContents.send('window-redirected', {
-              windowId: newWindow.id,
+              windowId: windowId,
               expectedUrl: expectedUrl,
               actualUrl: navUrl,
               isSameOrigin: isSameOrigin,
@@ -5458,8 +5600,7 @@ function getAccountSession(platform, accountId) {
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-  accountSession.setUserAgent(customUA);
+  accountSession.setUserAgent(STANDARD_USER_AGENT);
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
   accountSession.webRequest.onBeforeRequest((details, callback) => {
@@ -5476,6 +5617,7 @@ function getAccountSession(platform, accountId) {
   accountSessions.set(partitionName, accountSession);
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
   addContentTypeFix(accountSession, `账号 session ${partitionName}`);
+  addIdentityHeaderPolicy(accountSession, `账号 session ${partitionName}`);
 
   return accountSession;
 }
@@ -5516,6 +5658,7 @@ function ensurePlatformAccounts() {
       douyin: [],
       xiaohongshu: [],
       baijiahao: [],
+      toutiao: [],
       weixin: [],
       shipinhao: []
     };
@@ -5772,6 +5915,7 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
       douyin: ['douyin.com'],
       xiaohongshu: ['xiaohongshu.com'],
       baijiahao: ['baidu.com'],
+      toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
       weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
       shipinhao: ['channels.weixin.qq.com']
     };
@@ -5833,6 +5977,7 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
       douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
       xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
       baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
+      toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
       weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
       shipinhao: ['wxuin', 'pass_ticket']
     };

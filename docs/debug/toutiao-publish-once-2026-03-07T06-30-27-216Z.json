@@ -1,0 +1,24 @@
+{
+  "runAt": "2026/3/7 14:30:36",
+  "publishTitle": "运营助手自动发布验证-2026/3/7 14:30:27",
+  "publishContent": "这是一条由运营助手自动化发布的验证文章。\\n用于验证头条发布页的标题、正文、封面与发布链路。\\n发布时间：2026/3/7 14:30:27",
+  "result": {
+    "success": false,
+    "reason": "cover-not-ready",
+    "hint": "",
+    "logs": [
+      {
+        "step": "title-filled",
+        "value": "运营助手自动发布验证-2026/3/7 14:30:27"
+      },
+      {
+        "step": "content-filled",
+        "len": 70
+      },
+      {
+        "step": "cover-ready",
+        "coverReady": false
+      }
+    ]
+  }
+}

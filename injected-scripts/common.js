@@ -1891,6 +1891,15 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             logPrefix: "[网易号发布]",
             selectors: [{ containerClass: "el-message--error", textSelector: ".el-message__content", recursiveSelector: ".el-message.el-message--error" }],
         },
+        // 头条号
+        toutiao: {
+            logPrefix: "[头条发布]",
+            selectors: [
+                { containerClass: "byte-message", textSelector: ".byte-message-content" },
+                { containerClass: "byte-message-notice-content", textSelector: ".byte-message-notice-content-text" },
+                { containerClass: "semi-toast", textSelector: ".semi-toast-content-text" },
+            ],
+        },
         // 知乎
         zhihu: {
             logPrefix: "[知乎发布]",

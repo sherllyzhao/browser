@@ -140,7 +140,8 @@ const config = {
     shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
     txh: 'https://om.qq.com/main/creation/article',
     xl: 'https://card.weibo.com/article/v5/editor#/draft',
-    zh: 'https://zhuanlan.zhihu.com/write'
+    zh: 'https://zhuanlan.zhihu.com/write',
+    tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
@@ -152,6 +153,8 @@ const config = {
     10: 'txh',  // 腾讯号
     11: 'xl',   // 新浪号
     12: 'zh',   // 知乎
+    13: 'tt',   // 头条号
+    14: 'tt',   // 头条号（兼容）
   },
   platformNameMap: {
     'dy': 'douyin',
@@ -163,7 +166,8 @@ const config = {
     'shh': 'sohuhao',
     'txh': 'tengxunhao',
     'xl': 'xinlang',
-    'zh': 'zhihu'
+    'zh': 'zhihu',
+    'tt': 'toutiao'
   }
 };
 
@@ -328,15 +332,34 @@ contextBridge.exposeInMainWorld('browserAPI', {
       const urlMap = config.platformPublishUrls;
       const platformMap = config.platformIdMap;
       const platformFullNameMap = config.platformNameMap;
+      const resolvePlatform = (element) => {
+        const mediaId = element?.account_info?.media?.id;
+        if (platformMap[mediaId]) {
+          return platformMap[mediaId];
+        }
+
+        // 兼容后台新增平台 ID 未及时同步的情况：按平台名称兜底
+        const mediaName = `${element?.account_info?.media?.name || ''}`.toLowerCase();
+        if (mediaName.includes('头条') || mediaName.includes('toutiao')) {
+          return 'tt';
+        }
+
+        return null;
+      };
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
-          const platform = platformMap[element.account_info.media.id];
+          const platform = resolvePlatform(element);
           const platformFullName = platformFullNameMap[platform];
           const url = urlMap[platform];
           console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
+
+          if (!platform || !url) {
+            console.error(`❌ [${index + 1}] 不支持的平台，media.id=${element?.account_info?.media?.id}, media.name=${element?.account_info?.media?.name || ''}`);
+            continue;
+          }
 
           // 构建 openNewWindow 的 options
           // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复

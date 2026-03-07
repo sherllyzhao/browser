@@ -49,6 +49,8 @@
     "https://security.weibo.com/captcha/geetest*": ["xinlang-captcha.js"],
     "https://weibo.com*": ["common.js", "xinlang-redirect.js"],
     "https://mp.toutiao.com/profile_v4/index*": ["common.js", "toutiao-creator.js"],
+    "https://mp.toutiao.com/profile_v4/graphic/publish*": ["common.js", "toutiao-publish.js"],
+    "https://mp.toutiao.com/profile_v4/graphic/manage*": ["common.js", "publish-success.js"],
     "https://www.toutiao.com/?*": ["common.js", "toutiao-redirect.js"]
   },
   "dependencies": {
