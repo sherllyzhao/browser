@@ -5001,6 +5001,33 @@ ipcMain.handle('global-storage-clear', async () => {
   return { success: true };
 });
 
+// 调试：将内容页面传来的文本保存到 userData/debug-dumps 目录
+ipcMain.handle('write-debug-file', async (event, payload = {}) => {
+  try {
+    const prefixRaw = typeof payload.prefix === 'string' ? payload.prefix : 'debug';
+    const safePrefix = prefixRaw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'debug';
+    const content = typeof payload.content === 'string'
+      ? payload.content
+      : JSON.stringify(payload.content ?? null, null, 2);
+
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${safePrefix}-${timestamp}.json`;
+    const filePath = path.join(dumpDir, fileName);
+    fs.writeFileSync(filePath, content, 'utf8');
+
+    console.log('[Debug Dump] ✅ 已写入文件:', filePath, `(${content.length} chars)`);
+    return { success: true, filePath, fileName, size: content.length };
+  } catch (err) {
+    console.error('[Debug Dump] ❌ 写入失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========
 // 优化：添加文件大小限制，防止内存溢出
 const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB 限制

@@ -256,7 +256,16 @@ window.addEventListener('message', (event) => {
       console.log('[BrowserAPI] 检测到 FROM_HOME 消息');
       if (messageCallbacks.fromHome) {
         console.log('[BrowserAPI] 调用 fromHome 回调，数据:', event.data.data);
-        messageCallbacks.fromHome(event.data.data);
+        console.log('[BrowserAPI] 回调函数类型:', typeof messageCallbacks.fromHome);
+        try {
+          const result = messageCallbacks.fromHome(event.data.data);
+          console.log('[BrowserAPI] 回调返回值:', result);
+          if (result && typeof result.catch === 'function') {
+            result.catch(err => console.error('[BrowserAPI] fromHome 回调 Promise 错误:', err));
+          }
+        } catch (e) {
+          console.error('[BrowserAPI] fromHome 回调同步错误:', e);
+        }
       } else {
         console.warn('[BrowserAPI] ⚠️ fromHome 回调未注册！');
       }
@@ -582,6 +591,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
   getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
   // 清空所有数据
   clearGlobalData: () => ipcRenderer.invoke('global-storage-clear'),
+  // 写调试文件到 userData/debug-dumps
+  writeDebugFile: (payload) => ipcRenderer.invoke('write-debug-file', payload),
 
   // ========== 多账号管理 API ==========
   // 获取指定平台的所有账号

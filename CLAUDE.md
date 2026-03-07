@@ -25,41 +25,7 @@ npm install
 
 # Run the browser
 npm start
-
-# 打包命令
-npm run build:dev              # 打开发环境包（NSIS 安装包）
-npm run build:prod             # 打生产环境包（NSIS 安装包）
-npm run build:dev:portable     # 打开发环境便携版
-npm run build:prod:portable    # 打生产环境便携版
-npm run build                  # 默认打生产环境包（等同于 build:prod）
-npm run build:portable         # 默认打生产环境便携版（等同于 build:prod:portable）
 ```
-
-### 打包说明
-
-**环境配置：**
-- 打包命令通过 `BUILD_ENV` 环境变量控制使用哪个环境配置
-- `domain-config.js` 会读取 `process.env.BUILD_ENV`，如果没有则默认为 'dev'
-
-**开发环境（dev）配置：**
-- 远程脚本 baseUrl: `http://localhost:5173/injected-scripts/`
-- API 域名: `https://apidev.china9.cn`
-- GEO 页面: `https://jzt_dev_1.china9.cn`
-- 统计上报: `https://jzt_dev_1.china9.cn`
-
-**生产环境（prod）配置：**
-- 远程脚本 baseUrl: `https://dev.china9.cn/aigc_browser/injected-scripts/`
-- API 域名: `https://api.china9.cn`
-- GEO 页面: `https://zhjzt.china9.cn`
-- 统计上报: `https://zhjzt.china9.cn`
-
-**打包前准备：**
-1. 从父项目复制最新的脚本文件：
-   - 源目录: `E:\项目\资海云\视频剪辑\ai-media-edit\public\injected-scripts\`
-   - 目标目录: `D:\浏览器\运营助手分支\injected-scripts\`
-2. 根据需要配置 `scripts-config.json` 中的 `remoteConfig.enabled`：
-   - `true`: 从远程服务器加载脚本（开发时从 localhost:5173，生产时从 dev.china9.cn）
-   - `false`: 从打包后应用本地的 injected-scripts 目录加载脚本
 
 ## Architecture
 
