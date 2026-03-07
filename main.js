@@ -51,6 +51,82 @@ function saveGlobalStorage() {
   }
 }
 
+// 登录过期提示防抖，避免多处导航事件重复弹窗
+let lastTokenExpiredNoticeAt = 0;
+function showTokenExpiredNotice(source = 'unknown', expiresAt) {
+  const nowMs = Date.now();
+  if (nowMs - lastTokenExpiredNoticeAt < 10 * 1000) {
+    return;
+  }
+  lastTokenExpiredNoticeAt = nowMs;
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const expireText = expiresAt
+    ? new Date(expiresAt * 1000).toLocaleString()
+    : '未知';
+
+  dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: '登录已过期',
+    message: '登录状态已过期，请重新登录',
+    detail: `检测来源: ${source}\n过期时间: ${expireText}`,
+    buttons: ['确定'],
+    defaultId: 0,
+    noLink: true
+  }).catch(err => {
+    console.error('[Auth Notice] 显示登录过期提示失败:', err);
+  });
+}
+
+function isLikelyLoginUrl(url = '') {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return lower.includes('/login') ||
+         lower.includes('#/login') ||
+         lower.includes('passport.') ||
+         lower.includes('/passport') ||
+         lower.includes('signin') ||
+         lower.includes('sign-in') ||
+         lower.includes('/sso') ||
+         lower.includes('/oauth') ||
+         lower.includes('qrlogin') ||
+         lower.includes('/account/login');
+}
+
+function isLikelyPublishUrl(url = '') {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return lower.includes('/publish') ||
+         lower.includes('/edit') ||
+         lower.includes('/editor') ||
+         lower.includes('/create') ||
+         lower.includes('/write') ||
+         lower.includes('/article') ||
+         lower.includes('/contentmanagement/news/addarticle') ||
+         lower.includes('/article-publish');
+}
+
+function showPublishLoginRedirectNotice(targetWindow, payload = {}) {
+  const { platform = 'unknown', expectedUrl = '', actualUrl = '' } = payload;
+  const ownerWindow = targetWindow && !targetWindow.isDestroyed() ? targetWindow : mainWindow;
+  if (!ownerWindow || ownerWindow.isDestroyed()) return;
+
+  dialog.showMessageBox(ownerWindow, {
+    type: 'warning',
+    title: '发布窗口登录状态异常',
+    message: '检测到发布窗口已跳转，可能登录状态失效',
+    detail: `平台: ${platform}\n请在该平台窗口重新登录后重试发布。\n\n预期地址: ${expectedUrl}\n实际地址: ${actualUrl}`,
+    buttons: ['确定'],
+    defaultId: 0,
+    noLink: true
+  }).catch(err => {
+    console.error('[Publish Auth Notice] 显示提示失败:', err);
+  });
+}
+
 // 检测是否为便携版（通过检查是否在标准安装目录）
 // 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
 const execPathLower = process.execPath.toLowerCase();
@@ -1041,6 +1117,7 @@ function createWindow() {
       console.log('[BrowserView] 没有有效的登录 token，显示登录页');
       if (savedToken && savedExpires) {
         console.log('[BrowserView] Token 已过期，过期时间:', new Date(savedExpires * 1000).toLocaleString());
+        showTokenExpiredNotice('startup-check', savedExpires);
         // 清除过期的 token
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1603,9 +1680,13 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
+      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        if (isTokenExpired) {
+          showTokenExpiredNotice('did-navigate-in-page', savedExpires);
+        }
         // 清除过期数据
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1668,9 +1749,13 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
+      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        if (isTokenExpired) {
+          showTokenExpiredNotice('did-navigate', savedExpires);
+        }
         // 清除过期数据
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -4076,6 +4161,8 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
+    const openedAt = Date.now();
+    let hasShownRedirectAuthNotice = false;
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -4266,6 +4353,55 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         }
       }
       await injectScriptForUrl(newWindow.webContents, navUrl);
+    });
+
+    // 🔑 Redirect 检测：当页面导航离开预期 URL 时通知首页
+    // 覆盖场景：服务端 302 重定向、JS window.location 跳转、表单提交跳转
+    const expectedUrl = url;
+    newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      // 跳过中间页（预设 localStorage 时的 favicon.ico 加载）
+      if (navUrl === 'about:blank' || navUrl.endsWith('/favicon.ico')) return;
+
+      try {
+        const expected = new URL(expectedUrl);
+        const actual = new URL(navUrl);
+
+        // 比较 origin + pathname，忽略 query string 和 hash
+        const isSameOrigin = actual.origin === expected.origin;
+        const isSamePath = actual.pathname === expected.pathname;
+
+        if (!isSameOrigin || !isSamePath) {
+          console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
+
+          if (browserView && !browserView.webContents.isDestroyed()) {
+            browserView.webContents.send('window-redirected', {
+              windowId: newWindow.id,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            console.log('[Window Redirect] ✅ 已通知首页页面发生跳转');
+          }
+
+          // 发布窗口打开后短时间内被重定向到登录/非发布页，提示用户重新登录
+          const accountInfo = windowAccountMap.get(newWindow.id);
+          const openedRecently = Date.now() - openedAt < 45 * 1000;
+          const loginRedirect = isLikelyLoginUrl(navUrl);
+          const publishToNonPublishRedirect = isLikelyPublishUrl(expectedUrl) && !isLikelyPublishUrl(navUrl);
+
+          if (!hasShownRedirectAuthNotice && accountInfo && openedRecently && (loginRedirect || publishToNonPublishRedirect)) {
+            hasShownRedirectAuthNotice = true;
+            showPublishLoginRedirectNotice(newWindow, {
+              platform: accountInfo.platform,
+              expectedUrl,
+              actualUrl: navUrl
+            });
+          }
+        }
+      } catch (e) {
+        // URL 解析失败，忽略
+      }
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）

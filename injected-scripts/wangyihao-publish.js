@@ -671,7 +671,6 @@
                     // ===========================
                     const capturedErrors = []; // 收集所有捕获的错误信息
                     let errorScanInterval = null;
-                    let errorMutationObserver = null;
 
                     // 🔑 需要忽略的非错误文本（在采集时就过滤掉）
                     const ignoredTexts = [
@@ -695,19 +694,22 @@
                                 console.log('[网易号发布] 🔄 错误扫描器运行中...', scanCount);
                             }
 
-                            // 扫描 snackbar 错误提示（选择器覆盖多种 toast 变体）
-                            const snackbars = document.querySelectorAll('.ne-snackbar-item-description, .ne-snackbar-item-content-container');
+                            // 扫描 snackbar 错误提示
+                            const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
                             if (snackbars.length > 0 && scanCount % 10 === 1) {
                                 console.log('[网易号发布] 📍 找到', snackbars.length, '个 snackbar');
                             }
 
                             for (const snackbar of snackbars) {
-                                // 直接读取 textContent，兼容只有 1 个 span 或无 span 的情况
-                                const text = (snackbar.textContent || '').trim();
-                                // 🔑 采集时就过滤掉非错误文本
-                                if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
-                                    capturedErrors.push(text);
-                                    console.log('[网易号发布] 📨 捕获到错误信息:', text);
+                                const spans = snackbar.querySelectorAll('span');
+                                if (spans.length >= 2) {
+                                    const textSpan = spans[spans.length - 1];
+                                    const text = (textSpan.textContent || '').trim();
+                                    // 🔑 采集时就过滤掉非错误文本
+                                    if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
+                                        capturedErrors.push(text);
+                                        console.log('[网易号发布] 📨 捕获到错误信息:', text);
+                                    }
                                 }
                             }
 
@@ -726,30 +728,7 @@
                             }
                         }, 300); // 每 300ms 扫描一次
 
-                        // MutationObserver 实时捕捉动态添加的 toast 节点
-                        errorMutationObserver = new MutationObserver((mutations) => {
-                            for (const mutation of mutations) {
-                                for (const node of mutation.addedNodes) {
-                                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                                    // 检查新增节点自身或内部是否包含 snackbar
-                                    const targets = [];
-                                    if (node.matches && node.matches('.ne-snackbar-item-description, .ne-snackbar-item')) {
-                                        targets.push(node);
-                                    }
-                                    targets.push(...(node.querySelectorAll ? node.querySelectorAll('.ne-snackbar-item-description') : []));
-                                    for (const target of targets) {
-                                        const text = (target.textContent || '').trim();
-                                        if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
-                                            capturedErrors.push(text);
-                                            console.log('[网易号发布] 📨 [MutationObserver] 捕获到错误信息:', text);
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        errorMutationObserver.observe(document.body, { childList: true, subtree: true });
-
-                        console.log('[网易号发布] ✅ 全局错误监听器已启动（含 MutationObserver）');
+                        console.log('[网易号发布] ✅ 全局错误监听器已启动');
                     };
 
                     // 停止错误监听
@@ -757,12 +736,8 @@
                         if (errorScanInterval) {
                             clearInterval(errorScanInterval);
                             errorScanInterval = null;
+                            console.log('[网易号发布] 🛑 全局错误监听器已停止');
                         }
-                        if (errorMutationObserver) {
-                            errorMutationObserver.disconnect();
-                            errorMutationObserver = null;
-                        }
-                        console.log('[网易号发布] 🛑 全局错误监听器已停止');
                     };
 
                     // 获取最新的错误信息

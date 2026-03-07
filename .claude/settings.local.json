@@ -107,7 +107,19 @@
       "Bash(npx asar:*)",
       "Bash(npm start)",
       "Bash(taskkill /F /IM \"运营助手.exe\")",
-      "Bash(timeout 5 tail:*)"
+      "Bash(timeout 5 tail:*)",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"openNewWindow\\\\|did-finish-load\\\\|did-navigate\\\\|will-navigate\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -rn \"did-navigate\\\\|will-navigate\\\\|url.*change\\\\|redirect\\\\|跳转\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\"\" --include=\"*-publish.js \" -l)",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -rn \"redirect\\\\|location.href\\\\|window.location\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\" --include=\"*-publish.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"function.*openNewWindow\\\\|ipcMain.*open-new-window\\\\|handle.*open-new-window\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"onWindowLoaded\\\\|window-loaded\\\\|window-redirected\\\\|onSessionUpdated\\\\|session-updated\" \"D:\\\\浏览器\\\\运营助手\\\\content-preload.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"new BrowserWindow\\\\|return.*success.*windowId\\\\|const newWindow\\\\|const windowId\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"tjlog\\\\|上报\\\\|report\\\\|publish_data_window\\\\|publishData\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -rn \"tjlog\\\\|上报\\\\|统计\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\douyin-publish.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"tjlog\\\\|统计\\\\|sendMessageToParent\\\\|publish_report\\\\|reportError\\\\|publishApi\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\douyin-publish.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"tjlog\\\\|统计\\\\|report\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\common.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"sendMessageToParent\\\\|message-to-home\\\\|message-from-other\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\common.js\")",
+      "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"publish_data_window\\\\|publishId\\\\|element\\\\.id\\\\|element\\\\.account_info\" \"D:\\\\浏览器\\\\运营助手\\\\injected-scripts\\\\douyin-publish.js\")"
     ],
     "deny": [],
     "ask": []

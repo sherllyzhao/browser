@@ -197,7 +197,7 @@
                         if(isDev){
                             console.log('[小红书授权] ✅ 开发环境，不关闭窗口');
                         }else{
-                            setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+                            setTimeout(() => window.browserAPI.closeCurrentWindow(), 10000);
                         }
                     } else {
                         throw new Error(apiResult.msg || 'Failed');

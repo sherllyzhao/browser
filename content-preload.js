@@ -483,6 +483,16 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
   },
 
+  // 监听新窗口页面跳转事件（首页使用，用于检测发布页被第三方平台重定向的情况）
+  // data: { windowId, expectedUrl, actualUrl, isSameOrigin, timestamp }
+  onWindowRedirected: (callback) => {
+    ipcRenderer.on('window-redirected', (event, data) => {
+      console.log('[BrowserAPI] 收到 window-redirected 事件:', data);
+      callback(data);
+    });
+    console.log('[BrowserAPI] onWindowRedirected 监听器已注册');
+  },
+
   // 清除所有监听器（用于组件卸载）
   clearMessageListeners: () => {
     messageCallbacks.fromHome = null;
