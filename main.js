@@ -2123,7 +2123,17 @@ function updateBrowserViewBounds(scriptPanelOpen = false) {
   const toolbarHeight = 0; // 工具栏已移除
   const totalTopOffset = headerHeight + toolbarHeight;
   const viewWidth = scriptPanelOpen ? width - 400 : width;
-  browserView.setBounds({ x: 0, y: totalTopOffset, width: viewWidth, height: height - totalTopOffset });
+
+  // macOS 上 BrowserView.setBounds 的 y 是相对于窗口 frame（包含标题栏），
+  // 而非 content area，需要补偿标题栏高度，否则 BrowserView 会覆盖工具栏底部
+  let titleBarOffset = 0;
+  if (process.platform === 'darwin') {
+    const winBounds = mainWindow.getBounds();
+    const contentBounds = mainWindow.getContentBounds();
+    titleBarOffset = contentBounds.y - winBounds.y;
+  }
+
+  browserView.setBounds({ x: 0, y: totalTopOffset + titleBarOffset, width: viewWidth, height: height - totalTopOffset });
 }
 
 // 根据 URL 判断是否需要隐藏公共头部
