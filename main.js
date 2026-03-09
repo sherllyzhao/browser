@@ -187,29 +187,41 @@ function showPublishLoginRedirectNotice(targetWindow, payload = {}) {
   });
 }
 
-// 设置用户数据路径
-if (isProduction) {
-  if (isPortable && process.platform === 'win32') {
-    // 便携版（仅 Windows）：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
-    // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
-    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
+function isPathWritable(targetPath) {
+  try {
+    fs.mkdirSync(targetPath, { recursive: true });
+    const probeFile = path.join(targetPath, '.write-test');
+    fs.writeFileSync(probeFile, 'ok', 'utf8');
+    fs.unlinkSync(probeFile);
+    return true;
+  } catch (err) {
+    console.warn('[Path Check] 路径不可写:', targetPath, err && err.message ? err.message : err);
+    return false;
+  }
+}
 
-    // 确保目录存在
-    if (!fs.existsSync(portableDataPath)) {
-      try {
-        fs.mkdirSync(portableDataPath, { recursive: true });
-        console.log('[Portable Mode] 已创建数据目录:', portableDataPath);
-      } catch (err) {
-        console.error('[Portable Mode] 创建目录失败:', err);
-      }
-    }
-
+// 设置用户数据路径，并确保可写（否则会导致单实例锁和 os_crypt 报 0x5）
+if (isProduction && isPortable && process.platform === 'win32') {
+  // 便携版（仅 Windows）：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
+  // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
+  const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
+  if (isPathWritable(portableDataPath)) {
     app.setPath('userData', portableDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
     console.log('[Portable Mode] 数据存储在固定位置:', portableDataPath);
   } else {
-    // 安装版：使用系统默认路径
-    console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
+    const fallbackPath = path.join(app.getPath('temp'), 'zhcloud-browser-userData');
+    app.setPath('userData', fallbackPath);
+    console.warn('[Portable Mode] 便携目录不可写，已回退到临时目录:', fallbackPath);
+  }
+} else {
+  const defaultUserDataPath = app.getPath('userData');
+  if (!isPathWritable(defaultUserDataPath)) {
+    const fallbackPath = path.join(app.getPath('temp'), 'zhcloud-browser-userData');
+    app.setPath('userData', fallbackPath);
+    console.warn('[UserData] 默认目录不可写，已回退到临时目录:', fallbackPath);
+  } else {
+    console.log('[Installed Mode] 使用系统 AppData 目录:', defaultUserDataPath);
   }
 }
 

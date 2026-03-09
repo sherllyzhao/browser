@@ -12,8 +12,8 @@
     "build": "npm run build:prod",
     "build:dir": "electron-builder --win --dir",
     "build:portable": "npm run build:prod:portable",
-    "build:mac:dev": "node build-scripts/set-env.js dev && electron-builder --mac",
-    "build:mac:prod": "node build-scripts/set-env.js prod && electron-builder --mac",
+    "build:mac:dev": "node build-scripts/set-env.js dev && electron-builder --mac --publish never",
+    "build:mac:prod": "node build-scripts/set-env.js prod && electron-builder --mac --publish never",
     "build:mac": "npm run build:mac:prod"
   },
   "build": {
