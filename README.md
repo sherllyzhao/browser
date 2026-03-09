@@ -169,9 +169,18 @@ await window.browserAPI.setCookie({
   name: 'token',
   value: 'xxx',
   domain: '.china9.cn',
-  expirationDate: Math.floor(Date.now() / 1000) + 86400
+  expirationDate: Math.floor(Date.now() / 1000) + 86400 // 秒级 Unix 时间戳
 });
 ```
+
+### 登录过期机制（重要）
+
+- Cookie 会保存 `expirationDate`，完整会话数据上报后台时也会携带该字段。
+- 登录有效性不仅由本地 Cookie 决定，还受 `globalStorage.login_expires` 和后端接口鉴权（如 `401`）共同约束。
+- 仅修改本地 Cookie 过期时间不能实现“永久登录”。服务端 token 失效后，接口仍会返回未登录。
+- 当检测到 token 已过期时，应用会提示并跳转登录页（启动检查、导航检查、接口 `401` 均会触发）。
+- 应用会在 token 到期前默认 10 分钟弹出一次预警提示（每分钟检查一次，同一过期时间只提示一次）。
+- 预警时间可在 `renderer.js` 中通过 `TOKEN_EXPIRY_REMINDER_SECONDS` 调整。
 
 ### 多账号管理
 
@@ -311,6 +320,14 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install
 cd E:\项目\资海云\视频剪辑\ai-media-edit
 npm run dev
 ```
+
+### 能否把 Cookie 改成永不过期
+
+不能依赖这种方式实现永久登录。原因是服务端会按 token 有效期和鉴权结果判断登录状态，本地 Cookie 过期时间只影响浏览器是否继续携带该 Cookie。
+
+## 发版模板
+
+- 发版说明模板见：[docs/发版说明模板.md](docs/发版说明模板.md)
 
 ## License
 

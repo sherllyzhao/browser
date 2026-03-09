@@ -1,0 +1,74 @@
+{
+  "success": true,
+  "chain": {
+    "coverUploaded": true,
+    "scheduleOpened": true,
+    "secondConfirmSeen": true,
+    "secondConfirmPath": "submit-processing"
+  },
+  "toast": "",
+  "log": [
+    {
+      "step": "title-filled",
+      "title": "链路压测-2026/3/7 14:21:53",
+      "finalValue": "链路压测-2026/3/7 14:21:53",
+      "titleHint": ""
+    },
+    {
+      "step": "editor-filled",
+      "len": 35
+    },
+    {
+      "step": "cover-trigger-clicked",
+      "text": ""
+    },
+    {
+      "step": "cover-file-input-found",
+      "accept": "image/*",
+      "className": ""
+    },
+    {
+      "step": "cover-modal-confirm-clicked",
+      "text": "确定"
+    },
+    {
+      "step": "cover-upload-triggered",
+      "hasCoverPreview": true,
+      "coverError": ""
+    },
+    {
+      "step": "cover-after-wait-ready",
+      "attempt": 1,
+      "footerTexts": [
+        "预览",
+        "定时发布",
+        "预览并发布"
+      ]
+    },
+    {
+      "step": "schedule-clicked",
+      "attempt": 1,
+      "opened": true,
+      "signalCount": 2
+    },
+    {
+      "step": "schedule-cancel-clicked",
+      "text": "取消"
+    },
+    {
+      "step": "publish-btn-ready",
+      "attempt": 1,
+      "text": "预览并发布",
+      "disabled": false
+    },
+    {
+      "step": "publish-btn-clicked",
+      "text": "预览并发布",
+      "disabled": false
+    },
+    {
+      "step": "second-confirm-processing",
+      "className": "byte-btn byte-btn-primary byte-btn-size-large byte-btn-shape-square byte-btn-loading publish-btn publish-btn-last"
+    }
+  ]
+}

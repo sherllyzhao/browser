@@ -32,6 +32,19 @@ class ScriptManager {
       // 先同步加载本地配置（确保有基础配置）
       this.loadLocalConfig();
 
+      // 🔑 未打包环境（npm start）强制使用本地脚本文件
+      try {
+        const { app } = require('electron');
+        if (app && !app.isPackaged) {
+          if (this.remoteConfig) {
+            this.remoteConfig.enabled = false;
+          }
+          console.log('[ScriptManager] 📁 未打包环境，强制使用本地脚本文件');
+        }
+      } catch (e) {
+        // 非 Electron 环境，忽略
+      }
+
       // 然后异步加载远程配置（如果启用了远程模式）
       this.configLoadPromise = this.loadRemoteConfigAsync();
 

@@ -63,7 +63,7 @@
     };
 
     console.log('═══════════════════════════════════════');
-    console.log('✅ 网易号发布脚本已注入1111');
+    console.log('✅ 网易号发布脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
     console.log('🕐 注入时间:', new Date().toLocaleString());
     console.log('═══════════════════════════════════════');

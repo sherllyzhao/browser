@@ -214,7 +214,7 @@
     }
 
     // 延迟关闭窗口
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 10000));
 
     // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
     const isDev = window.browserAPI && window.browserAPI.isProduction === false;

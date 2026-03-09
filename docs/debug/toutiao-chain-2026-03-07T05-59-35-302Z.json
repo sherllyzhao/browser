@@ -1,0 +1,43 @@
+{
+  "success": true,
+  "chain": {
+    "coverUploaded": false,
+    "scheduleOpened": true,
+    "secondConfirmSeen": false
+  },
+  "toast": "",
+  "log": [
+    {
+      "step": "title-filled",
+      "title": "链路压测-2026/3/7 13:59:42",
+      "finalValue": "链路压测-2026/3/7 13:59:42"
+    },
+    {
+      "step": "editor-filled",
+      "len": 35
+    },
+    {
+      "step": "cover-trigger-not-found"
+    },
+    {
+      "step": "cover-file-input-not-found"
+    },
+    {
+      "step": "schedule-clicked",
+      "opened": true,
+      "signalCount": 19
+    },
+    {
+      "step": "schedule-cancel-not-found"
+    },
+    {
+      "step": "publish-btn-clicked",
+      "text": "预览并发布",
+      "disabled": false
+    },
+    {
+      "step": "second-confirm-not-detected",
+      "toastAfterClick": ""
+    }
+  ]
+}

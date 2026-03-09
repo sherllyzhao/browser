@@ -392,12 +392,6 @@
 
                                 console.log('[知乎发布] 🖼️ 发现', images.length, '张图片需要处理');
 
-                                // 🔑 等待 cookies 完全加载(避免第一次请求 403)
-                                if (images.length > 0) {
-                                    console.log('[知乎发布] ⏳ 等待 1 秒确保 cookies 完全加载...');
-                                    await new Promise(resolve => setTimeout(resolve, 1000));
-                                }
-
                                 for (const img of images) {
                                     const originalSrc = img.src;
                                     if (!originalSrc) {

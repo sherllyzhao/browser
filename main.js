@@ -26,6 +26,49 @@ function getAppIconPath() {
   return path.join(__dirname, 'icon.ico');
 }
 
+// 使用与 Electron 内核版本一致的标准 Chrome UA，避免 sec-ch-ua 与 UA 主版本不一致触发风控
+function buildStandardUserAgent() {
+  const chromeVersion = process.versions.chrome || '106.0.0.0';
+  const major = String(chromeVersion).split('.')[0] || '106';
+  if (process.platform === 'darwin') {
+    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  }
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+const STANDARD_USER_AGENT = buildStandardUserAgent();
+const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
+
+function isFirstPartyHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host === 'localhost' ||
+         host === '127.0.0.1' ||
+         host === '172.16.6.17' ||
+         host === 'china9.cn' ||
+         host.endsWith('.china9.cn');
+}
+
+function isFirstPartyUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isFirstPartyHost(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function setHeaderCaseInsensitive(headers, key, value) {
+  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase()) || key;
+  headers[targetKey] = value;
+}
+
+function removeHeaderCaseInsensitive(headers, key) {
+  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase());
+  if (targetKey) {
+    delete headers[targetKey];
+  }
+}
+
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
 const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
@@ -68,6 +111,89 @@ if (process.platform === 'win32') {
                       execPathLower.includes('\\windows\\');
   isPortable = isProduction && !isInstalled;
 }
+// 登录过期提示防抖，避免多处导航事件重复弹窗
+let lastTokenExpiredNoticeAt = 0;
+function showTokenExpiredNotice(source = 'unknown', expiresAt) {
+  const nowMs = Date.now();
+  if (nowMs - lastTokenExpiredNoticeAt < 10 * 1000) {
+    return;
+  }
+  lastTokenExpiredNoticeAt = nowMs;
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const expireText = expiresAt
+    ? new Date(expiresAt * 1000).toLocaleString()
+    : '未知';
+
+  dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: '登录已过期',
+    message: '登录状态已过期，请重新登录',
+    detail: `检测来源: ${source}\n过期时间: ${expireText}`,
+    buttons: ['确定'],
+    defaultId: 0,
+    noLink: true
+  }).catch(err => {
+    console.error('[Auth Notice] 显示登录过期提示失败:', err);
+  });
+}
+
+function isLikelyLoginUrl(url = '') {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return lower.includes('/login') ||
+         lower.includes('#/login') ||
+         lower.includes('passport.') ||
+         lower.includes('/passport') ||
+         lower.includes('signin') ||
+         lower.includes('sign-in') ||
+         lower.includes('/sso') ||
+         lower.includes('/oauth') ||
+         lower.includes('qrlogin') ||
+         lower.includes('/account/login');
+}
+
+function isLikelyPublishUrl(url = '') {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return lower.includes('/publish') ||
+         lower.includes('/edit') ||
+         lower.includes('/editor') ||
+         lower.includes('/create') ||
+         lower.includes('/write') ||
+         lower.includes('/article') ||
+         lower.includes('/contentmanagement/news/addarticle') ||
+         lower.includes('/article-publish');
+}
+
+function showPublishLoginRedirectNotice(targetWindow, payload = {}) {
+  const { platform = 'unknown', expectedUrl = '', actualUrl = '' } = payload;
+  const ownerWindow = targetWindow && !targetWindow.isDestroyed() ? targetWindow : mainWindow;
+  if (!ownerWindow || ownerWindow.isDestroyed()) return;
+
+  dialog.showMessageBox(ownerWindow, {
+    type: 'warning',
+    title: '发布窗口登录状态异常',
+    message: '检测到发布窗口已跳转，可能登录状态失效',
+    detail: `平台: ${platform}\n请在该平台窗口重新登录后重试发布。\n\n预期地址: ${expectedUrl}\n实际地址: ${actualUrl}`,
+    buttons: ['确定'],
+    defaultId: 0,
+    noLink: true
+  }).catch(err => {
+    console.error('[Publish Auth Notice] 显示提示失败:', err);
+  });
+}
+
+// 检测是否为便携版（通过检查是否在标准安装目录）
+// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
+const execPathLower = process.execPath.toLowerCase();
+const isInstalled = execPathLower.includes('program files') ||
+                    execPathLower.includes('programdata') ||
+                    execPathLower.includes('\\windows\\');
+const isPortable = isProduction && !isInstalled;
 
 // 设置用户数据路径
 if (isProduction) {
@@ -142,6 +268,21 @@ function addContentTypeFix(targetSession, label) {
     callback({ responseHeaders });
   });
   console.log(`[Session] ✅ ${label} Content-Type 修复 + Set-Cookie SameSite 修复拦截器已添加`);
+}
+
+function addIdentityHeaderPolicy(targetSession, label) {
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = details.requestHeaders || {};
+    if (isFirstPartyUrl(details.url)) {
+      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse', '1');
+      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version', APP_VERSION);
+    } else {
+      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse');
+      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version');
+    }
+    callback({ requestHeaders: headers });
+  });
+  console.log(`[Session] ✅ ${label} 身份头策略已添加（自有域名带标记，第三方标准 UA）`);
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -767,6 +908,7 @@ function createWindow() {
 
   // 🔴 修复外部页面 CSS/JS 乱码
   addContentTypeFix(persistentSession, '持久化 session');
+  addIdentityHeaderPolicy(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -779,12 +921,9 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
-  const customUA = process.platform === 'darwin'
-    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
-    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-  persistentSession.setUserAgent(customUA);
-  console.log('User-Agent set to:', customUA);
+  // 主窗口保持带标记 UA，供自有系统识别浏览器来源
+  persistentSession.setUserAgent(TAGGED_USER_AGENT);
+  console.log('User-Agent set to:', TAGGED_USER_AGENT);
 
   // 监听下载事件
   persistentSession.on('will-download', (event, item, webContents) => {
@@ -1053,6 +1192,7 @@ function createWindow() {
       console.log('[BrowserView] 没有有效的登录 token，显示登录页');
       if (savedToken && savedExpires) {
         console.log('[BrowserView] Token 已过期，过期时间:', new Date(savedExpires * 1000).toLocaleString());
+        showTokenExpiredNotice('startup-check', savedExpires);
         // 清除过期的 token
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1615,9 +1755,13 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
+      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        if (isTokenExpired) {
+          showTokenExpiredNotice('did-navigate-in-page', savedExpires);
+        }
         // 清除过期数据
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1680,9 +1824,13 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
+      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
+        if (isTokenExpired) {
+          showTokenExpiredNotice('did-navigate', savedExpires);
+        }
         // 清除过期数据
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1784,6 +1932,14 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
+
+    // 子窗口统一使用标准 UA，避免第三方平台风控将其识别为改写浏览器
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Created] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Created] 设置子窗口 User-Agent 失败:', e?.message || e);
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -2086,7 +2242,7 @@ async function validateAndCleanupUserData() {
 
 // createTray 创建托盘图标
 function createTray() {
-  const icon = getAppIconPath()
+  const icon = path.join(__dirname, 'icon.ico')
   tray = new Tray(icon)
 
   const contextMenu = Menu.buildFromTemplate([
@@ -2118,13 +2274,11 @@ app.commandLine.appendSwitch('disable-extensions');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 // 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
 app.commandLine.appendSwitch('no-sandbox');
-if (process.platform === 'win32') {
-  // 🛡️ Windows 安全软件兼容性优化（电脑管家/360等）
-  // 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
-  app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-  app.commandLine.appendSwitch('in-process-gpu');
-}
+// 🛡️ 安全软件兼容性优化（电脑管家/360等）
+// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
+app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+app.commandLine.appendSwitch('in-process-gpu');
 // 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
@@ -2348,7 +2502,7 @@ app.whenReady().then(async () => {
 
       // 直接使用简化的prompt对话框
       const { BrowserWindow } = require('electron');
-      const appIcon = nativeImage.createFromPath(getAppIconPath());
+      const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
 
       const inputWindow = new BrowserWindow({
         width: 500,
@@ -4031,12 +4185,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
-      // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      const customUA = process.platform === 'darwin'
-    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
-    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-      windowSession.setUserAgent(customUA);
+      // 临时 session 使用标准 UA（不带标记，避免第三方平台风控）
+      windowSession.setUserAgent(STANDARD_USER_AGENT);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
+
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
@@ -4050,6 +4202,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
+      addIdentityHeaderPolicy(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4070,6 +4223,14 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
       }
     });
+
+    // open-new-window 创建的发布/授权窗口统一使用标准 UA
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Manager] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Manager] 设置子窗口 User-Agent 失败:', e?.message || e);
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -4092,6 +4253,8 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
+    const openedAt = Date.now();
+    let hasShownRedirectAuthNotice = false;
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -4282,6 +4445,123 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         }
       }
       await injectScriptForUrl(newWindow.webContents, navUrl);
+    });
+
+    // 🔑 Redirect 检测：当页面导航离开预期 URL 时通知首页
+    // 覆盖场景：服务端 302 重定向、JS window.location 跳转、表单提交跳转
+    const expectedUrl = url;
+    newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      // 跳过中间页（预设 localStorage 时的 favicon.ico 加载）
+      if (navUrl === 'about:blank' || navUrl.endsWith('/favicon.ico')) return;
+
+      try {
+        const expected = new URL(expectedUrl);
+        const actual = new URL(navUrl);
+
+        // 比较 origin + pathname，忽略 query string 和 hash
+        const isSameOrigin = actual.origin === expected.origin;
+        const isSamePath = actual.pathname === expected.pathname;
+
+        if (!isSameOrigin || !isSamePath) {
+          console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
+          const windowId = newWindow.id;
+
+          // 1. 自动上报后台接口（异步，不阻塞）
+          (async () => {
+            try {
+              const publishDataKey = `publish_data_window_${windowId}`;
+              const publishData = globalStorage[publishDataKey];
+              const publishId = publishData?.video?.dyPlatform?.id;
+
+              if (publishId) {
+                const statisticsUrl = `${config.domains.apiDomain}/api/mediaauth/tjlogerror`;
+                const errorData = {
+                  id: publishId,
+                  status_text: `页面被重定向: ${navUrl}`,
+                  context: {
+                    url: navUrl,
+                    expectedUrl: expectedUrl,
+                    timestamp: new Date().toISOString(),
+                    platform: 'redirect-detection',
+                  }
+                };
+                const scanData = { data: JSON.stringify(errorData) };
+                const postData = JSON.stringify(scanData);
+                const urlObj = new URL(statisticsUrl);
+                const requestModule = urlObj.protocol === 'https:' ? https : http;
+
+                const options = {
+                  hostname: urlObj.hostname,
+                  port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                  path: urlObj.pathname,
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(postData),
+                  }
+                };
+
+                const req = requestModule.request(options, (res) => {
+                  console.log(`[Window Redirect] ✅ 上报后台成功, statusCode: ${res.statusCode}`);
+                });
+                req.on('error', (e) => {
+                  console.error(`[Window Redirect] ❌ 上报后台失败:`, e.message);
+                });
+                req.write(postData);
+                req.end();
+
+                console.log(`[Window Redirect] 📤 已上报后台, publishId: ${publishId}`);
+              } else {
+                console.log('[Window Redirect] ⚠️ 未找到 publishId，跳过上报');
+              }
+            } catch (err) {
+              console.error('[Window Redirect] ❌ 上报异常:', err);
+            }
+          })();
+
+          // 2. 通知首页（通过 postMessage，复用现有的 onMessageFromOtherPage 通道）
+          if (browserView && !browserView.webContents.isDestroyed()) {
+            const redirectMsg = JSON.stringify({
+              type: 'publish-redirected',
+              windowId: windowId,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            browserView.webContents.executeJavaScript(`
+              window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${redirectMsg} }, '*');
+            `).catch(() => {});
+
+            // 同时发送 window-redirected 事件（供 onWindowRedirected 回调使用）
+            browserView.webContents.send('window-redirected', {
+              windowId: windowId,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            console.log('[Window Redirect] ✅ 已通知首页页面发生跳转');
+          }
+
+          // 发布窗口打开后短时间内被重定向到登录/非发布页，提示用户重新登录
+          const accountInfo = windowAccountMap.get(newWindow.id);
+          const openedRecently = Date.now() - openedAt < 45 * 1000;
+          const loginRedirect = isLikelyLoginUrl(navUrl);
+          const publishToNonPublishRedirect = isLikelyPublishUrl(expectedUrl) && !isLikelyPublishUrl(navUrl);
+
+          if (!hasShownRedirectAuthNotice && accountInfo && openedRecently && (loginRedirect || publishToNonPublishRedirect)) {
+            hasShownRedirectAuthNotice = true;
+            showPublishLoginRedirectNotice(newWindow, {
+              platform: accountInfo.platform,
+              expectedUrl,
+              actualUrl: navUrl
+            });
+          }
+        }
+      } catch (e) {
+        // URL 解析失败，忽略
+      }
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
@@ -4881,6 +5161,33 @@ ipcMain.handle('global-storage-clear', async () => {
   return { success: true };
 });
 
+// 调试：将内容页面传来的文本保存到 userData/debug-dumps 目录
+ipcMain.handle('write-debug-file', async (event, payload = {}) => {
+  try {
+    const prefixRaw = typeof payload.prefix === 'string' ? payload.prefix : 'debug';
+    const safePrefix = prefixRaw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'debug';
+    const content = typeof payload.content === 'string'
+      ? payload.content
+      : JSON.stringify(payload.content ?? null, null, 2);
+
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${safePrefix}-${timestamp}.json`;
+    const filePath = path.join(dumpDir, fileName);
+    fs.writeFileSync(filePath, content, 'utf8');
+
+    console.log('[Debug Dump] ✅ 已写入文件:', filePath, `(${content.length} chars)`);
+    return { success: true, filePath, fileName, size: content.length };
+  } catch (err) {
+    console.error('[Debug Dump] ❌ 写入失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 视频下载功能（通过主进程绕过跨域限制） ==========
 // 优化：添加文件大小限制，防止内存溢出
 const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB 限制
@@ -5310,11 +5617,8 @@ function getAccountSession(platform, accountId) {
   // 创建新的持久化 session（禁用 HTTP 缓存，避免 CSS 渲染异常）
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
-  // 配置 User-Agent（与主 session 保持一致）
-  const customUA = process.platform === 'darwin'
-    ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0'
-    : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
-  accountSession.setUserAgent(customUA);
+  // 账号 session 使用标准 UA（不带标记，避免第三方平台风控）
+  accountSession.setUserAgent(STANDARD_USER_AGENT);
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
   accountSession.webRequest.onBeforeRequest((details, callback) => {
@@ -5331,6 +5635,7 @@ function getAccountSession(platform, accountId) {
   accountSessions.set(partitionName, accountSession);
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
   addContentTypeFix(accountSession, `账号 session ${partitionName}`);
+  addIdentityHeaderPolicy(accountSession, `账号 session ${partitionName}`);
 
   return accountSession;
 }
@@ -5371,6 +5676,7 @@ function ensurePlatformAccounts() {
       douyin: [],
       xiaohongshu: [],
       baijiahao: [],
+      toutiao: [],
       weixin: [],
       shipinhao: []
     };
@@ -5627,6 +5933,7 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
       douyin: ['douyin.com'],
       xiaohongshu: ['xiaohongshu.com'],
       baijiahao: ['baidu.com'],
+      toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
       weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
       shipinhao: ['channels.weixin.qq.com']
     };
@@ -5688,6 +5995,7 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
       douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
       xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
       baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
+      toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
       weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
       shipinhao: ['wxuin', 'pass_ticket']
     };
