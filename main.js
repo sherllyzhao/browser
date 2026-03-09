@@ -187,14 +187,6 @@ function showPublishLoginRedirectNotice(targetWindow, payload = {}) {
   });
 }
 
-// 检测是否为便携版（通过检查是否在标准安装目录）
-// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
-const execPathLower = process.execPath.toLowerCase();
-const isInstalled = execPathLower.includes('program files') ||
-                    execPathLower.includes('programdata') ||
-                    execPathLower.includes('\\windows\\');
-const isPortable = isProduction && !isInstalled;
-
 // 设置用户数据路径
 if (isProduction) {
   if (isPortable && process.platform === 'win32') {
