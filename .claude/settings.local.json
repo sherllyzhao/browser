@@ -131,7 +131,14 @@
       "Bash(more:*)",
       "Bash(npx sharp-cli:*)",
       "Bash(copy \"D:\\\\浏览器\\\\运营助手\\\\icon.png\" \"D:\\\\浏览器\\\\运营助手\\\\icon-old.png.bak\")",
-      "Bash(copy \"D:\\\\浏览器\\\\运营助手\\\\icon-mac.png\" \"D:\\\\浏览器\\\\运营助手\\\\icon.png\")"
+      "Bash(copy \"D:\\\\浏览器\\\\运营助手\\\\icon-mac.png\" \"D:\\\\浏览器\\\\运营助手\\\\icon.png\")",
+      "Bash(git push:*)",
+      "Bash(git -c http.sslVerify=false push origin ios)",
+      "Bash(git -c http.sslVerify=false push origin v1.0.7)",
+      "Bash(git -c http.sslVerify=false push origin --delete v1.0.7)",
+      "Bash(git tag:*)",
+      "Bash(git -c http.sslVerify=false push origin --delete v1.0.6)",
+      "Bash(git -c http.sslVerify=false push origin v1.0.6)"
     ],
     "deny": [],
     "ask": []
