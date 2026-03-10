@@ -13,6 +13,8 @@ user-agent是对的，不要改
 所有带-creator.js的文件是授权的注入脚本
 所有带-publish.js的文件是发布的注入脚本
 
+发布窗口打开在content-preload.js中的sendToOtherPage里，不要去找vue了
+
 ## Project Overview
 
 This is a custom Electron-based programmable browser with Chromium engine, featuring JavaScript injection and inter-page communication capabilities. The browser is designed for automation, testing, and operational tasks with a fixed homepage at `http://localhost:5173/`.

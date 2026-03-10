@@ -63,6 +63,15 @@
       "cookies": {
         "domain": "qq.com"
       }
+    },
+    "toutiao": {
+      "name": "头条号",
+      "publishPagePath": "/profile_v4/graphic/publish",
+      "publishPageUrl": "https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc",
+      "domain": "mp.toutiao.com",
+      "cookies": {
+        "domain": "toutiao.com"
+      }
     }
   },
   "注释": [

@@ -220,7 +220,7 @@
               }
 
               sendMessageToParent('授权成功，刷新数据');
-              setTimeout(() => window.browserAPI.closeCurrentWindow(), 1000);
+              setTimeout(() => window.browserAPI.closeCurrentWindow(), 10000);
             } else {
               throw new Error(apiResult.msg || 'Data collection failed');
             }

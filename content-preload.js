@@ -140,7 +140,8 @@ const config = {
     shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
     txh: 'https://om.qq.com/main/creation/article',
     xl: 'https://card.weibo.com/article/v5/editor#/draft',
-    zh: 'https://zhuanlan.zhihu.com/write'
+    zh: 'https://zhuanlan.zhihu.com/write',
+    tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
   },
   platformIdMap: {
     1: 'dy',    // 抖音
@@ -152,6 +153,7 @@ const config = {
     10: 'txh',  // 腾讯号
     11: 'xl',   // 新浪号
     12: 'zh',   // 知乎
+    14: 'tt',   // 头条号
   },
   platformNameMap: {
     'dy': 'douyin',
@@ -163,7 +165,8 @@ const config = {
     'shh': 'sohuhao',
     'txh': 'tengxunhao',
     'xl': 'xinlang',
-    'zh': 'zhihu'
+    'zh': 'zhihu',
+    'tt': 'toutiao'
   }
 };
 
@@ -572,6 +575,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
   getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
   // 清空所有数据
   clearGlobalData: () => ipcRenderer.invoke('global-storage-clear'),
+  // 写调试文件到 userData/debug-dumps
+  writeDebugFile: (payload) => ipcRenderer.invoke('write-debug-file', payload),
 
   // ========== 多账号管理 API ==========
   // 获取指定平台的所有账号
