@@ -13,6 +13,8 @@
     return;
   }
 
+  alert(123);
+
   // 头条发布页是富文本编辑器，跳过异常渲染检测，避免误报
   window.__TOUTIAO_PUBLISH_SCRIPT_LOADED__ = true;
 
@@ -831,100 +833,49 @@
       if (!editor) {
         throw new Error('未找到正文编辑器');
       }
-      if (typeof editor.focus === 'function') {
-        editor.focus();
-      }
-      await delay(300);
 
-      const lines = plain.split('\n').map(line => line.trim()).filter(Boolean);
-      const fullText = lines.join('\n');
+      // 聚焦编辑器
+      editor.focus();
+      await delay(200);
 
-      // 策略1: 模拟用户输入 - 逐字符 insertText，ProseMirror 会正确处理
-      let success = false;
+      // 清空现有内容（selectAll + delete）
+      document.execCommand('selectAll');
+      document.execCommand('delete');
+      await delay(200);
+
+      // 使用 clipboard API 模拟粘贴纯文本
+      // 让页面自己决定如何格式化这个内容
       try {
-        // 清空现有内容
-        document.execCommand('selectAll');
-        document.execCommand('delete');
-        await delay(200);
+        const clipboardData = new DataTransfer();
+        clipboardData.setData('text/plain', plain);
 
-        // 逐行输入，每行后插入换行
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          // 逐字符输入（模拟真实打字）
-          for (let j = 0; j < line.length; j++) {
-            document.execCommand('insertText', false, line[j]);
-          }
-          // 行尾插入段落分隔
-          if (i < lines.length - 1) {
-            document.execCommand('insertParagraph');
-          }
-          await delay(50); // 每行间隔，让 ProseMirror 有时间同步
-        }
-
-        await delay(500);
-        const checkText = (editor.innerText || editor.textContent || '').trim();
-        if (checkText.length > plain.length * 0.8) { // 允许 20% 误差（空格、换行差异）
-          success = true;
-          console.log(`${LOG_PREFIX} ✅ 正文设置成功(逐字符输入)，长度:`, checkText.length);
-        }
-      } catch (cmdErr) {
-        console.warn(`${LOG_PREFIX} ⚠️ 逐字符输入失败:`, cmdErr.message);
-      }
-
-      // 策略2: clipboard paste 模拟
-      if (!success) {
-        try {
-          editor.focus();
-          document.execCommand('selectAll');
-          document.execCommand('delete');
-          await delay(100);
-          const htmlToInsert = lines.map(l => `<p>${l}</p>`).join('');
-          const dt = new DataTransfer();
-          dt.setData('text/html', htmlToInsert);
-          dt.setData('text/plain', fullText);
-          const pasteEvt = new ClipboardEvent('paste', {
-            bubbles: true, cancelable: true, clipboardData: dt
-          });
-          editor.dispatchEvent(pasteEvt);
-          await delay(500);
-          const checkText2 = (editor.innerText || editor.textContent || '').trim();
-          if (checkText2.length > plain.length * 0.8) {
-            success = true;
-            console.log(`${LOG_PREFIX} ✅ 正文设置成功(clipboard paste)，长度:`, checkText2.length);
-          }
-        } catch (pasteErr) {
-          console.warn(`${LOG_PREFIX} ⚠️ clipboard paste 失败:`, pasteErr.message);
-        }
-      }
-
-      // 策略3: DOM 直接操作兜底
-      if (!success) {
-        console.log(`${LOG_PREFIX} ℹ️ 使用 DOM 直接操作兜底`);
-        editor.innerHTML = '';
-        lines.forEach(line => {
-          const p = document.createElement('p');
-          p.textContent = line;
-          editor.appendChild(p);
+        const pasteEvent = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: false,
+          clipboardData: clipboardData
         });
-        editor.dispatchEvent(new InputEvent('input', {
-          bubbles: true, cancelable: true, inputType: 'insertText', data: fullText
-        }));
-        editor.dispatchEvent(new Event('change', { bubbles: true }));
-        await delay(300);
-      }
 
-      // 最终验证
-      const currentText = (editor.innerText || editor.textContent || '').trim();
-      if (!currentText || currentText.length < plain.length * 0.5) {
-        throw new Error(`正文设置后长度不足: ${currentText.length} < ${plain.length * 0.5}`);
-      }
-      if (!success) {
-        console.log(`${LOG_PREFIX} ✅ 正文设置成功(DOM兜底)，长度:`, currentText.length);
-      }
+        const pasteResult = editor.dispatchEvent(pasteEvent);
+        console.log(`${LOG_PREFIX} 📋 粘贴事件已触发，propagate=${pasteResult}`);
 
-      // 额外等待，让页面 JavaScript 有时间计算 content_word_cnt
-      await delay(800);
-    }, 4, 1500);
+        // 等待编辑器处理粘贴
+        await delay(800);
+
+        const currentText = (editor.innerText || editor.textContent || '').trim();
+        if (!currentText) {
+          throw new Error('粘贴后内容仍为空');
+        }
+
+        console.log(`${LOG_PREFIX} ✅ 内容已粘贴，文本长度: ${currentText.length} 字`);
+
+        // 最后等待页面完成所有处理（字数统计、数据绑定等）
+        await delay(1200);
+
+      } catch (err) {
+        console.error(`${LOG_PREFIX} ❌ 粘贴操作失败:`, err.message);
+        throw err;
+      }
+    }, 3, 2500);
   };
 
   const tryUploadCover = async (coverUrl, title) => {
@@ -1340,7 +1291,7 @@
 
       await delay(1500);
       await fillTitle(title);
-      await fillContent(content, intro);
+      // await fillContent(content, intro);  // 临时注释，测试空内容发布
       await tryUploadCover(cover, title);
       await trySetSchedule(sendSet, sendTime);
       // 给平台自动存草稿留出稳定窗口，避免立即提交触发 7050
