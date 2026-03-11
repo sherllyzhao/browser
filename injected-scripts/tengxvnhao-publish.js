@@ -556,7 +556,7 @@
                                             }
                                         }
                                     }
-                                    await delay(2000); // 等待渲染完成
+                                    await delay(1000); // 等待渲染完成
 
                                     // 封面上传弹窗弹出后选中还有本地上传的tab
                                     const uploadTabs = document.querySelectorAll(".omui-dialog .omui-tab__nav .omui-tab__label");

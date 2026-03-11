@@ -230,7 +230,7 @@
                                     cookiesData = document.cookie;
                                 }
 
-                                const userInfoResult = await fetch('http://mp.163.com/wemedia/navinfo.do', {
+                                const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
                                     method: 'GET',
                                     credentials: 'include',
                                     headers: {
@@ -241,7 +241,7 @@
                                 if(userInfoRes.code === 1){
                                     const userInfo = userInfoRes.data;
                                     console.log("🚀 ~  ~ userInfo: ", userInfo);
-                                    const publishArticleCountResult = await fetch('http://mp.163.com/wemedia/content/manage/list.do', {
+                                    const publishArticleCountResult = await fetch('https://mp.163.com/wemedia/content/manage/list.do', {
                                         method: 'POST',
                                         body: new URLSearchParams({
                                             pageNo: 1,
@@ -345,7 +345,7 @@
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
                                             window.browserAPI.closeCurrentWindow();
-                                        }, 1000);
+                                        }, 10000);
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }

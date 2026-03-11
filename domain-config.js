@@ -198,6 +198,7 @@ const platformApis = {
   douyin: '/api/mediaauth/douyininfo',
   xiaohongshu: '/api/mediaauth/xhsinfo',
   baijiahao: '/api/mediaauth/bjhinfo',
+  toutiao: '/api/mediaauth/ttinfo',
   weixin: '/api/mediaauth/sphinfo',
   shipinhao: '/api/mediaauth/sphinfo'
 };
@@ -207,6 +208,7 @@ const platformDomains = {
   douyin: ['douyin.com'],
   xiaohongshu: ['xiaohongshu.com'],
   baijiahao: ['baidu.com'],
+  toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
   weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
   shipinhao: ['channels.weixin.qq.com']
 };
@@ -215,6 +217,7 @@ const platformDomains = {
 const platformLoginCookies = {
   douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
   xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id'],
+  toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
   weixin: ['wxuin', 'pass_ticket'],
   baijiahao: ['BDUSS', 'STOKEN'],
   shipinhao: ['wxuin', 'pass_ticket']
@@ -226,6 +229,7 @@ const platformNameMap = {
   'xhs': 'xiaohongshu',
   'sph': 'shipinhao',
   'bjh': 'baijiahao',
+  'tt': 'toutiao',
   'wx': 'weixin'
 };
 
@@ -234,7 +238,9 @@ const platformIdMap = {
   1: 'dy',    // 抖音
   4: 'bjh',   // 百家号
   6: 'xhs',   // 小红书
-  7: 'sph'    // 视频号
+  7: 'sph',   // 视频号
+  13: 'tt',   // 头条号
+  14: 'tt'    // 头条号（兼容）
 };
 
 // 各平台发布页 URL
@@ -242,7 +248,8 @@ const platformPublishUrls = {
   dy: 'https://creator.douyin.com/creator-micro/content/upload',
   xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
   sph: 'https://channels.weixin.qq.com/platform/post/create',
-  bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+  bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
+  tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
 };
 
 // 占位页面文件名（用于权限检查、未登录等场景）
