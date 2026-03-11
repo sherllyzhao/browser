@@ -982,11 +982,16 @@ const siteDropdownEl = document.getElementById('siteDropdown');
 
 // Token 过期自动跳转登录页（防重复跳转）
 let isRedirectingToLogin = false;
+let isPromptingTokenExpired = false;
 async function handleTokenExpired() {
   if (isRedirectingToLogin) return;
   isRedirectingToLogin = true;
   console.warn('[Auth] Token 已过期，自动跳转登录页...');
   try {
+    if (!isPromptingTokenExpired) {
+      isPromptingTokenExpired = true;
+      alert('登录已过期，请重新登录。');
+    }
     if (window.electronAPI && window.electronAPI.removeGlobalData) {
       await window.electronAPI.removeGlobalData('user_info');
       await window.electronAPI.removeGlobalData('login_token');
@@ -1003,9 +1008,11 @@ async function handleTokenExpired() {
       await window.electronAPI.clearDomainCookies('china9.cn');
     }
     await window.electronAPI.navigateToLogin();
+    setTimeout(() => { isPromptingTokenExpired = false; }, 2000);
   } catch (err) {
     console.error('[Auth] 跳转登录页失败:', err);
     isRedirectingToLogin = false;
+    isPromptingTokenExpired = false;
   }
 }
 

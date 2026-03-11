@@ -18,6 +18,13 @@ const isProduction = app.isPackaged; // 是否生产环境
 const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
+let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isShowingSessionExpiredDialog = false;
+let isShowingPageErrorDialog = false;
+let lastPageErrorDialogAt = 0;
+let blankScreenConsecutive = 0;
+const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
+const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -98,6 +105,112 @@ function loadLocalPage(webContents, pageName) {
   const filePath = path.join(__dirname, pageName);
   console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
   return webContents.loadFile(filePath);
+}
+
+function shouldShowPageErrorDialog() {
+  const now = Date.now();
+  if (now - lastPageErrorDialogAt < 15000) return false;
+  lastPageErrorDialogAt = now;
+  return true;
+}
+
+async function showSessionExpiredDialog(source) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (isShowingSessionExpiredDialog) return;
+  isShowingSessionExpiredDialog = true;
+  try {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: '登录已过期',
+      message: '登录已过期，请重新登录。',
+      detail: source ? `来源：${source}` : undefined,
+      buttons: ['回到登录页'],
+      defaultId: 0,
+      noLink: true
+    });
+  } finally {
+    isShowingSessionExpiredDialog = false;
+  }
+}
+
+async function showPageErrorDialog({ title, message, detail, buttons }) {
+  if (!mainWindow || mainWindow.isDestroyed()) return { response: 2 };
+  if (isShowingPageErrorDialog) return { response: 2 };
+  if (!shouldShowPageErrorDialog()) return { response: 2 };
+  isShowingPageErrorDialog = true;
+  try {
+    return await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title,
+      message,
+      detail,
+      buttons: buttons || ['重新加载', '回到登录页', '关闭'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    });
+  } finally {
+    isShowingPageErrorDialog = false;
+  }
+}
+
+async function navigateToLoginInternal(reason) {
+  if (!browserView || browserView.webContents.isDestroyed()) return;
+  console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
+
+  // 🔑 退出登录时清除所有登录相关数据
+  console.log('[Main] 清除退出登录数据...');
+
+  // 1. 清除 globalStorage 中的登录数据
+  delete globalStorage.last_page_url;
+  delete globalStorage.login_token;
+  delete globalStorage.login_expires;
+  delete globalStorage.login_gcc;
+  delete globalStorage.company_id;
+  delete globalStorage.user_info;
+  delete globalStorage.siteInfo;
+  delete globalStorage.current_site;
+  delete globalStorage.current_site_id;
+  delete globalStorage.current_site_name;
+  saveGlobalStorage();
+  console.log('[Main] ✅ 已清除 globalStorage 数据');
+
+  // 2. 清除 Cookies（token, access_token, site_id 等）
+  try {
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+    console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+    // 需要清除的 cookie 名称列表
+    const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+    let deletedCount = 0;
+    for (const cookie of cookies) {
+      if (cookiesToClear.includes(cookie.name)) {
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+        try {
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          deletedCount++;
+          console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+        } catch (err) {
+          console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+        }
+      }
+    }
+
+    // 也清除 localhost 的 cookies
+    await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+    await ses.flushStorageData();
+    console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+  } catch (err) {
+    console.error('[Main] ❌ 清除 cookies 失败:', err);
+  }
+
+  loadLocalPage(browserView.webContents, 'login.html');
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
@@ -860,24 +973,46 @@ function createWindow() {
     console.error('[BrowserView] ❌ 渲染进程已退出！');
     console.error('[BrowserView] 退出原因:', details.reason);
     console.error('[BrowserView] 退出码:', details.exitCode);
-    // 尝试重新加载
     if (details.reason !== 'killed') {
-      console.log('[BrowserView] 🔄 尝试重新加载页面...');
-      setTimeout(() => {
-        if (browserView && !browserView.webContents.isDestroyed()) {
-          loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+      (async () => {
+        const result = await showPageErrorDialog({
+          title: '页面异常',
+          message: '页面渲染进程异常退出，是否尝试恢复？',
+          detail: `原因: ${details.reason} 退出码: ${details.exitCode}`
+        });
+        if (result.response === 0) {
+          try {
+            browserView.webContents.reload();
+          } catch (err) {
             console.error('[BrowserView] ❌ 重新加载失败:', err);
-          });
+          }
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('render_process_gone');
         }
-      }, 1000);
+      })();
     }
   });
 
-  browserView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+  browserView.webContents.on('did-fail-load', async (event, errorCode, errorDescription, validatedURL) => {
     console.error('[BrowserView] ❌ 页面加载失败！');
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
     console.error('[BrowserView] 失败 URL:', validatedURL);
+    if (errorCode === -3) return; // 忽略导航中止
+    const result = await showPageErrorDialog({
+      title: '页面加载失败',
+      message: '页面加载失败，是否重试？',
+      detail: `错误码: ${errorCode} 描述: ${errorDescription}`
+    });
+    if (result.response === 0) {
+      try {
+        browserView.webContents.reload();
+      } catch (err) {
+        console.error('[BrowserView] ❌ 重试加载失败:', err);
+      }
+    } else if (result.response === 1) {
+      await navigateToLoginInternal('did_fail_load');
+    }
   });
 
   browserView.webContents.on('unresponsive', () => {
@@ -890,6 +1025,45 @@ function createWindow() {
 
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
+
+  const blankCheckInterval = setInterval(async () => {
+    if (!browserView || browserView.webContents.isDestroyed()) return;
+    if (browserView.webContents.isLoading()) return;
+    const currentUrl = browserView.webContents.getURL();
+    if (!currentUrl || currentUrl === 'about:blank') return;
+
+    try {
+      const bodyHTML = await browserView.webContents.executeJavaScript(
+        'document.body ? document.body.innerHTML.trim().length : 0',
+        true
+      );
+      if (bodyHTML === 0) {
+        blankScreenConsecutive += 1;
+      } else {
+        blankScreenConsecutive = 0;
+      }
+
+      if (blankScreenConsecutive >= BLANK_SCREEN_CONSECUTIVE_THRESHOLD) {
+        blankScreenConsecutive = 0;
+        const result = await showPageErrorDialog({
+          title: '页面可能空白',
+          message: '检测到页面可能空白，是否刷新？',
+          detail: `URL: ${currentUrl}`
+        });
+        if (result.response === 0) {
+          browserView.webContents.reload();
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('blank_screen_check');
+        }
+      }
+    } catch (err) {
+      console.warn('[BrowserView] ⚠️ 白屏检测执行失败:', err.message);
+    }
+  }, BLANK_SCREEN_CHECK_INTERVAL);
+
+  mainWindow.on('closed', () => {
+    clearInterval(blankCheckInterval);
+  });
 
   // 监听窗口大小变化
   mainWindow.on('resize', () => {
@@ -1051,6 +1225,7 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
+        await showSessionExpiredDialog('启动校验');
       }
     }
 
@@ -1085,9 +1260,16 @@ function createWindow() {
             );
             if (bodyHTML === 0) {
               console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
-              loadLocalPage(browserView.webContents, 'login.html').catch(err => {
-                console.error('[BrowserView] ❌ 白屏恢复重载失败:', err);
+              const result = await showPageErrorDialog({
+                title: '页面可能空白',
+                message: '检测到页面可能空白，是否刷新？',
+                detail: '启动后白屏检测触发'
               });
+              if (result.response === 0) {
+                browserView.webContents.reload();
+              } else if (result.response === 1) {
+                await navigateToLoginInternal('blank_screen_startup');
+              }
             } else {
               console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
             }
@@ -1611,12 +1793,12 @@ function createWindow() {
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
+        if (!isHandlingExpiredToken) {
+          isHandlingExpiredToken = true;
+          await showSessionExpiredDialog('页面内跳转');
+          await navigateToLoginInternal('token_expired_in_page');
+          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
+        }
         return;
       }
     }
@@ -1676,12 +1858,12 @@ function createWindow() {
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
+        if (!isHandlingExpiredToken) {
+          isHandlingExpiredToken = true;
+          await showSessionExpiredDialog('页面导航');
+          await navigateToLoginInternal('token_expired_navigate');
+          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
+        }
         return;
       }
     }
@@ -2744,63 +2926,7 @@ ipcMain.handle('navigate-to', async (event, url) => {
 
 // 导航到登录页
 ipcMain.handle('navigate-to-login', async () => {
-  if (browserView) {
-    console.log('[Main] 导航到登录页:', LOGIN_URL);
-
-    // 🔑 退出登录时清除所有登录相关数据
-    console.log('[Main] 清除退出登录数据...');
-
-    // 1. 清除 globalStorage 中的登录数据
-    delete globalStorage.last_page_url;
-    delete globalStorage.login_token;
-    delete globalStorage.login_expires;
-    delete globalStorage.login_gcc;
-    delete globalStorage.company_id;
-    delete globalStorage.user_info;
-    delete globalStorage.siteInfo;
-    delete globalStorage.current_site;
-    delete globalStorage.current_site_id;
-    delete globalStorage.current_site_name;
-    saveGlobalStorage();
-    console.log('[Main] ✅ 已清除 globalStorage 数据');
-
-    // 2. 清除 Cookies（token, access_token, site_id 等）
-    try {
-      const ses = browserView.webContents.session;
-      const cookies = await ses.cookies.get({});
-      console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
-
-      // 需要清除的 cookie 名称列表
-      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
-
-      let deletedCount = 0;
-      for (const cookie of cookies) {
-        if (cookiesToClear.includes(cookie.name)) {
-          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
-          try {
-            await ses.cookies.remove(cookieUrl, cookie.name);
-            deletedCount++;
-            console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
-          } catch (err) {
-            console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
-          }
-        }
-      }
-
-      // 也清除 localhost 的 cookies
-      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
-
-      await ses.flushStorageData();
-      console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
-    } catch (err) {
-      console.error('[Main] ❌ 清除 cookies 失败:', err);
-    }
-
-    loadLocalPage(browserView.webContents, 'login.html');
-  }
+  await navigateToLoginInternal('ipc');
 });
 
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
