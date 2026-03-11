@@ -283,7 +283,7 @@ const platformIdMap = {
   10: 'txh',  // 腾讯号
   11: 'xl',   // 新浪号
   12: 'zh',   // 知乎
-  13: 'tt',   // 头条号
+  13: 'xg',   // 西瓜号
   14: 'tt'    // 头条号（兼容）
 };
 
@@ -298,6 +298,7 @@ const platformPublishUrls = {
   txh: 'https://om.qq.com/main/creation/article',
   xl: 'https://card.weibo.com/article/v5/editor#/draft',
   zh: 'https://zhuanlan.zhihu.com/write',
+  xg: 'https://creator.douyin.com/creator-micro/content/upload',
   tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
 };
 

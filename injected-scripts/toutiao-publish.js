@@ -834,34 +834,45 @@
       if (typeof editor.focus === 'function') {
         editor.focus();
       }
-      await delay(200);
+      await delay(300);
 
       const lines = plain.split('\n').map(line => line.trim()).filter(Boolean);
+      const fullText = lines.join('\n');
 
-      // 策略1: execCommand — 走浏览器原生编辑管线，ProseMirror 会正确同步内部状态
-      let usedExecCommand = false;
+      // 策略1: 模拟用户输入 - 逐字符 insertText，ProseMirror 会正确处理
+      let success = false;
       try {
+        // 清空现有内容
         document.execCommand('selectAll');
         document.execCommand('delete');
-        await delay(100);
+        await delay(200);
+
+        // 逐行输入，每行后插入换行
         for (let i = 0; i < lines.length; i++) {
-          document.execCommand('insertText', false, lines[i]);
+          const line = lines[i];
+          // 逐字符输入（模拟真实打字）
+          for (let j = 0; j < line.length; j++) {
+            document.execCommand('insertText', false, line[j]);
+          }
+          // 行尾插入段落分隔
           if (i < lines.length - 1) {
             document.execCommand('insertParagraph');
           }
+          await delay(50); // 每行间隔，让 ProseMirror 有时间同步
         }
-        await delay(300);
+
+        await delay(500);
         const checkText = (editor.innerText || editor.textContent || '').trim();
-        if (checkText.length > 0) {
-          usedExecCommand = true;
-          console.log(`${LOG_PREFIX} ✅ 正文设置成功(execCommand)，长度:`, checkText.length);
+        if (checkText.length > plain.length * 0.8) { // 允许 20% 误差（空格、换行差异）
+          success = true;
+          console.log(`${LOG_PREFIX} ✅ 正文设置成功(逐字符输入)，长度:`, checkText.length);
         }
       } catch (cmdErr) {
-        console.warn(`${LOG_PREFIX} ⚠️ execCommand 方式失败:`, cmdErr.message);
+        console.warn(`${LOG_PREFIX} ⚠️ 逐字符输入失败:`, cmdErr.message);
       }
 
-      // 策略2: clipboard paste 模拟 — ProseMirror 天然处理 paste 事件
-      if (!usedExecCommand) {
+      // 策略2: clipboard paste 模拟
+      if (!success) {
         try {
           editor.focus();
           document.execCommand('selectAll');
@@ -870,50 +881,50 @@
           const htmlToInsert = lines.map(l => `<p>${l}</p>`).join('');
           const dt = new DataTransfer();
           dt.setData('text/html', htmlToInsert);
-          dt.setData('text/plain', plain);
+          dt.setData('text/plain', fullText);
           const pasteEvt = new ClipboardEvent('paste', {
             bubbles: true, cancelable: true, clipboardData: dt
           });
           editor.dispatchEvent(pasteEvt);
-          await delay(300);
+          await delay(500);
           const checkText2 = (editor.innerText || editor.textContent || '').trim();
-          if (checkText2.length > 0) {
-            usedExecCommand = true;
+          if (checkText2.length > plain.length * 0.8) {
+            success = true;
             console.log(`${LOG_PREFIX} ✅ 正文设置成功(clipboard paste)，长度:`, checkText2.length);
           }
         } catch (pasteErr) {
-          console.warn(`${LOG_PREFIX} ⚠️ clipboard paste 方式失败:`, pasteErr.message);
+          console.warn(`${LOG_PREFIX} ⚠️ clipboard paste 失败:`, pasteErr.message);
         }
       }
 
-      // 策略3: 直接 DOM 操作 + 事件兜底
-      if (!usedExecCommand) {
+      // 策略3: DOM 直接操作兜底
+      if (!success) {
         console.log(`${LOG_PREFIX} ℹ️ 使用 DOM 直接操作兜底`);
         editor.innerHTML = '';
-        if (lines.length === 0) {
-          editor.textContent = plain;
-        } else {
-          lines.forEach(line => {
-            const p = document.createElement('p');
-            p.textContent = line;
-            editor.appendChild(p);
-          });
-        }
+        lines.forEach(line => {
+          const p = document.createElement('p');
+          p.textContent = line;
+          editor.appendChild(p);
+        });
         editor.dispatchEvent(new InputEvent('input', {
-          bubbles: true, cancelable: true, inputType: 'insertText', data: plain
+          bubbles: true, cancelable: true, inputType: 'insertText', data: fullText
         }));
         editor.dispatchEvent(new Event('change', { bubbles: true }));
+        await delay(300);
       }
 
-      await delay(300);
+      // 最终验证
       const currentText = (editor.innerText || editor.textContent || '').trim();
-      if (!currentText) {
-        throw new Error('正文设置后仍为空');
+      if (!currentText || currentText.length < plain.length * 0.5) {
+        throw new Error(`正文设置后长度不足: ${currentText.length} < ${plain.length * 0.5}`);
       }
-      if (!usedExecCommand) {
+      if (!success) {
         console.log(`${LOG_PREFIX} ✅ 正文设置成功(DOM兜底)，长度:`, currentText.length);
       }
-    }, 4, 1200);
+
+      // 额外等待，让页面 JavaScript 有时间计算 content_word_cnt
+      await delay(800);
+    }, 4, 1500);
   };
 
   const tryUploadCover = async (coverUrl, title) => {

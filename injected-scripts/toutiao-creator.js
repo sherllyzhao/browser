@@ -321,12 +321,10 @@
                                 })
                             };
                             try {
-                                // Debug dump 只保存 cookies，不保存用户信息
-                                const debugDumpData = typeof cookiesData === 'string' ? JSON.parse(cookiesData) : cookiesData;
-                                const prettyDebugData = JSON.stringify(debugDumpData, null, 2);
+                                // Debug dump 只保存 cookies 的 JSON 字符串格式（和搜狐号一样）
                                 const dumpResult = await window.browserAPI.writeDebugFile({
                                     prefix: 'toutiao-scanData',
-                                    content: prettyDebugData
+                                    content: JSON.stringify({ cookies: cookiesData }, null, 2)
                                 });
                                 if (dumpResult?.success) {
                                     console.log(`[头条授权] Debug dump 已保存: ${dumpResult.filePath}`);
