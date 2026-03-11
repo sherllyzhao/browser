@@ -15,6 +15,7 @@ let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
+const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
 
@@ -265,7 +266,11 @@ function getVersionCheckUrl() {
         const urlObj = new URL(currentUrl);
         if (isDevHost(urlObj.host)) {
           console.log('[Update] 检测到开发环境:', urlObj.host);
-          return 'http://localhost:5173/browserVersion.json';
+          if (useLocalDevServer) {
+            console.log('[Update] 使用本地版本文件: http://localhost:5173/browserVersion.json');
+            return 'http://localhost:5173/browserVersion.json';
+          }
+          return config.domains.versionCheckUrl;
         } else {
           console.log('[Update] 检测到生产环境:', urlObj.host);
           return config.domains.versionCheckUrl;
@@ -445,7 +450,7 @@ async function fetchSiteInfo() {
 
   const apiBaseUrl = config.domains.geoPage;
   const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
-  geoLog('🌐 请求: ' + requestUrl + ' (ENV=' + config.ENV + ')');
+  geoLog('🌐 请求: ' + requestUrl + ' (ENV=' + (config.CURRENT_ENV || config.ENV) + ')');
 
   // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
   // 手动从 persist:browserview session 获取 cookies 并附加到请求头
@@ -2578,7 +2583,7 @@ app.on('window-all-closed', function () {
 // 🔑 获取域名配置（供渲染进程使用）
 ipcMain.handle('get-domain-config', () => {
   return {
-    ENV: config.ENV,
+    ENV: config.CURRENT_ENV || config.ENV,
     isProduction: isProduction,
     domains: config.domains,
     // 便捷 URL（根据 ENV 配置）

@@ -457,7 +457,7 @@
       const cfg = await initDomainConfig();
       TARGET_URLS = {
         aigc: cfg.aigcUrl,
-        geo: 'https://dev.china9.cn/aigc_browser/#/geo/dashboard'
+        geo: cfg.geoUrl
       };
       console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
       return TARGET_URLS;

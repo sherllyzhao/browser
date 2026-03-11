@@ -818,57 +818,196 @@
 
       let contentSet = false;
 
-      // === 方法 1: Clipboard paste（ProseMirror 最佳方案）===
-      try {
-        // 选中已有内容并删除
-        const selection = window.getSelection();
-        if (selection) {
-          const range = document.createRange();
-          range.selectNodeContents(editor);
-          selection.removeAllRanges();
-          selection.addRange(range);
+      // Helper: 选中编辑器全部内容并删除
+      const selectAndClear = () => {
+        const sel = window.getSelection();
+        if (sel) {
+          const r = document.createRange();
+          r.selectNodeContents(editor);
+          sel.removeAllRanges();
+          sel.addRange(r);
         }
         document.execCommand('delete', false);
-        await delay(200);
+      };
 
-        // 构造 paste 事件，ProseMirror 会用自己的 parseSlice 处理 HTML
-        const clipboardData = new DataTransfer();
-        clipboardData.setData('text/html', htmlForPaste);
-        clipboardData.setData('text/plain', plain);
-        const pasteEvent = new ClipboardEvent('paste', {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: clipboardData
+      // Helper: 获取 ProseMirror EditorView（多种策略搜索）
+      const getPmView = () => {
+        // 策略1: editor 自身或最近的 .ProseMirror 的 pmViewDesc
+        try {
+          const pmNode = editor.closest('.ProseMirror') || editor;
+          if (pmNode.pmViewDesc?.view) {
+            console.log(`${LOG_PREFIX} [PM] 通过 pmViewDesc 找到 EditorView`);
+            return pmNode.pmViewDesc.view;
+          }
+        } catch (_) {}
+
+        // 策略2: 向上遍历 DOM 树查找 pmViewDesc
+        try {
+          let node = editor;
+          while (node && node !== document.body) {
+            if (node.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过 DOM 向上遍历找到 EditorView (tag: ${node.tagName}, class: ${(node.className || '').toString().slice(0, 60)})`);
+              return node.pmViewDesc.view;
+            }
+            node = node.parentElement;
+          }
+        } catch (_) {}
+
+        // 策略3: 在页面中搜索所有 .ProseMirror 元素
+        try {
+          const allPm = document.querySelectorAll('.ProseMirror');
+          for (const pm of allPm) {
+            if (pm.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过全局搜索 .ProseMirror 找到 EditorView`);
+              return pm.pmViewDesc.view;
+            }
+          }
+        } catch (_) {}
+
+        // 策略4: 搜索 contenteditable 元素上的 pmViewDesc
+        try {
+          const editables = document.querySelectorAll('[contenteditable="true"]');
+          for (const el of editables) {
+            if (el.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过 contenteditable 找到 EditorView`);
+              return el.pmViewDesc.view;
+            }
+          }
+        } catch (_) {}
+
+        console.warn(`${LOG_PREFIX} [PM] ❌ 未找到 ProseMirror EditorView。诊断信息:`, {
+          editorTag: editor.tagName,
+          editorClass: (editor.className || '').toString().slice(0, 100),
+          hasPmViewDesc: !!editor.pmViewDesc,
+          closestPM: !!editor.closest('.ProseMirror'),
+          allPMCount: document.querySelectorAll('.ProseMirror').length,
+          allEditableCount: document.querySelectorAll('[contenteditable="true"]').length
         });
-        editor.dispatchEvent(pasteEvent);
-        await delay(600);
+        return null;
+      };
 
-        const afterPaste = (editor.innerText || editor.textContent || '').trim();
-        if (afterPaste.length > 0) {
+      // Helper: 检查 ProseMirror state 是否有实际内容
+      const pmStateHasContent = () => {
+        try {
+          const view = getPmView();
+          if (!view) return false;
+          const text = view.state.doc.textContent || '';
+          const hasContent = text.trim().length > 0;
+          console.log(`${LOG_PREFIX} [PM] state 内容检查: "${text.trim().slice(0, 50)}..." (长度=${text.trim().length}, 有内容=${hasContent})`);
+          return hasContent;
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} [PM] state 检查异常:`, e.message);
+          return false;
+        }
+      };
+
+      // Helper: 通过 ProseMirror dispatch 设置内容
+      const pmDispatchContent = (textContent) => {
+        const view = getPmView();
+        if (!view) {
+          console.warn(`${LOG_PREFIX} [PM] dispatch 失败: EditorView 不可用`);
+          return false;
+        }
+        const { state } = view;
+        const { schema } = state;
+        console.log(`${LOG_PREFIX} [PM] schema nodes:`, Object.keys(schema.nodes || {}));
+
+        // 找到用于创建段落的 node type
+        const paraType = schema.nodes.paragraph || schema.nodes.para || schema.nodes.text_block;
+        if (!paraType) {
+          console.warn(`${LOG_PREFIX} [PM] dispatch 失败: schema 中没有 paragraph/para/text_block 节点`);
+          return false;
+        }
+
+        const pmLines = textContent.split('\n').map(l => l.trim()).filter(Boolean);
+        const paragraphs = pmLines.length > 0
+          ? pmLines.map(line => paraType.create(null, line ? [schema.text(line)] : []))
+          : [paraType.create(null, [schema.text(textContent || ' ')])];
+
+        console.log(`${LOG_PREFIX} [PM] 准备 dispatch: ${paragraphs.length} 个段落, doc.content.size=${state.doc.content.size}`);
+        const tr = state.tr.replaceWith(0, state.doc.content.size, paragraphs);
+        view.dispatch(tr);
+
+        // 验证 dispatch 后的状态
+        const afterText = view.state.doc.textContent || '';
+        console.log(`${LOG_PREFIX} [PM] dispatch 后 state 内容: "${afterText.slice(0, 80)}..." (长度=${afterText.length})`);
+        return afterText.trim().length > 0;
+      };
+
+      // === 方法 1: ProseMirror EditorView 直接操作（最可靠）===
+      // 直接 dispatch transaction 设置文档内容，确保 ProseMirror 内部 state 被正确更新
+      // 这是唯一能保证草稿自动保存时发送正确 content 的方式
+      try {
+        const dispatched = pmDispatchContent(plain);
+        if (dispatched) {
           contentSet = true;
-          console.log(`${LOG_PREFIX} ✅ 方法1(clipboard paste) 正文设置成功，长度:`, afterPaste.length);
+          console.log(`${LOG_PREFIX} ✅ 方法1(ProseMirror dispatch) 正文设置成功`);
         } else {
-          console.warn(`${LOG_PREFIX} ⚠️ 方法1(clipboard paste) 内容为空，尝试下一种方法`);
+          console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 未能写入 state，尝试其他方法`);
         }
       } catch (e) {
-        console.warn(`${LOG_PREFIX} ⚠️ 方法1(clipboard paste) 失败:`, e.message);
+        console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 失败:`, e.message);
       }
 
-      // === 方法 2: execCommand insertText（部分 ProseMirror 支持）===
+      // === 方法 2: execCommand('insertHTML') ===
       if (!contentSet) {
         try {
           editor.focus();
-          const selection = window.getSelection();
-          if (selection) {
-            const range = document.createRange();
-            range.selectNodeContents(editor);
-            selection.removeAllRanges();
-            selection.addRange(range);
-          }
-          document.execCommand('delete', false);
+          selectAndClear();
           await delay(200);
 
-          // insertText 逐段插入，每段之间用 insertParagraph 分隔
+          const insertOk = document.execCommand('insertHTML', false, htmlForPaste);
+          await delay(800);
+
+          const afterInsert = (editor.innerText || editor.textContent || '').trim();
+          if (insertOk && afterInsert.length > 0) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法2(insertHTML) 正文设置成功，长度:`, afterInsert.length);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法2(insertHTML) ${insertOk ? '内容为空' : 'execCommand返回false'}，尝试下一种方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法2(insertHTML) 失败:`, e.message);
+        }
+      }
+
+      // === 方法 3: Clipboard paste ===
+      if (!contentSet) {
+        try {
+          editor.focus();
+          selectAndClear();
+          await delay(200);
+
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/html', htmlForPaste);
+          clipboardData.setData('text/plain', plain);
+          const pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: clipboardData
+          });
+          editor.dispatchEvent(pasteEvent);
+          await delay(600);
+
+          const afterPaste = (editor.innerText || editor.textContent || '').trim();
+          if (afterPaste.length > 0) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法3(clipboard paste) 正文设置成功，长度:`, afterPaste.length);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法3(clipboard paste) 内容为空，尝试下一种方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法3(clipboard paste) 失败:`, e.message);
+        }
+      }
+
+      // === 方法 4: execCommand insertText ===
+      if (!contentSet) {
+        try {
+          editor.focus();
+          selectAndClear();
+          await delay(200);
+
           const lines = plain.split('\n').map(l => l.trim()).filter(Boolean);
           for (let i = 0; i < lines.length; i++) {
             if (i > 0) {
@@ -881,18 +1020,18 @@
           const afterExec = (editor.innerText || editor.textContent || '').trim();
           if (afterExec.length > 0) {
             contentSet = true;
-            console.log(`${LOG_PREFIX} ✅ 方法2(execCommand) 正文设置成功，长度:`, afterExec.length);
+            console.log(`${LOG_PREFIX} ✅ 方法4(insertText) 正文设置成功，长度:`, afterExec.length);
           } else {
-            console.warn(`${LOG_PREFIX} ⚠️ 方法2(execCommand) 内容为空，尝试下一种方法`);
+            console.warn(`${LOG_PREFIX} ⚠️ 方法4(insertText) 内容为空，尝试下一种方法`);
           }
         } catch (e) {
-          console.warn(`${LOG_PREFIX} ⚠️ 方法2(execCommand) 失败:`, e.message);
+          console.warn(`${LOG_PREFIX} ⚠️ 方法4(insertText) 失败:`, e.message);
         }
       }
 
-      // === 方法 3: 直接 DOM 操作（兜底，可能不触发 ProseMirror state 更新）===
+      // === 方法 5: 直接 DOM 操作（最终兜底）===
       if (!contentSet) {
-        console.warn(`${LOG_PREFIX} ⚠️ 降级到方法3(直接 DOM 操作)，草稿可能无法自动保存`);
+        console.warn(`${LOG_PREFIX} ⚠️ 降级到方法5(直接 DOM 操作)，草稿可能无法自动保存`);
         editor.innerHTML = '';
         const lines = plain.split('\n').map(l => l.trim()).filter(Boolean);
         if (lines.length === 0) {
@@ -907,10 +1046,38 @@
         editor.dispatchEvent(new InputEvent('input', {
           bubbles: true,
           cancelable: true,
-          inputType: 'insertText',
+          inputType: 'insertFromPaste',
           data: plain
         }));
         editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+        // 对于直接 DOM 写入：只要 DOM 里已经有可见文本，就先视为“内容已写入”
+        // 这样后面的“关键补救”才会尝试把 ProseMirror state 同步回来
+        const afterDom = (editor.innerText || editor.textContent || '').trim();
+        if (afterDom.length > 0) {
+          contentSet = true;
+          console.log(`${LOG_PREFIX} ✅ 方法5(直接 DOM) 已写入内容，长度:`, afterDom.length);
+        } else {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法5(直接 DOM) 写入后仍为空`);
+        }
+      }
+
+      // === 关键补救：如果 DOM 有内容但 ProseMirror state 为空，强制 dispatch ===
+      // 这是 insertHTML/paste 等方法的常见问题——DOM 改了但 ProseMirror 不知道
+      // 注意：方法5(直接DOM)也会把 contentSet 标为 true（只代表“DOM 有内容”），因此这里必须做 state 同步
+      if (contentSet && !pmStateHasContent()) {
+        console.warn(`${LOG_PREFIX} ⚠️ DOM 有内容但 ProseMirror state 为空，强制 dispatch 补救`);
+        try {
+          const rescued = pmDispatchContent(plain);
+          await delay(300);
+          if (rescued && pmStateHasContent()) {
+            console.log(`${LOG_PREFIX} ✅ ProseMirror state 补救成功`);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ ProseMirror state 补救后仍为空，草稿保存可能失败`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ ProseMirror state 补救失败:`, e.message);
+        }
       }
 
       await delay(300);
@@ -1333,28 +1500,74 @@
       const sendSet = dataObj?.video?.formData?.send_set ?? dataObj?.element?.formData?.send_set ?? 1;
       const sendTime = dataObj?.video?.formData?.send_time || dataObj?.video?.dyPlatform?.send_time || dataObj?.element?.formData?.send_time || '';
 
+      // 在填写前重置草稿追踪状态，这样填写期间平台自动保存的草稿能被正确记录
+      latestDraftSaveSuccessAt = 0;
+      latestDraftSavePgcId = '0';
+
       await delay(1500);
       await fillTitle(title);
       await fillContent(content, intro);
       await tryUploadCover(cover, title);
       await trySetSchedule(sendSet, sendTime);
 
-      // 重置草稿追踪状态
-      latestDraftSaveSuccessAt = 0;
-      latestDraftSavePgcId = '0';
+      // 检查填写期间平台是否已经自动保存了草稿（ProseMirror dispatch 会立刻触发平台的自动保存）
+      let draftSaved = latestDraftSaveSuccessAt > 0 && latestDraftSavePgcId !== '0';
+      if (draftSaved) {
+        console.log(`${LOG_PREFIX} ✅ 填写期间平台已自动保存草稿，pgc_id: ${latestDraftSavePgcId}`);
+      } else {
+        // 触发编辑器 blur，促使平台自动保存草稿
+        const editorForBlur = findVisibleEditable();
+        if (editorForBlur) {
+          editorForBlur.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+          console.log(`${LOG_PREFIX} 📤 已触发编辑器 blur，等待平台自动保存草稿...`);
+        }
 
-      // 触发编辑器 blur，促使平台自动保存草稿
-      const editorForBlur = findVisibleEditable();
-      if (editorForBlur) {
-        editorForBlur.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-        console.log(`${LOG_PREFIX} 📤 已触发编辑器 blur，等待平台自动保存草稿...`);
+        // 等待草稿保存成功（监控 /mp/agw/draft/save_ugc_draft 响应）
+        draftSaved = await waitForDraftSave(12000);
       }
-
-      // 等待草稿保存成功（监控 /mp/agw/draft/save_ugc_draft 响应）
-      let draftSaved = await waitForDraftSave(12000);
       if (!draftSaved) {
-        // 二次尝试：点一下标题输入框再 blur，有些编辑器需要焦点切换才触发 save
-        console.log(`${LOG_PREFIX} 🔄 草稿未保存，尝试焦点切换触发保存...`);
+        // 二次尝试：通过 ProseMirror dispatch 制造一次真实的 state 变更来强制触发保存
+        console.log(`${LOG_PREFIX} 🔄 草稿未保存，尝试 ProseMirror state 变更触发保存...`);
+        const editorRetry = findVisibleEditable();
+        if (editorRetry) {
+          try {
+            const pmNode = editorRetry.closest('.ProseMirror') || editorRetry;
+            const view = pmNode.pmViewDesc?.view;
+            if (view) {
+              // 在末尾插入空格再撤销，ProseMirror 会检测到 state 变化并触发保存
+              const { state } = view;
+              const endPos = state.doc.content.size;
+              const trInsert = state.tr.insertText(' ', endPos);
+              view.dispatch(trInsert);
+              await delay(200);
+              const trUndo = view.state.tr.delete(view.state.doc.content.size - 1, view.state.doc.content.size);
+              view.dispatch(trUndo);
+              await delay(300);
+              editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            } else {
+              // fallback: 用 execCommand
+              editorRetry.focus();
+              document.execCommand('insertText', false, ' ');
+              await delay(200);
+              document.execCommand('undo', false);
+              await delay(300);
+              editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            }
+          } catch (e) {
+            console.warn(`${LOG_PREFIX} ⚠️ ProseMirror 变更触发失败:`, e.message);
+            editorRetry.focus();
+            document.execCommand('insertText', false, ' ');
+            await delay(200);
+            document.execCommand('undo', false);
+            await delay(300);
+            editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+          }
+        }
+        draftSaved = await waitForDraftSave(10000);
+      }
+      if (!draftSaved) {
+        // 第三次尝试：焦点切换
+        console.log(`${LOG_PREFIX} 🔄 草稿仍未保存，尝试焦点切换触发保存...`);
         const titleInput = findTitleInput();
         if (titleInput) {
           titleInput.focus();
@@ -1363,8 +1576,11 @@
         }
         draftSaved = await waitForDraftSave(8000);
       }
+
       if (!draftSaved) {
-        console.warn(`${LOG_PREFIX} ⚠️ 草稿保存未确认（pgc_id=${latestDraftSavePgcId}），仍尝试发布`);
+        const errMsg = `草稿保存失败（pgc_id=${latestDraftSavePgcId}），无法继续发布。正文内容可能未被编辑器正确识别`;
+        console.error(`${LOG_PREFIX} ❌ ${errMsg}`);
+        throw new Error(errMsg);
       }
 
       await publishArticle(dataObj);
