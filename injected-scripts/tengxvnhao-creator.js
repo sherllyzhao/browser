@@ -266,10 +266,10 @@
                                     console.log("🚀 ~  ~ scanData: ", scanData);
 
                                     console.log('[腾讯号授权] 📤 准备发送数据到接口...');
-                                    // 发送数据到服务器（根据环境选择域名）
-                                    const apiDomain = await getApiDomain();
-                                    console.log('[腾讯号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/txinfo`);
-                                    const apiResponse = await fetch(`${apiDomain}/api/mediaauth/txinfo`, {
+                                    // 发送数据到服务器（使用 getPlatformApiUrl 获取平台特定接口）
+                                    const apiUrl = await window.getPlatformApiUrl('tengxunhao');
+                                    console.log('[腾讯号授权] 📡 API 地址:', apiUrl);
+                                    const apiResponse = await fetch(apiUrl, {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json'
@@ -312,7 +312,7 @@
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
                                             window.browserAPI.closeCurrentWindow();
-                                        }, 10000);
+                                        }, window.PUBLISH_CONFIG.timeout.windowClose);
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }

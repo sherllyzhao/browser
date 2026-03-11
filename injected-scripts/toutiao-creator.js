@@ -196,6 +196,64 @@
 
                             const result = await response.json();
 
+                            // 🔧 补全设备 Cookie（tt_webid / s_v_web_id / ttcid / tt_scid）
+                            // Electron 临时 session 中这些 Cookie 可能缺失，补全后一并保存到后台
+                            try {
+                                const _allCookies = document.cookie;
+                                const _hasTtWebid = _allCookies.includes('tt_webid=');
+
+                                if (!_hasTtWebid) {
+                                    const _ts = BigInt(Date.now());
+                                    const _rand = BigInt(Math.floor(Math.random() * (2 ** 22)));
+                                    const _ttWebid = String(_ts * BigInt(2 ** 22) + _rand);
+                                    await window.browserAPI.setCookie({
+                                        name: 'tt_webid', value: _ttWebid, domain: '.toutiao.com',
+                                        path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+                                        expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                                    });
+                                    console.log('[头条授权] ✅ 已补全 tt_webid:', _ttWebid);
+                                }
+
+                                // 修复 s_v_web_id 的 verify_ 前缀
+                                const _svMatch = _allCookies.match(/s_v_web_id=(verify_[^;]*)/);
+                                if (_svMatch) {
+                                    const _fixedSv = _svMatch[1].replace('verify_', '');
+                                    await window.browserAPI.setCookie({
+                                        name: 's_v_web_id', value: _fixedSv, domain: 'mp.toutiao.com',
+                                        path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+                                        expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                                    });
+                                    console.log('[头条授权] ✅ 已修复 s_v_web_id');
+                                }
+
+                                if (!_allCookies.includes('ttcid=')) {
+                                    const _hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+                                    const _ttcid = _hex + Math.floor(Math.random() * 100).toString().padStart(2, '0');
+                                    await window.browserAPI.setCookie({
+                                        name: 'ttcid', value: _ttcid, domain: 'mp.toutiao.com',
+                                        path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+                                        expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                                    });
+                                    console.log('[头条授权] ✅ 已补全 ttcid');
+                                }
+
+                                if (!_allCookies.includes('tt_scid=')) {
+                                    const _scChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-';
+                                    const _ttScid = Array.from({ length: 64 }, () => _scChars[Math.floor(Math.random() * _scChars.length)]).join('');
+                                    await window.browserAPI.setCookie({
+                                        name: 'tt_scid', value: _ttScid, domain: 'mp.toutiao.com',
+                                        path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+                                        expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                                    });
+                                    console.log('[头条授权] ✅ 已补全 tt_scid');
+                                }
+
+                                // 等待 Cookie 写入完成
+                                await new Promise(r => setTimeout(r, 200));
+                            } catch (_devErr) {
+                                console.warn('[头条授权] ⚠️ 设备 Cookie 补全失败:', _devErr);
+                            }
+
                             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
                             // 头条需要多个域名的数据：www.toutiao.com, .toutiao.com, xxbg.snssdk.com, .bytedance.com
                             const sessionDomains = ['www.toutiao.com', '.toutiao.com', 'xxbg.snssdk.com', '.bytedance.com'];
@@ -210,14 +268,11 @@
                                     }))
                                 );
 
-                                // 合并所有域名的会话数据
+                                // 合并所有域名的 cookies（只保存 cookies，不保存 localStorage/sessionStorage/indexedDB）
                                 const mergedData = {
                                     domains: sessionDomains,
                                     timestamp: Date.now(),
-                                    cookies: [],
-                                    localStorage: {},
-                                    sessionStorage: {},
-                                    indexedDB: {}
+                                    cookies: []
                                 };
 
                                 let totalSize = 0;
@@ -226,21 +281,9 @@
                                     if (result.success && result.data) {
                                         console.log(`[头条授权] ✅ ${domain} 会话数据获取成功，大小: ${Math.round((result.size || 0) / 1024)} KB`);
                                         totalSize += result.size || 0;
-                                        // 合并 cookies（数组拼接）
+                                        // 只合并 cookies
                                         if (Array.isArray(result.data.cookies)) {
                                             mergedData.cookies.push(...result.data.cookies);
-                                        }
-                                        // 合并 localStorage（按域名分组）
-                                        if (result.data.localStorage && Object.keys(result.data.localStorage).length > 0) {
-                                            mergedData.localStorage[domain] = result.data.localStorage;
-                                        }
-                                        // 合并 sessionStorage（按域名分组）
-                                        if (result.data.sessionStorage && Object.keys(result.data.sessionStorage).length > 0) {
-                                            mergedData.sessionStorage[domain] = result.data.sessionStorage;
-                                        }
-                                        // 合并 indexedDB（按域名分组）
-                                        if (result.data.indexedDB && Object.keys(result.data.indexedDB).length > 0) {
-                                            mergedData.indexedDB[domain] = result.data.indexedDB;
                                         }
                                     } else {
                                         console.warn(`[头条授权] ⚠️ ${domain} 会话数据获取失败`);
@@ -278,18 +321,20 @@
                                 })
                             };
                             try {
-                                const prettyScanData = JSON.stringify(scanData, null, 2);
+                                // Debug dump 只保存 cookies，不保存用户信息
+                                const debugDumpData = typeof cookiesData === 'string' ? JSON.parse(cookiesData) : cookiesData;
+                                const prettyDebugData = JSON.stringify(debugDumpData, null, 2);
                                 const dumpResult = await window.browserAPI.writeDebugFile({
                                     prefix: 'toutiao-scanData',
-                                    content: prettyScanData
+                                    content: prettyDebugData
                                 });
                                 if (dumpResult?.success) {
-                                    alert(`[头条授权] scanData 已保存到文件:\n${dumpResult.filePath}`);
+                                    console.log(`[头条授权] Debug dump 已保存: ${dumpResult.filePath}`);
                                 } else {
-                                    alert(`[头条授权] scanData 保存失败: ${dumpResult?.error || 'unknown error'}`);
+                                    console.warn(`[头条授权] Debug dump 保存失败: ${dumpResult?.error || 'unknown error'}`);
                                 }
                             } catch (dumpError) {
-                                alert(`[头条授权] scanData 写文件异常: ${dumpError?.message || dumpError}`);
+                                console.error(`[头条授权] Debug dump 写文件异常:`, dumpError);
                             }
 
                             console.log('[头条授权] 📤 准备发送数据到接口...');
@@ -349,7 +394,7 @@
                                 // 统计接口成功后关闭弹窗
                                 setTimeout(() => {
                                     window.browserAPI.closeCurrentWindow();
-                                }, 10000);
+                                }, window.PUBLISH_CONFIG.timeout.windowClose);
                             } else {
                                 throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
                             }

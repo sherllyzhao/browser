@@ -912,7 +912,7 @@ async function handleTokenExpired() {
 // 获取站点列表 API
 async function getSiteListApi() {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = 'https://jzt_dev_1.china9.cn/';
   const siteInfo = await window.electronAPI.getGlobalData('siteInfo');
   console.log("🚀 ~ getSiteListApi ~ siteInfo: ", siteInfo);
   let companyId = siteInfo.company_id;
@@ -984,7 +984,7 @@ async function getSiteListApi() {
 // 切换站点 API
 async function changeSiteApi(newSiteId, oldSiteId, companyId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = 'https://jzt_dev_1.china9.cn/';
   const token = await window.electronAPI.getGlobalData('login_token');
 
   const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}newapi/site/change?id=${newSiteId}&site_id=${oldSiteId}&company_id=${companyId}`, {
@@ -1056,7 +1056,7 @@ async function selectSite(site, skipApiCall = false) {
 
       // 更新 Cookie 中的 site_id
       const cookieDomain = '.china9.cn';
-      const cookieUrl = 'https://zhjzt.china9.cn';
+      const cookieUrl = 'https://jzt_dev_1.china9.cn';
       await window.electronAPI.setCookie({
         url: cookieUrl,
         name: 'site_id',
@@ -1226,10 +1226,10 @@ async function getCompanyListApi() {
   }
 
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = window.DOMAIN_CONFIG.getApiDomainUrl() + '/';
 
   try {
-    const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/switchCompanyData`, {
+    const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}api/user/switchCompanyData`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -1256,7 +1256,7 @@ async function getCompanyListApi() {
 // 获取站点基础信息 API（切换公司后需重新获取）
 async function getSiteInfoApi(companyUniqueId) {
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = window.DOMAIN_CONFIG.getApiDomainUrl() + '/';
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
   const url = `${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`;
   console.log('[SiteInfo] 请求 site/info:', url);
@@ -1281,9 +1281,9 @@ async function getSiteInfoApi(companyUniqueId) {
 async function switchCompanyApi(uniqueId) {
   const token = await window.electronAPI.getGlobalData('login_token');
   const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = window.DOMAIN_CONFIG.getApiDomainUrl() + '/';
 
-  const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/cutNew`, {
+  const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}api/user/cutNew`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',

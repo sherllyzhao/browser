@@ -217,9 +217,8 @@
                 };
                 console.log('[知乎授权] 📤 准备发送数据到接口...', scanData);
 
-                // 动态获取 API 域名
-                const apiDomain = await getApiDomain();
-                const apiUrl = `${apiDomain}/api/mediaauth/zhinfo`;
+                // 动态获取 API URL（通过 common.js 桥接）
+                const apiUrl = await window.getPlatformApiUrl('zhihu');
                 console.log('[知乎授权] 📡 API 地址:', apiUrl);
 
                 // 发送数据到服务器
@@ -261,7 +260,7 @@
                     // 统计接口成功后关闭弹窗
                     setTimeout(() => {
                         window.browserAPI.closeCurrentWindow();
-                    }, 10000);
+                    }, window.PUBLISH_CONFIG.timeout.windowClose);
                 } else {
                     throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                 }

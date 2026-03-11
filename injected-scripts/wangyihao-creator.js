@@ -345,7 +345,7 @@
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
                                             window.browserAPI.closeCurrentWindow();
-                                        }, 10000);
+                                        }, window.PUBLISH_CONFIG.timeout.windowClose);
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }

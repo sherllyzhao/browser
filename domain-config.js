@@ -13,7 +13,7 @@
 // 🔑 唯一环境开关 — 改这一个值，全部切换
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
-const ENV = 'prod'; // 'dev' | 'prod'
+const ENV = 'dev'; // 'dev' | 'prod'
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
@@ -190,6 +190,25 @@ function getStatisticsUrl(host, isError = false) {
 // 🔑 其他配置（来自原 config.js）
 // ===========================
 
+/**
+ * 判断 URL 是否为第三方平台（用于跳过登录检查等）
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isThirdPartyUrl(url) {
+  const allDomains = Object.values(platformDomains).flat();
+  return allDomains.some(domain => url.includes(domain));
+}
+
+/**
+ * 判断 URL 是否为自己平台（china9.cn 或开发环境）
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isOwnPlatformUrl(url) {
+  return url.includes('china9.cn') || DEV_HOSTS.some(h => url.includes(h));
+}
+
 // API 基础地址（默认值，实际会从主窗口 URL 自动获取）
 const apiBaseUrl = domains.aigcPage;
 
@@ -200,7 +219,12 @@ const platformApis = {
   baijiahao: '/api/mediaauth/bjhinfo',
   toutiao: '/api/mediaauth/ttinfo',
   weixin: '/api/mediaauth/sphinfo',
-  shipinhao: '/api/mediaauth/sphinfo'
+  shipinhao: '/api/mediaauth/sphinfo',
+  wangyihao: '/api/mediaauth/wyhinfo',
+  sohuhao: '/api/mediaauth/shinfo',
+  tengxunhao: '/api/mediaauth/txinfo',
+  xinlang: '/api/mediaauth/xlinfo',
+  zhihu: '/api/mediaauth/zhinfo'
 };
 
 // 各平台的 Cookie 域名（用于过滤）
@@ -210,7 +234,12 @@ const platformDomains = {
   baijiahao: ['baidu.com'],
   toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
   weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
-  shipinhao: ['channels.weixin.qq.com']
+  shipinhao: ['channels.weixin.qq.com'],
+  wangyihao: ['163.com', 'mp.163.com'],
+  sohuhao: ['sohu.com', 'mp.sohu.com'],
+  tengxunhao: ['qq.com', 'om.qq.com'],
+  xinlang: ['sina.com.cn', 'weibo.com', 'sina.cn'],
+  zhihu: ['zhihu.com', 'www.zhihu.com']
 };
 
 // 平台登录凭证 Cookie 名称（用于判断登录状态）
@@ -220,7 +249,12 @@ const platformLoginCookies = {
   toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
   weixin: ['wxuin', 'pass_ticket'],
   baijiahao: ['BDUSS', 'STOKEN'],
-  shipinhao: ['wxuin', 'pass_ticket']
+  shipinhao: ['wxuin', 'pass_ticket'],
+  wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
+  sohuhao: ['SUV', 'IPLOC', 'sct'],
+  tengxunhao: ['pgv_pvid', 'RK', 'ptcz'],
+  xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
+  zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
 
 // 平台短名称到长名称的映射
@@ -230,7 +264,12 @@ const platformNameMap = {
   'sph': 'shipinhao',
   'bjh': 'baijiahao',
   'tt': 'toutiao',
-  'wx': 'weixin'
+  'wx': 'weixin',
+  'wyh': 'wangyihao',
+  'shh': 'sohuhao',
+  'txh': 'tengxunhao',
+  'xl': 'xinlang',
+  'zh': 'zhihu'
 };
 
 // 平台 ID 到短名称的映射（来自后台 media.id）
@@ -239,6 +278,11 @@ const platformIdMap = {
   4: 'bjh',   // 百家号
   6: 'xhs',   // 小红书
   7: 'sph',   // 视频号
+  8: 'wyh',   // 网易号
+  9: 'shh',   // 搜狐号
+  10: 'txh',  // 腾讯号
+  11: 'xl',   // 新浪号
+  12: 'zh',   // 知乎
   13: 'tt',   // 头条号
   14: 'tt'    // 头条号（兼容）
 };
@@ -249,6 +293,11 @@ const platformPublishUrls = {
   xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
   sph: 'https://channels.weixin.qq.com/platform/post/create',
   bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
+  wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+  shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+  txh: 'https://om.qq.com/main/creation/article',
+  xl: 'https://card.weibo.com/article/v5/editor#/draft',
+  zh: 'https://zhuanlan.zhihu.com/write',
   tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
 };
 
@@ -278,6 +327,8 @@ if (typeof module !== 'undefined' && module.exports) {
     getCookieDomain,
     getVersionCheckUrlByEnv,
     getStatisticsUrl,
+    isThirdPartyUrl,
+    isOwnPlatformUrl,
     // 其他配置
     apiBaseUrl,
     platformApis,
@@ -304,6 +355,8 @@ if (typeof window !== 'undefined') {
     getCookieDomain,
     getVersionCheckUrlByEnv,
     getStatisticsUrl,
+    isThirdPartyUrl,
+    isOwnPlatformUrl,
     // 其他配置
     apiBaseUrl,
     platformApis,

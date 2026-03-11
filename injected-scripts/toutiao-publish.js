@@ -687,6 +687,61 @@
 
   installApiDiagnostics();
 
+  // ========== 设备 Cookie 安全网 ==========
+  // 如果 openNewWindow 阶段的补全未生效（如 restoreSessionAndReload 路径），
+  // 在脚本运行时再补一次，确保后续 publish API 请求携带正确的设备标识。
+  const ensureDeviceCookies = async () => {
+    try {
+      const cookies = document.cookie;
+      if (!cookies.includes('tt_webid=') && window.browserAPI?.setCookie) {
+        const ts = BigInt(Date.now());
+        const rand = BigInt(Math.floor(Math.random() * (2 ** 22)));
+        const ttWebid = String(ts * BigInt(2 ** 22) + rand);
+        await window.browserAPI.setCookie({
+          name: 'tt_webid', value: ttWebid, domain: '.toutiao.com',
+          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+        });
+        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 tt_webid`);
+      }
+
+      const svMatch = cookies.match(/s_v_web_id=(verify_[^;]*)/);
+      if (svMatch && window.browserAPI?.setCookie) {
+        const fixed = svMatch[1].replace('verify_', '');
+        await window.browserAPI.setCookie({
+          name: 's_v_web_id', value: fixed, domain: 'mp.toutiao.com',
+          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+        });
+        console.log(`${LOG_PREFIX} ✅ 安全网：已修复 s_v_web_id`);
+      }
+
+      if (!cookies.includes('ttcid=') && window.browserAPI?.setCookie) {
+        const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+        await window.browserAPI.setCookie({
+          name: 'ttcid', value: hex + Math.floor(Math.random() * 100).toString().padStart(2, '0'),
+          domain: 'mp.toutiao.com', path: '/', secure: true, httpOnly: false,
+          sameSite: 'no_restriction', expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+        });
+        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 ttcid`);
+      }
+
+      if (!cookies.includes('tt_scid=') && window.browserAPI?.setCookie) {
+        const sc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-';
+        const ttScid = Array.from({ length: 64 }, () => sc[Math.floor(Math.random() * sc.length)]).join('');
+        await window.browserAPI.setCookie({
+          name: 'tt_scid', value: ttScid, domain: 'mp.toutiao.com',
+          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
+          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+        });
+        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 tt_scid`);
+      }
+    } catch (e) {
+      console.warn(`${LOG_PREFIX} ⚠️ 设备 Cookie 安全网失败:`, e.message || e);
+    }
+  };
+  await ensureDeviceCookies();
+
   const fillTitle = async (title) => {
     const targetTitle = (title || '').trim();
     if (!targetTitle) return;
@@ -780,30 +835,84 @@
         editor.focus();
       }
       await delay(200);
-      editor.innerHTML = '';
+
       const lines = plain.split('\n').map(line => line.trim()).filter(Boolean);
-      if (lines.length === 0) {
-        editor.textContent = plain;
-      } else {
-        lines.forEach(line => {
-          const p = document.createElement('p');
-          p.textContent = line;
-          editor.appendChild(p);
-        });
+
+      // 策略1: execCommand — 走浏览器原生编辑管线，ProseMirror 会正确同步内部状态
+      let usedExecCommand = false;
+      try {
+        document.execCommand('selectAll');
+        document.execCommand('delete');
+        await delay(100);
+        for (let i = 0; i < lines.length; i++) {
+          document.execCommand('insertText', false, lines[i]);
+          if (i < lines.length - 1) {
+            document.execCommand('insertParagraph');
+          }
+        }
+        await delay(300);
+        const checkText = (editor.innerText || editor.textContent || '').trim();
+        if (checkText.length > 0) {
+          usedExecCommand = true;
+          console.log(`${LOG_PREFIX} ✅ 正文设置成功(execCommand)，长度:`, checkText.length);
+        }
+      } catch (cmdErr) {
+        console.warn(`${LOG_PREFIX} ⚠️ execCommand 方式失败:`, cmdErr.message);
       }
-      editor.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertText',
-        data: plain
-      }));
-      editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // 策略2: clipboard paste 模拟 — ProseMirror 天然处理 paste 事件
+      if (!usedExecCommand) {
+        try {
+          editor.focus();
+          document.execCommand('selectAll');
+          document.execCommand('delete');
+          await delay(100);
+          const htmlToInsert = lines.map(l => `<p>${l}</p>`).join('');
+          const dt = new DataTransfer();
+          dt.setData('text/html', htmlToInsert);
+          dt.setData('text/plain', plain);
+          const pasteEvt = new ClipboardEvent('paste', {
+            bubbles: true, cancelable: true, clipboardData: dt
+          });
+          editor.dispatchEvent(pasteEvt);
+          await delay(300);
+          const checkText2 = (editor.innerText || editor.textContent || '').trim();
+          if (checkText2.length > 0) {
+            usedExecCommand = true;
+            console.log(`${LOG_PREFIX} ✅ 正文设置成功(clipboard paste)，长度:`, checkText2.length);
+          }
+        } catch (pasteErr) {
+          console.warn(`${LOG_PREFIX} ⚠️ clipboard paste 方式失败:`, pasteErr.message);
+        }
+      }
+
+      // 策略3: 直接 DOM 操作 + 事件兜底
+      if (!usedExecCommand) {
+        console.log(`${LOG_PREFIX} ℹ️ 使用 DOM 直接操作兜底`);
+        editor.innerHTML = '';
+        if (lines.length === 0) {
+          editor.textContent = plain;
+        } else {
+          lines.forEach(line => {
+            const p = document.createElement('p');
+            p.textContent = line;
+            editor.appendChild(p);
+          });
+        }
+        editor.dispatchEvent(new InputEvent('input', {
+          bubbles: true, cancelable: true, inputType: 'insertText', data: plain
+        }));
+        editor.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
       await delay(300);
       const currentText = (editor.innerText || editor.textContent || '').trim();
       if (!currentText) {
         throw new Error('正文设置后仍为空');
       }
-      console.log(`${LOG_PREFIX} ✅ 正文设置成功，长度:`, currentText.length);
+      if (!usedExecCommand) {
+        console.log(`${LOG_PREFIX} ✅ 正文设置成功(DOM兜底)，长度:`, currentText.length);
+      }
     }, 4, 1200);
   };
 

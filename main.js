@@ -1558,9 +1558,7 @@ function createWindow() {
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
-    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
-                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
-                             url.includes('channels.weixin.qq.com');
+    const isThirdPartyAuth = config.isThirdPartyUrl(url);
 
     if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
       try {
@@ -1617,9 +1615,7 @@ function createWindow() {
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
-    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
-                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
-                             url.includes('channels.weixin.qq.com');
+    const isThirdPartyAuth = config.isThirdPartyUrl(url);
 
     if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
       try {
@@ -1733,7 +1729,7 @@ function createWindow() {
 
     // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
+    const isOwnPlatform = config.isOwnPlatformUrl(url);
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
@@ -1802,7 +1798,7 @@ function createWindow() {
 
     // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
+    const isOwnPlatform = config.isOwnPlatformUrl(url);
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
@@ -2780,60 +2776,32 @@ ipcMain.handle('check-session-status', async () => {
     const ses = browserView.webContents.session;
     const cookies = await ses.cookies.get({});
 
-    // 检查特定平台的登录凭证 cookies（不只是数量，而是关键的登录 cookie）
-    const douyinCookies = cookies.filter(c => c.domain.includes('douyin.com'));
-    const xiaohongshuCookies = cookies.filter(c => c.domain.includes('xiaohongshu.com'));
-    const weixinCookies = cookies.filter(c => c.domain.includes('weixin.qq.com'));
-    const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
+    // 动态检查所有平台的登录凭证（基于 domain-config.js 配置）
+    const platformStatus = {};
 
-    // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
-    // 扩大检测范围，避免漏检
-    const douyinLoggedIn = douyinCookies.some(c =>
-      c.name === 'sessionid' ||
-      c.name === 'sessionid_ss' ||
-      c.name === 'passport_csrf_token' ||
-      c.name === 'sid_guard' ||
-      c.name === 'uid_tt' ||
-      c.name === 'uid_tt_ss' ||
-      c.name === 'ttwid' ||
-      c.name === 'passport_auth_status'
-    );
+    Object.entries(config.platformDomains).forEach(([platform, domains]) => {
+      const platformCookies = cookies.filter(c =>
+        domains.some(domain => c.domain.includes(domain))
+      );
 
-    const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
-      c.name === 'web_session' ||
-      c.name === 'websectiga' ||
-      c.name === 'sec_poison_id' ||
-      c.name === 'a1' ||
-      c.name === 'webId'
-    );
+      // 获取该平台的关键登录 Cookie 名称
+      const loginCookieNames = config.platformLoginCookies[platform] || [];
+      const isLoggedIn = platformCookies.some(c =>
+        loginCookieNames.includes(c.name)
+      );
 
-    const weixinLoggedIn = weixinCookies.some(c =>
-      c.name === 'wxuin' ||
-      c.name === 'pass_ticket' ||
-      c.name === 'slave_user' ||
-      c.name === 'slave_sid'
-    );
-
-    const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
-      c.name === 'BDUSS' ||
-      c.name === 'STOKEN' ||
-      c.name === 'BAIDUID' ||
-      c.name === 'BIDUPSID'
-    );
-
-    const platformStatus = {
-      douyin: { count: douyinCookies.length, loggedIn: douyinLoggedIn },
-      xiaohongshu: { count: xiaohongshuCookies.length, loggedIn: xiaohongshuLoggedIn },
-      weixin: { count: weixinCookies.length, loggedIn: weixinLoggedIn },
-      baijiahao: { count: baijiahaoCookies.length, loggedIn: baijiahaoLoggedIn }
-    };
+      platformStatus[platform] = {
+        count: platformCookies.length,
+        loggedIn: isLoggedIn
+      };
+    });
 
     console.log('[Session Check] Cookie 统计:', {
       total: cookies.length,
-      douyin: `${douyinCookies.length} cookies, loggedIn: ${douyinLoggedIn}`,
-      xiaohongshu: `${xiaohongshuCookies.length} cookies, loggedIn: ${xiaohongshuLoggedIn}`,
-      weixin: `${weixinCookies.length} cookies, loggedIn: ${weixinLoggedIn}`,
-      baijiahao: `${baijiahaoCookies.length} cookies, loggedIn: ${baijiahaoLoggedIn}`
+      platforms: Object.entries(platformStatus).reduce((acc, [platform, status]) => {
+        acc[platform] = `${status.count} cookies, loggedIn: ${status.loggedIn}`;
+        return acc;
+      }, {})
     });
 
     return {
@@ -4615,6 +4583,122 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 等待一下确保 localStorage 写入
       await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // ========== 头条设备 Cookie 补全 ==========
+    // 头条 publish 接口依赖 tt_webid 和已验证的 s_v_web_id，
+    // 但 Electron 临时 session 中这些 Cookie 可能缺失或处于未验证状态。
+    // 在页面加载前补全，确保页面 JS 和后续 API 请求能携带正确的设备标识。
+    // 注意：Chromium 要求 SameSite=None 必须 Secure=true，否则 cookie 会被静默丢弃。
+    if (url.includes('toutiao.com')) {
+      console.log('[Window Manager] 🔍 检测到头条页面，检查设备 Cookie...');
+      try {
+        const allCookies = await windowSession.cookies.get({});
+        const hasTtWebid = allCookies.some(c => c.name === 'tt_webid');
+        const svWebIdCookie = allCookies.find(c => c.name === 's_v_web_id');
+        const hasTtcid = allCookies.some(c => c.name === 'ttcid');
+        const hasTtScid = allCookies.some(c => c.name === 'tt_scid');
+
+        // 1. 补全 tt_webid（19位雪花ID格式，头条设备标识）
+        if (!hasTtWebid) {
+          const ts = BigInt(Date.now());
+          const rand = BigInt(Math.floor(Math.random() * (2 ** 22)));
+          const ttWebid = String(ts * BigInt(2 ** 22) + rand);
+          await windowSession.cookies.set({
+            url: 'https://mp.toutiao.com/',
+            name: 'tt_webid',
+            value: ttWebid,
+            domain: '.toutiao.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'no_restriction',
+            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          });
+          console.log('[Window Manager] ✅ 已补全 tt_webid:', ttWebid);
+        }
+
+        // 2. 修复 s_v_web_id（去掉 verify_ 前缀，标记为已验证状态）
+        if (svWebIdCookie && svWebIdCookie.value.startsWith('verify_')) {
+          const fixedValue = svWebIdCookie.value.replace('verify_', '');
+          await windowSession.cookies.set({
+            url: `https://${(svWebIdCookie.domain || 'mp.toutiao.com').replace(/^\./, '')}/`,
+            name: 's_v_web_id',
+            value: fixedValue,
+            domain: svWebIdCookie.domain || 'mp.toutiao.com',
+            path: svWebIdCookie.path || '/',
+            secure: true,
+            httpOnly: svWebIdCookie.httpOnly || false,
+            sameSite: 'no_restriction',
+            expirationDate: svWebIdCookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          });
+          console.log('[Window Manager] ✅ 已修复 s_v_web_id: verify_xxx → xxx');
+        } else if (!svWebIdCookie) {
+          // 如果完全没有 s_v_web_id，生成一个已验证格式的值
+          const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+          const seg = (len) => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+          const svWebId = `${seg(8)}_${seg(8)}_${seg(4)}_${seg(4)}_${seg(4)}_${seg(16)}`;
+          await windowSession.cookies.set({
+            url: 'https://mp.toutiao.com/',
+            name: 's_v_web_id',
+            value: svWebId,
+            domain: 'mp.toutiao.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'no_restriction',
+            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          });
+          console.log('[Window Manager] ✅ 已生成 s_v_web_id:', svWebId);
+        }
+
+        // 3. 补全 ttcid（32位hex + 2位数字，追踪标识）
+        if (!hasTtcid) {
+          const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+          const ttcid = hex + Math.floor(Math.random() * 100).toString().padStart(2, '0');
+          await windowSession.cookies.set({
+            url: 'https://mp.toutiao.com/',
+            name: 'ttcid',
+            value: ttcid,
+            domain: 'mp.toutiao.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'no_restriction',
+            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          });
+          console.log('[Window Manager] ✅ 已补全 ttcid:', ttcid);
+        }
+
+        // 4. 补全 tt_scid（base64格式追踪标识）
+        if (!hasTtScid) {
+          const scidChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-';
+          const ttScid = Array.from({ length: 64 }, () => scidChars[Math.floor(Math.random() * scidChars.length)]).join('');
+          await windowSession.cookies.set({
+            url: 'https://mp.toutiao.com/',
+            name: 'tt_scid',
+            value: ttScid,
+            domain: 'mp.toutiao.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'no_restriction',
+            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          });
+          console.log('[Window Manager] ✅ 已补全 tt_scid');
+        }
+
+        // 打印最终 Cookie 状态
+        const finalCookies = await windowSession.cookies.get({});
+        const deviceCookieNames = ['tt_webid', 's_v_web_id', 'ttwid', 'ttcid', 'tt_scid', 'odin_tt', 'csrf_session_id'];
+        const deviceStatus = deviceCookieNames.map(name => {
+          const c = finalCookies.find(x => x.name === name);
+          return `${name}: ${c ? '✅' : '❌'}`;
+        });
+        console.log('[Window Manager] 📋 头条设备 Cookie 状态:', deviceStatus.join(', '));
+      } catch (err) {
+        console.error('[Window Manager] ⚠️ 头条设备 Cookie 补全失败:', err.message);
+      }
     }
 
     // 加载目标 URL

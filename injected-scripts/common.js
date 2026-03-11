@@ -14,6 +14,21 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.__COMMON_JS_LOADED__ = true;
 
     // ===========================
+    // 🔑 开发环境域名列表（避免重复定义）
+    // ===========================
+    const DEV_HOSTS = [
+        "localhost:5173",
+        "localhost:8080",
+        "127.0.0.1:5173",
+        "127.0.0.1:8080",
+        "dev.china9.cn",
+        "www.dev.china9.cn",
+        "apidev.china9.cn",
+        "172.16.6.17:8080",
+        "jzt_dev_1.china9.cn",
+    ];
+
+    // ===========================
     // 🔑 统一配置常量（低风险优化：提取硬编码延迟）
     // ===========================
     window.PUBLISH_CONFIG = {
@@ -38,6 +53,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             publish: 30000, // 发布超时
             iframe: 10000, // iframe 加载超时
             shadowDom: 5000, // Shadow DOM 查找超时
+            windowClose: 10000, // 窗口关闭延迟（授权/发布完成后）
         },
         // 各平台选择器（方便维护和检查有效性）
         selectors: {
@@ -182,6 +198,20 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         clear: function () {
             this._history = [];
         },
+    };
+
+    // ===========================
+    // 🔑 各平台配置（避免重复定义）
+    // ===========================
+    window.PLATFORM_CONFIGS = {
+        souhuhao: {
+            name: '搜狐号',
+            publishPagePath: '/contentManagement/news/addarticle',
+            publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+            firstPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+            domain: 'mp.sohu.com',
+            cookiesDomain: 'mp.sohu.com'
+        }
     };
 
     // ===========================
@@ -1080,19 +1110,6 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // 根据主窗口域名获取 API 域名（用于授权等接口）
     // 返回格式：https://apidev.china9.cn 或 https://api.china9.cn
     window.getApiDomain = async function () {
-        // 开发环境域名列表
-        const devHosts = [
-            "localhost:5173",
-            "localhost:8080",
-            "127.0.0.1:5173",
-            "127.0.0.1:8080",
-            "dev.china9.cn",
-            "www.dev.china9.cn",
-            "apidev.china9.cn",
-            "172.16.6.17:8080",
-            "jzt_dev_1.china9.cn",
-        ];
-
         // 默认使用开发环境
         let apiDomain = "https://apidev.china9.cn";
 
@@ -1103,7 +1120,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     const host = mainInfo.host.toLowerCase();
 
                     // 检查是否是开发环境（精确匹配，避免 china9.cn 被 dev.china9.cn 误匹配）
-                    const isDev = devHosts.some(devHost => host === devHost || host.endsWith('.' + devHost) || devHost === host);
+                    const isDev = DEV_HOSTS.some(devHost => host === devHost || host.endsWith('.' + devHost) || devHost === host);
 
                     if (isDev) {
                         apiDomain = "https://apidev.china9.cn";
@@ -1145,11 +1162,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // AIGC 域名下访问 /geo/ 路径时，也走 GEO 上报域名
                     if (mainInfo.url && (mainInfo.url.includes('/geo/') || mainInfo.url.includes('#/geo'))) {
-                        const devHosts = [
-                            "localhost:5173", "127.0.0.1:5173",
-                            "dev.china9.cn", "www.dev.china9.cn",
-                        ];
-                        const isDev = devHosts.some(h => mainInfo.host.toLowerCase() === h);
+                        const isDev = DEV_HOSTS.some(h => mainInfo.host.toLowerCase() === h);
                         const geoDomain = isDev
                             ? `https://jzt_dev_1.china9.cn`
                             : `https://zhjzt.china9.cn`;
@@ -1166,7 +1179,44 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
-    // 发送统计接口（发布成功时调用）
+    // 各平台 API 路径映射（来自 domain-config.js，用于注入脚本）
+    const PLATFORM_API_PATHS = {
+        douyin: '/api/mediaauth/douyininfo',
+        xiaohongshu: '/api/mediaauth/xhsinfo',
+        baijiahao: '/api/mediaauth/bjhinfo',
+        toutiao: '/api/mediaauth/ttinfo',
+        weixin: '/api/mediaauth/sphinfo',
+        shipinhao: '/api/mediaauth/sphinfo',
+        wangyihao: '/api/mediaauth/wyhinfo',
+        sohuhao: '/api/mediaauth/shinfo',
+        tengxunhao: '/api/mediaauth/txinfo',
+        xinlang: '/api/mediaauth/xlinfo',
+        zhihu: '/api/mediaauth/zhinfo'
+    };
+
+    /**
+     * 获取指定平台的 API 路径（相对路径）
+     * @param {string} platform 平台名称（如 'douyin', 'zhihu' 等）
+     * @returns {string} API 相对路径（如 '/api/mediaauth/douyininfo'）
+     */
+    window.getPlatformApiPath = function(platform) {
+        return PLATFORM_API_PATHS[platform] || '';
+    };
+
+    /**
+     * 获取指定平台的完整 API URL
+     * @param {string} platform 平台名称
+     * @returns {Promise<string>} 完整 API URL
+     */
+    window.getPlatformApiUrl = async function(platform) {
+        const path = PLATFORM_API_PATHS[platform];
+        if (!path) {
+            console.warn(`[getPlatformApiUrl] 未知平台: ${platform}`);
+            return '';
+        }
+        const apiDomain = await window.getApiDomain();
+        return `${apiDomain}${path}`;
+    };
     window.sendStatistics = async function (publishId, platform = "") {
         const scanData = { data: JSON.stringify({ id: publishId }) };
         try {

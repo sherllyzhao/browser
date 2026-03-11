@@ -128,7 +128,11 @@
       "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"content-to-home\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
       "Bash(\"D:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\grep.exe\" -n \"domain-config\\\\|domainConfig\\\\|DOMAIN_CONFIG\\\\|getStatisticsUrl\\\\|tjlogerror\\\\|apidev.china9\\\\|api.china9\" \"D:\\\\浏览器\\\\运营助手\\\\main.js\")",
       "Bash(if exist \"D:\\\\浏览器\\\\运营助手\\\\docs\\\\debug\" dir /b \"D:\\\\浏览器\\\\运营助手\\\\docs\\\\debug\")",
-      "Bash(more:*)"
+      "Bash(more:*)",
+      "Bash(python3:*)",
+      "Bash(do node -c \"$file\")",
+      "Bash(echo:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []
