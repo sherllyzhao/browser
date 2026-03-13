@@ -115,7 +115,9 @@
       "Bash(pip install Pillow)",
       "Bash(pip3 install:*)",
       "Bash(git push:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "Bash(where magick:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []
