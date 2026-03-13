@@ -14,6 +14,11 @@
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
 const ENV = 'prod'; // 'dev' | 'prod'
+let CURRENT_ENV = ENV;
+// 可选：开发时通过 USE_REMOTE_AIGC_PAGE=1 强制走远端页面（不走 localhost）
+const useRemoteAigcPage = typeof process !== 'undefined'
+  && process.env
+  && process.env.USE_REMOTE_AIGC_PAGE === '1';
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
@@ -84,16 +89,36 @@ const DOMAINS = {
   },
 };
 
-// 当前生效的域名配置
-const domains = DOMAINS[ENV] || DOMAINS.dev;
+// 当前生效的域名配置（拷贝一份，避免污染 DOMAINS 模板）
+const initialDomains = DOMAINS[ENV] || DOMAINS.dev;
+const domains = {
+  ...initialDomains,
+  statisticsHosts: { ...(initialDomains.statisticsHosts || {}) },
+};
+let runtimeAigcPage = domains.aigcPage;
+let runtimeAigcPath = domains.aigcPath;
 
-// 🔑 未打包环境（npm start）自动指向 localhost:5173
-// 打包后 app.isPackaged === true，不影响 dev/prod 配置
+// 未打包环境默认：开发页走 localhost:5173；接口域名仍按 dev/prod 走
+// 可通过 START_ENV=prod 切换生产域名；可通过 USE_REMOTE_AIGC_PAGE=1 关闭 localhost 页面
 try {
   const { app } = require('electron');
   if (app && !app.isPackaged) {
-    domains.aigcPage = 'http://localhost:5173';
-    domains.aigcPath = '/';
+    // 开发启动默认走 dev 域名；可用 START_ENV=prod 临时切到生产域名
+    const startEnv = process.env && process.env.START_ENV === 'prod' ? 'prod' : 'dev';
+    const startDomains = DOMAINS[startEnv] || DOMAINS.dev;
+    CURRENT_ENV = startEnv;
+    Object.assign(domains, {
+      ...startDomains,
+      statisticsHosts: { ...(startDomains.statisticsHosts || {}) },
+    });
+    runtimeAigcPage = domains.aigcPage;
+    runtimeAigcPath = domains.aigcPath;
+
+    // 开发环境页面入口默认走 localhost，便于本地联调
+    if (startEnv === 'dev' && !useRemoteAigcPage) {
+      runtimeAigcPage = 'http://localhost:5173';
+      runtimeAigcPath = '/';
+    }
   }
 } catch (e) {
   // 非 Electron 环境（浏览器端引用），忽略
@@ -123,7 +148,7 @@ const DEV_HOSTS = [
  * @returns {string}
  */
 function getAigcUrl() {
-  return domains.aigcPage + domains.aigcPath;
+  return runtimeAigcPage + runtimeAigcPath;
 }
 
 /**
@@ -131,7 +156,7 @@ function getAigcUrl() {
  * @returns {string}
  */
 function getGeoUrl() {
-  return domains.aigcPage + domains.aigcPath + '#/geo/dashboard';
+  return domains.geoPage + domains.geoPath;
 }
 
 /**
@@ -159,12 +184,14 @@ function getCookieDomain() {
 }
 
 /**
- * 获取版本检查 URL（打包环境用远程，非打包用 localhost）
+ * 获取版本检查 URL（开发本地页走 localhost，其余走域名配置）
  * @param {boolean} isProduction - 是否为打包环境
  * @returns {string}
  */
 function getVersionCheckUrlByEnv(isProduction) {
-  if (!isProduction) return 'http://localhost:5173/browserVersion.json';
+  if (!isProduction && runtimeAigcPage.startsWith('http://localhost')) {
+    return 'http://localhost:5173/browserVersion.json';
+  }
   return domains.versionCheckUrl;
 }
 
@@ -268,6 +295,7 @@ const placeholderPages = {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ENV,
+    CURRENT_ENV,
     DOMAINS,
     domains,
     DEV_HOSTS,
@@ -294,6 +322,7 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof window !== 'undefined') {
   window.DOMAIN_CONFIG = {
     ENV,
+    CURRENT_ENV,
     DOMAINS,
     domains,
     DEV_HOSTS,

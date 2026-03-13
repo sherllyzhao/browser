@@ -54,16 +54,47 @@ const tabGeo = document.getElementById('__tab_geo__');
 const isProduction = window.electronAPI && window.electronAPI.isProduction;
 let AIGC_URL = 'https://dev.china9.cn/aigc_browser/';
 let GEO_URL = 'https://dev.china9.cn/aigc_browser/#/geo/dashboard';
+let domainConfigCache = null;
 
 // 从域名配置获取正确的 URL（覆盖 fallback）
 if (window.electronAPI && window.electronAPI.getDomainConfig) {
   window.electronAPI.getDomainConfig().then(config => {
+    domainConfigCache = config;
     AIGC_URL = config.aigcUrl;
     GEO_URL = config.geoUrl;
     console.log('[Common Header] 已从配置加载 URL - AIGC:', AIGC_URL, 'GEO:', GEO_URL);
   }).catch(err => {
     console.error('[Common Header] 加载域名配置失败，使用 fallback:', err);
   });
+}
+
+function trimTrailingSlash(url) {
+  return String(url || '').replace(/\/+$/, '');
+}
+
+async function getDomainConfigSafe() {
+  if (domainConfigCache) return domainConfigCache;
+  if (window.electronAPI && window.electronAPI.getDomainConfig) {
+    try {
+      domainConfigCache = await window.electronAPI.getDomainConfig();
+      return domainConfigCache;
+    } catch (err) {
+      console.error('[DomainConfig] 获取配置失败，使用默认值:', err);
+    }
+  }
+  return null;
+}
+
+async function getGeoApiBaseUrl() {
+  const cfg = await getDomainConfigSafe();
+  const geoPage = cfg && cfg.domains && cfg.domains.geoPage ? cfg.domains.geoPage : 'https://zhjzt.china9.cn';
+  return trimTrailingSlash(geoPage);
+}
+
+async function getAigcApiBaseUrl() {
+  const cfg = await getDomainConfigSafe();
+  const aigcPage = cfg && cfg.domains && cfg.domains.aigcPage ? cfg.domains.aigcPage : 'https://dev.china9.cn';
+  return trimTrailingSlash(aigcPage);
 }
 
 // 占位页面文件名（与 config.js 中 placeholderPages 保持一致）
@@ -700,6 +731,126 @@ if (clearAllBtn) {
 }
 
 // 加载用户信息
+function maskPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 11) {
+    return digits.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
+  }
+  return '';
+}
+
+function getUserDisplayName(userInfo) {
+  if (!userInfo || typeof userInfo !== 'object') return '';
+  const maskedPhone = maskPhone(userInfo.phone || userInfo.mobile || userInfo.tel);
+  if (maskedPhone) return maskedPhone;
+
+  const candidates = [
+    userInfo.nickname,
+    userInfo.user_name,
+    userInfo.username,
+    userInfo.name,
+    userInfo.real_name,
+    userInfo.account,
+    userInfo.email,
+  ];
+  const hit = candidates.find(v => typeof v === 'string' && v.trim());
+  return hit ? hit.trim() : '';
+}
+
+function getUserAvatarUrl(userInfo) {
+  if (!userInfo || typeof userInfo !== 'object') return '';
+  const candidates = [
+    userInfo.avatar,
+    userInfo.avatar_url,
+    userInfo.headimg,
+    userInfo.head_img,
+    userInfo.photo,
+  ];
+  const hit = candidates.find(v => typeof v === 'string' && v.trim());
+  return hit ? hit.trim() : '';
+}
+
+async function fetchUserInfoByToken() {
+  try {
+    if (!window.electronAPI || !window.electronAPI.getGlobalData || !window.electronAPI.proxyFetch) {
+      return null;
+    }
+    const token = String(await window.electronAPI.getGlobalData('login_token') || '');
+    if (!token) return null;
+
+    const apiBaseUrl = await getAigcApiBaseUrl();
+    const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/info`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': token,
+        'access_token': token,
+      },
+      body: JSON.stringify({
+        type: 'pc',
+        enterpriseSide: 'pc',
+        token: token,
+        tokens: token,
+      }),
+    });
+
+    if (!resp || !resp.success || !resp.ok || !resp.data) return null;
+    const payload = resp.data;
+    const userData = payload.data || null;
+    if (userData && window.electronAPI.setGlobalData) {
+      await window.electronAPI.setGlobalData('user_info', userData);
+    }
+    return userData;
+  } catch (err) {
+    console.warn('[Common Header] token 回源用户信息失败:', err);
+    return null;
+  }
+}
+
+function parseCookieString(cookieString) {
+  const map = {};
+  String(cookieString || '')
+    .split(';')
+    .map(item => item.trim())
+    .filter(Boolean)
+    .forEach(pair => {
+      const idx = pair.indexOf('=');
+      if (idx <= 0) return;
+      const key = pair.substring(0, idx).trim();
+      const value = pair.substring(idx + 1).trim();
+      if (!key) return;
+      map[key] = value;
+    });
+  return map;
+}
+
+function safeDecodeURIComponent(value) {
+  if (typeof value !== 'string') return '';
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
+
+async function getActiveCompanyUniqueIdFromCookie() {
+  try {
+    if (!window.electronAPI || !window.electronAPI.getDomainCookies) return '';
+
+    // 优先读取 china9.cn 下的全局 cookie（登录/切换公司均会写入）
+    const resp = await window.electronAPI.getDomainCookies('china9.cn');
+    if (!resp || !resp.success || !resp.cookies) return '';
+
+    const cookieMap = parseCookieString(resp.cookies);
+    const raw = cookieMap.company_unique_id || cookieMap.unique_id || '';
+    const decoded = safeDecodeURIComponent(raw);
+    return String(decoded || '').trim();
+  } catch (err) {
+    console.warn('[Company] 从 cookie 读取当前公司失败:', err);
+    return '';
+  }
+}
+
 async function loadUserInfo() {
   if (!window.electronAPI || !window.electronAPI.getGlobalData) {
     console.log('[Common Header] electronAPI 不可用，无法加载用户信息');
@@ -734,6 +885,9 @@ async function loadUserInfo() {
     }
 
     var userInfo = await window.electronAPI.getGlobalData('user_info');
+    if (!userInfo) {
+      userInfo = await fetchUserInfoByToken();
+    }
     console.log('[Common Header] userInfo:', userInfo);
 
     if (userInfo) {
@@ -765,21 +919,21 @@ async function loadUserInfo() {
         }
       }
 
-      // 更新用户手机号
+      // 更新用户显示名（手机号优先，其次昵称/账号）
       var userPhoneEl = document.getElementById('userPhone');
       if (userPhoneEl) {
-        userPhoneEl.textContent = '';
-        if (userInfo.phone && userInfo.phone.length === 11) {
-          userPhoneEl.textContent = userInfo.phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')
-        }
+        const displayName = getUserDisplayName(userInfo);
+        userPhoneEl.textContent = displayName || '已登录';
+        userPhoneEl.setAttribute('title', displayName || '已登录');
       }
 
       // 更新用户头像
       var userAvatarEl = document.getElementById('userAvatar');
-      if (userAvatarEl && userInfo.avatar) {
+      const avatarUrl = getUserAvatarUrl(userInfo);
+      if (userAvatarEl && avatarUrl) {
         var avatarImg = userAvatarEl.querySelector('img');
         if (avatarImg) {
-          avatarImg.src = userInfo.avatar;
+          avatarImg.src = avatarUrl;
         }
       }
     } else {
@@ -794,7 +948,12 @@ async function loadUserInfo() {
         }
       }
       var userPhoneEl = document.getElementById('userPhone');
-      if (userPhoneEl) userPhoneEl.textContent = '';
+      if (userPhoneEl) {
+        const token = String(await window.electronAPI.getGlobalData('login_token') || '');
+        const text = token ? '已登录' : '';
+        userPhoneEl.textContent = text;
+        userPhoneEl.setAttribute('title', text);
+      }
       var companyNameEl = document.getElementById('currentSiteName');
       if (companyNameEl){
         console.log(5)
@@ -1225,8 +1384,7 @@ async function getCompanyListApi() {
     return [];
   }
 
-  const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = await getAigcApiBaseUrl();
 
   try {
     const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/switchCompanyData`, {
@@ -1255,10 +1413,9 @@ async function getCompanyListApi() {
 
 // 获取站点基础信息 API（切换公司后需重新获取）
 async function getSiteInfoApi(companyUniqueId) {
-  const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = await getGeoApiBaseUrl();
   const loginToken = String(await window.electronAPI.getGlobalData('login_token') || '');
-  const url = `${apiBaseUrl}newapi/site/info?company_unique_id=${companyUniqueId}`;
+  const url = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
   console.log('[SiteInfo] 请求 site/info:', url);
   const resp = await window.electronAPI.proxyFetch(url, {
     method: 'GET',
@@ -1280,8 +1437,7 @@ async function getSiteInfoApi(companyUniqueId) {
 // 切换公司 API
 async function switchCompanyApi(uniqueId) {
   const token = await window.electronAPI.getGlobalData('login_token');
-  const isDev = window.electronAPI && !window.electronAPI.isProduction;
-  const apiBaseUrl = 'https://zhjzt.china9.cn/';
+  const apiBaseUrl = await getAigcApiBaseUrl();
 
   const resp = await window.electronAPI.proxyFetch(`${apiBaseUrl}/api/user/cutNew`, {
     method: 'POST',
@@ -1518,7 +1674,26 @@ async function loadCompanyList() {
     companyListCache = companies;
     if (companyManageEl) companyManageEl.style.display = '';
 
-    // 优先级1: 从 current_company 缓存恢复（切换公司后保存的，退出登录时已清除）
+    // 优先级1: 从 cookie 读取当前公司（与服务端会话一致，最权威）
+    const cookieUniqueId = await getActiveCompanyUniqueIdFromCookie();
+    if (cookieUniqueId) {
+      const cookieMatched = companies.find(c => String(c.unique_id) === String(cookieUniqueId));
+      if (cookieMatched) {
+        currentCompanyUniqueId = cookieMatched.unique_id;
+        const displayName = cookieMatched.abbreviation || cookieMatched.name || '';
+        if (currentCompanyNameEl) {
+          currentCompanyNameEl.textContent = displayName;
+          currentCompanyNameEl.setAttribute('title', cookieMatched.name || '');
+          currentCompanyNameEl.style.visibility = 'visible';
+        }
+        await window.electronAPI.setGlobalData('current_company', cookieMatched);
+        console.log('[Company] 当前公司（来自 cookie）:', displayName, cookieUniqueId);
+        return;
+      }
+      console.log('[Company] cookie 中 company_unique_id 未匹配到列表:', cookieUniqueId);
+    }
+
+    // 优先级2: 从 current_company 缓存恢复（切换公司后保存的，退出登录时已清除）
     const savedCompany = await window.electronAPI.getGlobalData('current_company');
     if (savedCompany && companies.find(c => c.unique_id === savedCompany.unique_id)) {
       currentCompanyUniqueId = savedCompany.unique_id;
@@ -1532,7 +1707,7 @@ async function loadCompanyList() {
       return;
     }
 
-    // 优先级2: 从 user_info.company.unique_id 匹配（登录时存储）
+    // 优先级3: 从 user_info.company.unique_id 匹配（登录时存储）
     const userInfo = await window.electronAPI.getGlobalData('user_info');
     const activeUniqueId = userInfo && userInfo.company ? userInfo.company.unique_id : null;
     console.log('[Company] user_info.company.unique_id:', activeUniqueId);

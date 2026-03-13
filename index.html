@@ -120,7 +120,7 @@
     /* ========== 公司切换样式 ========== */
     #__browser_common_header__ .header-right .company-manage {
       width: auto;
-      max-width: clamp(200px, 22vw, 320px);
+      max-width: clamp(140px, 18vw, 240px);
       position: relative;
       cursor: pointer;
       overflow: visible;
@@ -253,6 +253,8 @@
       cursor: pointer;
       position: relative;
       border-radius: 20px;
+      flex-shrink: 0;
+      min-width: 0;
     }
 
     #__browser_common_header__ .header-right .user-info:hover {
@@ -279,6 +281,11 @@
       color: #374151;
       font-weight: 500;
       white-space: nowrap;
+      min-width: 64px;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 0;
     }
 
     #__browser_common_header__ .header-right .user-info .dropdown-arrow {
