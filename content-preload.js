@@ -1,8 +1,160 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🔧 [最高优先级] Chromium 106 IndexedDB version change 竞态修复
+// 必须在所有其他脚本之前注入！头条编辑器的 JS 加载很快，
+// 如果 IDB hook 不是第一个注入的，头条代码可能在 hook 安装前就拿到了原生 open 引用
+(async function injectIDBFixFirst() {
+  const idbFixScript = `
+    (function() {
+      'use strict';
+      try {
+        var host = (window.location && window.location.hostname) ? window.location.hostname : '';
+        if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
+
+        window.__IDB_FIX__ = true;
+        window.__IDB_FIX_LOG__ = [];
+        var upgradingDbs = {};
+        var knownVersions = {};
+
+        function idbLog(msg) {
+          window.__IDB_FIX_LOG__.push(msg);
+          try { console.log('[IDB-Fix] ' + msg); } catch(e) {}
+        }
+
+        // 用 Object.defineProperty 强制覆盖（比直接赋值更可靠）
+        var proto = IDBFactory.prototype;
+        var origOpen = proto.open;
+
+        function addVCHandler(db) {
+          if (!db.__idbFixVC) {
+            db.__idbFixVC = true;
+            db.addEventListener('versionchange', function() {
+              idbLog('versionchange on ' + db.name + ' -> auto-close');
+              db.close();
+            });
+          }
+        }
+
+        function hookedOpen(name, version) {
+          // Case 1: DB 正在 upgrade
+          if (upgradingDbs[name]) {
+            idbLog('[WAIT] ' + name + ' upgrading, open without version');
+            var waitReq = origOpen.call(this, name);
+            waitReq.addEventListener('success', function(e) {
+              var db = e.target.result;
+              knownVersions[name] = db.version;
+              addVCHandler(db);
+            });
+            return waitReq;
+          }
+
+          // Case 2: 已知版本 >= 请求版本
+          if (version !== undefined && knownVersions[name] !== undefined && knownVersions[name] >= version) {
+            idbLog('[SKIP] ' + name + ' v' + knownVersions[name] + ' >= v' + version);
+            var skipReq = origOpen.call(this, name);
+            skipReq.addEventListener('success', function(e) {
+              var db = e.target.result;
+              knownVersions[name] = db.version;
+              addVCHandler(db);
+            });
+            return skipReq;
+          }
+
+          // Case 3: 正常 open - 带 version 则立即标记 upgrading
+          if (version !== undefined) {
+            upgradingDbs[name] = true;
+            idbLog('[OPEN] ' + name + ' v' + version + ' (marked upgrading)');
+          } else {
+            idbLog('[OPEN] ' + name + ' (no version)');
+          }
+
+          var request = version !== undefined
+            ? origOpen.call(this, name, version)
+            : origOpen.call(this, name);
+
+          request.addEventListener('upgradeneeded', function(e) {
+            idbLog('[UPGRADE] ' + name + ' v' + e.oldVersion + ' -> v' + e.newVersion);
+          });
+
+          request.addEventListener('success', function(e) {
+            var db = e.target.result;
+            knownVersions[name] = db.version;
+            delete upgradingDbs[name];
+            idbLog('[READY] ' + name + ' v' + db.version);
+            addVCHandler(db);
+          });
+
+          request.addEventListener('error', function(e) {
+            delete upgradingDbs[name];
+            idbLog('[ERROR] ' + name + ': ' + (e.target.error || 'unknown'));
+          });
+
+          request.addEventListener('blocked', function() {
+            idbLog('[BLOCKED] ' + name);
+          });
+
+          return request;
+        }
+
+        // 方法1: Object.defineProperty 强制覆盖 prototype
+        try {
+          Object.defineProperty(proto, 'open', {
+            value: hookedOpen,
+            writable: true,
+            configurable: true
+          });
+          idbLog('prototype hook via defineProperty: ' + (proto.open === hookedOpen ? 'OK' : 'FAIL'));
+        } catch (e1) {
+          // 方法2: 直接赋值 prototype
+          try {
+            proto.open = hookedOpen;
+            idbLog('prototype hook via assignment: ' + (proto.open === hookedOpen ? 'OK' : 'FAIL'));
+          } catch (e2) {
+            idbLog('prototype hook failed: ' + e2.message);
+          }
+        }
+
+        // 方法3: 同时覆盖 indexedDB.open 实例属性（双保险）
+        try {
+          Object.defineProperty(indexedDB, 'open', {
+            value: hookedOpen.bind(indexedDB),
+            writable: true,
+            configurable: true
+          });
+          idbLog('instance hook: OK');
+        } catch (e3) {
+          try {
+            indexedDB.open = hookedOpen.bind(indexedDB);
+            idbLog('instance hook via assignment: ' + (indexedDB.open !== origOpen ? 'OK' : 'FAIL'));
+          } catch (e4) {
+            idbLog('instance hook failed: ' + e4.message);
+          }
+        }
+
+        // 测试：调用一次看 hook 是否生效
+        try {
+          var testReq = indexedDB.open('__idb_fix_verify__');
+          testReq.onsuccess = function(e) {
+            e.target.result.close();
+            indexedDB.deleteDatabase('__idb_fix_verify__');
+          };
+        } catch (e) {
+          idbLog('verify test failed: ' + e.message);
+        }
+
+      } catch (e) {
+        try { console.error('[IDB-Fix] fatal:', e); } catch(e2) {}
+      }
+    })();
+  `;
+  try {
+    await webFrame.executeJavaScript(idbFixScript);
+  } catch (e) {}
+})();
+
 // 🛡️ 反自动化检测 - 隐藏 Electron/Webdriver 特征
 // 必须在最开始执行，在页面脚本之前
-(function injectAntiDetection() {
+(async function injectAntiDetection() {
   try {
     const antiDetectionScript = `
       (function() {
@@ -25,8 +177,37 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
         }
 
         // 3. 隐藏 Electron 特征
-        delete window.process;
-        delete window.require;
+        // 说明：严格模式下，delete 非 configurable 属性会抛异常（可能导致后续脚本不再注入）
+        // 这里改为更安全的“遮蔽”写法：优先 defineProperty getter 返回 undefined；失败再尝试赋值。
+        (function hideElectronProp(key) {
+          try {
+            Object.defineProperty(window, key, {
+              get: () => undefined,
+              set: () => {},
+              configurable: true
+            });
+            return;
+          } catch (e) {}
+
+          try {
+            window[key] = undefined;
+          } catch (e2) {}
+        })('process');
+
+        (function hideElectronProp(key) {
+          try {
+            Object.defineProperty(window, key, {
+              get: () => undefined,
+              set: () => {},
+              configurable: true
+            });
+            return;
+          } catch (e) {}
+
+          try {
+            window[key] = undefined;
+          } catch (e2) {}
+        })('require');
 
         // 4. 修复 permissions API
         const originalQuery = window.navigator.permissions?.query;
@@ -59,11 +240,442 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
           configurable: true
         });
 
+        // 7. 补充 navigator.connection API（头条 vendor 依赖）
+        // Chromium 106 / Electron 21 环境下可能不存在或不完整，导致 "Cannot read properties of undefined (reading 'network')"
+        // 注意：这里必须在 antiDetection 脚本内执行，不能等到 polyfill 脚本，因为头条 vendor 加载很早
+        try {
+          if (!navigator.connection) {
+            var connObj = {
+              effectiveType: '4g',
+              downlink: 10,
+              rtt: 50,
+              saveData: false,
+              type: 'wifi'
+            };
+            navigator.connection = connObj;
+            console.log('[AntiDetection] ✅ 已直接赋值 navigator.connection');
+          }
+        } catch (e) {
+          console.warn('[AntiDetection] ⚠️ 直接赋值 navigator.connection 失败，尝试 defineProperty');
+          try {
+            Object.defineProperty(navigator, 'connection', {
+              value: {
+                effectiveType: '4g',
+                downlink: 10,
+                rtt: 50,
+                saveData: false,
+                type: 'wifi'
+              },
+              writable: true,
+              configurable: true,
+              enumerable: true
+            });
+            console.log('[AntiDetection] ✅ 已通过 defineProperty 补充 navigator.connection');
+          } catch (e2) {
+            console.warn('[AntiDetection] ⚠️ defineProperty 也失败了:', e2.message);
+          }
+        }
+
         console.log('[AntiDetection] ✅ 反自动化检测已启用');
       })();
     `;
 
-    webFrame.executeJavaScript(antiDetectionScript);
+    // ⚠️ 必须 await，确保注入顺序早于页面脚本
+    try {
+      await webFrame.executeJavaScript(antiDetectionScript);
+    } catch (e) {
+      console.error('[AntiDetection] 注入失败:', e);
+    }
+
+    // 🔧 Chromium 106 Polyfills - 补充头条等平台前端可能用到的新 API
+    const polyfillScript = `
+      (function() {
+        'use strict';
+
+        var polyfilled = [];
+
+        // Array.prototype.toSorted (Chrome 110+)
+        if (!Array.prototype.toSorted) {
+          Array.prototype.toSorted = function(compareFn) {
+            return Array.from(this).sort(compareFn);
+          };
+          polyfilled.push('Array.toSorted');
+        }
+
+        // Array.prototype.toReversed (Chrome 110+)
+        if (!Array.prototype.toReversed) {
+          Array.prototype.toReversed = function() {
+            return Array.from(this).reverse();
+          };
+          polyfilled.push('Array.toReversed');
+        }
+
+        // Array.prototype.toSpliced (Chrome 110+)
+        if (!Array.prototype.toSpliced) {
+          Array.prototype.toSpliced = function() {
+            var arr = Array.from(this);
+            arr.splice.apply(arr, arguments);
+            return arr;
+          };
+          polyfilled.push('Array.toSpliced');
+        }
+
+        // Array.prototype.with (Chrome 110+)
+        if (!Array.prototype.with) {
+          Array.prototype.with = function(index, value) {
+            var arr = Array.from(this);
+            if (index < 0) index = arr.length + index;
+            arr[index] = value;
+            return arr;
+          };
+          polyfilled.push('Array.with');
+        }
+
+        // Array.prototype.findLast (Chrome 97+, but double-check)
+        if (!Array.prototype.findLast) {
+          Array.prototype.findLast = function(fn, thisArg) {
+            for (var i = this.length - 1; i >= 0; i--) {
+              if (fn.call(thisArg, this[i], i, this)) return this[i];
+            }
+            return undefined;
+          };
+          polyfilled.push('Array.findLast');
+        }
+
+        // Array.prototype.findLastIndex (Chrome 97+)
+        if (!Array.prototype.findLastIndex) {
+          Array.prototype.findLastIndex = function(fn, thisArg) {
+            for (var i = this.length - 1; i >= 0; i--) {
+              if (fn.call(thisArg, this[i], i, this)) return i;
+            }
+            return -1;
+          };
+          polyfilled.push('Array.findLastIndex');
+        }
+
+        // Object.groupBy (Chrome 117+)
+        if (!Object.groupBy) {
+          Object.groupBy = function(iterable, callbackFn) {
+            var result = Object.create(null);
+            var index = 0;
+            for (var item of iterable) {
+              var key = callbackFn(item, index++);
+              if (!(key in result)) result[key] = [];
+              result[key].push(item);
+            }
+            return result;
+          };
+          polyfilled.push('Object.groupBy');
+        }
+
+        // Map.groupBy (Chrome 117+)
+        if (!Map.groupBy) {
+          Map.groupBy = function(iterable, callbackFn) {
+            var map = new Map();
+            var index = 0;
+            for (var item of iterable) {
+              var key = callbackFn(item, index++);
+              if (!map.has(key)) map.set(key, []);
+              map.get(key).push(item);
+            }
+            return map;
+          };
+          polyfilled.push('Map.groupBy');
+        }
+
+        // Promise.withResolvers (Chrome 119+)
+        if (!Promise.withResolvers) {
+          Promise.withResolvers = function() {
+            var resolve, reject;
+            var promise = new Promise(function(res, rej) {
+              resolve = res;
+              reject = rej;
+            });
+            return { promise: promise, resolve: resolve, reject: reject };
+          };
+          polyfilled.push('Promise.withResolvers');
+        }
+
+        // String.prototype.isWellFormed (Chrome 111+)
+        if (!String.prototype.isWellFormed) {
+          String.prototype.isWellFormed = function() {
+            return !/\\uD800/.test(this) || /[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]/.test(this);
+          };
+          polyfilled.push('String.isWellFormed');
+        }
+
+        // String.prototype.toWellFormed (Chrome 111+)
+        if (!String.prototype.toWellFormed) {
+          String.prototype.toWellFormed = function() {
+            return this.replace(/[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]/g, '\\uFFFD');
+          };
+          polyfilled.push('String.toWellFormed');
+        }
+
+        // Set methods (Chrome 122+)
+        if (!Set.prototype.intersection) {
+          Set.prototype.intersection = function(other) {
+            var result = new Set();
+            for (var item of this) { if (other.has(item)) result.add(item); }
+            return result;
+          };
+          polyfilled.push('Set.intersection');
+        }
+        if (!Set.prototype.union) {
+          Set.prototype.union = function(other) {
+            var result = new Set(this);
+            for (var item of other) result.add(item);
+            return result;
+          };
+          polyfilled.push('Set.union');
+        }
+        if (!Set.prototype.difference) {
+          Set.prototype.difference = function(other) {
+            var result = new Set();
+            for (var item of this) { if (!other.has(item)) result.add(item); }
+            return result;
+          };
+          polyfilled.push('Set.difference');
+        }
+
+        if (polyfilled.length > 0) {
+          console.log('[Polyfill] ✅ 已补充 ' + polyfilled.length + ' 个 API:', polyfilled.join(', '));
+        }
+      })();
+    `;
+    try {
+      await webFrame.executeJavaScript(polyfillScript);
+    } catch (e) {}
+
+    // 🔍 JS 错误捕获浮层 - 在页面上直接显示 JS 错误（不依赖 Console）
+    // 同时在头条域名额外捕获 console.* 输出（可观测日志）
+    const errorOverlayScript = `
+      (function() {
+        'use strict';
+        var errors = [];
+        var overlay = null;
+        var MAX_ERRORS = 80;
+        var pendingLines = [];
+
+        function isOverlayMountedAndCurrentDoc() {
+          try {
+            if (!overlay) return false;
+            if (overlay.ownerDocument !== document) return false;
+            if (!document.contains(overlay)) return false;
+            return true;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function buildOverlayElement() {
+          var el = document.createElement('div');
+          el.id = '__js_error_overlay__';
+          el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:35vh;overflow-y:auto;' +
+            'background:rgba(0,0,0,0.88);color:#ff6b6b;font:12px/1.5 monospace;padding:8px 12px;z-index:2147483647;' +
+            'display:none;border-top:2px solid #ff4444;pointer-events:auto;';
+          var closeBtn = document.createElement('span');
+          closeBtn.textContent = '[X 关闭]';
+          closeBtn.style.cssText = 'position:sticky;top:0;float:right;cursor:pointer;color:#aaa;padding:2px 6px;';
+          closeBtn.onclick = function() { el.style.display = 'none'; };
+          el.appendChild(closeBtn);
+          return el;
+        }
+
+        function appendLine(el, msg, color) {
+          var line = document.createElement('div');
+          line.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.1);padding:3px 0;word-break:break-all;' +
+            (color ? ('color:' + color + ';') : '');
+          line.textContent = msg;
+          el.appendChild(line);
+          el.style.display = 'block';
+          el.scrollTop = el.scrollHeight;
+        }
+
+        function flushPendingLines() {
+          if (!isOverlayMountedAndCurrentDoc()) return;
+          if (!pendingLines.length) return;
+          try {
+            var el = overlay;
+            var list = pendingLines.slice(0);
+            pendingLines.length = 0;
+            list.forEach(function(item) {
+              try { appendLine(el, item.msg, item.color); } catch (e) {}
+            });
+          } catch (e) {}
+        }
+
+        function tryMountOverlay() {
+          // 跨导航保护：旧 document 的节点不可复用
+          if (overlay && (overlay.ownerDocument !== document || !document.contains(overlay))) {
+            try { overlay.remove(); } catch (e) {}
+            overlay = null;
+          }
+
+          if (isOverlayMountedAndCurrentDoc()) {
+            flushPendingLines();
+            return overlay;
+          }
+
+          var parent = document.body || document.documentElement;
+          if (!parent) return null;
+
+          try {
+            var el = overlay;
+            if (!el) {
+              el = buildOverlayElement();
+            }
+            parent.appendChild(el);
+            // 只有成功挂载后才缓存为可用 overlay（避免早期文档 append 失败导致“假缓存”）
+            overlay = el;
+            flushPendingLines();
+            return overlay;
+          } catch (e) {
+            // 挂载失败：不要缓存 overlay，等待后续重试
+            overlay = null;
+            return null;
+          }
+        }
+
+        function addLine(msg, color) {
+          errors.push(msg);
+          if (errors.length > MAX_ERRORS) errors.shift();
+
+          pendingLines.push({ msg: msg, color: color });
+          if (pendingLines.length > MAX_ERRORS) pendingLines.shift();
+
+          tryMountOverlay();
+        }
+
+        // 挂载重试：同一 renderer 跨导航时，DOMContentLoaded/load 会在新 document 再次触发
+        try {
+          window.addEventListener('DOMContentLoaded', function() { tryMountOverlay(); }, false);
+          window.addEventListener('load', function() { tryMountOverlay(); }, false);
+        } catch (e) {}
+
+        // 尽早尝试一次（可能在早期文档失败，后续事件会再试）
+        tryMountOverlay();
+
+        function safeStringify(val) {
+          try {
+            if (typeof val === 'string') return val;
+            if (val && typeof val === 'object') {
+              if (val instanceof Error) return (val.stack || val.message || String(val));
+              return JSON.stringify(val);
+            }
+            return String(val);
+          } catch (e) {
+            try { return String(val); } catch (e2) { return '[unserializable]'; }
+          }
+        }
+
+        function formatArgs(args) {
+          try {
+            return Array.prototype.slice.call(args).map(safeStringify).join(' ');
+          } catch (e) {
+            return '[format failed]';
+          }
+        }
+
+        // 在头条域名展示 IDB 修复状态 + hook 诊断日志
+        (function() {
+          try {
+            var host = window.location.hostname || '';
+            if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
+            var enabled = !!window.__IDB_FIX__;
+            addLine('[IDB-Fix] ' + (enabled ? 'enabled' : 'disabled'), enabled ? '#7bed9f' : '#ffa502');
+            // 显示 hook 安装过程中的所有日志
+            var logs = window.__IDB_FIX_LOG__ || [];
+            for (var i = 0; i < logs.length; i++) {
+              addLine('[IDB-Fix] ' + logs[i], '#7bed9f');
+            }
+            if (logs.length === 0 && enabled) {
+              addLine('[IDB-Fix] WARNING: no hook logs captured (hook may have failed silently)', '#ffa502');
+            }
+          } catch (e) {}
+        })();
+
+        // 捕获 JS 错误
+        window.onerror = function(msg, source, lineno, colno, error) {
+          var src = (source || '').split('/').slice(-2).join('/');
+          addLine('[ERR] ' + msg + ' | ' + src + ':' + lineno + ':' + colno, '#ff6b6b');
+        };
+
+        window.addEventListener('unhandledrejection', function(e) {
+          var reason = e.reason;
+          var msg = (reason && reason.stack) ? reason.stack.split('\\n').slice(0, 2).join(' ') :
+                    (reason && reason.message) ? reason.message : String(reason);
+          addLine('[Promise] ' + msg, '#ffa502');
+        });
+
+        // 头条域名：捕获 console.* 到 overlay（不依赖 DevTools）
+        (function hookConsoleForToutiao() {
+          try {
+            var host = window.location.hostname || '';
+            if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
+
+            if (!window.console) return;
+
+            var con = window.console;
+
+            // 防重复 hook：避免多次注入导致递归/性能问题，也避免覆盖站点自己对 console 的处理
+            if (con.__consoleOverlayHooked__) return;
+
+            var methods = [
+              { key: 'log', tag: '[LOG]', color: '#dfe4ea' },
+              { key: 'info', tag: '[INFO]', color: '#70a1ff' },
+              { key: 'warn', tag: '[WARN]', color: '#ffa502' },
+              { key: 'error', tag: '[ERR]', color: '#ff6b6b' },
+              { key: 'debug', tag: '[DBG]', color: '#a4b0be' }
+            ];
+
+            methods.forEach(function(m) {
+              var current = con[m.key];
+              if (current && current.__overlayHooked__) return;
+
+              var orig = con[m.key];
+              if (typeof orig !== 'function') return;
+              if (orig.__overlayHooked__) return;
+
+              var wrapped = function() {
+                try {
+                  addLine(m.tag + ' ' + formatArgs(arguments), m.color);
+                } catch (e) {}
+                try {
+                  return orig.apply(con, arguments);
+                } catch (e) {
+                  // console 本身失败也不要影响业务
+                }
+              };
+              try { wrapped.__overlayHooked__ = true; } catch (e) {}
+
+              // 关键：不要把 console.* 变成只读/不可配置，避免站点脚本后续覆盖时报错
+              try {
+                con[m.key] = wrapped;
+              } catch (e) {
+                try {
+                  Object.defineProperty(con, m.key, {
+                    value: wrapped,
+                    writable: true,
+                    configurable: true,
+                    enumerable: true
+                  });
+                } catch (e2) {}
+              }
+            });
+
+            try { con.__consoleOverlayHooked__ = true; } catch (e) {}
+
+            addLine('[ConsoleOverlay] enabled', '#7bed9f');
+          } catch (e) {}
+        })();
+
+        console.log('[ErrorOverlay] ✅ JS 错误/日志捕获浮层已启用');
+      })();
+    `;
+    try {
+      await webFrame.executeJavaScript(errorOverlayScript);
+    } catch (e) {}
   } catch (e) {
     console.error('[AntiDetection] 注入失败:', e);
   }

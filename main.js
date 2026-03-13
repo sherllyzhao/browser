@@ -254,6 +254,12 @@ function addContentTypeFix(targetSession, label) {
 // 1) 自有域名：保留 zh.Cloud-browse 标记 + 专用识别头（便于后台识别）
 // 2) 第三方域名：强制标准 UA，避免风控把 UA 与 sec-ch-ua 判为异常
 function addIdentityHeaderPolicy(targetSession, label) {
+  // Electron 21 = Chromium 106（2022 年版本），部分平台已拒绝过旧的浏览器
+  // 为第三方域名请求伪装成更新的 Chrome 版本，避免被风控拒绝
+  const SPOOF_CHROME_VERSION = '120';
+  const SPOOFED_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${SPOOF_CHROME_VERSION}.0.0.0 Safari/537.36`;
+  const SPOOFED_SEC_CH_UA = `"Not_A Brand";v="8", "Chromium";v="${SPOOF_CHROME_VERSION}", "Google Chrome";v="${SPOOF_CHROME_VERSION}"`;
+
   targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const headers = details.requestHeaders || {};
     if (isFirstPartyUrl(details.url)) {
@@ -262,7 +268,66 @@ function addIdentityHeaderPolicy(targetSession, label) {
     } else {
       removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse');
       removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version');
+      // 伪装 Chrome 版本，避免第三方平台（如 Toutiao）拒绝 Chromium 106
+      setHeaderCaseInsensitive(headers, 'User-Agent', SPOOFED_USER_AGENT);
+      setHeaderCaseInsensitive(headers, 'sec-ch-ua', SPOOFED_SEC_CH_UA);
     }
+
+    // 🔍 [临时诊断] Toutiao publish/draft API 请求头捕获
+    const url = details.url || '';
+    if (url.includes('/mp/agw/article/publish') || url.includes('/mp/agw/draft/')) {
+      const cookieHeader = headers['Cookie'] || headers['cookie'] || '';
+      const cookieNames = cookieHeader.split(';').map(c => (c.split('=')[0] || '').trim()).filter(Boolean);
+      const importantCookies = ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss', 'ttwid', 'csrf_session_id', 's_v_web_id', 'msToken'];
+
+      console.log('╔══════════════════════════════════════════════════════════╗');
+      console.log('║ [Toutiao API 诊断] 拦截到 publish/draft 请求            ║');
+      console.log('╚══════════════════════════════════════════════════════════╝');
+      console.log('[Toutiao API] URL:', url.slice(0, 120));
+      console.log('[Toutiao API] Method:', details.method);
+      console.log('[Toutiao API] User-Agent:', headers['User-Agent'] || '[无]');
+      console.log('[Toutiao API] sec-ch-ua:', headers['sec-ch-ua'] || '[无]');
+      console.log('[Toutiao API] x-secsdk-csrf-token:', headers['x-secsdk-csrf-token'] || '[无]');
+      console.log('[Toutiao API] tt-anti-token:', (headers['tt-anti-token'] || '[无]').slice(0, 30));
+      console.log('[Toutiao API] Cookie 数量:', cookieNames.length);
+      importantCookies.forEach(name => {
+        const found = cookieHeader.split(';').find(c => c.trim().startsWith(name + '='));
+        console.log(found ? `  ✅ ${name}` : `  ❌ ${name} = [缺失!]`);
+      });
+
+      // 保存到文件（包含完整 header 值）
+      const fs = require('fs');
+      const path = require('path');
+      const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+      try {
+        if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+        const dumpFile = path.join(dumpDir, `toutiao-api-headers-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+        const headersSafe = {};
+        for (const [k, v] of Object.entries(headers)) {
+          if (k.toLowerCase() === 'cookie') {
+            headersSafe[k] = `[${cookieNames.length}个] ${cookieNames.join(', ')}`;
+          } else {
+            headersSafe[k] = v;
+          }
+        }
+        fs.writeFileSync(dumpFile, JSON.stringify({
+          url: url,
+          method: details.method,
+          headers: headersSafe,
+          cookieNames,
+          importantCookieStatus: Object.fromEntries(importantCookies.map(name => {
+            const found = cookieHeader.split(';').find(c => c.trim().startsWith(name + '='));
+            return [name, found ? 'present' : 'MISSING'];
+          })),
+          fullCookieLength: cookieHeader.length,
+          timestamp: new Date().toISOString()
+        }, null, 2));
+        console.log('[Toutiao API] 📁 请求头已保存到:', dumpFile);
+      } catch (e) {
+        console.error('[Toutiao API] 保存失败:', e.message);
+      }
+    }
+
     callback({ requestHeaders: headers });
   });
   console.log(`[Session] ✅ ${label} 身份头策略已添加（自有域名带标记，第三方标准 UA）`);
@@ -883,6 +948,14 @@ function createWindow() {
     if (url && url.toLowerCase().startsWith('bitbrowser:')) {
       console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
       callback({ cancel: true });
+      return;
+    }
+    // 🔧 Chromium 106 IndexedDB 修复：
+    // ⚠️ 不再每次清空 IDB！清空会强制 Toutiao 重建 DB → 触发 version change → 竞态错误 → 7050
+    // 保留 DB 让 Toutiao 复用已有版本 → 不触发 upgrade → 不会 version change → 写入正常
+    if (details.resourceType === 'mainFrame' && url && url.includes('toutiao.com')) {
+      console.log('[IDB] ⏩ Toutiao 主框架请求 - 保留 IndexedDB（不清空）');
+      callback({});
       return;
     }
     callback({});
@@ -4148,6 +4221,23 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
           callback({ cancel: true });
           return;
         }
+        // 🔧 Chromium 106 IndexedDB versionchange 修复（临时 session）
+        if (details.resourceType === 'mainFrame' && reqUrl && reqUrl.includes('toutiao.com')) {
+          console.log('[Temp IDB Clear] 🔄 检测到 Toutiao 主框架请求，先清空 IndexedDB...');
+          const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
+          Promise.all(
+            origins.map(origin =>
+              windowSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
+                .catch(err => console.log(`[Temp IDB Clear] Failed for ${origin}:`, err.message))
+            )
+          ).then(() => {
+            console.log('[Temp IDB Clear] ✅ Toutiao IndexedDB 已清空，放行请求');
+            callback({});
+          }).catch(() => {
+            callback({});
+          });
+          return;
+        }
         callback({});
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
@@ -4327,6 +4417,23 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
           const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
           console.log(`[Window WebRequest] 🔒 HTTP→HTTPS: ${reqUrl}`);
           callback({ redirectURL: httpsUrl });
+          return;
+        }
+        // 🔧 Chromium 106 IndexedDB versionchange 修复（非持久化 session 窗口）
+        if (details.resourceType === 'mainFrame' && reqUrl && reqUrl.includes('toutiao.com')) {
+          console.log('[Window IDB Clear] 🔄 检测到 Toutiao 主框架请求，先清空 IndexedDB...');
+          const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
+          Promise.all(
+            origins.map(origin =>
+              windowSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
+                .catch(err => console.log(`[Window IDB Clear] Failed for ${origin}:`, err.message))
+            )
+          ).then(() => {
+            console.log('[Window IDB Clear] ✅ Toutiao IndexedDB 已清空，放行请求');
+            callback({});
+          }).catch(() => {
+            callback({});
+          });
           return;
         }
         callback({});
@@ -5692,6 +5799,23 @@ function getAccountSession(platform, accountId) {
     if (url && url.toLowerCase().startsWith('bitbrowser:')) {
       console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
       callback({ cancel: true });
+      return;
+    }
+    // 🔧 Chromium 106 IndexedDB versionchange 修复（账号 session）
+    if (details.resourceType === 'mainFrame' && url && url.includes('toutiao.com')) {
+      console.log(`[Account IDB Clear ${partitionName}] 🔄 清空 Toutiao IndexedDB...`);
+      const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
+      Promise.all(
+        origins.map(origin =>
+          accountSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
+            .catch(err => console.log(`[Account IDB Clear] Failed for ${origin}:`, err.message))
+        )
+      ).then(() => {
+        console.log(`[Account IDB Clear ${partitionName}] ✅ 已清空，放行请求`);
+        callback({});
+      }).catch(() => {
+        callback({});
+      });
       return;
     }
     callback({});

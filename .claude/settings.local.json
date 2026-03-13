@@ -132,7 +132,8 @@
       "Bash(python3:*)",
       "Bash(do node -c \"$file\")",
       "Bash(echo:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(git -C:*)"
     ],
     "deny": [],
     "ask": []

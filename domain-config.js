@@ -13,7 +13,7 @@
 // 🔑 唯一环境开关 — 改这一个值，全部切换
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
-const ENV = 'dev'; // 'dev' | 'prod'
+const ENV = 'prod'; // 'dev' | 'prod'
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
