@@ -1291,3 +1291,187 @@ await newWindow.loadURL(`${targetOrigin}/favicon.ico`).catch(() => {});
 3. **Preload 注入**: 在 `content-preload.js` 中根据目标 URL 预设 localStorage（类似搜狐号 toPath 的处理方式），避免中间页
 
 **代码位置**: main.js:4237-4283（`openNewWindow` 的 localStorage 预设逻辑）
+
+
+### 17. AI 智能发布功能（实验性）
+
+通过 AI 大模型自动分析页面 DOM 结构，识别表单元素，生成填写指令并执行，实现跨平台的智能发布。
+
+#### 架构概览
+
+```
+injected-scripts/ai-publish.js    ← 注入脚本（DOM 提取 + 操作执行 + 流程编排 + 跳转拦截）
+        ↕ browserAPI.aiAnalyzePage / aiDetectResult
+content-preload.js                ← IPC 桥接
+        ↕ ipcRenderer.invoke
+main.js                           ← IPC Handler（调用 LLM）
+        ↕ require
+ai-agent/llm-provider.js          ← LLM Provider 抽象层（可插拔，支持多服务商）
+ai-agent/prompts.js               ← Prompt 模板（页面分析 + 结果检测）
+```
+
+#### 文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `ai-agent/llm-provider.js` | LLM 调用抽象层，OpenAI 兼容格式，支持 Groq/通义千问/OpenRouter/OpenAI/自定义 |
+| `ai-agent/prompts.js` | Prompt 模板，包含页面分析和结果检测两套 prompt |
+| `injected-scripts/ai-publish.js` | 注入脚本，包含 DOM 提取器、操作执行器、主流程编排、跳转拦截 |
+| `main.js` (末尾) | `ai-get-config`、`ai-set-config`、`ai-analyze-page`、`ai-detect-result` 四个 IPC handler |
+| `content-preload.js` (browserAPI) | `aiAnalyzePage`、`aiDetectResult`、`aiGetConfig`、`aiSetConfig` 四个 API |
+
+#### 切换 LLM 服务商
+
+架构设计为**可插拔**，所有服务商使用 OpenAI 兼容的 `/v1/chat/completions` 格式。切换只需改配置：
+
+```javascript
+// 在浏览器控制台或注入脚本中设置
+await window.browserAPI.aiSetConfig({
+  provider: 'groq',           // 预置: groq / openrouter / qwen / openai / custom
+  apiKey: 'gsk_xxxxxxxx',     // API Key
+  model: 'llama-3.3-70b-versatile',  // 可选，不填用默认模型
+  // baseUrl: '',              // custom 模式时必填
+  // timeout: 30000,           // 超时时间（毫秒）
+});
+```
+
+**预置服务商配置：**
+
+| provider | 服务商 | 默认模型 | baseUrl |
+|----------|--------|---------|---------|
+| `groq` | Groq（当前默认） | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+| `openrouter` | OpenRouter | `qwen/qwen3-4b:free` | `https://openrouter.ai/api/v1` |
+| `qwen` | 通义千问（阿里云百炼） | `qwen-turbo` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `openai` | OpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` |
+| `custom` | 自定义 | 需手动指定 | 需手动指定 |
+
+**添加新服务商**：只需在 `ai-agent/llm-provider.js` 的 `PRESET_PROVIDERS` 中添加一条记录。
+
+#### 配置存储
+
+AI 配置存储在 `global-storage.json` 的 `ai_config` 字段中，应用重启后保留。
+
+```json
+{
+  "ai_config": {
+    "provider": "groq",
+    "apiKey": "gsk_xxxxxxxx",
+    "model": "llama-3.3-70b-versatile"
+  }
+}
+```
+
+#### 使用方法
+
+**前提**：先配置 API Key（只需一次）：
+```javascript
+await window.browserAPI.aiSetConfig({
+  provider: 'groq',
+  apiKey: 'gsk_你的key'
+});
+```
+
+**方式1：在任意页面的 DevTools 控制台手动调用**
+
+需要先在 `scripts-config.json` 中为目标 URL 配置注入 `ai-publish.js`，或手动注入。
+
+```javascript
+// 查看 AI 提取的 DOM 结构
+__AI_AGENT__.extractDOM()
+
+// AI 分析页面（不执行操作，只看 AI 返回什么）
+await __AI_AGENT__.analyze({ title: '测试标题', content: '测试内容' })
+
+// 完整发布流程（填写表单，但不自动点击发布按钮）
+await __AI_AGENT__.publish({ title: '标题', content: '内容' })
+
+// 完整发布流程（包括自动点击发布 + 检测结果）
+await __AI_AGENT__.publish({ title: '标题', content: '内容' }, { autoPublish: true })
+
+// 检测当前页面状态（点击发布后调用）
+await __AI_AGENT__.detectResult()
+```
+
+**方式2：通过 scripts-config.json 自动注入**
+
+在 `scripts-config.json` 中为目标平台 URL 配置 `ai-publish.js`：
+```json
+{
+  "scripts": {
+    "https://some-new-platform.com/publish*": ["common.js", "ai-publish.js"]
+  }
+}
+```
+
+脚本注入后会自动：
+1. 从 `publish_data_window_{windowId}` 读取发布数据
+2. 提取 DOM → 调用 AI 分析 → 执行填写操作
+3. 发布按钮默认不自动点击（`autoPublish: false`），需用户确认
+
+#### 页面跳转拦截
+
+AI 发布脚本内置了导航守卫，防止页面意外跳转导致发布中断：
+
+| 场景 | 行为 |
+|------|------|
+| 跳转到登录页（`/login`、`/passport` 等） | 放行，不拦截 |
+| 同域名路径变化（SPA 路由） | 放行，不拦截 |
+| 第一次跨域跳转 | 自动跳回原页面 |
+| 第二次跨域跳转 | 上报错误（`sendStatisticsError`）+ 通知首页 + 关闭窗口 |
+
+#### AI 返回格式
+
+**页面分析（`ai-analyze-page`）返回：**
+```json
+{
+  "isForm": true,
+  "pageName": "抖音视频发布页",
+  "actions": [
+    {"step": 1, "action": "fill", "selector": "#title-input", "value": "标题", "description": "填写标题"},
+    {"step": 2, "action": "fill_rich", "selector": "[contenteditable]", "value": "内容", "description": "填写正文"},
+    {"step": 3, "action": "upload", "selector": "input[type=file]", "field": "video_url", "description": "上传视频"},
+    {"step": 4, "action": "publish", "selector": ".publish-btn", "description": "点击发布按钮"}
+  ]
+}
+```
+
+**支持的 action 类型：**
+
+| action | 说明 | 特殊处理 |
+|--------|------|---------|
+| `fill` | 普通 input/textarea 填写 | 兼容 React 受控组件（`setNativeValue`） |
+| `fill_rich` | contenteditable 富文本填写 | 使用 `execCommand` |
+| `click` | 点击元素 | - |
+| `select` | 下拉选择 | - |
+| `check` | 勾选复选框/单选框 | - |
+| `upload` | 文件上传区域标记 | 不自动执行，返回 `needsUpload: true` |
+| `publish` | 发布按钮标记 | 不自动点击，返回 `isPublishButton: true` |
+
+**结果检测（`ai-detect-result`）返回：**
+```json
+{
+  "status": "success",
+  "message": "发布成功，已跳转到作品管理页",
+  "errorDetail": ""
+}
+```
+
+#### 开发进度
+
+- [x] LLM Provider 抽象层（支持 Groq/通义千问/OpenRouter/OpenAI/自定义）
+- [x] Prompt 模板（页面分析 + 结果检测）
+- [x] main.js IPC Handler（ai-get-config / ai-set-config / ai-analyze-page / ai-detect-result）
+- [x] content-preload.js API 暴露（aiAnalyzePage / aiDetectResult / aiGetConfig / aiSetConfig）
+- [x] AI 发布脚本（DOM 提取 + 操作执行 + 流程编排）
+- [x] 页面跳转拦截（登录页放行 + 跨域跳转拦截 + 错误上报）
+- [ ] 与现有发布脚本集成（作为兜底方案，现有脚本失败时启用 AI）
+- [ ] 文件上传与 common.js 的 uploadVideo/uploadImage 联动
+- [ ] UI 配置面板（在浏览器界面中配置 API Key 和服务商）
+- [ ] 实际平台测试和 prompt 调优
+
+#### 注意事项
+
+1. **API Key 安全**：Key 存储在本地 `global-storage.json` 中，不会上传到服务器
+2. **网络要求**：Groq/OpenRouter/OpenAI 需要翻墙；通义千问国内直连
+3. **成本**：Groq 免费（每天 1000 次），通义千问新人有免费额度，之后约 ¥0.003/千tokens
+4. **准确性**：AI 分析结果取决于模型能力和 DOM 结构复杂度，复杂页面可能需要多次调优 prompt

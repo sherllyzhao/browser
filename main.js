@@ -5,6 +5,8 @@ const https = require('https');
 const http = require('http');
 const ScriptManager = require('./script-manager');
 const config = require('./domain-config');
+const { LLMProvider, PRESET_PROVIDERS } = require('./ai-agent/llm-provider');
+const { buildAnalyzeMessages, buildDetectMessages } = require('./ai-agent/prompts');
 
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
@@ -6730,5 +6732,88 @@ ipcMain.handle('save-session-to-backend', async (event) => {
   } catch (err) {
     console.error('[Save Session] 保存失败:', err);
     return { success: false, error: err.message };
+  }
+});
+
+// ========== AI 智能体 ==========
+
+// 获取 AI 配置
+ipcMain.handle('ai-get-config', async () => {
+  const aiConfig = globalStorage['ai_config'] || null;
+  return { success: true, config: aiConfig, presets: PRESET_PROVIDERS };
+});
+
+// 保存 AI 配置
+ipcMain.handle('ai-set-config', async (event, config) => {
+  globalStorage['ai_config'] = config;
+  saveGlobalStorage();
+  console.log('[AI Agent] 配置已保存:', config.provider, config.model);
+  return { success: true };
+});
+
+// AI 分析页面并生成填写指令
+ipcMain.handle('ai-analyze-page', async (event, domData, publishData) => {
+  console.log('[AI Agent] ========== 分析页面 ==========');
+  try {
+    const aiConfig = globalStorage['ai_config'];
+    if (!aiConfig || !aiConfig.apiKey) {
+      return { success: false, error: '请先配置 AI API Key。通过 browserAPI.setGlobalData("ai_config", {provider: "groq", apiKey: "your_key"}) 设置' };
+    }
+
+    const provider = new LLMProvider(aiConfig);
+    const messages = buildAnalyzeMessages(domData, publishData);
+    const response = await provider.chat(messages);
+
+    // 解析 JSON 响应
+    let result;
+    try {
+      // 去掉可能的 markdown 代码块标记
+      let cleaned = response.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      result = JSON.parse(cleaned);
+    } catch (e) {
+      console.error('[AI Agent] JSON 解析失败:', response.substring(0, 500));
+      return { success: false, error: 'AI 返回格式异常', raw: response };
+    }
+
+    console.log('[AI Agent] ✅ 分析完成:', result.isForm ? `${result.actions?.length || 0} 个操作` : '非表单页面');
+    return { success: true, result };
+  } catch (error) {
+    console.error('[AI Agent] ❌ 分析失败:', error.message);
+    return { success: false, error: error.message };
+  }
+});
+
+// AI 检测发布结果
+ipcMain.handle('ai-detect-result', async (event, domData) => {
+  console.log('[AI Agent] ========== 检测发布结果 ==========');
+  try {
+    const aiConfig = globalStorage['ai_config'];
+    if (!aiConfig || !aiConfig.apiKey) {
+      return { success: false, error: 'AI 未配置' };
+    }
+
+    const provider = new LLMProvider(aiConfig);
+    const messages = buildDetectMessages(domData);
+    const response = await provider.chat(messages);
+
+    let result;
+    try {
+      let cleaned = response.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      result = JSON.parse(cleaned);
+    } catch (e) {
+      return { success: false, error: 'AI 返回格式异常', raw: response };
+    }
+
+    console.log('[AI Agent] ✅ 检测结果:', result.status, result.message);
+    return { success: true, result };
+  } catch (error) {
+    console.error('[AI Agent] ❌ 检测失败:', error.message);
+    return { success: false, error: error.message };
   }
 });

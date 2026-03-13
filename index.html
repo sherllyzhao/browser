@@ -419,6 +419,163 @@
       opacity: 1;
     }
 
+    /* ========== AI 配置按钮 ========== */
+    #__browser_common_header__ .ai-config-btn {
+      width: clamp(30px, 2.5vw, 36px);
+      height: clamp(30px, 2.5vw, 36px);
+      border-radius: 50%;
+      background: #F6F6F6;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(14px, 1.2vw, 18px);
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    #__browser_common_header__ .ai-config-btn:hover {
+      background: #E8E8E8;
+    }
+    #__browser_common_header__ .ai-config-btn.configured {
+      background: #E8F5E9;
+    }
+    #__browser_common_header__ .ai-config-btn.configured:hover {
+      background: #C8E6C9;
+    }
+
+    /* ========== AI 配置弹窗 ========== */
+    .ai-config-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 9999999;
+      justify-content: center;
+      align-items: center;
+    }
+    .ai-config-overlay.show {
+      display: flex;
+    }
+    .ai-config-dialog {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      width: 420px;
+      max-width: 90vw;
+      animation: aiDialogIn 0.2s ease-out;
+    }
+    @keyframes aiDialogIn {
+      from { opacity: 0; transform: translateY(-20px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .ai-config-dialog .dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid #F0F0F0;
+    }
+    .ai-config-dialog .dialog-header h3 {
+      margin: 0;
+      font-size: 16px;
+      color: #303133;
+    }
+    .ai-config-dialog .dialog-close {
+      width: 28px; height: 28px;
+      border: none; background: none;
+      cursor: pointer; font-size: 18px;
+      color: #909399; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ai-config-dialog .dialog-close:hover {
+      background: #F5F7FA; color: #303133;
+    }
+    .ai-config-dialog .dialog-body {
+      padding: 20px;
+    }
+    .ai-config-dialog .form-group {
+      margin-bottom: 16px;
+    }
+    .ai-config-dialog .form-group:last-child {
+      margin-bottom: 0;
+    }
+    .ai-config-dialog label {
+      display: block;
+      font-size: 13px;
+      color: #606266;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    .ai-config-dialog select,
+    .ai-config-dialog input {
+      width: 100%;
+      height: 36px;
+      padding: 0 12px;
+      border: 1px solid #DCDFE6;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #303133;
+      outline: none;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+    }
+    .ai-config-dialog select:focus,
+    .ai-config-dialog input:focus {
+      border-color: #409EFF;
+    }
+    .ai-config-dialog .form-hint {
+      font-size: 11px;
+      color: #909399;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+    .ai-config-dialog .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 14px 20px;
+      border-top: 1px solid #F0F0F0;
+    }
+    .ai-config-dialog .dialog-footer button {
+      padding: 8px 20px;
+      border-radius: 6px;
+      border: 1px solid #DCDFE6;
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .ai-config-dialog .dialog-footer .btn-cancel:hover {
+      border-color: #C0C4CC;
+    }
+    .ai-config-dialog .dialog-footer .btn-save {
+      background: #409EFF;
+      border-color: #409EFF;
+      color: #fff;
+    }
+    .ai-config-dialog .dialog-footer .btn-save:hover {
+      background: #66B1FF;
+      border-color: #66B1FF;
+    }
+    .ai-config-dialog .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .ai-config-dialog .status-bar.status-ok {
+      background: #F0F9EB;
+      color: #67C23A;
+    }
+    .ai-config-dialog .status-bar.status-none {
+      background: #FDF6EC;
+      color: #E6A23C;
+    }
+
     .toolbar {
       position: fixed;
       top: 50px; /* 位于公共头部下方 */
@@ -696,6 +853,8 @@
         </div>
       </div> -->
 
+      <button class="ai-config-btn" id="aiConfigBtn" title="AI 智能体配置">🤖</button>
+
       <div class="user-info" id="userInfo">
         <div class="user-avatar" id="userAvatar">
           <img src="./assets/avatar.png" alt="">
@@ -831,6 +990,49 @@ if (window.browserAPI) {
       font-size: 14px;
     }
   </style>
+
+  <!-- AI 配置弹窗 -->
+  <div class="ai-config-overlay" id="aiConfigOverlay">
+    <div class="ai-config-dialog">
+      <div class="dialog-header">
+        <h3>🤖 AI 智能体配置</h3>
+        <button class="dialog-close" id="aiConfigClose">✕</button>
+      </div>
+      <div class="dialog-body">
+        <div class="status-bar status-none" id="aiConfigStatus">
+          <span>⚠️</span><span>未配置 API Key</span>
+        </div>
+        <div class="form-group">
+          <label>服务商</label>
+          <select id="aiProvider">
+            <option value="groq">Groq（免费，需翻墙）</option>
+            <option value="openrouter">OpenRouter（部分免费，需翻墙）</option>
+            <option value="qwen">通义千问（国内直连，按量付费）</option>
+            <option value="openai">OpenAI（需翻墙，付费）</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="aiApiKey" placeholder="输入 API Key...">
+          <div class="form-hint" id="aiKeyHint">Groq 免费申请: <a href="#" id="aiKeyLink" style="color:#409EFF;">console.groq.com</a></div>
+        </div>
+        <div class="form-group">
+          <label>模型 <span style="color:#909399;font-weight:normal;">（留空使用默认）</span></label>
+          <input type="text" id="aiModel" placeholder="留空使用默认模型">
+          <div class="form-hint" id="aiModelHint">默认: llama-3.3-70b-versatile</div>
+        </div>
+        <div class="form-group" id="aiCustomUrlGroup" style="display:none;">
+          <label>自定义 API 地址</label>
+          <input type="text" id="aiCustomUrl" placeholder="https://your-api.com/v1">
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button class="btn-cancel" id="aiConfigCancel">取消</button>
+        <button class="btn-save" id="aiConfigSave">保存配置</button>
+      </div>
+    </div>
+  </div>
 
   <script src="renderer.js"></script>
 </body>

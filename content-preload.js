@@ -666,7 +666,25 @@ contextBridge.exposeInMainWorld('browserAPI', {
   getDomainConfig: () => ipcRenderer.invoke('get-domain-config'),
 
   // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
-  nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y)
+  nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y),
+
+  // ========== AI 智能体 API ==========
+  // AI 分析页面并生成填写指令
+  // 参数: domData - 精简的 DOM 结构, publishData - 发布数据
+  // 返回: { success: true, result: { isForm, actions: [...] } }
+  aiAnalyzePage: (domData, publishData) => ipcRenderer.invoke('ai-analyze-page', domData, publishData),
+
+  // AI 检测发布结果（点击发布按钮后调用）
+  // 参数: domData - 当前页面的 DOM 结构
+  // 返回: { success: true, result: { status, message, errorDetail } }
+  aiDetectResult: (domData) => ipcRenderer.invoke('ai-detect-result', domData),
+
+  // 获取 AI 配置
+  aiGetConfig: () => ipcRenderer.invoke('ai-get-config'),
+
+  // 设置 AI 配置
+  // 参数: config - { provider: 'groq', apiKey: 'xxx', model: 'xxx' }
+  aiSetConfig: (config) => ipcRenderer.invoke('ai-set-config', config)
 });
 
 // 在页面加载时注入通信代码和协议拦截
