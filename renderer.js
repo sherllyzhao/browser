@@ -1009,6 +1009,8 @@ async function handleTokenExpired() {
     }
     await window.electronAPI.navigateToLogin();
     setTimeout(() => { isPromptingTokenExpired = false; }, 2000);
+    // 延迟重置，给主进程导航事件处理留足时间
+    setTimeout(() => { isRedirectingToLogin = false; }, 5000);
   } catch (err) {
     console.error('[Auth] 跳转登录页失败:', err);
     isRedirectingToLogin = false;

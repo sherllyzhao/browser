@@ -19,6 +19,7 @@ const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
 let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
 let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
@@ -156,6 +157,12 @@ async function showPageErrorDialog({ title, message, detail, buttons }) {
 
 async function navigateToLoginInternal(reason) {
   if (!browserView || browserView.webContents.isDestroyed()) return;
+  // 防重入：如果正在导航到登录页，跳过重复调用
+  if (isNavigatingToLogin) {
+    console.log('[Main] ⏭️ 已在导航到登录页，跳过重复调用:', reason);
+    return;
+  }
+  isNavigatingToLogin = true;
   console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
 
   // 🔑 退出登录时清除所有登录相关数据
@@ -211,6 +218,96 @@ async function navigateToLoginInternal(reason) {
   }
 
   loadLocalPage(browserView.webContents, 'login.html');
+  // 延迟重置标志，给导航事件处理留足时间，避免导航事件回调中又触发重复跳转
+  setTimeout(() => { isNavigatingToLogin = false; }, 3000);
+}
+
+/**
+ * 尝试用 globalStorage 中的 token 恢复登录（重新设置 cookies）
+ * 用于：检测到远程 #/login 跳转时，如果本地 token 还有效，无需重新登录
+ * @param {string} returnUrl - 恢复后要回到的 URL（#/login 之前的页面）
+ * @returns {boolean} true=恢复成功, false=token 无效需要重新登录
+ */
+async function tryRestoreLoginWithToken(returnUrl) {
+  const savedToken = globalStorage.login_token;
+  const savedExpires = globalStorage.login_expires;
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!savedToken || !savedExpires || savedExpires <= now) {
+    console.log('[Auth Restore] Token 无效或已过期，无法恢复登录');
+    return false;
+  }
+
+  console.log('[Auth Restore] Token 仍有效，尝试恢复登录（仅恢复 cookies，不强制刷新）...');
+  console.log('[Auth Restore] Token 过期时间:', new Date(savedExpires * 1000).toLocaleString());
+
+  try {
+    const ses = browserView.webContents.session;
+
+    // 重新设置 cookies（复用启动时的逻辑）
+    await ses.cookies.set({
+      url: 'http://localhost:5173/',
+      name: 'token', value: savedToken, path: '/',
+      expirationDate: savedExpires, secure: false, sameSite: 'lax'
+    });
+    await ses.cookies.set({
+      url: 'http://localhost:5173/',
+      name: 'access_token', value: savedToken, path: '/',
+      expirationDate: savedExpires, secure: false, sameSite: 'lax'
+    });
+    await ses.cookies.set({
+      url: config.getCookieUrl(),
+      name: 'token', value: savedToken,
+      domain: config.getCookieDomain(), path: '/',
+      expirationDate: savedExpires, secure: true
+    });
+    await ses.cookies.set({
+      url: config.getCookieUrl(),
+      name: 'access_token', value: savedToken,
+      domain: config.getCookieDomain(), path: '/',
+      expirationDate: savedExpires, secure: true
+    });
+
+    // 恢复 gcc Cookie（如果有）
+    if (globalStorage.login_gcc) {
+      await ses.cookies.set({
+        url: 'http://localhost:5173/',
+        name: 'gcc', value: globalStorage.login_gcc, path: '/',
+        expirationDate: savedExpires, secure: false, sameSite: 'lax'
+      });
+      await ses.cookies.set({
+        url: config.getCookieUrl(),
+        name: 'gcc', value: globalStorage.login_gcc,
+        domain: config.getCookieDomain(), path: '/',
+        expirationDate: savedExpires, secure: true
+      });
+    }
+
+    await ses.flushStorageData();
+    console.log('[Auth Restore] ✅ Cookies 已恢复');
+
+    // 如果有有效的返回 URL，用 goBack 或导航回去（Vue 已经跳到 #/login，需要回去）
+    if (returnUrl && !returnUrl.includes('#/login') && !returnUrl.includes('/login') && !returnUrl.startsWith('file://')) {
+      console.log('[Auth Restore] 返回原页面:', returnUrl);
+      browserView.webContents.loadURL(returnUrl);
+    } else {
+      // 没有有效的返回 URL，尝试 goBack
+      if (browserView.webContents.canGoBack()) {
+        console.log('[Auth Restore] 返回上一页');
+        browserView.webContents.goBack();
+      } else {
+        // 回到 AIGC 首页
+        const aigcUrl = config.getAigcUrl();
+        console.log('[Auth Restore] 返回首页:', aigcUrl);
+        browserView.webContents.loadURL(aigcUrl);
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[Auth Restore] ❌ 恢复登录失败:', err);
+    return false;
+  }
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
@@ -1596,17 +1693,21 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        // 先尝试用本地 token 恢复登录（避免 PHP session 过期时误清还有效的 token）
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_url');
+        }
+      }
       return;
     }
 
     // 🔑 检查登录状态（Cookie 中的 token, access_token, PHPSESSID）
-    // 排除：登录页、本地文件、第三方平台授权页
+    // 排除：登录页、本地文件、第三方平台授权页、正在跳转登录页
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1634,8 +1735,8 @@ function createWindow() {
           delete globalStorage.login_expires;
           delete globalStorage.login_gcc;
           saveGlobalStorage();
-          // 跳转到登录页
-          loadLocalPage(browserView.webContents, 'login.html');
+          // 跳转到登录页（通过 navigateToLoginInternal 统一走防重入逻辑）
+          await navigateToLoginInternal('cookie_missing');
           return;
         }
       } catch (err) {
@@ -1656,16 +1757,20 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check - DOM Ready] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_dom_ready');
+        }
+      }
       return;
     }
 
     // 检查登录状态（与 did-navigate 相同的逻辑）
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1685,11 +1790,7 @@ function createWindow() {
 
         if (!hasToken || !hasAccessToken) {
           console.log('[Auth Check - DOM Ready] ⚠️ 缺少登录凭证，跳转到登录页');
-          delete globalStorage.login_token;
-          delete globalStorage.login_expires;
-          delete globalStorage.login_gcc;
-          saveGlobalStorage();
-          loadLocalPage(browserView.webContents, 'login.html');
+          await navigateToLoginInternal('cookie_missing_dom_ready');
           return;
         }
       } catch (err) {
@@ -1775,16 +1876,24 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Navigation] 🔄 检测到远程登录页(in-page)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_in_page');
+        }
+      }
       return;
     }
 
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 🔑 检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1836,36 +1945,23 @@ function createWindow() {
   // 监听页面加载完成，注入自定义脚本
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
-  // 监听完整页面导航，检测远程登录页和 token 有效性
-  browserView.webContents.on('did-navigate', (event, url) => {
-    console.log(`[Navigation] 页面导航 → ${url}`);
+  // 监听完整页面导航，检测远程登录页和 GEO 权限
+  // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
+  browserView.webContents.on('did-navigate', async (event, url) => {
+    console.log(`[Navigation] 页面导航(补充检测) → ${url}`);
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
-      return;
-    }
-
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
-    // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
-    if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
-      const savedToken = globalStorage.login_token;
-      const savedExpires = globalStorage.login_expires;
-      const now = Math.floor(Date.now() / 1000);
-
-      if (!savedToken || !savedExpires || savedExpires <= now) {
-        console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (!isHandlingExpiredToken) {
-          isHandlingExpiredToken = true;
-          await showSessionExpiredDialog('页面导航');
-          await navigateToLoginInternal('token_expired_navigate');
-          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
+      console.log('[Navigation] 🔄 检测到远程登录页(did-navigate)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_navigate');
         }
-        return;
       }
+      return;
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
