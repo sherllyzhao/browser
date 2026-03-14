@@ -1985,3 +1985,203 @@ if (currentCompanyEl) {
 
   console.log('初始化完成，面板初始位置:', window.getComputedStyle(scriptPanel).right);
 })();
+
+
+// ========== AI 智能体配置弹窗 ==========
+(function () {
+  const aiConfigBtn = document.getElementById('aiConfigBtn');
+  const aiConfigOverlay = document.getElementById('aiConfigOverlay');
+  const aiConfigClose = document.getElementById('aiConfigClose');
+  const aiConfigCancel = document.getElementById('aiConfigCancel');
+  const aiConfigSave = document.getElementById('aiConfigSave');
+  const aiProvider = document.getElementById('aiProvider');
+  const aiApiKey = document.getElementById('aiApiKey');
+  const aiModel = document.getElementById('aiModel');
+  const aiCustomUrl = document.getElementById('aiCustomUrl');
+  const aiCustomUrlGroup = document.getElementById('aiCustomUrlGroup');
+  const aiAccountId = document.getElementById('aiAccountId');
+  const aiAccountIdGroup = document.getElementById('aiAccountIdGroup');
+  const aiConfigStatus = document.getElementById('aiConfigStatus');
+  const aiKeyHint = document.getElementById('aiKeyHint');
+  const aiKeyLink = document.getElementById('aiKeyLink');
+  const aiModelHint = document.getElementById('aiModelHint');
+
+  if (!aiConfigBtn || !aiConfigOverlay) return;
+
+  // 服务商对应的提示信息
+  const PROVIDER_INFO = {
+    groq: {
+      keyHint: 'Groq 免费申请:',
+      keyLink: 'https://console.groq.com/keys',
+      keyLinkText: 'console.groq.com',
+      modelHint: '默认: llama-3.3-70b-versatile',
+    },
+    openrouter: {
+      keyHint: 'OpenRouter 申请:',
+      keyLink: 'https://openrouter.ai/keys',
+      keyLinkText: 'openrouter.ai',
+      modelHint: '默认: qwen/qwen3-4b:free（免费模型）',
+    },
+    qwen: {
+      keyHint: '阿里云百炼申请:',
+      keyLink: 'https://bailian.console.aliyun.com/',
+      keyLinkText: 'bailian.console.aliyun.com',
+      modelHint: '默认: qwen-turbo',
+    },
+    openai: {
+      keyHint: 'OpenAI 申请:',
+      keyLink: 'https://platform.openai.com/api-keys',
+      keyLinkText: 'platform.openai.com',
+      modelHint: '默认: gpt-4o-mini',
+    },
+    cloudflare: {
+      keyHint: 'Cloudflare 申请:',
+      keyLink: 'https://dash.cloudflare.com/profile/api-tokens',
+      keyLinkText: 'dash.cloudflare.com',
+      modelHint: '默认: @cf/meta/llama-3.1-8b-instruct',
+    },
+    custom: {
+      keyHint: '请填写自定义服务商的 API Key',
+      keyLink: '',
+      keyLinkText: '',
+      modelHint: '请填写模型名称',
+    },
+  };
+
+  // 切换服务商时更新提示
+  function updateProviderHints() {
+    const info = PROVIDER_INFO[aiProvider.value] || PROVIDER_INFO.custom;
+    if (info.keyLink) {
+      aiKeyHint.innerHTML = `${info.keyHint} <a href="#" id="aiKeyLink" style="color:#409EFF;">${info.keyLinkText}</a>`;
+      // 重新绑定链接点击事件
+      const link = aiKeyHint.querySelector('#aiKeyLink');
+      if (link) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (window.electronAPI && window.electronAPI.navigateTo) {
+            window.electronAPI.navigateTo(info.keyLink);
+          }
+          closeDialog();
+        });
+      }
+    } else {
+      aiKeyHint.textContent = info.keyHint;
+    }
+    aiModelHint.textContent = info.modelHint;
+    aiCustomUrlGroup.style.display = aiProvider.value === 'custom' ? 'block' : 'none';
+    aiAccountIdGroup.style.display = aiProvider.value === 'cloudflare' ? 'block' : 'none';
+  }
+
+  aiProvider.addEventListener('change', updateProviderHints);
+
+  // 打开弹窗
+  async function openDialog() {
+    // 加载现有配置
+    try {
+      if (window.electronAPI && window.electronAPI.aiGetConfig) {
+        const result = await window.electronAPI.aiGetConfig();
+        if (result.success && result.config) {
+          const cfg = result.config;
+          aiProvider.value = cfg.provider || 'groq';
+          aiApiKey.value = cfg.apiKey || '';
+          aiModel.value = cfg.model || '';
+          aiCustomUrl.value = cfg.baseUrl || '';
+          aiAccountId.value = cfg.accountId || '';
+          updateStatus(!!cfg.apiKey);
+        }
+      }
+    } catch (e) {
+      console.error('[AI Config] 加载配置失败:', e);
+    }
+    updateProviderHints();
+    aiConfigOverlay.classList.add('show');
+    // 隐藏 BrowserView，避免遮住弹窗
+    if (window.electronAPI && window.electronAPI.showGlobalLoading) {
+      window.electronAPI.showGlobalLoading();
+    }
+  }
+
+  // 关闭弹窗
+  function closeDialog() {
+    aiConfigOverlay.classList.remove('show');
+    // 恢复 BrowserView
+    if (window.electronAPI && window.electronAPI.hideGlobalLoading) {
+      window.electronAPI.hideGlobalLoading();
+    }
+  }
+
+  // 更新状态指示
+  function updateStatus(hasKey) {
+    if (hasKey) {
+      aiConfigStatus.className = 'status-bar status-ok';
+      aiConfigStatus.innerHTML = '<span>✅</span><span>已配置</span>';
+      aiConfigBtn.classList.add('configured');
+    } else {
+      aiConfigStatus.className = 'status-bar status-none';
+      aiConfigStatus.innerHTML = '<span>⚠️</span><span>未配置 API Key</span>';
+      aiConfigBtn.classList.remove('configured');
+    }
+  }
+
+  // 保存配置
+  async function saveConfig() {
+    const config = {
+      provider: aiProvider.value,
+      apiKey: aiApiKey.value.trim(),
+      model: aiModel.value.trim() || undefined,
+    };
+    if (aiProvider.value === 'custom') {
+      config.baseUrl = aiCustomUrl.value.trim();
+      if (!config.baseUrl) {
+        alert('自定义模式下请填写 API 地址');
+        return;
+      }
+    }
+    if (aiProvider.value === 'cloudflare') {
+      config.accountId = aiAccountId.value.trim();
+      if (!config.accountId) {
+        alert('Cloudflare 模式下请填写 Account ID');
+        return;
+      }
+    }
+    if (!config.apiKey) {
+      alert('请填写 API Key');
+      return;
+    }
+
+    try {
+      if (window.electronAPI && window.electronAPI.aiSetConfig) {
+        const result = await window.electronAPI.aiSetConfig(config);
+        if (result.success) {
+          updateStatus(true);
+          closeDialog();
+          console.log('[AI Config] ✅ 配置已保存');
+        }
+      }
+    } catch (e) {
+      console.error('[AI Config] 保存失败:', e);
+      alert('保存失败: ' + e.message);
+    }
+  }
+
+  // 绑定事件
+  aiConfigBtn.addEventListener('click', openDialog);
+  aiConfigClose.addEventListener('click', closeDialog);
+  aiConfigCancel.addEventListener('click', closeDialog);
+  aiConfigSave.addEventListener('click', saveConfig);
+  aiConfigOverlay.addEventListener('click', (e) => {
+    if (e.target === aiConfigOverlay) closeDialog();
+  });
+
+  // 初始化时检查配置状态
+  (async () => {
+    try {
+      if (window.electronAPI && window.electronAPI.aiGetConfig) {
+        const result = await window.electronAPI.aiGetConfig();
+        if (result.success && result.config && result.config.apiKey) {
+          aiConfigBtn.classList.add('configured');
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+  })();
+})();

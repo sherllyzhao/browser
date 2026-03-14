@@ -117,7 +117,9 @@
       "Bash(git push:*)",
       "Bash(git tag:*)",
       "Bash(where magick:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(claude --version 2>/dev/null || echo \"claude command not found\")",
+      "Bash(claude plugins:*)"
     ],
     "deny": [],
     "ask": []
