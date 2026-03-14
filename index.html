@@ -1009,6 +1009,7 @@ if (window.browserAPI) {
             <option value="openrouter">OpenRouter（部分免费，需翻墙）</option>
             <option value="qwen">通义千问（国内直连，按量付费）</option>
             <option value="openai">OpenAI（需翻墙，付费）</option>
+            <option value="cloudflare">Cloudflare Workers AI（免费额度，需翻墙）</option>
             <option value="custom">自定义</option>
           </select>
         </div>
@@ -1021,6 +1022,11 @@ if (window.browserAPI) {
           <label>模型 <span style="color:#909399;font-weight:normal;">（留空使用默认）</span></label>
           <input type="text" id="aiModel" placeholder="留空使用默认模型">
           <div class="form-hint" id="aiModelHint">默认: llama-3.3-70b-versatile</div>
+        </div>
+        <div class="form-group" id="aiAccountIdGroup" style="display:none;">
+          <label>Account ID</label>
+          <input type="text" id="aiAccountId" placeholder="输入 Cloudflare Account ID...">
+          <div class="form-hint">在 Cloudflare Dashboard → Workers AI 页面获取</div>
         </div>
         <div class="form-group" id="aiCustomUrlGroup" style="display:none;">
           <label>自定义 API 地址</label>

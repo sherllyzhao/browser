@@ -28,6 +28,14 @@ const PRESET_PROVIDERS = {
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
   },
+  cloudflare: {
+    name: 'Cloudflare Workers AI',
+    // baseUrl 需要动态拼接 Account ID: https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1
+    baseUrl: '',
+    defaultModel: '@cf/meta/llama-3.1-8b-instruct',
+    needsAccountId: true,
+    buildBaseUrl: (accountId) => `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
+  },
   custom: {
     name: '自定义',
     baseUrl: '',
@@ -41,7 +49,12 @@ class LLMProvider {
     const preset = PRESET_PROVIDERS[provider] || PRESET_PROVIDERS.custom;
 
     this.providerName = preset.name;
-    this.baseUrl = config.baseUrl || preset.baseUrl;
+    // Cloudflare 需要用 accountId 动态拼接 baseUrl
+    if (provider === 'cloudflare' && config.accountId) {
+      this.baseUrl = preset.buildBaseUrl(config.accountId);
+    } else {
+      this.baseUrl = config.baseUrl || preset.baseUrl;
+    }
     this.apiKey = config.apiKey || '';
     this.model = config.model || preset.defaultModel;
     this.timeout = config.timeout || 30000; // 30秒超时

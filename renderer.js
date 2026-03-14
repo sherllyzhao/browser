@@ -1993,6 +1993,8 @@ if (currentCompanyEl) {
   const aiModel = document.getElementById('aiModel');
   const aiCustomUrl = document.getElementById('aiCustomUrl');
   const aiCustomUrlGroup = document.getElementById('aiCustomUrlGroup');
+  const aiAccountId = document.getElementById('aiAccountId');
+  const aiAccountIdGroup = document.getElementById('aiAccountIdGroup');
   const aiConfigStatus = document.getElementById('aiConfigStatus');
   const aiKeyHint = document.getElementById('aiKeyHint');
   const aiKeyLink = document.getElementById('aiKeyLink');
@@ -2026,6 +2028,12 @@ if (currentCompanyEl) {
       keyLinkText: 'platform.openai.com',
       modelHint: '默认: gpt-4o-mini',
     },
+    cloudflare: {
+      keyHint: 'Cloudflare 申请:',
+      keyLink: 'https://dash.cloudflare.com/profile/api-tokens',
+      keyLinkText: 'dash.cloudflare.com',
+      modelHint: '默认: @cf/meta/llama-3.1-8b-instruct',
+    },
     custom: {
       keyHint: '请填写自定义服务商的 API Key',
       keyLink: '',
@@ -2055,6 +2063,7 @@ if (currentCompanyEl) {
     }
     aiModelHint.textContent = info.modelHint;
     aiCustomUrlGroup.style.display = aiProvider.value === 'custom' ? 'block' : 'none';
+    aiAccountIdGroup.style.display = aiProvider.value === 'cloudflare' ? 'block' : 'none';
   }
 
   aiProvider.addEventListener('change', updateProviderHints);
@@ -2071,6 +2080,7 @@ if (currentCompanyEl) {
           aiApiKey.value = cfg.apiKey || '';
           aiModel.value = cfg.model || '';
           aiCustomUrl.value = cfg.baseUrl || '';
+          aiAccountId.value = cfg.accountId || '';
           updateStatus(!!cfg.apiKey);
         }
       }
@@ -2110,6 +2120,13 @@ if (currentCompanyEl) {
       config.baseUrl = aiCustomUrl.value.trim();
       if (!config.baseUrl) {
         alert('自定义模式下请填写 API 地址');
+        return;
+      }
+    }
+    if (aiProvider.value === 'cloudflare') {
+      config.accountId = aiAccountId.value.trim();
+      if (!config.accountId) {
+        alert('Cloudflare 模式下请填写 Account ID');
         return;
       }
     }
