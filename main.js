@@ -20,6 +20,14 @@ const isProduction = app.isPackaged; // 是否生产环境
 const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
+let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
+let isShowingSessionExpiredDialog = false;
+let isShowingPageErrorDialog = false;
+let lastPageErrorDialogAt = 0;
+let blankScreenConsecutive = 0;
+const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
+const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 
 // 跨平台图标路径
 function getAppIconPath() {
@@ -1209,6 +1217,7 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
+        await showSessionExpiredDialog('启动校验');
       }
     }
 
@@ -1243,9 +1252,16 @@ function createWindow() {
             );
             if (bodyHTML === 0) {
               console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
-              loadLocalPage(browserView.webContents, 'login.html').catch(err => {
-                console.error('[BrowserView] ❌ 白屏恢复重载失败:', err);
+              const result = await showPageErrorDialog({
+                title: '页面可能空白',
+                message: '检测到页面可能空白，是否刷新？',
+                detail: '启动后白屏检测触发'
               });
+              if (result.response === 0) {
+                browserView.webContents.reload();
+              } else if (result.response === 1) {
+                await navigateToLoginInternal('blank_screen_startup');
+              }
             } else {
               console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
             }
@@ -1572,17 +1588,21 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        // 先尝试用本地 token 恢复登录（避免 PHP session 过期时误清还有效的 token）
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_url');
+        }
+      }
       return;
     }
 
     // 🔑 检查登录状态（Cookie 中的 token, access_token, PHPSESSID）
-    // 排除：登录页、本地文件、第三方平台授权页
+    // 排除：登录页、本地文件、第三方平台授权页、正在跳转登录页
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1610,8 +1630,8 @@ function createWindow() {
           delete globalStorage.login_expires;
           delete globalStorage.login_gcc;
           saveGlobalStorage();
-          // 跳转到登录页
-          loadLocalPage(browserView.webContents, 'login.html');
+          // 跳转到登录页（通过 navigateToLoginInternal 统一走防重入逻辑）
+          await navigateToLoginInternal('cookie_missing');
           return;
         }
       } catch (err) {
@@ -1632,16 +1652,20 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check - DOM Ready] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_dom_ready');
+        }
+      }
       return;
     }
 
     // 检查登录状态（与 did-navigate 相同的逻辑）
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1661,11 +1685,7 @@ function createWindow() {
 
         if (!hasToken || !hasAccessToken) {
           console.log('[Auth Check - DOM Ready] ⚠️ 缺少登录凭证，跳转到登录页');
-          delete globalStorage.login_token;
-          delete globalStorage.login_expires;
-          delete globalStorage.login_gcc;
-          saveGlobalStorage();
-          loadLocalPage(browserView.webContents, 'login.html');
+          await navigateToLoginInternal('cookie_missing_dom_ready');
           return;
         }
       } catch (err) {
@@ -1751,16 +1771,24 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Navigation] 🔄 检测到远程登录页(in-page)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_in_page');
+        }
+      }
       return;
     }
 
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 🔑 检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1770,15 +1798,12 @@ function createWindow() {
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (isTokenExpired) {
-          showTokenExpiredNotice('did-navigate-in-page', savedExpires);
+        if (!isHandlingExpiredToken) {
+          isHandlingExpiredToken = true;
+          await showSessionExpiredDialog('页面内跳转');
+          await navigateToLoginInternal('token_expired_in_page');
+          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
         }
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
@@ -1816,40 +1841,23 @@ function createWindow() {
   // 监听页面加载完成，注入自定义脚本
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
-  // 监听完整页面导航，检测远程登录页和 token 有效性
-  browserView.webContents.on('did-navigate', (event, url) => {
-    console.log(`[Navigation] 页面导航 → ${url}`);
+  // 监听完整页面导航，检测远程登录页和 GEO 权限
+  // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
+  browserView.webContents.on('did-navigate', async (event, url) => {
+    console.log(`[Navigation] 页面导航(补充检测) → ${url}`);
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
-      return;
-    }
-
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
-    // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
-    if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
-      const savedToken = globalStorage.login_token;
-      const savedExpires = globalStorage.login_expires;
-      const now = Math.floor(Date.now() / 1000);
-      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
-
-      if (!savedToken || !savedExpires || savedExpires <= now) {
-        console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (isTokenExpired) {
-          showTokenExpiredNotice('did-navigate', savedExpires);
+      console.log('[Navigation] 🔄 检测到远程登录页(did-navigate)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_navigate');
         }
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
-        return;
       }
+      return;
     }
 
     // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
@@ -4216,7 +4224,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       // 临时 session 使用标准 UA（不带标记，避免第三方平台风控）
       windowSession.setUserAgent(STANDARD_USER_AGENT);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
-
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
