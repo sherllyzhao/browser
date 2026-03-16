@@ -460,6 +460,10 @@ async function checkForUpdate() {
           resolve({ hasUpdate: false, error: err.message });
         }
       });
+      res.on('error', (err) => {
+        console.error('[Update] 响应流错误:', err.message);
+        resolve({ hasUpdate: false, error: err.message });
+      });
     });
 
     req.on('error', (err) => {
@@ -1837,7 +1841,7 @@ function createWindow() {
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
   // 监听完整页面导航，检测远程登录页和 token 有效性
-  browserView.webContents.on('did-navigate', (event, url) => {
+  browserView.webContents.on('did-navigate', async (event, url) => {
     console.log(`[Navigation] 页面导航 → ${url}`);
 
     // 检测远程登录页，自动跳转到本地登录页
