@@ -25,6 +25,7 @@ let lastPageErrorDialogAt = 0;
 let blankScreenConsecutive = 0;
 const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
 const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
+const FORCE_BARE_TOUTIAO = true;
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -263,6 +264,28 @@ const HOME_URLS = [
 // 判断 URL 是否为首页
 function isHomeUrl(url) {
   return HOME_URLS.some(homeUrl => url.startsWith(homeUrl));
+}
+
+function isToutiaoHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host === 'toutiao.com' ||
+         host.endsWith('.toutiao.com') ||
+         host === 'toutiaostatic.com' ||
+         host.endsWith('.toutiaostatic.com');
+}
+
+function isToutiaoUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isToutiaoHost(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function shouldSkipScriptInjection(url = '') {
+  return FORCE_BARE_TOUTIAO && isToutiaoUrl(url);
 }
 
 const childWindows = []; // 跟踪所有打开的子窗口
@@ -1311,6 +1334,10 @@ function createWindow() {
     console.log('==================================================');
     console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
+    if (shouldSkipScriptInjection(url)) {
+      console.log('[Script Injection] Skip for Toutiao URL:', url);
+      return;
+    }
 
     // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
     // 如果异常，保持隐藏状态；如果正常，移除预防性隐藏样式
