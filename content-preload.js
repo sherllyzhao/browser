@@ -1,8 +1,9 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
-// 🔧 [最高优先级] Chromium 106 IndexedDB version change 竞态修复
-// 必须在所有其他脚本之前注入！头条编辑器的 JS 加载很快，
-// 如果 IDB hook 不是第一个注入的，头条代码可能在 hook 安装前就拿到了原生 open 引用
+// 🔧 Toutiao IndexedDB 诊断标记
+// 之前这里会强行 hook indexedDB.open，但一次性发布窗口在“无 hook”环境下能稳定保存，
+// 说明 monkey patch 本身更可能在干扰头条编辑器的原生持久化流程。
+// 现在改成只打诊断标记，不再改写原生 IDB API。
 (async function injectIDBFixFirst() {
   const idbFixScript = `
     (function() {
@@ -11,136 +12,9 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
         var host = (window.location && window.location.hostname) ? window.location.hostname : '';
         if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
 
-        window.__IDB_FIX__ = true;
-        window.__IDB_FIX_LOG__ = [];
-        var upgradingDbs = {};
-        var knownVersions = {};
-
-        function idbLog(msg) {
-          window.__IDB_FIX_LOG__.push(msg);
-          try { console.log('[IDB-Fix] ' + msg); } catch(e) {}
-        }
-
-        // 用 Object.defineProperty 强制覆盖（比直接赋值更可靠）
-        var proto = IDBFactory.prototype;
-        var origOpen = proto.open;
-
-        function addVCHandler(db) {
-          if (!db.__idbFixVC) {
-            db.__idbFixVC = true;
-            db.addEventListener('versionchange', function() {
-              idbLog('versionchange on ' + db.name + ' -> auto-close');
-              db.close();
-            });
-          }
-        }
-
-        function hookedOpen(name, version) {
-          // Case 1: DB 正在 upgrade
-          if (upgradingDbs[name]) {
-            idbLog('[WAIT] ' + name + ' upgrading, open without version');
-            var waitReq = origOpen.call(this, name);
-            waitReq.addEventListener('success', function(e) {
-              var db = e.target.result;
-              knownVersions[name] = db.version;
-              addVCHandler(db);
-            });
-            return waitReq;
-          }
-
-          // Case 2: 已知版本 >= 请求版本
-          if (version !== undefined && knownVersions[name] !== undefined && knownVersions[name] >= version) {
-            idbLog('[SKIP] ' + name + ' v' + knownVersions[name] + ' >= v' + version);
-            var skipReq = origOpen.call(this, name);
-            skipReq.addEventListener('success', function(e) {
-              var db = e.target.result;
-              knownVersions[name] = db.version;
-              addVCHandler(db);
-            });
-            return skipReq;
-          }
-
-          // Case 3: 正常 open - 带 version 则立即标记 upgrading
-          if (version !== undefined) {
-            upgradingDbs[name] = true;
-            idbLog('[OPEN] ' + name + ' v' + version + ' (marked upgrading)');
-          } else {
-            idbLog('[OPEN] ' + name + ' (no version)');
-          }
-
-          var request = version !== undefined
-            ? origOpen.call(this, name, version)
-            : origOpen.call(this, name);
-
-          request.addEventListener('upgradeneeded', function(e) {
-            idbLog('[UPGRADE] ' + name + ' v' + e.oldVersion + ' -> v' + e.newVersion);
-          });
-
-          request.addEventListener('success', function(e) {
-            var db = e.target.result;
-            knownVersions[name] = db.version;
-            delete upgradingDbs[name];
-            idbLog('[READY] ' + name + ' v' + db.version);
-            addVCHandler(db);
-          });
-
-          request.addEventListener('error', function(e) {
-            delete upgradingDbs[name];
-            idbLog('[ERROR] ' + name + ': ' + (e.target.error || 'unknown'));
-          });
-
-          request.addEventListener('blocked', function() {
-            idbLog('[BLOCKED] ' + name);
-          });
-
-          return request;
-        }
-
-        // 方法1: Object.defineProperty 强制覆盖 prototype
-        try {
-          Object.defineProperty(proto, 'open', {
-            value: hookedOpen,
-            writable: true,
-            configurable: true
-          });
-          idbLog('prototype hook via defineProperty: ' + (proto.open === hookedOpen ? 'OK' : 'FAIL'));
-        } catch (e1) {
-          // 方法2: 直接赋值 prototype
-          try {
-            proto.open = hookedOpen;
-            idbLog('prototype hook via assignment: ' + (proto.open === hookedOpen ? 'OK' : 'FAIL'));
-          } catch (e2) {
-            idbLog('prototype hook failed: ' + e2.message);
-          }
-        }
-
-        // 方法3: 同时覆盖 indexedDB.open 实例属性（双保险）
-        try {
-          Object.defineProperty(indexedDB, 'open', {
-            value: hookedOpen.bind(indexedDB),
-            writable: true,
-            configurable: true
-          });
-          idbLog('instance hook: OK');
-        } catch (e3) {
-          try {
-            indexedDB.open = hookedOpen.bind(indexedDB);
-            idbLog('instance hook via assignment: ' + (indexedDB.open !== origOpen ? 'OK' : 'FAIL'));
-          } catch (e4) {
-            idbLog('instance hook failed: ' + e4.message);
-          }
-        }
-
-        // 测试：调用一次看 hook 是否生效
-        try {
-          var testReq = indexedDB.open('__idb_fix_verify__');
-          testReq.onsuccess = function(e) {
-            e.target.result.close();
-            indexedDB.deleteDatabase('__idb_fix_verify__');
-          };
-        } catch (e) {
-          idbLog('verify test failed: ' + e.message);
-        }
+        window.__IDB_FIX__ = false;
+        window.__IDB_FIX_LOG__ = ['disabled: keep native IndexedDB behavior for Toutiao'];
+        try { console.log('[IDB-Fix] disabled: keep native IndexedDB behavior for Toutiao'); } catch(e) {}
 
       } catch (e) {
         try { console.error('[IDB-Fix] fatal:', e); } catch(e2) {}

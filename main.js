@@ -25,6 +25,8 @@ function buildStandardUserAgent() {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 const STANDARD_USER_AGENT = buildStandardUserAgent();
+const STANDARD_CHROME_MAJOR = String((process.versions.chrome || '106.0.0.0').split('.')[0] || '106');
+const STANDARD_SEC_CH_UA = `"Not_A Brand";v="8", "Chromium";v="${STANDARD_CHROME_MAJOR}", "Google Chrome";v="${STANDARD_CHROME_MAJOR}"`;
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
 function isFirstPartyHost(hostname = '') {
@@ -41,6 +43,36 @@ function isFirstPartyUrl(rawUrl = '') {
   try {
     const parsed = new URL(rawUrl);
     return isFirstPartyHost(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isByteDanceHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host.endsWith('.toutiao.com') ||
+         host === 'toutiao.com' ||
+         host.endsWith('.toutiaostatic.com') ||
+         host === 'toutiaostatic.com' ||
+         host.endsWith('.bytedance.com') ||
+         host === 'bytedance.com' ||
+         host.endsWith('.snssdk.com') ||
+         host === 'snssdk.com' ||
+         host.endsWith('.zijieapi.com') ||
+         host === 'zijieapi.com' ||
+         host.endsWith('.bytegoofy.com') ||
+         host === 'bytegoofy.com' ||
+         host.endsWith('.bytetos.com') ||
+         host === 'bytetos.com' ||
+         host.endsWith('.yhgfb-cn-static.com') ||
+         host === 'yhgfb-cn-static.com';
+}
+
+function isByteDanceUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isByteDanceHost(parsed.hostname);
   } catch (_) {
     return false;
   }
@@ -268,9 +300,15 @@ function addIdentityHeaderPolicy(targetSession, label) {
     } else {
       removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse');
       removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version');
-      // 伪装 Chrome 版本，避免第三方平台（如 Toutiao）拒绝 Chromium 106
-      setHeaderCaseInsensitive(headers, 'User-Agent', SPOOFED_USER_AGENT);
-      setHeaderCaseInsensitive(headers, 'sec-ch-ua', SPOOFED_SEC_CH_UA);
+      if (isByteDanceUrl(details.url)) {
+        // 头条/字节系对客户端指纹更敏感，保持 JS 层与网络层一致，避免“页面看到 106，请求报 120”。
+        setHeaderCaseInsensitive(headers, 'User-Agent', STANDARD_USER_AGENT);
+        setHeaderCaseInsensitive(headers, 'sec-ch-ua', STANDARD_SEC_CH_UA);
+      } else {
+        // 其他第三方站点继续维持较新的 Chrome 指纹，降低旧 Chromium 被拦截概率。
+        setHeaderCaseInsensitive(headers, 'User-Agent', SPOOFED_USER_AGENT);
+        setHeaderCaseInsensitive(headers, 'sec-ch-ua', SPOOFED_SEC_CH_UA);
+      }
     }
 
     // 🔍 [临时诊断] Toutiao publish/draft API 请求头捕获
@@ -331,6 +369,27 @@ function addIdentityHeaderPolicy(targetSession, label) {
     callback({ requestHeaders: headers });
   });
   console.log(`[Session] ✅ ${label} 身份头策略已添加（自有域名带标记，第三方标准 UA）`);
+}
+
+function handleSpecialSessionRequest(details, callback, label) {
+  const requestUrl = details.url || '';
+  const lowerUrl = requestUrl.toLowerCase();
+
+  if (lowerUrl.startsWith('bitbrowser:')) {
+    console.log(`[${label}] ❌ Blocked bitbrowser protocol:`, requestUrl);
+    callback({ cancel: true });
+    return true;
+  }
+
+  const isToutiaoMainFrame = details.resourceType === 'mainFrame' &&
+    (lowerUrl.includes('toutiao.com') || lowerUrl.includes('toutiaostatic.com'));
+  if (isToutiaoMainFrame) {
+    console.log(`[${label}] ⏩ Toutiao 主框架请求 - 保留 IndexedDB`);
+    callback({});
+    return true;
+  }
+
+  return false;
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -943,19 +1002,7 @@ function createWindow() {
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
   persistentSession.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
-    // 检测非标准协议
-    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-      console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
-      callback({ cancel: true });
-      return;
-    }
-    // 🔧 Chromium 106 IndexedDB 修复：
-    // ⚠️ 不再每次清空 IDB！清空会强制 Toutiao 重建 DB → 触发 version change → 竞态错误 → 7050
-    // 保留 DB 让 Toutiao 复用已有版本 → 不触发 upgrade → 不会 version change → 写入正常
-    if (details.resourceType === 'mainFrame' && url && url.includes('toutiao.com')) {
-      console.log('[IDB] ⏩ Toutiao 主框架请求 - 保留 IndexedDB（不清空）');
-      callback({});
+    if (handleSpecialSessionRequest(details, callback, 'WebRequest')) {
       return;
     }
     callback({});
@@ -4215,27 +4262,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const reqUrl = details.url;
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
-        // 🔧 Chromium 106 IndexedDB versionchange 修复（临时 session）
-        if (details.resourceType === 'mainFrame' && reqUrl && reqUrl.includes('toutiao.com')) {
-          console.log('[Temp IDB Clear] 🔄 检测到 Toutiao 主框架请求，先清空 IndexedDB...');
-          const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
-          Promise.all(
-            origins.map(origin =>
-              windowSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
-                .catch(err => console.log(`[Temp IDB Clear] Failed for ${origin}:`, err.message))
-            )
-          ).then(() => {
-            console.log('[Temp IDB Clear] ✅ Toutiao IndexedDB 已清空，放行请求');
-            callback({});
-          }).catch(() => {
-            callback({});
-          });
+        if (handleSpecialSessionRequest(details, callback, 'Temp Session WebRequest')) {
           return;
         }
         callback({});
@@ -4406,12 +4433,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     if (sessionType !== 'persistent') {
       windowSession.webRequest.onBeforeRequest((details, callback) => {
         const reqUrl = details.url;
-        // 阻止 bitbrowser:// 协议
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Window WebRequest] ❌ Blocked bitbrowser:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
         // HTTP→HTTPS 升级：163.com 的所有请求（主页面 + API 子请求）
         if (reqUrl && reqUrl.startsWith('http://mp.163.com/')) {
           const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
@@ -4419,21 +4440,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
           callback({ redirectURL: httpsUrl });
           return;
         }
-        // 🔧 Chromium 106 IndexedDB versionchange 修复（非持久化 session 窗口）
-        if (details.resourceType === 'mainFrame' && reqUrl && reqUrl.includes('toutiao.com')) {
-          console.log('[Window IDB Clear] 🔄 检测到 Toutiao 主框架请求，先清空 IndexedDB...');
-          const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
-          Promise.all(
-            origins.map(origin =>
-              windowSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
-                .catch(err => console.log(`[Window IDB Clear] Failed for ${origin}:`, err.message))
-            )
-          ).then(() => {
-            console.log('[Window IDB Clear] ✅ Toutiao IndexedDB 已清空，放行请求');
-            callback({});
-          }).catch(() => {
-            callback({});
-          });
+        if (handleSpecialSessionRequest(details, callback, 'Window WebRequest')) {
           return;
         }
         callback({});
@@ -5795,27 +5802,7 @@ function getAccountSession(platform, accountId) {
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
   accountSession.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
-    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-      console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
-      callback({ cancel: true });
-      return;
-    }
-    // 🔧 Chromium 106 IndexedDB versionchange 修复（账号 session）
-    if (details.resourceType === 'mainFrame' && url && url.includes('toutiao.com')) {
-      console.log(`[Account IDB Clear ${partitionName}] 🔄 清空 Toutiao IndexedDB...`);
-      const origins = ['https://mp.toutiao.com', 'https://www.toutiao.com', 'https://toutiaostatic.com'];
-      Promise.all(
-        origins.map(origin =>
-          accountSession.clearStorageData({ storages: ['indexdb'], origins: [origin] })
-            .catch(err => console.log(`[Account IDB Clear] Failed for ${origin}:`, err.message))
-        )
-      ).then(() => {
-        console.log(`[Account IDB Clear ${partitionName}] ✅ 已清空，放行请求`);
-        callback({});
-      }).catch(() => {
-        callback({});
-      });
+    if (handleSpecialSessionRequest(details, callback, `Account Session ${partitionName}`)) {
       return;
     }
     callback({});

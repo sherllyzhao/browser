@@ -54,6 +54,7 @@
   let latestDumpFilePath = '';
   let submitAttempted = false;
   let submitAttemptedAt = 0;
+  const stageTrace = [];
 
   const initErrorListener = () => {
     if (typeof createErrorListener !== 'function') {
@@ -89,6 +90,50 @@
     console.log(`${LOG_PREFIX} 🔑 使用 localStorage key:`, key);
     return key;
   };
+
+  const pushStage = (stage, detail = {}) => {
+    const entry = {
+      stage,
+      ts: Date.now(),
+      iso: new Date().toISOString(),
+      ...detail
+    };
+    stageTrace.push(entry);
+    if (stageTrace.length > 120) {
+      stageTrace.shift();
+    }
+    console.log(`${LOG_PREFIX} 🧭 阶段: ${stage}`, detail);
+    try {
+      window.__TOUTIAO_PUBLISH_DIAG__.stageTrace = stageTrace.slice(-50);
+    } catch (_) {}
+    return entry;
+  };
+
+  const getVisibleButtonTexts = (limit = 40) => {
+    try {
+      return Array.from(document.querySelectorAll('button'))
+        .filter(btn => {
+          const rect = btn.getBoundingClientRect();
+          return rect.width > 2 && rect.height > 2;
+        })
+        .map(btn => (btn.textContent || '').trim())
+        .filter(Boolean)
+        .slice(0, limit);
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const getQuickPageSnapshot = () => ({
+    href: window.location.href,
+    title: document.title,
+    visibleButtons: getVisibleButtonTexts(),
+    submitAttempted,
+    submitAttemptedAt,
+    latestApiDiag,
+    latestPublishApiFailure,
+    latestPreSubmitPublishFailure
+  });
 
   // ═══ 2. 初始化日志与平台检查 ═══
   console.log('═══════════════════════════════════════');
@@ -882,10 +927,12 @@
           url: window.location.href,
           submitAttempted,
           submitAttemptedAt,
+          stageTrace,
           latestApiDiag,
           latestPublishApiFailure,
           latestPreSubmitPublishFailure,
           latestPublishApiSuccessAt,
+          pageSnapshot: getQuickPageSnapshot(),
           extra
         }
       };
@@ -969,6 +1016,7 @@
   const fillTitle = async (title) => {
     const targetTitle = (title || '').trim();
     if (!targetTitle) return;
+    pushStage('fill-title:start', { targetTitle });
     await retryOperation(async () => {
       const titleInput = findTitleInput();
       if (!titleInput) {
@@ -1041,6 +1089,10 @@
       }
 
       console.log(`${LOG_PREFIX} ✅ 标题设置成功`);
+      pushStage('fill-title:done', {
+        finalValue: currentValue,
+        titleHint: titleHint || ''
+      });
     }, 5, 1000);
   };
 
@@ -1048,8 +1100,10 @@
     const plain = parsePlainTextFromHtml(htmlContent) || parsePlainTextFromHtml(introText);
     if (!plain) {
       console.log(`${LOG_PREFIX} ℹ️ 内容为空，跳过正文填写`);
+      pushStage('fill-content:skip-empty');
       return;
     }
+    pushStage('fill-content:start', { length: plain.length });
     await retryOperation(async () => {
       const editor = findVisibleEditable();
       if (!editor) {
@@ -1060,41 +1114,71 @@
       editor.focus();
       await delay(200);
 
-      // 清空现有内容（selectAll + delete）
-      document.execCommand('selectAll');
-      document.execCommand('delete');
-      await delay(200);
-
-      // 使用 clipboard API 模拟粘贴纯文本
-      // 让页面自己决定如何格式化这个内容
+      // 优先用 DOM 写入（与单次发布脚本一致），失败再回退粘贴
       try {
-        const clipboardData = new DataTransfer();
-        clipboardData.setData('text/plain', plain);
+        // 清空现有内容
+        try {
+          editor.innerHTML = '';
+        } catch (_) {
+          try {
+            document.execCommand('selectAll');
+            document.execCommand('delete');
+          } catch (_) {}
+        }
+        await delay(200);
 
-        const pasteEvent = new ClipboardEvent('paste', {
-          bubbles: true,
-          cancelable: false,
-          clipboardData: clipboardData
-        });
-
-        const pasteResult = editor.dispatchEvent(pasteEvent);
-        console.log(`${LOG_PREFIX} 📋 粘贴事件已触发，propagate=${pasteResult}`);
-
-        // 等待编辑器处理粘贴
-        await delay(800);
-
-        const currentText = (editor.innerText || editor.textContent || '').trim();
-        if (!currentText) {
-          throw new Error('粘贴后内容仍为空');
+        const lines = plain.split('\n').map(s => s.trim()).filter(Boolean);
+        if (lines.length === 0) {
+          lines.push(plain.trim());
         }
 
-        console.log(`${LOG_PREFIX} ✅ 内容已粘贴，文本长度: ${currentText.length} 字`);
+        for (const line of lines) {
+          const p = document.createElement('p');
+          p.textContent = line;
+          editor.appendChild(p);
+        }
+
+        try {
+          editor.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: plain
+          }));
+        } catch (_) {}
+        editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+        await delay(800);
+
+        let currentText = (editor.innerText || editor.textContent || '').trim();
+        if (!currentText) {
+          console.warn(`${LOG_PREFIX} ⚠️ DOM 写入后内容为空，尝试粘贴回退`);
+
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/plain', plain);
+          const pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: false,
+            clipboardData: clipboardData
+          });
+          const pasteResult = editor.dispatchEvent(pasteEvent);
+          console.log(`${LOG_PREFIX} 📋 粘贴回退已触发，propagate=${pasteResult}`);
+          await delay(800);
+
+          currentText = (editor.innerText || editor.textContent || '').trim();
+        }
+
+        if (!currentText) {
+          throw new Error('正文填写后仍为空');
+        }
+
+        console.log(`${LOG_PREFIX} ✅ 正文填充完成，文本长度: ${currentText.length} 字`);
+        pushStage('fill-content:done', { finalLength: currentText.length });
 
         // 最后等待页面完成所有处理（字数统计、数据绑定等）
         await delay(1200);
-
       } catch (err) {
-        console.error(`${LOG_PREFIX} ❌ 粘贴操作失败:`, err.message);
+        console.error(`${LOG_PREFIX} ❌ 正文填充失败:`, err.message);
         throw err;
       }
     }, 3, 2500);
@@ -1102,6 +1186,7 @@
 
   const tryUploadCover = async (coverUrl, title) => {
     try {
+      pushStage('cover:start', { hasCoverUrl: !!coverUrl });
       console.log(`${LOG_PREFIX} 🖼️ 准备上传封面:`, coverUrl || '[使用兜底封面]');
       const getVisibleButtons = () => Array.from(document.querySelectorAll('button')).filter(btn => isVisibleElement(btn));
       const findVisibleButtonByTexts = (texts) => {
@@ -1171,6 +1256,7 @@
       }
       if (!fileInput) {
         console.log(`${LOG_PREFIX} ⚠️ 未找到封面上传 input，跳过封面上传`);
+        pushStage('cover:no-file-input');
         return;
       }
 
@@ -1179,6 +1265,7 @@
         : await createFallbackCoverFile(title);
       if (!file) {
         console.log(`${LOG_PREFIX} ⚠️ 封面文件为空，跳过`);
+        pushStage('cover:no-file');
         return;
       }
 
@@ -1228,13 +1315,17 @@
       const coverHint = findVisibleHintText([/封面.*不能为空/, /上传失败/, /格式不支持/]);
       if (!hasCoverPreview && coverHint) {
         console.warn(`${LOG_PREFIX} ⚠️ 封面上传后校验提示:`, coverHint, 'modalClosed=', modalClosed);
+        pushStage('cover:hint', { coverHint, modalClosed });
       } else if (!hasCoverPreview) {
         console.warn(`${LOG_PREFIX} ⚠️ 封面上传后未检测到预览，可能仍需人工确认裁剪`);
+        pushStage('cover:no-preview', { modalClosed });
       } else {
         console.log(`${LOG_PREFIX} ✅ 封面上传已触发`);
+        pushStage('cover:done', { modalClosed });
       }
     } catch (e) {
       console.warn(`${LOG_PREFIX} ⚠️ 封面上传失败（不阻断发布）:`, e.message || e);
+      pushStage('cover:error', { message: e.message || String(e) });
     }
   };
 
@@ -1270,6 +1361,7 @@
   };
 
   const waitForPublishResult = async (publishId, originalUrl, options = {}) => {
+    pushStage('publish-result:wait-start', { originalUrl });
     const start = Date.now();
     const timeout = 45000;
     const allowAutoConfirm = options.allowAutoConfirm !== false;
@@ -1282,16 +1374,19 @@
 
       if (window.location.href !== originalUrl) {
         console.log(`${LOG_PREFIX} ✅ 页面已跳转，视为提交成功`);
+        pushStage('publish-result:url-changed', { currentUrl: window.location.href });
         return { success: true, reason: 'url-changed', message: '' };
       }
 
       if (window.location.href.includes('/profile_v4/graphic/manage')) {
         console.log(`${LOG_PREFIX} ✅ 跳转到管理页，视为成功`);
+        pushStage('publish-result:manage-page');
         return { success: true, reason: 'manage-page', message: '' };
       }
 
       if (window.location.href.includes('/profile_v4/graphic/articles')) {
         console.log(`${LOG_PREFIX} ✅ 跳转到文章列表页，视为成功`);
+        pushStage('publish-result:articles-page');
         return { success: true, reason: 'articles-page', message: '' };
       }
 
@@ -1327,10 +1422,12 @@
         const isSuccess = SUCCESS_TOAST_KEYWORDS.some(k => toastText.includes(k));
         if (isSuccess) {
           console.log(`${LOG_PREFIX} ✅ 检测到成功提示:`, toastText);
+          pushStage('publish-result:toast-success', { toastText });
           return { success: true, reason: 'toast-success', message: toastText };
         }
         const isFailed = FAIL_TOAST_KEYWORDS.some(k => toastText.includes(k));
         if (isFailed) {
+          pushStage('publish-result:toast-failed', { toastText });
           return { success: false, reason: 'toast-failed', message: toastText };
         }
       }
@@ -1338,6 +1435,7 @@
       const currentKeyData = localStorage.getItem(getPublishSuccessKey());
       if (!currentKeyData) {
         console.log(`${LOG_PREFIX} ✅ 发布标记已被消费，视为成功`);
+        pushStage('publish-result:success-key-consumed');
         return { success: true, reason: 'success-key-consumed', message: '' };
       }
 
@@ -1359,6 +1457,7 @@
             if (secondClick.success) {
               submitAttempted = true;
               submitAttemptedAt = Date.now();
+              pushStage('publish-result:auto-confirm-clicked', { text: t });
               autoConfirmClicked = true;
               await delay(900);
             }
@@ -1367,6 +1466,7 @@
       }
     }
 
+    pushStage('publish-result:timeout', getQuickPageSnapshot());
     return { success: false, reason: 'timeout', message: lastToast || '发布超时，未检测到成功状态' };
   };
 
@@ -1382,6 +1482,7 @@
 
     try {
       startErrorListener();
+      pushStage('publish:start');
       latestPublishApiFailure = null;
       latestPreSubmitPublishFailure = null;
       latestApiDiag = null;
@@ -1416,6 +1517,7 @@
         }
         return btn;
       }, 12, 1200);
+      pushStage('publish:button-ready', { text: (publishBtn.textContent || '').trim() });
 
       if (publishId) {
         try {
@@ -1434,10 +1536,16 @@
         throw new Error(clickResult.message || '点击发布按钮失败');
       }
       console.log(`${LOG_PREFIX} ✅ 已点击发布按钮`);
+      pushStage('publish:button-clicked', { text: (publishBtn.textContent || '').trim() });
 
       // 实测头条为“预览并发布”两步流：预览层稳定后再点确认，避免 7050 保存失败
       let secondConfirmed = false;
       const previewReady = await waitPreviewConfirmReady(15000);
+      pushStage('publish:preview-ready', {
+        ready: previewReady.ready,
+        hasConfirmBtn: !!previewReady.confirmBtn,
+        confirmText: (previewReady.confirmBtn?.textContent || '').trim()
+      });
       if (previewReady.confirmBtn && isButtonInteractive(previewReady.confirmBtn)) {
         const confirmText = (previewReady.confirmBtn.textContent || '').trim();
         if (!previewReady.ready) {
@@ -1453,18 +1561,22 @@
         submitAttempted = true;
         submitAttemptedAt = Date.now();
         console.log(`${LOG_PREFIX} ✅ 已点击二次确认按钮`);
+        pushStage('publish:secondary-confirm-clicked', { text: confirmText });
         secondConfirmed = true;
       }
       if (!secondConfirmed) {
         console.log(`${LOG_PREFIX} ℹ️ 未检测到可点击二次确认，进入结果等待阶段继续观察`);
+        pushStage('publish:no-secondary-confirm', getQuickPageSnapshot());
       }
 
       const result = await waitForPublishResult(publishId, originalUrl, {
         allowAutoConfirm: !secondConfirmed
       });
       if (!result.success) {
+        pushStage('publish:result-failed', result);
         throw new Error(result.message || '发布失败');
       }
+      pushStage('publish:result-success', result);
 
       hasProcessed = true;
       isProcessing = false;
@@ -1479,6 +1591,10 @@
       }
     } catch (error) {
       console.error(`${LOG_PREFIX} ❌ 发布失败:`, error);
+      pushStage('publish:error', {
+        message: error?.message || String(error),
+        snapshot: getQuickPageSnapshot()
+      });
       void dumpDebugToFile('publish-catch-error', {
         errorMessage: error?.message || String(error),
         latestDumpFilePath
@@ -1502,6 +1618,7 @@
     }
     fillFormRunning = true;
     try {
+      pushStage('fill-form:start');
       const rawTitle = dataObj?.video?.video?.title || dataObj?.element?.title || '';
       const intro = dataObj?.video?.video?.intro || dataObj?.element?.intro || '';
       const rawContent = dataObj?.video?.video?.content || dataObj?.element?.content || intro || '';
@@ -1526,9 +1643,14 @@
       await trySetSchedule(sendSet, sendTime);
       // 给平台自动存草稿留出稳定窗口，避免立即提交触发 7050
       await delay(1200);
+      pushStage('fill-form:before-publish');
       await publishApi(dataObj);
     } catch (e) {
       console.error(`${LOG_PREFIX} ❌ 填写表单失败:`, e);
+      pushStage('fill-form:error', {
+        message: e?.message || String(e),
+        snapshot: getQuickPageSnapshot()
+      });
       const publishId = dataObj?.video?.dyPlatform?.id;
       if (publishId && typeof sendStatisticsError === 'function') {
         await sendStatisticsError(publishId, e.message || '填写表单失败', '头条发布', e);
