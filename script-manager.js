@@ -11,6 +11,7 @@ class ScriptManager {
     this.manifest = {};
     this.configLoaded = false; // 标记配置是否已加载
     this.configLoadPromise = null; // 配置加载 Promise（用于等待异步加载完成）
+    this.isDevMode = !require('electron').app.isPackaged; // 开发模式用本地文件，打包用远程
 
     this.init();
   }

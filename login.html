@@ -17,7 +17,7 @@
       align-items: center;
       justify-content: center;
       /* 如果有背景图片，使用下面这行 */
-      background: url('./assets/login-bg.png') no-repeat center center;
+       background: url('./assets/login-bg.png') no-repeat center center;
       /* 使用CSS模拟背景 */
       /*background: linear-gradient(135deg, #f5f7fb 0%, #e8eef5 50%, #f0f4f9 100%);*/
       background-size: cover;
@@ -361,76 +361,76 @@
   </style>
 </head>
 <body>
-<!-- 背景装饰 -->
-<div class="bg-decoration">
-  <div class="paper-roll"></div>
-  <div class="bg-shape bg-shape-1"></div>
-  <div class="bg-shape bg-shape-2"></div>
-  <div class="bg-shape bg-shape-3"></div>
-  <div class="bg-shape bg-shape-4"></div>
-  <div class="bg-shape bg-shape-5"></div>
-  <div class="bg-shape bg-shape-6"></div>
-</div>
-
-<!-- 装饰元素 -->
-<div class="decoration decoration-1"></div>
-<div class="decoration decoration-2"></div>
-
-<!-- 登录卡片 -->
-<div class="login-box">
-  <h1 class="login-title">账号登录</h1>
-
-  <!-- Tab切换 -->
-  <div class="tabs">
-    <div class="tab-item active" data-tab="aigc">AIGC运营</div>
-    <div class="tab-item" data-tab="geo">GEO运营</div>
+  <!-- 背景装饰 -->
+  <div class="bg-decoration">
+    <div class="paper-roll"></div>
+    <div class="bg-shape bg-shape-1"></div>
+    <div class="bg-shape bg-shape-2"></div>
+    <div class="bg-shape bg-shape-3"></div>
+    <div class="bg-shape bg-shape-4"></div>
+    <div class="bg-shape bg-shape-5"></div>
+    <div class="bg-shape bg-shape-6"></div>
   </div>
 
-  <!-- 登录表单 -->
-  <form id="loginForm" class="login-form">
-    <div class="form-item">
-      <input type="text" class="input-field" id="username" placeholder="请输入您的资海云账号">
-      <span class="input-icon" id="clearUsername" title="清除">
+  <!-- 装饰元素 -->
+  <div class="decoration decoration-1"></div>
+  <div class="decoration decoration-2"></div>
+
+  <!-- 登录卡片 -->
+  <div class="login-box">
+    <h1 class="login-title">账号登录</h1>
+
+    <!-- Tab切换 -->
+    <div class="tabs">
+      <div class="tab-item active" data-tab="aigc">AIGC运营</div>
+      <div class="tab-item" data-tab="geo">GEO运营</div>
+    </div>
+
+    <!-- 登录表单 -->
+    <form id="loginForm" class="login-form">
+      <div class="form-item">
+        <input type="text" class="input-field" id="username" placeholder="请输入您的资海云账号">
+        <span class="input-icon" id="clearUsername" title="清除">
           <svg class="icon-svg" viewBox="0 0 1024 1024">
             <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm165.4 618.2l-66-.3L512 563.4l-99.3 118.4-66.1.3c-4.4 0-8-3.5-8-8 0-1.9.7-3.7 1.9-5.2l130.1-155L340.5 359c-1.2-1.5-1.9-3.3-1.9-5.2 0-4.4 3.6-8 8-8l66.1.3L512 464.6l99.3-118.4 66-.3c4.4 0 8 3.5 8 8 0 1.9-.7 3.7-1.9 5.2L553.5 514l130 155c1.2 1.5 1.9 3.3 1.9 5.2 0 4.4-3.6 8-8 8z"/>
           </svg>
         </span>
-    </div>
+      </div>
 
-    <div class="form-item">
-      <input type="password" class="input-field" id="password" placeholder="请输入您的资海云密码">
-      <span class="input-icon" id="togglePassword" title="显示密码">
+      <div class="form-item">
+        <input type="password" class="input-field" id="password" placeholder="请输入您的资海云密码">
+        <span class="input-icon" id="togglePassword" title="显示密码">
           <svg class="icon-svg" id="eyeIcon" viewBox="0 0 1024 1024">
             <path d="M942.2 486.2C847.4 286.5 704.1 186 512 186c-192.2 0-335.4 100.5-430.2 300.3a60.3 60.3 0 0 0 0 51.5C176.6 737.5 319.9 838 512 838c192.2 0 335.4-100.5 430.2-300.3 7.7-16.2 7.7-35 0-51.5zM512 766c-161.3 0-279.4-81.8-362.7-254C232.6 339.8 350.7 258 512 258c161.3 0 279.4 81.8 362.7 254C791.5 684.2 673.4 766 512 766zm-4-430c-97.2 0-176 78.8-176 176s78.8 176 176 176 176-78.8 176-176-78.8-176-176-176zm0 288c-61.9 0-112-50.1-112-112s50.1-112 112-112 112 50.1 112 112-50.1 112-112 112z"/>
           </svg>
         </span>
-    </div>
+      </div>
 
-    <button type="submit" class="login-button" id="loginBtn">立即登录</button>
-  </form>
-</div>
+      <button type="submit" class="login-button" id="loginBtn">立即登录</button>
+    </form>
+  </div>
 
-<script>
-  // ========== 配置 ==========
-  // API 基础地址（会根据环境自动获取）
-  let API_BASE_URL = '';
+  <script>
+    // ========== 配置 ==========
+    // API 基础地址（会根据环境自动获取）
+    let API_BASE_URL = '';
 
-  // 🔑 域名配置（从集中配置获取）
-  let domainConfig = null;
+    // 🔑 域名配置（从集中配置获取）
+    let domainConfig = null;
 
-  // 初始化域名配置
-  async function initDomainConfig() {
-    if (domainConfig) return domainConfig;
-    if (window.browserAPI && window.browserAPI.getDomainConfig) {
-      try {
-        domainConfig = await window.browserAPI.getDomainConfig();
-        console.log('[Login] 已加载域名配置:', domainConfig);
-        return domainConfig;
-      } catch (err) {
-        console.error('[Login] 加载域名配置失败:', err);
+    // 初始化域名配置
+    async function initDomainConfig() {
+      if (domainConfig) return domainConfig;
+      if (window.browserAPI && window.browserAPI.getDomainConfig) {
+        try {
+          domainConfig = await window.browserAPI.getDomainConfig();
+          console.log('[Login] 已加载域名配置:', domainConfig);
+          return domainConfig;
+        } catch (err) {
+          console.error('[Login] 加载域名配置失败:', err);
+        }
       }
-    }
-                // fallback 默认配置
+                                                                                                                                                                                                                                                      // fallback 默认配置
       domainConfig = {
         isProduction: true,
         aigcUrl: 'https://www.china9.cn/aigc_browser/',
@@ -443,622 +443,622 @@
           apiDomain: 'https://api.china9.cn'
         }
       };
-    return domainConfig;
-  }
-
-  // 判断是否开发环境（通过 browserAPI.isProduction）
-  const isDev = window.browserAPI && window.browserAPI.isProduction === false;
-
-  // 🔑 跳转目标地址（异步获取，初始为 null，在 initDomainConfig 后赋值）
-  let TARGET_URLS = null;
-
-  async function getTargetUrls() {
-    if (TARGET_URLS) return TARGET_URLS;
-    const cfg = await initDomainConfig();
-    TARGET_URLS = {
-      aigc: cfg.aigcUrl,
-      geo: cfg.geoUrl
-    };
-    console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
-    return TARGET_URLS;
-  }
-
-  console.log('[Login] 环境:', isDev ? '开发' : '生产');
-
-  // ========== 工具函数 ==========
-  // 设置 Cookie
-  function setCookie(name, value, options = {}) {
-    let cookieStr = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
-    if (options.expires) {
-      cookieStr += `; expires=${options.expires.toUTCString()}`;
+      return domainConfig;
     }
-    if (options.path) {
-      cookieStr += `; path=${options.path}`;
-    }
-    if (options.domain) {
-      cookieStr += `; domain=${options.domain}`;
-    }
-    document.cookie = cookieStr;
-  }
 
-  // 获取 API 基础地址
-  async function getApiBaseUrl() {
-    if (API_BASE_URL) return API_BASE_URL;
+    // 判断是否开发环境（通过 browserAPI.isProduction）
+    const isDev = window.browserAPI && window.browserAPI.isProduction === false;
 
-    // 尝试从 browserAPI 获取主窗口 URL
-    if (window.browserAPI && window.browserAPI.getMainUrl) {
-      try {
-        const mainInfo = await window.browserAPI.getMainUrl();
-        // origin 为 "null" 时说明是 file:// 协议（login.html 自身），需要跳过
-        if (mainInfo.success && mainInfo.origin && mainInfo.origin !== 'null' && mainInfo.protocol !== 'file:') {
-          API_BASE_URL = mainInfo.origin;
-          console.log('[Login] API 基础地址:', API_BASE_URL);
-          return API_BASE_URL;
-        }
-      } catch (err) {
-        console.error('[Login] 获取主窗口 URL 失败:', err);
+    // 🔑 跳转目标地址（异步获取，初始为 null，在 initDomainConfig 后赋值）
+    let TARGET_URLS = null;
+
+    async function getTargetUrls() {
+      if (TARGET_URLS) return TARGET_URLS;
+      const cfg = await initDomainConfig();
+      TARGET_URLS = {
+        aigc: cfg.aigcUrl,
+        geo: cfg.geoUrl
+      };
+      console.log('[Login] TARGET_URLS 已设置:', JSON.stringify(TARGET_URLS));
+      return TARGET_URLS;
+    }
+
+    console.log('[Login] 环境:', isDev ? '开发' : '生产');
+
+    // ========== 工具函数 ==========
+    // 设置 Cookie
+    function setCookie(name, value, options = {}) {
+      let cookieStr = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+      if (options.expires) {
+        cookieStr += `; expires=${options.expires.toUTCString()}`;
       }
+      if (options.path) {
+        cookieStr += `; path=${options.path}`;
+      }
+      if (options.domain) {
+        cookieStr += `; domain=${options.domain}`;
+      }
+      document.cookie = cookieStr;
     }
 
-    // 检测是否是开发环境（通过检查 browserAPI.isProduction）
-    const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
-    // 🔑 使用集中配置的域名
-    const cfg = await initDomainConfig();
-    API_BASE_URL = cfg.domains.aigcPage;
-    console.log('[Login] 使用 API 基础地址:', API_BASE_URL);
-    return API_BASE_URL;
-  }
+    // 获取 API 基础地址
+    async function getApiBaseUrl() {
+      if (API_BASE_URL) return API_BASE_URL;
 
-  // 登录 API 调用
-  async function loginApi(username, password) {
-    const apiBase = await getApiBaseUrl();
-    const response = await fetch(`${apiBase}/api/login/auth`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        user_name: username,
-        password: password,
-        type: 'company',
-        enterpriseSide: 'pc'
-      })
+      // 尝试从 browserAPI 获取主窗口 URL
+      if (window.browserAPI && window.browserAPI.getMainUrl) {
+        try {
+          const mainInfo = await window.browserAPI.getMainUrl();
+          // origin 为 "null" 时说明是 file:// 协议（login.html 自身），需要跳过
+          if (mainInfo.success && mainInfo.origin && mainInfo.origin !== 'null' && mainInfo.protocol !== 'file:') {
+            API_BASE_URL = mainInfo.origin;
+            console.log('[Login] API 基础地址:', API_BASE_URL);
+            return API_BASE_URL;
+          }
+        } catch (err) {
+          console.error('[Login] 获取主窗口 URL 失败:', err);
+        }
+      }
+
+      // 检测是否是开发环境（通过检查 browserAPI.isProduction）
+      const isProduction = window.browserAPI && window.browserAPI.isProduction === true;
+      // 🔑 使用集中配置的域名
+      const cfg = await initDomainConfig();
+      API_BASE_URL = cfg.domains.aigcPage;
+      console.log('[Login] 使用 API 基础地址:', API_BASE_URL);
+      return API_BASE_URL;
+    }
+
+    // 登录 API 调用
+    async function loginApi(username, password) {
+      const apiBase = await getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/login/auth`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_name: username,
+          password: password,
+          type: 'company',
+          enterpriseSide: 'pc'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (result.code !== 0 && result.code !== 200) {
+        // 优先使用 msg，其次 message，最后使用默认消息
+        throw new Error(result.msg || result.message || '登录失败');
+      }
+
+      // 返回整个 result，包含 msg/message 用于成功提示
+      return {
+        data: result.data,
+        msg: result.msg || result.message || '登录成功'
+      };
+    }
+
+    // 获取用户信息
+    async function getUserInfoApi(token) {
+        console.log("🚀 ~ getUserInfoApi ~ token: ", token);
+        const apiBase = await getApiBaseUrl();
+        const response = await fetch(`${apiBase}/api/user/info`, {
+          method: 'POST',
+          headers: {
+            'token': token,
+            'access_token': token
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            type: 'pc',
+            enterpriseSide: 'pc',
+            token: token,
+            tokens: token
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        return result.data;
+    }
+
+    async function getCompanyId(token){
+      const apiBase = await getApiBaseUrl();
+      const response = await fetch(`${apiBase}/api/media/getcompany`, {
+        method: 'POST',
+        headers: {
+          'token': token,
+          'access_token': token
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          type: 'pc',
+          enterpriseSide: 'pc'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      return result.data;
+    }
+
+    // 获取建站通站点信息
+    async function getSiteInfoApi(company_unique_id) {
+      // 🔑 使用集中配置的 GEO 域名
+      const cfg = await initDomainConfig();
+      const apiBaseUrl = cfg.domains.geoPage + '/';
+        const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
+          method: 'GET'
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        return result.data;
+    }
+
+    // ========== Tab 切换 ==========
+    const tabs = document.querySelectorAll('.tab-item');
+    let activeTab = localStorage.getItem('loginActiveTab') || 'aigc';
+
+    // 初始化 Tab 状态
+    tabs.forEach(tab => {
+      if (tab.dataset.tab === activeTab) {
+        tab.classList.add('active');
+      } else {
+        tab.classList.remove('active');
+      }
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const result = await response.json();
-    if (result.code !== 0 && result.code !== 200) {
-      // 优先使用 msg，其次 message，最后使用默认消息
-      throw new Error(result.msg || result.message || '登录失败');
-    }
-
-    // 返回整个 result，包含 msg/message 用于成功提示
-    return {
-      data: result.data,
-      msg: result.msg || result.message || '登录成功'
-    };
-  }
-
-  // 获取用户信息
-  async function getUserInfoApi(token) {
-    console.log("🚀 ~ getUserInfoApi ~ token: ", token);
-    const apiBase = await getApiBaseUrl();
-    const response = await fetch(`${apiBase}/api/user/info`, {
-      method: 'POST',
-      headers: {
-        'token': token,
-        'access_token': token
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        type: 'pc',
-        enterpriseSide: 'pc',
-        token: token,
-        tokens: token
-      })
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        activeTab = tab.dataset.tab;
+        localStorage.setItem('loginActiveTab', activeTab);
+      });
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    // ========== 密码显示/隐藏 ==========
+    const togglePassword = document.getElementById('togglePassword');
+    const passwordInput = document.getElementById('password');
+    const eyeIcon = document.getElementById('eyeIcon');
 
-    const result = await response.json();
-    return result.data;
-  }
+    const eyeOpenPath = 'M942.2 486.2C847.4 286.5 704.1 186 512 186c-192.2 0-335.4 100.5-430.2 300.3a60.3 60.3 0 0 0 0 51.5C176.6 737.5 319.9 838 512 838c192.2 0 335.4-100.5 430.2-300.3 7.7-16.2 7.7-35 0-51.5zM512 766c-161.3 0-279.4-81.8-362.7-254C232.6 339.8 350.7 258 512 258c161.3 0 279.4 81.8 362.7 254C791.5 684.2 673.4 766 512 766zm-4-430c-97.2 0-176 78.8-176 176s78.8 176 176 176 176-78.8 176-176-78.8-176-176-176zm0 288c-61.9 0-112-50.1-112-112s50.1-112 112-112 112 50.1 112 112-50.1 112-112 112z';
+    const eyeClosePath = 'M942.2 486.2Q889.47 372.68 807.54 290.77l-72.57 72.57Q793.25 422.62 838.7 512Q756.04 684.2 512 766q-44.17 0-85.1-7.74l-82.49 82.49Q419.17 838 512 838q192.2 0 430.2-300.3a60.3 60.3 0 0 0 0-51.5zM877.2 146.8a16.79 16.79 0 0 0-23.74 0L717.63 282.64Q620.55 186 512 186Q319.9 186 81.8 486.2a60.3 60.3 0 0 0 0 51.5Q134.47 651.32 216.46 733.24L146.8 802.9a16.79 16.79 0 0 0 0 23.74l28.57 28.57a16.79 16.79 0 0 0 23.74 0l678.09-678.09a16.79 16.79 0 0 0 0-23.74zM289.04 805.62L185.3 512Q267.96 339.8 512 258q44.17 0 85.1 7.74l-73.33 73.33A176 176 0 0 0 336 512a174.85 174.85 0 0 0 26.26 92.64zM512 624a112 112 0 0 1-112-112a111.08 111.08 0 0 1 2.35-22.64L540.7 351.01A111.07 111.07 0 0 1 624 512a112 112 0 0 1-112 112z';
 
-  async function getCompanyId(token){
-    const apiBase = await getApiBaseUrl();
-    const response = await fetch(`${apiBase}/api/media/getcompany`, {
-      method: 'POST',
-      headers: {
-        'token': token,
-        'access_token': token
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        type: 'pc',
-        enterpriseSide: 'pc'
-      })
+    togglePassword.addEventListener('click', () => {
+      const type = passwordInput.type === 'password' ? 'text' : 'password';
+      passwordInput.type = type;
+      eyeIcon.querySelector('path').setAttribute('d', type === 'password' ? eyeOpenPath : eyeClosePath);
+      togglePassword.title = type === 'password' ? '显示密码' : '隐藏密码';
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    // ========== 清除账号 ==========
+    const clearUsername = document.getElementById('clearUsername');
+    const usernameInput = document.getElementById('username');
 
-    const result = await response.json();
-    return result.data;
-  }
-
-  // 获取建站通站点信息
-  async function getSiteInfoApi(company_unique_id) {
-    // 🔑 使用集中配置的 GEO 域名
-    const cfg = await initDomainConfig();
-    const apiBaseUrl = cfg.domains.geoPage + '/';
-    const response = await fetch(`${apiBaseUrl}newapi/site/info?company_unique_id=${company_unique_id}`, {
-      method: 'GET'
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const result = await response.json();
-    return result.data;
-  }
-
-  // ========== Tab 切换 ==========
-  const tabs = document.querySelectorAll('.tab-item');
-  let activeTab = localStorage.getItem('loginActiveTab') || 'aigc';
-
-  // 初始化 Tab 状态
-  tabs.forEach(tab => {
-    if (tab.dataset.tab === activeTab) {
-      tab.classList.add('active');
-    } else {
-      tab.classList.remove('active');
-    }
-  });
-
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      tabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      activeTab = tab.dataset.tab;
-      localStorage.setItem('loginActiveTab', activeTab);
-    });
-  });
-
-  // ========== 密码显示/隐藏 ==========
-  const togglePassword = document.getElementById('togglePassword');
-  const passwordInput = document.getElementById('password');
-  const eyeIcon = document.getElementById('eyeIcon');
-
-  const eyeOpenPath = 'M942.2 486.2C847.4 286.5 704.1 186 512 186c-192.2 0-335.4 100.5-430.2 300.3a60.3 60.3 0 0 0 0 51.5C176.6 737.5 319.9 838 512 838c192.2 0 335.4-100.5 430.2-300.3 7.7-16.2 7.7-35 0-51.5zM512 766c-161.3 0-279.4-81.8-362.7-254C232.6 339.8 350.7 258 512 258c161.3 0 279.4 81.8 362.7 254C791.5 684.2 673.4 766 512 766zm-4-430c-97.2 0-176 78.8-176 176s78.8 176 176 176 176-78.8 176-176-78.8-176-176-176zm0 288c-61.9 0-112-50.1-112-112s50.1-112 112-112 112 50.1 112 112-50.1 112-112 112z';
-  const eyeClosePath = 'M942.2 486.2Q889.47 372.68 807.54 290.77l-72.57 72.57Q793.25 422.62 838.7 512Q756.04 684.2 512 766q-44.17 0-85.1-7.74l-82.49 82.49Q419.17 838 512 838q192.2 0 430.2-300.3a60.3 60.3 0 0 0 0-51.5zM877.2 146.8a16.79 16.79 0 0 0-23.74 0L717.63 282.64Q620.55 186 512 186Q319.9 186 81.8 486.2a60.3 60.3 0 0 0 0 51.5Q134.47 651.32 216.46 733.24L146.8 802.9a16.79 16.79 0 0 0 0 23.74l28.57 28.57a16.79 16.79 0 0 0 23.74 0l678.09-678.09a16.79 16.79 0 0 0 0-23.74zM289.04 805.62L185.3 512Q267.96 339.8 512 258q44.17 0 85.1 7.74l-73.33 73.33A176 176 0 0 0 336 512a174.85 174.85 0 0 0 26.26 92.64zM512 624a112 112 0 0 1-112-112a111.08 111.08 0 0 1 2.35-22.64L540.7 351.01A111.07 111.07 0 0 1 624 512a112 112 0 0 1-112 112z';
-
-  togglePassword.addEventListener('click', () => {
-    const type = passwordInput.type === 'password' ? 'text' : 'password';
-    passwordInput.type = type;
-    eyeIcon.querySelector('path').setAttribute('d', type === 'password' ? eyeOpenPath : eyeClosePath);
-    togglePassword.title = type === 'password' ? '显示密码' : '隐藏密码';
-  });
-
-  // ========== 清除账号 ==========
-  const clearUsername = document.getElementById('clearUsername');
-  const usernameInput = document.getElementById('username');
-
-  clearUsername.addEventListener('click', () => {
-    usernameInput.value = '';
-    usernameInput.focus();
-  });
-
-  // ========== 表单提交 ==========
-  const loginForm = document.getElementById('loginForm');
-  const loginBtn = document.getElementById('loginBtn');
-
-  loginForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value;
-
-    if (!username) {
-      alert('请输入您的资海云账号');
+    clearUsername.addEventListener('click', () => {
+      usernameInput.value = '';
       usernameInput.focus();
-      return;
-    }
+    });
 
-    if (!password) {
-      alert('请输入您的资海云密码');
-      passwordInput.focus();
-      return;
-    }
+    // ========== 表单提交 ==========
+    const loginForm = document.getElementById('loginForm');
+    const loginBtn = document.getElementById('loginBtn');
 
-    // 禁用按钮，显示加载状态
-    loginBtn.disabled = true;
-    loginBtn.classList.add('loading');
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
 
-    try {
-      console.log('[Login] 开始登录:', { username, type: activeTab });
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
 
-      // 调用登录 API
-      const loginResult = await loginApi(username, password);
-      const loginData = loginResult.data;
-      const successMsg = loginResult.msg;
-      console.log('[Login] 登录成功:', loginData, '消息:', successMsg);
-
-      // 显示成功提示
-      if(!successMsg.includes('成功')){
-        loginBtn.disabled = false;
-        loginBtn.classList.remove('loading');
-        alert(successMsg);
+      if (!username) {
+        alert('请输入您的资海云账号');
+        usernameInput.focus();
         return;
       }
 
-      // 🔑 把 token 存到全局存储（解决 file:// 和 http:// 跨域 Cookie 问题）
-      if (window.browserAPI && window.browserAPI.setGlobalData) {
-        await window.browserAPI.setGlobalData('login_token', loginData.token);
-        await window.browserAPI.setGlobalData('login_expires', loginData.expires_in);
-        if (loginData.gcc) {
-          await window.browserAPI.setGlobalData('login_gcc', loginData.gcc);
-        }
-        console.log('[Login] 已存储 token 到全局存储');
+      if (!password) {
+        alert('请输入您的资海云密码');
+        passwordInput.focus();
+        return;
       }
 
-      // 🔑 使用 Electron session API 设置跨域 Cookie
-      const expirationDate = loginData.expires_in; // 已经是秒级时间戳
-      console.log('[Login] expirationDate:', expirationDate, '对应时间:', new Date(expirationDate * 1000).toLocaleString());
+      // 禁用按钮，显示加载状态
+      loginBtn.disabled = true;
+      loginBtn.classList.add('loading');
 
-      // 根据目标 URL 决定 Cookie 的 domain
-      const targets = await getTargetUrls();
-      const targetUrl = activeTab === 'geo' ? targets.geo : targets.aigc;
-      const cfg = await initDomainConfig();
-      const cookieUrl = cfg.cookieUrl;
-      const cookieDomain = cfg.cookieDomain;
-      console.log('[Login] 目标 URL:', targetUrl);
-      console.log('[Login] isDev:', isDev, 'browserAPI.isProduction:', window.browserAPI?.isProduction);
+      try {
+        console.log('[Login] 开始登录:', { username, type: activeTab });
 
-      // 同时为 localhost 和 china9.cn 都设置 Cookie，确保两种环境都能工作
-      if (window.browserAPI && window.browserAPI.setCookie) {
-        try {
-          // 🔑 先清除 china9.cn 的旧 Cookie，避免旧数据（如 users_unique_id）干扰
-          if (window.browserAPI.clearDomainCookies) {
-            await window.browserAPI.clearDomainCookies('china9.cn');
-            console.log('[Login] ✅ 已清除 china9.cn 旧 Cookie');
-          }
+        // 调用登录 API
+        const loginResult = await loginApi(username, password);
+        const loginData = loginResult.data;
+        const successMsg = loginResult.msg;
+        console.log('[Login] 登录成功:', loginData, '消息:', successMsg);
 
-          // 1. 为 localhost:5173 设置 Cookie（开发环境）
-          // 注意：localhost 不能设置 domain 参数，否则会失败
-          console.log('[Login] 开始设置 localhost Cookie...');
-          const localResult1 = await window.browserAPI.setCookie({
-            url: 'http://localhost:5173/',
-            name: 'token',
-            value: loginData.token,
-            path: '/',
-            expirationDate: expirationDate,
-            secure: false,
-            sameSite: 'lax'
-          });
-          console.log('[Login] localhost token 结果:', localResult1);
+        // 显示成功提示
+        if(!successMsg.includes('成功')){
+          loginBtn.disabled = false;
+          loginBtn.classList.remove('loading');
+          alert(successMsg);
+          return;
+        }
 
-          const localResult2 = await window.browserAPI.setCookie({
-            url: 'http://localhost:5173/',
-            name: 'access_token',
-            value: loginData.token,
-            path: '/',
-            expirationDate: expirationDate,
-            secure: false,
-            sameSite: 'lax'
-          });
-          console.log('[Login] localhost access_token 结果:', localResult2);
-
+        // 🔑 把 token 存到全局存储（解决 file:// 和 http:// 跨域 Cookie 问题）
+        if (window.browserAPI && window.browserAPI.setGlobalData) {
+          await window.browserAPI.setGlobalData('login_token', loginData.token);
+          await window.browserAPI.setGlobalData('login_expires', loginData.expires_in);
           if (loginData.gcc) {
-            await window.browserAPI.setCookie({
+            await window.browserAPI.setGlobalData('login_gcc', loginData.gcc);
+          }
+          console.log('[Login] 已存储 token 到全局存储');
+        }
+
+        // 🔑 使用 Electron session API 设置跨域 Cookie
+        const expirationDate = loginData.expires_in; // 已经是秒级时间戳
+        console.log('[Login] expirationDate:', expirationDate, '对应时间:', new Date(expirationDate * 1000).toLocaleString());
+
+        // 根据目标 URL 决定 Cookie 的 domain
+        const targets = await getTargetUrls();
+        const targetUrl = activeTab === 'geo' ? targets.geo : targets.aigc;
+        const cfg = await initDomainConfig();
+        const cookieUrl = cfg.cookieUrl;
+        const cookieDomain = cfg.cookieDomain;
+        console.log('[Login] 目标 URL:', targetUrl);
+        console.log('[Login] isDev:', isDev, 'browserAPI.isProduction:', window.browserAPI?.isProduction);
+
+        // 同时为 localhost 和 china9.cn 都设置 Cookie，确保两种环境都能工作
+        if (window.browserAPI && window.browserAPI.setCookie) {
+          try {
+            // 🔑 先清除 china9.cn 的旧 Cookie，避免旧数据（如 users_unique_id）干扰
+            if (window.browserAPI.clearDomainCookies) {
+              await window.browserAPI.clearDomainCookies('china9.cn');
+              console.log('[Login] ✅ 已清除 china9.cn 旧 Cookie');
+            }
+
+            // 1. 为 localhost:5173 设置 Cookie（开发环境）
+            // 注意：localhost 不能设置 domain 参数，否则会失败
+            console.log('[Login] 开始设置 localhost Cookie...');
+            const localResult1 = await window.browserAPI.setCookie({
               url: 'http://localhost:5173/',
-              name: 'gcc',
-              value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
+              name: 'token',
+              value: loginData.token,
               path: '/',
               expirationDate: expirationDate,
               secure: false,
               sameSite: 'lax'
             });
-          }
-          console.log('[Login] ✅ 已设置 localhost:5173 Cookie');
+            console.log('[Login] localhost token 结果:', localResult1);
 
-          // 2. 为 .china9.cn 设置 Cookie（生产环境）
-          console.log('[Login] 开始设置 china9.cn Cookie...');
-          await window.browserAPI.setCookie({
-            url: cookieUrl,
-            name: 'token',
-            value: loginData.token,
-            domain: cookieDomain,
-            path: '/',
-            expirationDate: expirationDate,
-            secure: true
-          });
-          await window.browserAPI.setCookie({
-            url: 'https://dev.china9.cn',
-            name: 'access_token',
-            value: loginData.token,
-            domain: '.china9.cn',
-            path: '/',
-            expirationDate: expirationDate,
-            secure: true
-          });
-          await window.browserAPI.setCookie({
-            url: 'https://dev.china9.cn',
-            name: 'employee_token',
-            value: loginData.user.token,
-            domain: '.china9.cn',
-            path: '/',
-            expirationDate: expirationDate,
-            secure: true
-          });
-          if (loginData.gcc) {
+            const localResult2 = await window.browserAPI.setCookie({
+              url: 'http://localhost:5173/',
+              name: 'access_token',
+              value: loginData.token,
+              path: '/',
+              expirationDate: expirationDate,
+              secure: false,
+              sameSite: 'lax'
+            });
+            console.log('[Login] localhost access_token 结果:', localResult2);
+
+            if (loginData.gcc) {
+              await window.browserAPI.setCookie({
+                url: 'http://localhost:5173/',
+                name: 'gcc',
+                value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
+                path: '/',
+                expirationDate: expirationDate,
+                secure: false,
+                sameSite: 'lax'
+              });
+            }
+            console.log('[Login] ✅ 已设置 localhost:5173 Cookie');
+
+            // 2. 为 .china9.cn 设置 Cookie（生产环境）
+            console.log('[Login] 开始设置 china9.cn Cookie...');
+            await window.browserAPI.setCookie({
+              url: cookieUrl,
+              name: 'token',
+              value: loginData.token,
+              domain: cookieDomain,
+              path: '/',
+              expirationDate: expirationDate,
+              secure: true
+            });
             await window.browserAPI.setCookie({
               url: 'https://dev.china9.cn',
-              name: 'gcc',
-              value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
+              name: 'access_token',
+              value: loginData.token,
               domain: '.china9.cn',
               path: '/',
               expirationDate: expirationDate,
               secure: true
             });
-          }
-          console.log('[Login] ✅ 已设置 .china9.cn Cookie');
+            await window.browserAPI.setCookie({
+              url: 'https://dev.china9.cn',
+              name: 'employee_token',
+              value: loginData.user.token,
+              domain: '.china9.cn',
+              path: '/',
+              expirationDate: expirationDate,
+              secure: true
+            });
+            if (loginData.gcc) {
+              await window.browserAPI.setCookie({
+                url: 'https://dev.china9.cn',
+                name: 'gcc',
+                value: encodeURIComponent(loginData.gcc),  // URL 编码中文字符
+                domain: '.china9.cn',
+                path: '/',
+                expirationDate: expirationDate,
+                secure: true
+              });
+            }
+            console.log('[Login] ✅ 已设置 .china9.cn Cookie');
 
-        } catch (cookieErr) {
-          console.error('[Login] ⚠️ Cookie 设置失败:', cookieErr);
-        }
-      }
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // 获取用户信息并存储
-      const userInfo = await getUserInfoApi(loginData.token);
-      console.log('[Login] 用户信息:', userInfo);
-      if (userInfo.company && userInfo.company.unique_id) {
-        await window.browserAPI.setCookie({
-          url: 'https://dev.china9.cn',
-          name: 'company_unique_id',
-          value: userInfo.company.unique_id,
-          domain: '.china9.cn',
-          path: '/',
-          expirationDate: expirationDate,
-          secure: true
-        });
-      }
-
-      // 🔑 设置 users_unique_id Cookie（用户唯一标识，后端可能根据这个判断权限）
-      if (userInfo.unique_id) {
-        await window.browserAPI.setCookie({
-          url: 'https://dev.china9.cn',
-          name: 'users_unique_id',
-          value: userInfo.unique_id,
-          domain: '.china9.cn',
-          path: '/',
-          expirationDate: expirationDate,
-          secure: true
-        });
-        console.log('[Login] ✅ 已设置 users_unique_id:', userInfo.unique_id);
-      }
-
-      if (window.browserAPI && window.browserAPI.setGlobalData) {
-        // 存储完整用户信息供公共头部使用
-        await window.browserAPI.setGlobalData('user_info', userInfo);
-        console.log('[Login] 已存储用户信息:', userInfo);
-
-        const companyId = await getCompanyId(loginData.token)
-        await window.browserAPI.setGlobalData('company_id', companyId.id);
-
-        if (userInfo.company?.unique_id) {
-          /* [已注释] 获取站点信息和设置站点Cookie - GEO不再需要独立域名判断
-		  //  获取建站通站点信息
-		  const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
-		  console.log('[Login] 站点信息:', siteInfo);
-		  await window.browserAPI.setGlobalData('siteInfo', siteInfo);
-
-		  // 把站点id存进去
-		  await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
-
-		  // 检查 web_name 是否存在
-		  if (!siteInfo.web_name) {
-			console.warn('[Login] ⚠️ siteInfo.web_name 为空:', siteInfo);
-		  }
-		  await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
-		  console.log('[Login] 已存储站点信息 - ID:', siteInfo.id, 'Name:', siteInfo.web_name);
-		  if (window.browserAPI && window.browserAPI.setCookie) {
-			try {
-			  // 1. 为 localhost:5173 设置 Cookie（开发环境）
-			  // 注意：localhost 不能设置 domain 参数，否则会失败
-			  const uniqueId = String(userInfo.company.unique_id);
-			  const siteIdStr = String(siteInfo.id);
-			  console.log('[Login] 开始设置 Cookie, siteId:', siteIdStr, 'uniqueId:', uniqueId);
-
-			  // 🔑 设置 site_id Cookie（值为 siteInfo.id）
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:5173/',
-				name: 'site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:8080/',
-				name: 'site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'https://dev.china9.cn',
-				name: 'site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: true,
-				sameSite: 'no_restriction',
-				domain: '.china9.cn',
-			  });
-			  console.log('[Login] site_id Cookie 设置完成');
-
-			  // 🔑 设置 china_site_id Cookie（值为 siteInfo.id）
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:5173/',
-				name: 'china_site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:8080/',
-				name: 'china_site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'https://dev.china9.cn',
-				name: 'china_site_id',
-				value: siteIdStr,
-				path: '/',
-				secure: true,
-				sameSite: 'no_restriction',
-				domain: '.china9.cn',
-			  });
-			  console.log('[Login] china_site_id Cookie 设置完成');
-
-			  // 🔑 设置 company_unique_id Cookie（值为 unique_id）
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:5173/',
-				name: 'company_unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:8080/',
-				name: 'company_unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'https://dev.china9.cn',
-				name: 'company_unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: true,
-				sameSite: 'no_restriction',
-				domain: '.china9.cn',
-			  });
-			  console.log('[Login] company_unique_id Cookie 设置完成');
-
-			  // 🔑 设置 unique_id Cookie
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:5173/',
-				name: 'unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'http://localhost:8080/',
-				name: 'unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: false,
-				sameSite: 'lax'
-			  });
-			  await window.browserAPI.setCookie({
-				url: 'https://dev.china9.cn',
-				name: 'unique_id',
-				value: uniqueId,
-				path: '/',
-				secure: true,
-				sameSite: 'no_restriction',
-				domain: '.china9.cn',
-			  });
-			  console.log('[Login] unique_id Cookie 设置完成');
-
-			  console.log('[Login] ✅ 所有 Cookie 设置完成');
-			} catch (e) {
-			  console.error('[Login] ❌ siteId保存失败:', e);
-			}
-		  }
-		  [已注释结束] */
-
-          // 登录成功，跳转到首页
-          console.log('[Login] 准备跳转，activeTab:', activeTab);
-
-          /* [已注释] GEO权限检查 - GEO不再走独立域名，不需要在登录时检查
-		  // 🔑 GEO Tab 登录时，检查 is_geo 权限
-		  if (activeTab === 'geo') {
-			const siteInfo = await window.browserAPI.getGlobalData('siteInfo');
-			console.log('[Login] GEO 权限检查 - is_geo:', siteInfo?.is_geo);
-			if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-			  console.log('[Login] ⚠️ 未购买 GEO 产品，跳转到未购买页面');
-			  // 等待 Cookie 写入
-			  await new Promise(resolve => setTimeout(resolve, 2000));
-			  if (window.browserAPI && window.browserAPI.navigateToLocalPage) {
-				await window.browserAPI.navigateToLocalPage('not-purchase.html?system=geo');
-			  }
-			  loginBtn.disabled = false;
-			  loginBtn.classList.remove('loading');
-			  return;
-			}
-			console.log('[Login] ✅ GEO 权限检查通过');
-		  }
-		  [已注释结束] */
-
-          // 等待一小段时间确保 Cookie 写入
-          await new Promise(resolve => setTimeout(resolve, 5000));
-
-          console.log('[Login] 跳转到:', targetUrl);
-
-          // 使用 browserAPI 跳转（如果可用）
-          if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
-            await window.browserAPI.navigateCurrentWindow(targetUrl);
-          } else {
-            // 降级使用 location
-            window.location.href = targetUrl;
+          } catch (cookieErr) {
+            console.error('[Login] ⚠️ Cookie 设置失败:', cookieErr);
           }
         }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // 获取用户信息并存储
+        const userInfo = await getUserInfoApi(loginData.token);
+        console.log('[Login] 用户信息:', userInfo);
+        if (userInfo.company && userInfo.company.unique_id) {
+          await window.browserAPI.setCookie({
+            url: 'https://dev.china9.cn',
+            name: 'company_unique_id',
+            value: userInfo.company.unique_id,
+            domain: '.china9.cn',
+            path: '/',
+            expirationDate: expirationDate,
+            secure: true
+          });
+        }
+
+        // 🔑 设置 users_unique_id Cookie（用户唯一标识，后端可能根据这个判断权限）
+        if (userInfo.unique_id) {
+          await window.browserAPI.setCookie({
+            url: 'https://dev.china9.cn',
+            name: 'users_unique_id',
+            value: userInfo.unique_id,
+            domain: '.china9.cn',
+            path: '/',
+            expirationDate: expirationDate,
+            secure: true
+          });
+          console.log('[Login] ✅ 已设置 users_unique_id:', userInfo.unique_id);
+        }
+
+        if (window.browserAPI && window.browserAPI.setGlobalData) {
+          // 存储完整用户信息供公共头部使用
+          await window.browserAPI.setGlobalData('user_info', userInfo);
+          console.log('[Login] 已存储用户信息:', userInfo);
+
+          const companyId = await getCompanyId(loginData.token)
+          await window.browserAPI.setGlobalData('company_id', companyId.id);
+
+          if (userInfo.company?.unique_id) {
+            /* [已注释] 获取站点信息和设置站点Cookie - GEO不再需要独立域名判断
+            //  获取建站通站点信息
+            const siteInfo = await getSiteInfoApi(userInfo.company.unique_id);
+            console.log('[Login] 站点信息:', siteInfo);
+            await window.browserAPI.setGlobalData('siteInfo', siteInfo);
+
+            // 把站点id存进去
+            await window.browserAPI.setGlobalData('current_site_id', siteInfo.id);
+
+            // 检查 web_name 是否存在
+            if (!siteInfo.web_name) {
+              console.warn('[Login] ⚠️ siteInfo.web_name 为空:', siteInfo);
+            }
+            await window.browserAPI.setGlobalData('current_site_name', siteInfo.web_name);
+            console.log('[Login] 已存储站点信息 - ID:', siteInfo.id, 'Name:', siteInfo.web_name);
+            if (window.browserAPI && window.browserAPI.setCookie) {
+              try {
+                // 1. 为 localhost:5173 设置 Cookie（开发环境）
+                // 注意：localhost 不能设置 domain 参数，否则会失败
+                const uniqueId = String(userInfo.company.unique_id);
+                const siteIdStr = String(siteInfo.id);
+                console.log('[Login] 开始设置 Cookie, siteId:', siteIdStr, 'uniqueId:', uniqueId);
+
+                // 🔑 设置 site_id Cookie（值为 siteInfo.id）
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://dev.china9.cn',
+                  name: 'site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] site_id Cookie 设置完成');
+
+                // 🔑 设置 china_site_id Cookie（值为 siteInfo.id）
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'china_site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'china_site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://dev.china9.cn',
+                  name: 'china_site_id',
+                  value: siteIdStr,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] china_site_id Cookie 设置完成');
+
+                // 🔑 设置 company_unique_id Cookie（值为 unique_id）
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://dev.china9.cn',
+                  name: 'company_unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] company_unique_id Cookie 设置完成');
+
+                // 🔑 设置 unique_id Cookie
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:5173/',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'http://localhost:8080/',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: false,
+                  sameSite: 'lax'
+                });
+                await window.browserAPI.setCookie({
+                  url: 'https://dev.china9.cn',
+                  name: 'unique_id',
+                  value: uniqueId,
+                  path: '/',
+                  secure: true,
+                  sameSite: 'no_restriction',
+                  domain: '.china9.cn',
+                });
+                console.log('[Login] unique_id Cookie 设置完成');
+
+                console.log('[Login] ✅ 所有 Cookie 设置完成');
+              } catch (e) {
+                console.error('[Login] ❌ siteId保存失败:', e);
+              }
+            }
+            [已注释结束] */
+
+            // 登录成功，跳转到首页
+            console.log('[Login] 准备跳转，activeTab:', activeTab);
+
+            /* [已注释] GEO权限检查 - GEO不再走独立域名，不需要在登录时检查
+            // 🔑 GEO Tab 登录时，检查 is_geo 权限
+            if (activeTab === 'geo') {
+              const siteInfo = await window.browserAPI.getGlobalData('siteInfo');
+              console.log('[Login] GEO 权限检查 - is_geo:', siteInfo?.is_geo);
+              if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
+                console.log('[Login] ⚠️ 未购买 GEO 产品，跳转到未购买页面');
+                // 等待 Cookie 写入
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (window.browserAPI && window.browserAPI.navigateToLocalPage) {
+                  await window.browserAPI.navigateToLocalPage('not-purchase.html?system=geo');
+                }
+                loginBtn.disabled = false;
+                loginBtn.classList.remove('loading');
+                return;
+              }
+              console.log('[Login] ✅ GEO 权限检查通过');
+            }
+            [已注释结束] */
+
+            // 等待一小段时间确保 Cookie 写入
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            console.log('[Login] 跳转到:', targetUrl);
+
+            // 使用 browserAPI 跳转（如果可用）
+            if (window.browserAPI && window.browserAPI.navigateCurrentWindow) {
+              await window.browserAPI.navigateCurrentWindow(targetUrl);
+            } else {
+              // 降级使用 location
+              window.location.href = targetUrl;
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[Login] 登录失败:', error);
+        alert(error);
+        // 不弹窗提示，只在控制台输出错误
+        loginBtn.disabled = false;
+        loginBtn.classList.remove('loading');
       }
-    } catch (error) {
-      console.error('[Login] 登录失败:', error);
-      alert(error);
-      // 不弹窗提示，只在控制台输出错误
-      loginBtn.disabled = false;
-      loginBtn.classList.remove('loading');
-    }
-  });
-
-  // 回车提交
-  passwordInput.addEventListener('keyup', (e) => {
-    if (e.key === 'Enter' && !loginBtn.disabled) {
-      loginForm.dispatchEvent(new Event('submit'));
-    }
-  });
-
-  // ========== 初始化 ==========
-  console.log('[Login] 登录页面已加载');
-  console.log('[Login] browserAPI 是否可用:', !!window.browserAPI);
-
-  // 检查 browserAPI 可用性
-  if (window.browserAPI) {
-    getApiBaseUrl().then(url => {
-      console.log('[Login] API 基础地址已获取:', url);
     });
-  }
-</script>
+
+    // 回车提交
+    passwordInput.addEventListener('keyup', (e) => {
+      if (e.key === 'Enter' && !loginBtn.disabled) {
+        loginForm.dispatchEvent(new Event('submit'));
+      }
+    });
+
+    // ========== 初始化 ==========
+    console.log('[Login] 登录页面已加载');
+    console.log('[Login] browserAPI 是否可用:', !!window.browserAPI);
+
+    // 检查 browserAPI 可用性
+    if (window.browserAPI) {
+      getApiBaseUrl().then(url => {
+        console.log('[Login] API 基础地址已获取:', url);
+      });
+    }
+  </script>
 </body>
 </html>

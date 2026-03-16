@@ -14,8 +14,8 @@
 (async function () {
     'use strict';
 
-    // 🔑 平台配置（从 common.js 引用，避免重复定义）
-    const PLATFORM_CONFIG = window.PLATFORM_CONFIGS?.souhuhao || {
+    // 🔑 平台配置（在 IIFE 内部定义，避免与发布脚本冲突）
+    const PLATFORM_CONFIG = {
         name: '搜狐号',
         publishPagePath: '/contentManagement/news/addarticle',
         publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
@@ -256,10 +256,10 @@
                             //return;
 
                             console.log('[搜狐号授权] 📤 准备发送数据到接口...');
-                            // 发送数据到服务器（通过 common.js 桥接）
-                            const apiUrl = await window.getPlatformApiUrl('sohuhao');
-                            console.log('[搜狐号授权] 📡 API 地址:', apiUrl);
-                            const apiResponse = await fetch(apiUrl, {
+                            // 发送数据到服务器（根据环境选择域名）
+                            const apiDomain = await getApiDomain();
+                            console.log('[搜狐号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/shinfo`);
+                            const apiResponse = await fetch(`${apiDomain}/api/mediaauth/shinfo`, {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json'
@@ -308,7 +308,7 @@
                                     // 统计接口成功后关闭弹窗
                                     setTimeout(() => {
                                         window.browserAPI.closeCurrentWindow();
-                                    }, window.PUBLISH_CONFIG.timeout.windowClose);
+                                    }, 10000);
                                 }
                             } else {
                                 throw new Error(apiResult.msg || apiResult.message || '上报数据失败');

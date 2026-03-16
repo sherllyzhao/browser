@@ -8,5 +8,5 @@ dist/
 .claude
 /installer.nsh
 /nul
-/{
+/[{]
 .omc

@@ -6,23 +6,11 @@
  */
 
 (async function () {
-  'use strict'
+  'use strict';
 
-  // ===========================
-  // 防止脚本重复注入
-  // ===========================
   if (window.__TOUTIAO_PUBLISH_SCRIPT_LOADED__) {
     console.log('[头条发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
-  }
-
-  // ===========================
-  // 页面状态检查 - 防止异常渲染
-  // ===========================
-  if (typeof window.checkPageStateAndReload === 'function') {
-    if (!window.checkPageStateAndReload('头条发布')) {
-      return;
-    }
   }
 
   // 头条发布页是富文本编辑器，跳过异常渲染检测，避免误报
@@ -54,7 +42,8 @@
   let latestDumpFilePath = '';
   let submitAttempted = false;
   let submitAttemptedAt = 0;
-  const stageTrace = [];
+  let latestDraftSaveSuccessAt = 0;
+  let latestDraftSavePgcId = '0';
 
   const initErrorListener = () => {
     if (typeof createErrorListener !== 'function') {
@@ -91,197 +80,6 @@
     return key;
   };
 
-  const pushStage = (stage, detail = {}) => {
-    const entry = {
-      stage,
-      ts: Date.now(),
-      iso: new Date().toISOString(),
-      ...detail
-    };
-    stageTrace.push(entry);
-    if (stageTrace.length > 120) {
-      stageTrace.shift();
-    }
-    console.log(`${LOG_PREFIX} 🧭 阶段: ${stage}`, detail);
-    try {
-      window.__TOUTIAO_PUBLISH_DIAG__.stageTrace = stageTrace.slice(-50);
-    } catch (_) {}
-    return entry;
-  };
-
-  const getVisibleButtonTexts = (limit = 40) => {
-    try {
-      return Array.from(document.querySelectorAll('button'))
-        .filter(btn => {
-          const rect = btn.getBoundingClientRect();
-          return rect.width > 2 && rect.height > 2;
-        })
-        .map(btn => (btn.textContent || '').trim())
-        .filter(Boolean)
-        .slice(0, limit);
-    } catch (_) {
-      return [];
-    }
-  };
-
-  const getQuickPageSnapshot = () => ({
-    href: window.location.href,
-    title: document.title,
-    visibleButtons: getVisibleButtonTexts(),
-    submitAttempted,
-    submitAttemptedAt,
-    latestApiDiag,
-    latestPublishApiFailure,
-    latestPreSubmitPublishFailure
-  });
-
-  // ═══ 2. 初始化日志与平台检查 ═══
-  console.log('═══════════════════════════════════════');
-  console.log('✅ 头条发布脚本已注入');
-  console.log('📍 当前 URL:', window.location.href);
-  console.log('🕐 注入时间:', new Date().toLocaleString());
-  console.log('═══════════════════════════════════════');
-
-  // 暴露诊断数据到全局 window 对象（这样在 DevTools Console 可以直接查看）
-  window.__TOUTIAO_PUBLISH_DIAG__ = {
-    loaded: true,
-    loadTime: Date.now(),
-    apiDiag: null,
-    errors: [],
-    publishAttempts: 0,
-    lastDiagMessage: ''
-  };
-
-  // 全局异常捕获：确保所有错误都被记录
-  const origOnError = window.onerror;
-  window.onerror = function(msg, source, lineno, colno, error) {
-    const errMsg = `[头条发布脚本异常] ${msg} (${source}:${lineno}:${colno})`;
-    console.error(errMsg, error);
-    try {
-      window.__TOUTIAO_PUBLISH_DIAG__.errors.push({
-        msg: errMsg,
-        error: error && error.message ? error.message : String(error),
-        timestamp: Date.now()
-      });
-    } catch (e) {}
-    if (origOnError) return origOnError.apply(this, arguments);
-  };
-
-  const origOnUnhandledRejection = window.onunhandledrejection;
-  window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    const errMsg = `[头条发布脚本 Promise 异常] ${reason && reason.message ? reason.message : String(reason)}`;
-    console.error(errMsg);
-    try {
-      window.__TOUTIAO_PUBLISH_DIAG__.errors.push({
-        msg: errMsg,
-        error: reason && reason.message ? reason.message : String(reason),
-        timestamp: Date.now()
-      });
-    } catch (e) {}
-    if (origOnUnhandledRejection) origOnUnhandledRejection.call(window, event);
-  });
-
-  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
-    console.error(`${LOG_PREFIX} ❌ common.js 未加载！脚本可能无法正常工作`);
-  } else {
-    console.log(`${LOG_PREFIX} ✅ common.js 已加载，工具函数可用`);
-  }
-
-  // ═══ 3. 注册消息监听器 ═══
-  console.log(`${LOG_PREFIX} 注册消息监听器...`);
-
-  if (!window.browserAPI) {
-    console.error(`${LOG_PREFIX} ❌ browserAPI 不可用！`);
-  } else if (!window.browserAPI.onMessageFromHome) {
-    console.error(`${LOG_PREFIX} ❌ browserAPI.onMessageFromHome 不可用！`);
-  } else {
-    window.browserAPI.onMessageFromHome(async (message) => {
-      console.log('═══════════════════════════════════════');
-      console.log(`${LOG_PREFIX} 🎉 收到来自父窗口的消息!`);
-      console.log(`${LOG_PREFIX} 消息.type:`, message?.type);
-      console.log(`${LOG_PREFIX} 消息.windowId:`, message?.windowId);
-      console.log('═══════════════════════════════════════');
-
-      if (message.type !== 'publish-data') return;
-
-      const messageData = parseMessageData(message.data, LOG_PREFIX);
-      if (!messageData) return;
-
-      const isMatch = await checkWindowIdMatch(message, LOG_PREFIX);
-      if (!isMatch) return;
-
-      const needReload = await restoreSessionAndReload(messageData, LOG_PREFIX);
-      if (needReload) return;
-
-      receivedMessageData = messageData;
-      console.log(`${LOG_PREFIX} 💾 已保存收到的消息数据到 receivedMessageData`);
-
-      if (isProcessing) {
-        console.warn(`${LOG_PREFIX} ⚠️ 正在处理中，忽略重复消息`);
-        return;
-      }
-      if (hasProcessed) {
-        console.warn(`${LOG_PREFIX} ⚠️ 已经处理过，忽略重复消息`);
-        return;
-      }
-
-      isProcessing = true;
-      try {
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: messageData,
-          receivedAt: Date.now()
-        };
-        await retryOperation(async () => fillFormData(messageData), 3, 2000);
-      } catch (e) {
-        console.error(`${LOG_PREFIX} ❌ 执行发布流程失败:`, e);
-      } finally {
-        isProcessing = false;
-      }
-    });
-
-    console.log(`${LOG_PREFIX} ✅ 消息监听器注册成功`);
-  }
-
-  // ═══ 4. URL 参数与窗口 ID ═══
-  const urlParams = new URLSearchParams(window.location.search);
-  const companyId = await window.browserAPI.getGlobalData('company_id');
-  const transferId = urlParams.get('transfer_id');
-
-  try {
-    currentWindowId = await window.browserAPI.getWindowId();
-    console.log(`${LOG_PREFIX} 当前窗口 ID:`, currentWindowId);
-  } catch (e) {
-    console.error(`${LOG_PREFIX} ❌ 获取窗口 ID 失败:`, e);
-  }
-
-  // ═══ 5. 全局授权数据与方法 ═══
-  window.__AUTH_DATA__ = {
-    companyId,
-    transferId,
-    timestamp: Date.now()
-  };
-
-  window.__TOUTIAO_PUBLISH_AUTH__ = {
-    notifySuccess: () => sendMessageToParent('发布成功'),
-    sendMessage: (message) => sendMessageToParent(message),
-    getAuthData: () => window.__AUTH_DATA__
-  };
-
-  // ═══ 6. 发送页面加载完成消息 ═══
-  console.log(`${LOG_PREFIX} 页面加载完成，发送 页面加载完成 消息`);
-  sendMessageToParent('页面加载完成');
-
-  console.log('═══════════════════════════════════════');
-  console.log('✅ 头条发布脚本初始化完成');
-  console.log('📝 全局方法: window.__TOUTIAO_PUBLISH_AUTH__');
-  console.log('  - notifySuccess()  : 发送发布成功消息');
-  console.log('  - sendMessage(msg) : 发送自定义消息');
-  console.log('  - getAuthData()    : 获取发布数据');
-  console.log('═══════════════════════════════════════');
-
-  // ═══ 头条专用辅助函数 ═══
   const parsePlainTextFromHtml = (html) => {
     if (!html) return '';
     if (typeof html !== 'string') return String(html);
@@ -338,11 +136,7 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 56px sans-serif';
-    const safeTitle = (
-      typeof title === 'string' && title.trim()
-        ? title.trim()
-        : '未命名文章'
-    ).slice(0, 16);
+    const safeTitle = (title || '测试文章').slice(0, 16);
     ctx.fillText(safeTitle, 56, 140);
     ctx.font = '32px sans-serif';
     const timeText = new Date().toLocaleString('zh-CN', { hour12: false });
@@ -357,21 +151,20 @@
     const clean = (title || '').trim();
     if (clean.length >= 5) return clean;
     const suffix = new Date().toLocaleTimeString('zh-CN', { hour12: false }).replace(/:/g, '');
-    const base = clean || '未命名文章';
-    const composed = `${base} ${suffix}`.trim();
-    return composed.slice(0, 30);
+    const base = clean || '测试文章';
+    return `${base} ${suffix}`.slice(0, 30);
   };
 
   const normalizeContentForPublish = (content, intro, title) => {
     const raw = parsePlainTextFromHtml(content) || parsePlainTextFromHtml(intro) || '';
     const trimmed = raw.trim();
     if (trimmed.length >= 20) return trimmed;
-    const head = (typeof title === 'string' ? title.trim() : '') || '';
-    const timeText = new Date().toLocaleString('zh-CN', { hour12: false });
+    const head = (title || '测试文章').trim() || '测试文章';
     return [
-      head,
-      `更新时间：${timeText}`
-    ].filter(Boolean).join('\n\n');
+      `${head}`,
+      '这是一篇测试内容，用于验证发布页流程。',
+      `更新时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`
+    ].join('\n');
   };
 
   const findVisibleEditable = () => {
@@ -713,30 +506,14 @@
   const recordApiDiag = (diag) => {
     latestApiDiag = diag;
     const codeText = diag.code !== null && typeof diag.code !== 'undefined' ? diag.code : 'unknown';
-    const statusText = `HTTP ${diag.status}`;
-    const msgText = diag.message ? `(${diag.message})` : '';
-
-    // 【关键】记录到全局诊断对象（DevTools 可查看）
-    try {
-      window.__TOUTIAO_PUBLISH_DIAG__.apiDiag = {
-        kind: diag.kind,
-        status: diag.status,
-        code: codeText,
-        message: diag.message,
-        success: diag.success,
-        requestHeaders: diag.requestHeaders || {},
-        timestamp: Date.now()
-      };
-      window.__TOUTIAO_PUBLISH_DIAG__.lastDiagMessage = `${diag.kind}接口 ${statusText} code=${codeText}`;
-    } catch (e) {}
-
-    // 格式化输出到 console（同时也会通过 console overlay 显示在浮层）
-    console.log(`${LOG_PREFIX} 📡 ${diag.kind}接口响应: ${statusText} code=${codeText} ${msgText}`);
+    console.log(`${LOG_PREFIX} 📡 ${diag.kind}接口响应:`, {
+      status: diag.status,
+      code: codeText,
+      message: diag.message,
+      url: diag.url
+    });
     if (diag.requestSummary) {
-      console.log(`${LOG_PREFIX} 🧾 ${diag.kind}请求体摘要: ${diag.requestSummary}`);
-    }
-    if (diag.requestHeaders && Object.keys(diag.requestHeaders).length > 0) {
-      console.log(`${LOG_PREFIX} 🔐 请求头: ${JSON.stringify(diag.requestHeaders).slice(0, 200)}`);
+      console.log(`${LOG_PREFIX} 🧾 ${diag.kind}请求体摘要:`, diag.requestSummary);
     }
 
     if (!diag.success) {
@@ -752,22 +529,13 @@
             ...diag,
             failText
           };
-          console.warn(`${LOG_PREFIX} ℹ️ 捕获到发布接口失败（尚未提交）: ${failText}`);
+          console.warn(`${LOG_PREFIX} ℹ️ 捕获到发布接口失败，但尚未点击确认发布，先记为预提交失败:`, failText);
         }
       }
-
-      // 把失败诊断信息格式化输出到 console（会显示在浮层）
-      const diagSummary = [
-        `❌ ${failText}`,
-        `   状态: ${diag.status}`,
-        `   代码: ${codeText}`,
-        diag.message ? `   信息: ${diag.message}` : '',
-        diag.requestSummary ? `   请求: ${diag.requestSummary}` : '',
-        diag.responseSnippet ? `   响应: ${diag.responseSnippet.slice(0, 100)}...` : ''
-      ].filter(Boolean).join('\n');
-
-      console.error(diagSummary);
-
+      console.error(`${LOG_PREFIX} ❌ ${failText}`, {
+        requestBodySnippet: diag.requestBodySnippet || '',
+        responseSnippet: diag.responseSnippet || ''
+      });
       if (submitAttempted && typeof sendMessageToParent === 'function') {
         sendMessageToParent(`头条发布诊断: ${failText}`);
       }
@@ -778,11 +546,23 @@
       // 一旦检测到发布接口成功响应，清理之前的失败快照，避免误判中间失败
       latestPublishApiFailure = null;
       latestPreSubmitPublishFailure = null;
-      console.log(`${LOG_PREFIX} ✅ ${diag.kind}接口成功`);
+    }
+
+    // 追踪草稿保存成功，提取 pgc_id
+    if (diag.kind === 'draft' && diag.success) {
+      latestDraftSaveSuccessAt = Date.now();
+      try {
+        const respObj = safeParseJsonText(diag.responseSnippet);
+        const pgcId = respObj?.data?.pgc_id || respObj?.pgc_id || '';
+        if (pgcId && String(pgcId) !== '0') {
+          latestDraftSavePgcId = String(pgcId);
+          console.log(`${LOG_PREFIX} ✅ 草稿保存成功，pgc_id:`, latestDraftSavePgcId);
+        }
+      } catch (_) {}
     }
   };
 
-  const handleApiResponse = (url, status, requestBodySnippet, responseText, fullDiag = {}) => {
+  const handleApiResponse = (url, status, requestBodySnippet, responseText) => {
     if (!isTargetApiUrl(url)) return;
 
     const payload = safeParseJsonText(responseText);
@@ -803,22 +583,29 @@
       requestBodySnippet,
       requestSummary,
       responseSnippet: (responseText || '').slice(0, 400),
-      requestHeaders: fullDiag?.requestHeaders || {},
       ts: Date.now()
     });
+  };
+
+  const waitForDraftSave = async (timeoutMs = 12000) => {
+    const start = Date.now();
+    console.log(`${LOG_PREFIX} ⏳ 等待平台自动保存草稿（超时 ${timeoutMs / 1000}s）...`);
+    while (Date.now() - start < timeoutMs) {
+      if (latestDraftSaveSuccessAt > 0 && latestDraftSavePgcId !== '0') {
+        console.log(`${LOG_PREFIX} ✅ 草稿保存已确认，pgc_id: ${latestDraftSavePgcId}`);
+        return true;
+      }
+      await delay(600);
+    }
+    console.warn(`${LOG_PREFIX} ⚠️ 等待草稿保存超时（${timeoutMs / 1000}s），pgc_id: ${latestDraftSavePgcId}`);
+    return false;
   };
 
   const installApiDiagnostics = () => {
     if (window.__TOUTIAO_API_DIAG_HOOKED__) return;
     window.__TOUTIAO_API_DIAG_HOOKED__ = true;
 
-    console.log(`${LOG_PREFIX} 📊 开始安装 API 诊断钩子...`);
-
-    let fetchHooked = false;
-    let xhrHooked = false;
-
     if (typeof window.fetch === 'function') {
-      console.log(`${LOG_PREFIX} 🔗 检测到 fetch，正在 hook...`);
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (...args) => {
         const req = args[0];
@@ -826,34 +613,12 @@
         const url = typeof req === 'string' ? req : (req?.url || '');
         const fullUrl = normalizeUrl(url);
         const bodySnippet = bodyToSnippet(init?.body || req?.body);
-
-        // 【新增】捕获请求头用于诊断
-        const requestHeaders = init?.headers || {};
-        const headersSummary = {};
-        try {
-          if (requestHeaders instanceof Headers) {
-            requestHeaders.forEach((value, key) => {
-              headersSummary[key] = value;
-            });
-          } else if (typeof requestHeaders === 'object') {
-            Object.assign(headersSummary, requestHeaders);
-          }
-        } catch (e) {
-          console.warn(`${LOG_PREFIX} ⚠️ 请求头读取失败:`, e.message);
-        }
-
         try {
           const res = await nativeFetch(...args);
           if (isTargetApiUrl(fullUrl)) {
-            fetchHooked = true;
             try {
               const text = await res.clone().text();
-              // 【新增】记录请求头到诊断数据
-              const fullDiag = {
-                requestHeaders: headersSummary,
-                requestUrl: fullUrl
-              };
-              handleApiResponse(fullUrl, res.status || 0, bodySnippet, text, fullDiag);
+              handleApiResponse(fullUrl, res.status || 0, bodySnippet, text);
             } catch (e) {
               console.warn(`${LOG_PREFIX} ⚠️ fetch响应读取失败:`, e.message || e);
             }
@@ -861,7 +626,6 @@
           return res;
         } catch (e) {
           if (isTargetApiUrl(fullUrl)) {
-            fetchHooked = true;
             recordApiDiag({
               kind: fullUrl.includes(PUBLISH_API_PATH) ? 'publish' : 'draft',
               url: fullUrl,
@@ -877,11 +641,9 @@
           throw e;
         }
       };
-      console.log(`${LOG_PREFIX} ✅ fetch hook 安装完成`);
     }
 
     if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
-      console.log(`${LOG_PREFIX} 🔗 检测到 XMLHttpRequest，正在 hook...`);
       const xhrProto = window.XMLHttpRequest.prototype;
       const nativeOpen = xhrProto.open;
       const nativeSend = xhrProto.send;
@@ -900,7 +662,6 @@
           this.addEventListener('loadend', () => {
             const targetUrl = this.__ttDiagUrl || '';
             if (!isTargetApiUrl(targetUrl)) return;
-            xhrHooked = true;
             let responseText = '';
             try {
               responseText = typeof this.responseText === 'string' ? this.responseText : '';
@@ -910,7 +671,6 @@
         } catch (_) {}
         return nativeSend.call(this, body);
       };
-      console.log(`${LOG_PREFIX} ✅ XMLHttpRequest hook 安装完成`);
     }
 
     console.log(`${LOG_PREFIX} ✅ 已安装发布接口诊断钩子`);
@@ -927,12 +687,10 @@
           url: window.location.href,
           submitAttempted,
           submitAttemptedAt,
-          stageTrace,
           latestApiDiag,
           latestPublishApiFailure,
           latestPreSubmitPublishFailure,
           latestPublishApiSuccessAt,
-          pageSnapshot: getQuickPageSnapshot(),
           extra
         }
       };
@@ -958,65 +716,9 @@
 
   installApiDiagnostics();
 
-  // ========== 设备 Cookie 安全网 ==========
-  // 如果 openNewWindow 阶段的补全未生效（如 restoreSessionAndReload 路径），
-  // 在脚本运行时再补一次，确保后续 publish API 请求携带正确的设备标识。
-  const ensureDeviceCookies = async () => {
-    try {
-      const cookies = document.cookie;
-      if (!cookies.includes('tt_webid=') && window.browserAPI?.setCookie) {
-        const ts = BigInt(Date.now());
-        const rand = BigInt(Math.floor(Math.random() * (2 ** 22)));
-        const ttWebid = String(ts * BigInt(2 ** 22) + rand);
-        await window.browserAPI.setCookie({
-          name: 'tt_webid', value: ttWebid, domain: '.toutiao.com',
-          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
-          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-        });
-        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 tt_webid`);
-      }
-
-      const svMatch = cookies.match(/s_v_web_id=(verify_[^;]*)/);
-      if (svMatch && window.browserAPI?.setCookie) {
-        const fixed = svMatch[1].replace('verify_', '');
-        await window.browserAPI.setCookie({
-          name: 's_v_web_id', value: fixed, domain: 'mp.toutiao.com',
-          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
-          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-        });
-        console.log(`${LOG_PREFIX} ✅ 安全网：已修复 s_v_web_id`);
-      }
-
-      if (!cookies.includes('ttcid=') && window.browserAPI?.setCookie) {
-        const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-        await window.browserAPI.setCookie({
-          name: 'ttcid', value: hex + Math.floor(Math.random() * 100).toString().padStart(2, '0'),
-          domain: 'mp.toutiao.com', path: '/', secure: true, httpOnly: false,
-          sameSite: 'no_restriction', expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-        });
-        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 ttcid`);
-      }
-
-      if (!cookies.includes('tt_scid=') && window.browserAPI?.setCookie) {
-        const sc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-';
-        const ttScid = Array.from({ length: 64 }, () => sc[Math.floor(Math.random() * sc.length)]).join('');
-        await window.browserAPI.setCookie({
-          name: 'tt_scid', value: ttScid, domain: 'mp.toutiao.com',
-          path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction',
-          expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-        });
-        console.log(`${LOG_PREFIX} ✅ 安全网：已补全 tt_scid`);
-      }
-    } catch (e) {
-      console.warn(`${LOG_PREFIX} ⚠️ 设备 Cookie 安全网失败:`, e.message || e);
-    }
-  };
-  await ensureDeviceCookies();
-
   const fillTitle = async (title) => {
     const targetTitle = (title || '').trim();
     if (!targetTitle) return;
-    pushStage('fill-title:start', { targetTitle });
     await retryOperation(async () => {
       const titleInput = findTitleInput();
       if (!titleInput) {
@@ -1089,10 +791,6 @@
       }
 
       console.log(`${LOG_PREFIX} ✅ 标题设置成功`);
-      pushStage('fill-title:done', {
-        finalValue: currentValue,
-        titleHint: titleHint || ''
-      });
     }, 5, 1000);
   };
 
@@ -1100,93 +798,299 @@
     const plain = parsePlainTextFromHtml(htmlContent) || parsePlainTextFromHtml(introText);
     if (!plain) {
       console.log(`${LOG_PREFIX} ℹ️ 内容为空，跳过正文填写`);
-      pushStage('fill-content:skip-empty');
       return;
     }
-    pushStage('fill-content:start', { length: plain.length });
+
+    // 保留原始 HTML 用于 paste（ProseMirror 原生处理 paste 事件会正确更新内部 state）
+    const htmlForPaste = htmlContent
+      ? htmlContent
+      : `<p>${(introText || '').split('\n').filter(Boolean).join('</p><p>')}</p>`;
+
     await retryOperation(async () => {
       const editor = findVisibleEditable();
       if (!editor) {
         throw new Error('未找到正文编辑器');
       }
+      if (typeof editor.focus === 'function') {
+        editor.focus();
+      }
+      await delay(300);
 
-      // 聚焦编辑器
-      editor.focus();
-      await delay(200);
+      let contentSet = false;
 
-      // 优先用 DOM 写入（与单次发布脚本一致），失败再回退粘贴
-      try {
-        // 清空现有内容
+      // Helper: 选中编辑器全部内容并删除
+      const selectAndClear = () => {
+        const sel = window.getSelection();
+        if (sel) {
+          const r = document.createRange();
+          r.selectNodeContents(editor);
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+        document.execCommand('delete', false);
+      };
+
+      // Helper: 获取 ProseMirror EditorView（多种策略搜索）
+      const getPmView = () => {
+        // 策略1: editor 自身或最近的 .ProseMirror 的 pmViewDesc
         try {
-          editor.innerHTML = '';
-        } catch (_) {
-          try {
-            document.execCommand('selectAll');
-            document.execCommand('delete');
-          } catch (_) {}
-        }
-        await delay(200);
-
-        const lines = plain.split('\n').map(s => s.trim()).filter(Boolean);
-        if (lines.length === 0) {
-          lines.push(plain.trim());
-        }
-
-        for (const line of lines) {
-          const p = document.createElement('p');
-          p.textContent = line;
-          editor.appendChild(p);
-        }
-
-        try {
-          editor.dispatchEvent(new InputEvent('input', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: plain
-          }));
+          const pmNode = editor.closest('.ProseMirror') || editor;
+          if (pmNode.pmViewDesc?.view) {
+            console.log(`${LOG_PREFIX} [PM] 通过 pmViewDesc 找到 EditorView`);
+            return pmNode.pmViewDesc.view;
+          }
         } catch (_) {}
-        editor.dispatchEvent(new Event('change', { bubbles: true }));
 
-        await delay(800);
+        // 策略2: 向上遍历 DOM 树查找 pmViewDesc
+        try {
+          let node = editor;
+          while (node && node !== document.body) {
+            if (node.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过 DOM 向上遍历找到 EditorView (tag: ${node.tagName}, class: ${(node.className || '').toString().slice(0, 60)})`);
+              return node.pmViewDesc.view;
+            }
+            node = node.parentElement;
+          }
+        } catch (_) {}
 
-        let currentText = (editor.innerText || editor.textContent || '').trim();
-        if (!currentText) {
-          console.warn(`${LOG_PREFIX} ⚠️ DOM 写入后内容为空，尝试粘贴回退`);
+        // 策略3: 在页面中搜索所有 .ProseMirror 元素
+        try {
+          const allPm = document.querySelectorAll('.ProseMirror');
+          for (const pm of allPm) {
+            if (pm.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过全局搜索 .ProseMirror 找到 EditorView`);
+              return pm.pmViewDesc.view;
+            }
+          }
+        } catch (_) {}
+
+        // 策略4: 搜索 contenteditable 元素上的 pmViewDesc
+        try {
+          const editables = document.querySelectorAll('[contenteditable="true"]');
+          for (const el of editables) {
+            if (el.pmViewDesc?.view) {
+              console.log(`${LOG_PREFIX} [PM] 通过 contenteditable 找到 EditorView`);
+              return el.pmViewDesc.view;
+            }
+          }
+        } catch (_) {}
+
+        console.warn(`${LOG_PREFIX} [PM] ❌ 未找到 ProseMirror EditorView。诊断信息:`, {
+          editorTag: editor.tagName,
+          editorClass: (editor.className || '').toString().slice(0, 100),
+          hasPmViewDesc: !!editor.pmViewDesc,
+          closestPM: !!editor.closest('.ProseMirror'),
+          allPMCount: document.querySelectorAll('.ProseMirror').length,
+          allEditableCount: document.querySelectorAll('[contenteditable="true"]').length
+        });
+        return null;
+      };
+
+      // Helper: 检查 ProseMirror state 是否有实际内容
+      const pmStateHasContent = () => {
+        try {
+          const view = getPmView();
+          if (!view) return false;
+          const text = view.state.doc.textContent || '';
+          const hasContent = text.trim().length > 0;
+          console.log(`${LOG_PREFIX} [PM] state 内容检查: "${text.trim().slice(0, 50)}..." (长度=${text.trim().length}, 有内容=${hasContent})`);
+          return hasContent;
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} [PM] state 检查异常:`, e.message);
+          return false;
+        }
+      };
+
+      // Helper: 通过 ProseMirror dispatch 设置内容
+      const pmDispatchContent = (textContent) => {
+        const view = getPmView();
+        if (!view) {
+          console.warn(`${LOG_PREFIX} [PM] dispatch 失败: EditorView 不可用`);
+          return false;
+        }
+        const { state } = view;
+        const { schema } = state;
+        console.log(`${LOG_PREFIX} [PM] schema nodes:`, Object.keys(schema.nodes || {}));
+
+        // 找到用于创建段落的 node type
+        const paraType = schema.nodes.paragraph || schema.nodes.para || schema.nodes.text_block;
+        if (!paraType) {
+          console.warn(`${LOG_PREFIX} [PM] dispatch 失败: schema 中没有 paragraph/para/text_block 节点`);
+          return false;
+        }
+
+        const pmLines = textContent.split('\n').map(l => l.trim()).filter(Boolean);
+        const paragraphs = pmLines.length > 0
+          ? pmLines.map(line => paraType.create(null, line ? [schema.text(line)] : []))
+          : [paraType.create(null, [schema.text(textContent || ' ')])];
+
+        console.log(`${LOG_PREFIX} [PM] 准备 dispatch: ${paragraphs.length} 个段落, doc.content.size=${state.doc.content.size}`);
+        const tr = state.tr.replaceWith(0, state.doc.content.size, paragraphs);
+        view.dispatch(tr);
+
+        // 验证 dispatch 后的状态
+        const afterText = view.state.doc.textContent || '';
+        console.log(`${LOG_PREFIX} [PM] dispatch 后 state 内容: "${afterText.slice(0, 80)}..." (长度=${afterText.length})`);
+        return afterText.trim().length > 0;
+      };
+
+      // === 方法 1: ProseMirror EditorView 直接操作（最可靠）===
+      // 直接 dispatch transaction 设置文档内容，确保 ProseMirror 内部 state 被正确更新
+      // 这是唯一能保证草稿自动保存时发送正确 content 的方式
+      try {
+        const dispatched = pmDispatchContent(plain);
+        if (dispatched) {
+          contentSet = true;
+          console.log(`${LOG_PREFIX} ✅ 方法1(ProseMirror dispatch) 正文设置成功`);
+        } else {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 未能写入 state，尝试其他方法`);
+        }
+      } catch (e) {
+        console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 失败:`, e.message);
+      }
+
+      // === 方法 2: execCommand('insertHTML') ===
+      if (!contentSet) {
+        try {
+          editor.focus();
+          selectAndClear();
+          await delay(200);
+
+          const insertOk = document.execCommand('insertHTML', false, htmlForPaste);
+          await delay(800);
+
+          const afterInsert = (editor.innerText || editor.textContent || '').trim();
+          if (insertOk && afterInsert.length > 0) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法2(insertHTML) 正文设置成功，长度:`, afterInsert.length);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法2(insertHTML) ${insertOk ? '内容为空' : 'execCommand返回false'}，尝试下一种方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法2(insertHTML) 失败:`, e.message);
+        }
+      }
+
+      // === 方法 3: Clipboard paste ===
+      if (!contentSet) {
+        try {
+          editor.focus();
+          selectAndClear();
+          await delay(200);
 
           const clipboardData = new DataTransfer();
+          clipboardData.setData('text/html', htmlForPaste);
           clipboardData.setData('text/plain', plain);
           const pasteEvent = new ClipboardEvent('paste', {
             bubbles: true,
-            cancelable: false,
+            cancelable: true,
             clipboardData: clipboardData
           });
-          const pasteResult = editor.dispatchEvent(pasteEvent);
-          console.log(`${LOG_PREFIX} 📋 粘贴回退已触发，propagate=${pasteResult}`);
-          await delay(800);
+          editor.dispatchEvent(pasteEvent);
+          await delay(600);
 
-          currentText = (editor.innerText || editor.textContent || '').trim();
+          const afterPaste = (editor.innerText || editor.textContent || '').trim();
+          if (afterPaste.length > 0) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法3(clipboard paste) 正文设置成功，长度:`, afterPaste.length);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法3(clipboard paste) 内容为空，尝试下一种方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法3(clipboard paste) 失败:`, e.message);
         }
-
-        if (!currentText) {
-          throw new Error('正文填写后仍为空');
-        }
-
-        console.log(`${LOG_PREFIX} ✅ 正文填充完成，文本长度: ${currentText.length} 字`);
-        pushStage('fill-content:done', { finalLength: currentText.length });
-
-        // 最后等待页面完成所有处理（字数统计、数据绑定等）
-        await delay(1200);
-      } catch (err) {
-        console.error(`${LOG_PREFIX} ❌ 正文填充失败:`, err.message);
-        throw err;
       }
-    }, 3, 2500);
+
+      // === 方法 4: execCommand insertText ===
+      if (!contentSet) {
+        try {
+          editor.focus();
+          selectAndClear();
+          await delay(200);
+
+          const lines = plain.split('\n').map(l => l.trim()).filter(Boolean);
+          for (let i = 0; i < lines.length; i++) {
+            if (i > 0) {
+              document.execCommand('insertParagraph', false);
+            }
+            document.execCommand('insertText', false, lines[i]);
+          }
+          await delay(400);
+
+          const afterExec = (editor.innerText || editor.textContent || '').trim();
+          if (afterExec.length > 0) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法4(insertText) 正文设置成功，长度:`, afterExec.length);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法4(insertText) 内容为空，尝试下一种方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法4(insertText) 失败:`, e.message);
+        }
+      }
+
+      // === 方法 5: 直接 DOM 操作（最终兜底）===
+      if (!contentSet) {
+        console.warn(`${LOG_PREFIX} ⚠️ 降级到方法5(直接 DOM 操作)，草稿可能无法自动保存`);
+        editor.innerHTML = '';
+        const lines = plain.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) {
+          editor.textContent = plain;
+        } else {
+          lines.forEach(line => {
+            const p = document.createElement('p');
+            p.textContent = line;
+            editor.appendChild(p);
+          });
+        }
+        editor.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertFromPaste',
+          data: plain
+        }));
+        editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+        // 对于直接 DOM 写入：只要 DOM 里已经有可见文本，就先视为“内容已写入”
+        // 这样后面的“关键补救”才会尝试把 ProseMirror state 同步回来
+        const afterDom = (editor.innerText || editor.textContent || '').trim();
+        if (afterDom.length > 0) {
+          contentSet = true;
+          console.log(`${LOG_PREFIX} ✅ 方法5(直接 DOM) 已写入内容，长度:`, afterDom.length);
+        } else {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法5(直接 DOM) 写入后仍为空`);
+        }
+      }
+
+      // === 关键补救：如果 DOM 有内容但 ProseMirror state 为空，强制 dispatch ===
+      // 这是 insertHTML/paste 等方法的常见问题——DOM 改了但 ProseMirror 不知道
+      // 注意：方法5(直接DOM)也会把 contentSet 标为 true（只代表“DOM 有内容”），因此这里必须做 state 同步
+      if (contentSet && !pmStateHasContent()) {
+        console.warn(`${LOG_PREFIX} ⚠️ DOM 有内容但 ProseMirror state 为空，强制 dispatch 补救`);
+        try {
+          const rescued = pmDispatchContent(plain);
+          await delay(300);
+          if (rescued && pmStateHasContent()) {
+            console.log(`${LOG_PREFIX} ✅ ProseMirror state 补救成功`);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ ProseMirror state 补救后仍为空，草稿保存可能失败`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ ProseMirror state 补救失败:`, e.message);
+        }
+      }
+
+      await delay(300);
+      const currentText = (editor.innerText || editor.textContent || '').trim();
+      if (!currentText) {
+        throw new Error('正文设置后仍为空');
+      }
+      console.log(`${LOG_PREFIX} ✅ 正文设置成功，长度:`, currentText.length);
+    }, 4, 1200);
   };
 
   const tryUploadCover = async (coverUrl, title) => {
     try {
-      pushStage('cover:start', { hasCoverUrl: !!coverUrl });
       console.log(`${LOG_PREFIX} 🖼️ 准备上传封面:`, coverUrl || '[使用兜底封面]');
       const getVisibleButtons = () => Array.from(document.querySelectorAll('button')).filter(btn => isVisibleElement(btn));
       const findVisibleButtonByTexts = (texts) => {
@@ -1256,7 +1160,6 @@
       }
       if (!fileInput) {
         console.log(`${LOG_PREFIX} ⚠️ 未找到封面上传 input，跳过封面上传`);
-        pushStage('cover:no-file-input');
         return;
       }
 
@@ -1265,7 +1168,6 @@
         : await createFallbackCoverFile(title);
       if (!file) {
         console.log(`${LOG_PREFIX} ⚠️ 封面文件为空，跳过`);
-        pushStage('cover:no-file');
         return;
       }
 
@@ -1315,17 +1217,13 @@
       const coverHint = findVisibleHintText([/封面.*不能为空/, /上传失败/, /格式不支持/]);
       if (!hasCoverPreview && coverHint) {
         console.warn(`${LOG_PREFIX} ⚠️ 封面上传后校验提示:`, coverHint, 'modalClosed=', modalClosed);
-        pushStage('cover:hint', { coverHint, modalClosed });
       } else if (!hasCoverPreview) {
         console.warn(`${LOG_PREFIX} ⚠️ 封面上传后未检测到预览，可能仍需人工确认裁剪`);
-        pushStage('cover:no-preview', { modalClosed });
       } else {
         console.log(`${LOG_PREFIX} ✅ 封面上传已触发`);
-        pushStage('cover:done', { modalClosed });
       }
     } catch (e) {
       console.warn(`${LOG_PREFIX} ⚠️ 封面上传失败（不阻断发布）:`, e.message || e);
-      pushStage('cover:error', { message: e.message || String(e) });
     }
   };
 
@@ -1361,7 +1259,6 @@
   };
 
   const waitForPublishResult = async (publishId, originalUrl, options = {}) => {
-    pushStage('publish-result:wait-start', { originalUrl });
     const start = Date.now();
     const timeout = 45000;
     const allowAutoConfirm = options.allowAutoConfirm !== false;
@@ -1374,19 +1271,16 @@
 
       if (window.location.href !== originalUrl) {
         console.log(`${LOG_PREFIX} ✅ 页面已跳转，视为提交成功`);
-        pushStage('publish-result:url-changed', { currentUrl: window.location.href });
         return { success: true, reason: 'url-changed', message: '' };
       }
 
       if (window.location.href.includes('/profile_v4/graphic/manage')) {
         console.log(`${LOG_PREFIX} ✅ 跳转到管理页，视为成功`);
-        pushStage('publish-result:manage-page');
         return { success: true, reason: 'manage-page', message: '' };
       }
 
       if (window.location.href.includes('/profile_v4/graphic/articles')) {
         console.log(`${LOG_PREFIX} ✅ 跳转到文章列表页，视为成功`);
-        pushStage('publish-result:articles-page');
         return { success: true, reason: 'articles-page', message: '' };
       }
 
@@ -1422,12 +1316,10 @@
         const isSuccess = SUCCESS_TOAST_KEYWORDS.some(k => toastText.includes(k));
         if (isSuccess) {
           console.log(`${LOG_PREFIX} ✅ 检测到成功提示:`, toastText);
-          pushStage('publish-result:toast-success', { toastText });
           return { success: true, reason: 'toast-success', message: toastText };
         }
         const isFailed = FAIL_TOAST_KEYWORDS.some(k => toastText.includes(k));
         if (isFailed) {
-          pushStage('publish-result:toast-failed', { toastText });
           return { success: false, reason: 'toast-failed', message: toastText };
         }
       }
@@ -1435,7 +1327,6 @@
       const currentKeyData = localStorage.getItem(getPublishSuccessKey());
       if (!currentKeyData) {
         console.log(`${LOG_PREFIX} ✅ 发布标记已被消费，视为成功`);
-        pushStage('publish-result:success-key-consumed');
         return { success: true, reason: 'success-key-consumed', message: '' };
       }
 
@@ -1457,7 +1348,6 @@
             if (secondClick.success) {
               submitAttempted = true;
               submitAttemptedAt = Date.now();
-              pushStage('publish-result:auto-confirm-clicked', { text: t });
               autoConfirmClicked = true;
               await delay(900);
             }
@@ -1466,11 +1356,10 @@
       }
     }
 
-    pushStage('publish-result:timeout', getQuickPageSnapshot());
     return { success: false, reason: 'timeout', message: lastToast || '发布超时，未检测到成功状态' };
   };
 
-  const publishApi = async (dataObj) => {
+  const publishArticle = async (dataObj) => {
     if (publishRunning) {
       console.log(`${LOG_PREFIX} ⚠️ 发布流程正在进行，跳过重复调用`);
       return;
@@ -1482,7 +1371,6 @@
 
     try {
       startErrorListener();
-      pushStage('publish:start');
       latestPublishApiFailure = null;
       latestPreSubmitPublishFailure = null;
       latestApiDiag = null;
@@ -1517,7 +1405,6 @@
         }
         return btn;
       }, 12, 1200);
-      pushStage('publish:button-ready', { text: (publishBtn.textContent || '').trim() });
 
       if (publishId) {
         try {
@@ -1536,16 +1423,10 @@
         throw new Error(clickResult.message || '点击发布按钮失败');
       }
       console.log(`${LOG_PREFIX} ✅ 已点击发布按钮`);
-      pushStage('publish:button-clicked', { text: (publishBtn.textContent || '').trim() });
 
       // 实测头条为“预览并发布”两步流：预览层稳定后再点确认，避免 7050 保存失败
       let secondConfirmed = false;
       const previewReady = await waitPreviewConfirmReady(15000);
-      pushStage('publish:preview-ready', {
-        ready: previewReady.ready,
-        hasConfirmBtn: !!previewReady.confirmBtn,
-        confirmText: (previewReady.confirmBtn?.textContent || '').trim()
-      });
       if (previewReady.confirmBtn && isButtonInteractive(previewReady.confirmBtn)) {
         const confirmText = (previewReady.confirmBtn.textContent || '').trim();
         if (!previewReady.ready) {
@@ -1561,22 +1442,18 @@
         submitAttempted = true;
         submitAttemptedAt = Date.now();
         console.log(`${LOG_PREFIX} ✅ 已点击二次确认按钮`);
-        pushStage('publish:secondary-confirm-clicked', { text: confirmText });
         secondConfirmed = true;
       }
       if (!secondConfirmed) {
         console.log(`${LOG_PREFIX} ℹ️ 未检测到可点击二次确认，进入结果等待阶段继续观察`);
-        pushStage('publish:no-secondary-confirm', getQuickPageSnapshot());
       }
 
       const result = await waitForPublishResult(publishId, originalUrl, {
         allowAutoConfirm: !secondConfirmed
       });
       if (!result.success) {
-        pushStage('publish:result-failed', result);
         throw new Error(result.message || '发布失败');
       }
-      pushStage('publish:result-success', result);
 
       hasProcessed = true;
       isProcessing = false;
@@ -1591,10 +1468,6 @@
       }
     } catch (error) {
       console.error(`${LOG_PREFIX} ❌ 发布失败:`, error);
-      pushStage('publish:error', {
-        message: error?.message || String(error),
-        snapshot: getQuickPageSnapshot()
-      });
       void dumpDebugToFile('publish-catch-error', {
         errorMessage: error?.message || String(error),
         latestDumpFilePath
@@ -1618,39 +1491,101 @@
     }
     fillFormRunning = true;
     try {
-      pushStage('fill-form:start');
       const rawTitle = dataObj?.video?.video?.title || dataObj?.element?.title || '';
       const intro = dataObj?.video?.video?.intro || dataObj?.element?.intro || '';
-      const rawContent = dataObj?.video?.video?.content || dataObj?.element?.content || intro || '';
-
-      if (!String(rawTitle || '').trim()) {
-        throw new Error('缺少标题');
-      }
-      if (!String(rawContent || '').trim()) {
-        throw new Error('缺少正文');
-      }
-
+      const rawContent = dataObj?.video?.video?.content || dataObj?.element?.content || intro;
       const title = normalizeTitleForPublish(rawTitle);
       const content = normalizeContentForPublish(rawContent, intro, title);
       const cover = dataObj?.video?.video?.cover || dataObj?.element?.image || '';
       const sendSet = dataObj?.video?.formData?.send_set ?? dataObj?.element?.formData?.send_set ?? 1;
       const sendTime = dataObj?.video?.formData?.send_time || dataObj?.video?.dyPlatform?.send_time || dataObj?.element?.formData?.send_time || '';
 
+      // 在填写前重置草稿追踪状态，这样填写期间平台自动保存的草稿能被正确记录
+      latestDraftSaveSuccessAt = 0;
+      latestDraftSavePgcId = '0';
+
       await delay(1500);
       await fillTitle(title);
       await fillContent(content, intro);
       await tryUploadCover(cover, title);
       await trySetSchedule(sendSet, sendTime);
-      // 给平台自动存草稿留出稳定窗口，避免立即提交触发 7050
-      await delay(1200);
-      pushStage('fill-form:before-publish');
-      await publishApi(dataObj);
+
+      // 检查填写期间平台是否已经自动保存了草稿（ProseMirror dispatch 会立刻触发平台的自动保存）
+      let draftSaved = latestDraftSaveSuccessAt > 0 && latestDraftSavePgcId !== '0';
+      if (draftSaved) {
+        console.log(`${LOG_PREFIX} ✅ 填写期间平台已自动保存草稿，pgc_id: ${latestDraftSavePgcId}`);
+      } else {
+        // 触发编辑器 blur，促使平台自动保存草稿
+        const editorForBlur = findVisibleEditable();
+        if (editorForBlur) {
+          editorForBlur.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+          console.log(`${LOG_PREFIX} 📤 已触发编辑器 blur，等待平台自动保存草稿...`);
+        }
+
+        // 等待草稿保存成功（监控 /mp/agw/draft/save_ugc_draft 响应）
+        draftSaved = await waitForDraftSave(12000);
+      }
+      if (!draftSaved) {
+        // 二次尝试：通过 ProseMirror dispatch 制造一次真实的 state 变更来强制触发保存
+        console.log(`${LOG_PREFIX} 🔄 草稿未保存，尝试 ProseMirror state 变更触发保存...`);
+        const editorRetry = findVisibleEditable();
+        if (editorRetry) {
+          try {
+            const pmNode = editorRetry.closest('.ProseMirror') || editorRetry;
+            const view = pmNode.pmViewDesc?.view;
+            if (view) {
+              // 在末尾插入空格再撤销，ProseMirror 会检测到 state 变化并触发保存
+              const { state } = view;
+              const endPos = state.doc.content.size;
+              const trInsert = state.tr.insertText(' ', endPos);
+              view.dispatch(trInsert);
+              await delay(200);
+              const trUndo = view.state.tr.delete(view.state.doc.content.size - 1, view.state.doc.content.size);
+              view.dispatch(trUndo);
+              await delay(300);
+              editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            } else {
+              // fallback: 用 execCommand
+              editorRetry.focus();
+              document.execCommand('insertText', false, ' ');
+              await delay(200);
+              document.execCommand('undo', false);
+              await delay(300);
+              editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            }
+          } catch (e) {
+            console.warn(`${LOG_PREFIX} ⚠️ ProseMirror 变更触发失败:`, e.message);
+            editorRetry.focus();
+            document.execCommand('insertText', false, ' ');
+            await delay(200);
+            document.execCommand('undo', false);
+            await delay(300);
+            editorRetry.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+          }
+        }
+        draftSaved = await waitForDraftSave(10000);
+      }
+      if (!draftSaved) {
+        // 第三次尝试：焦点切换
+        console.log(`${LOG_PREFIX} 🔄 草稿仍未保存，尝试焦点切换触发保存...`);
+        const titleInput = findTitleInput();
+        if (titleInput) {
+          titleInput.focus();
+          await delay(300);
+          titleInput.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+        }
+        draftSaved = await waitForDraftSave(8000);
+      }
+
+      if (!draftSaved) {
+        const errMsg = `草稿保存失败（pgc_id=${latestDraftSavePgcId}），无法继续发布。正文内容可能未被编辑器正确识别`;
+        console.error(`${LOG_PREFIX} ❌ ${errMsg}`);
+        throw new Error(errMsg);
+      }
+
+      await publishArticle(dataObj);
     } catch (e) {
       console.error(`${LOG_PREFIX} ❌ 填写表单失败:`, e);
-      pushStage('fill-form:error', {
-        message: e?.message || String(e),
-        snapshot: getQuickPageSnapshot()
-      });
       const publishId = dataObj?.video?.dyPlatform?.id;
       if (publishId && typeof sendStatisticsError === 'function') {
         await sendStatisticsError(publishId, e.message || '填写表单失败', '头条发布', e);
@@ -1661,7 +1596,99 @@
     }
   }
 
-  // ═══ 7. 检查是否是恢复 cookies 后的刷新 ═══
+  console.log('═══════════════════════════════════════');
+  console.log('✅ 头条发布脚本已注入');
+  console.log('📍 当前 URL:', window.location.href);
+  console.log('🕐 注入时间:', new Date().toLocaleString());
+  console.log('═══════════════════════════════════════');
+
+  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
+    console.error(`${LOG_PREFIX} ❌ common.js 未加载！脚本可能无法正常工作`);
+  } else {
+    console.log(`${LOG_PREFIX} ✅ common.js 已加载，工具函数可用`);
+  }
+
+  console.log(`${LOG_PREFIX} 注册消息监听器...`);
+
+  if (!window.browserAPI) {
+    console.error(`${LOG_PREFIX} ❌ browserAPI 不可用！`);
+  } else if (!window.browserAPI.onMessageFromHome) {
+    console.error(`${LOG_PREFIX} ❌ browserAPI.onMessageFromHome 不可用！`);
+  } else {
+    window.browserAPI.onMessageFromHome(async (message) => {
+      console.log('═══════════════════════════════════════');
+      console.log(`${LOG_PREFIX} 🎉 收到来自父窗口的消息!`);
+      console.log(`${LOG_PREFIX} 消息.type:`, message?.type);
+      console.log(`${LOG_PREFIX} 消息.windowId:`, message?.windowId);
+      console.log('═══════════════════════════════════════');
+
+      if (message.type !== 'publish-data') return;
+
+      const messageData = parseMessageData(message.data, LOG_PREFIX);
+      if (!messageData) return;
+
+      const isMatch = await checkWindowIdMatch(message, LOG_PREFIX);
+      if (!isMatch) return;
+
+      const needReload = await restoreSessionAndReload(messageData, LOG_PREFIX);
+      if (needReload) return;
+
+      receivedMessageData = messageData;
+      console.log(`${LOG_PREFIX} 💾 已保存收到的消息数据到 receivedMessageData`);
+
+      if (isProcessing) {
+        console.warn(`${LOG_PREFIX} ⚠️ 正在处理中，忽略重复消息`);
+        return;
+      }
+      if (hasProcessed) {
+        console.warn(`${LOG_PREFIX} ⚠️ 已经处理过，忽略重复消息`);
+        return;
+      }
+
+      isProcessing = true;
+      try {
+        window.__AUTH_DATA__ = {
+          ...window.__AUTH_DATA__,
+          message: messageData,
+          receivedAt: Date.now()
+        };
+        await retryOperation(async () => fillFormData(messageData), 3, 2000);
+      } catch (e) {
+        console.error(`${LOG_PREFIX} ❌ 执行发布流程失败:`, e);
+      } finally {
+        isProcessing = false;
+      }
+    });
+
+    console.log(`${LOG_PREFIX} ✅ 消息监听器注册成功`);
+  }
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const companyId = await window.browserAPI.getGlobalData('company_id');
+  const transferId = urlParams.get('transfer_id');
+
+  try {
+    currentWindowId = await window.browserAPI.getWindowId();
+    console.log(`${LOG_PREFIX} 当前窗口 ID:`, currentWindowId);
+  } catch (e) {
+    console.error(`${LOG_PREFIX} ❌ 获取窗口 ID 失败:`, e);
+  }
+
+  window.__AUTH_DATA__ = {
+    companyId,
+    transferId,
+    timestamp: Date.now()
+  };
+
+  window.__TOUTIAO_PUBLISH_AUTH__ = {
+    notifySuccess: () => sendMessageToParent('发布成功'),
+    sendMessage: (message) => sendMessageToParent(message),
+    getAuthData: () => window.__AUTH_DATA__
+  };
+
+  console.log(`${LOG_PREFIX} 页面加载完成，发送 页面加载完成 消息`);
+  sendMessageToParent('页面加载完成');
+
   await (async () => {
     if (isProcessing || hasProcessed) return;
     try {

@@ -15,80 +15,16 @@ let scriptManager;
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
+const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
-
-// 使用与 Electron 内核版本一致的标准 Chrome UA，避免 sec-ch-ua 与 UA 主版本不一致触发风控
-function buildStandardUserAgent() {
-  const chromeVersion = process.versions.chrome || '106.0.0.0';
-  const major = String(chromeVersion).split('.')[0] || '106';
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
-}
-const STANDARD_USER_AGENT = buildStandardUserAgent();
-const STANDARD_CHROME_MAJOR = String((process.versions.chrome || '106.0.0.0').split('.')[0] || '106');
-const STANDARD_SEC_CH_UA = `"Not_A Brand";v="8", "Chromium";v="${STANDARD_CHROME_MAJOR}", "Google Chrome";v="${STANDARD_CHROME_MAJOR}"`;
-const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
-
-function isFirstPartyHost(hostname = '') {
-  const host = String(hostname || '').toLowerCase();
-  if (!host) return false;
-  return host === 'localhost' ||
-         host === '127.0.0.1' ||
-         host === '172.16.6.17' ||
-         host === 'china9.cn' ||
-         host.endsWith('.china9.cn');
-}
-
-function isFirstPartyUrl(rawUrl = '') {
-  try {
-    const parsed = new URL(rawUrl);
-    return isFirstPartyHost(parsed.hostname);
-  } catch (_) {
-    return false;
-  }
-}
-
-function isByteDanceHost(hostname = '') {
-  const host = String(hostname || '').toLowerCase();
-  if (!host) return false;
-  return host.endsWith('.toutiao.com') ||
-         host === 'toutiao.com' ||
-         host.endsWith('.toutiaostatic.com') ||
-         host === 'toutiaostatic.com' ||
-         host.endsWith('.bytedance.com') ||
-         host === 'bytedance.com' ||
-         host.endsWith('.snssdk.com') ||
-         host === 'snssdk.com' ||
-         host.endsWith('.zijieapi.com') ||
-         host === 'zijieapi.com' ||
-         host.endsWith('.bytegoofy.com') ||
-         host === 'bytegoofy.com' ||
-         host.endsWith('.bytetos.com') ||
-         host === 'bytetos.com' ||
-         host.endsWith('.yhgfb-cn-static.com') ||
-         host === 'yhgfb-cn-static.com';
-}
-
-function isByteDanceUrl(rawUrl = '') {
-  try {
-    const parsed = new URL(rawUrl);
-    return isByteDanceHost(parsed.hostname);
-  } catch (_) {
-    return false;
-  }
-}
-
-function setHeaderCaseInsensitive(headers, key, value) {
-  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase()) || key;
-  headers[targetKey] = value;
-}
-
-function removeHeaderCaseInsensitive(headers, key) {
-  const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase());
-  if (targetKey) {
-    delete headers[targetKey];
-  }
-}
+let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isShowingSessionExpiredDialog = false;
+let isShowingPageErrorDialog = false;
+let lastPageErrorDialogAt = 0;
+let blankScreenConsecutive = 0;
+const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
+const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -121,82 +57,6 @@ function saveGlobalStorage() {
   } catch (err) {
     console.error('[Global Storage] ❌ 保存数据失败:', err);
   }
-}
-
-// 登录过期提示防抖，避免多处导航事件重复弹窗
-let lastTokenExpiredNoticeAt = 0;
-function showTokenExpiredNotice(source = 'unknown', expiresAt) {
-  const nowMs = Date.now();
-  if (nowMs - lastTokenExpiredNoticeAt < 10 * 1000) {
-    return;
-  }
-  lastTokenExpiredNoticeAt = nowMs;
-
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
-  }
-
-  const expireText = expiresAt
-    ? new Date(expiresAt * 1000).toLocaleString()
-    : '未知';
-
-  dialog.showMessageBox(mainWindow, {
-    type: 'warning',
-    title: '登录已过期',
-    message: '登录状态已过期，请重新登录',
-    detail: `检测来源: ${source}\n过期时间: ${expireText}`,
-    buttons: ['确定'],
-    defaultId: 0,
-    noLink: true
-  }).catch(err => {
-    console.error('[Auth Notice] 显示登录过期提示失败:', err);
-  });
-}
-
-function isLikelyLoginUrl(url = '') {
-  if (!url || typeof url !== 'string') return false;
-  const lower = url.toLowerCase();
-  return lower.includes('/login') ||
-         lower.includes('#/login') ||
-         lower.includes('passport.') ||
-         lower.includes('/passport') ||
-         lower.includes('signin') ||
-         lower.includes('sign-in') ||
-         lower.includes('/sso') ||
-         lower.includes('/oauth') ||
-         lower.includes('qrlogin') ||
-         lower.includes('/account/login');
-}
-
-function isLikelyPublishUrl(url = '') {
-  if (!url || typeof url !== 'string') return false;
-  const lower = url.toLowerCase();
-  return lower.includes('/publish') ||
-         lower.includes('/edit') ||
-         lower.includes('/editor') ||
-         lower.includes('/create') ||
-         lower.includes('/write') ||
-         lower.includes('/article') ||
-         lower.includes('/contentmanagement/news/addarticle') ||
-         lower.includes('/article-publish');
-}
-
-function showPublishLoginRedirectNotice(targetWindow, payload = {}) {
-  const { platform = 'unknown', expectedUrl = '', actualUrl = '' } = payload;
-  const ownerWindow = targetWindow && !targetWindow.isDestroyed() ? targetWindow : mainWindow;
-  if (!ownerWindow || ownerWindow.isDestroyed()) return;
-
-  dialog.showMessageBox(ownerWindow, {
-    type: 'warning',
-    title: '发布窗口登录状态异常',
-    message: '检测到发布窗口已跳转，可能登录状态失效',
-    detail: `平台: ${platform}\n请在该平台窗口重新登录后重试发布。\n\n预期地址: ${expectedUrl}\n实际地址: ${actualUrl}`,
-    buttons: ['确定'],
-    defaultId: 0,
-    noLink: true
-  }).catch(err => {
-    console.error('[Publish Auth Notice] 显示提示失败:', err);
-  });
 }
 
 // 检测是否为便携版（通过检查是否在标准安装目录）
@@ -247,6 +107,112 @@ function loadLocalPage(webContents, pageName) {
   return webContents.loadFile(filePath);
 }
 
+function shouldShowPageErrorDialog() {
+  const now = Date.now();
+  if (now - lastPageErrorDialogAt < 15000) return false;
+  lastPageErrorDialogAt = now;
+  return true;
+}
+
+async function showSessionExpiredDialog(source) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (isShowingSessionExpiredDialog) return;
+  isShowingSessionExpiredDialog = true;
+  try {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: '登录已过期',
+      message: '登录已过期，请重新登录。',
+      detail: source ? `来源：${source}` : undefined,
+      buttons: ['回到登录页'],
+      defaultId: 0,
+      noLink: true
+    });
+  } finally {
+    isShowingSessionExpiredDialog = false;
+  }
+}
+
+async function showPageErrorDialog({ title, message, detail, buttons }) {
+  if (!mainWindow || mainWindow.isDestroyed()) return { response: 2 };
+  if (isShowingPageErrorDialog) return { response: 2 };
+  if (!shouldShowPageErrorDialog()) return { response: 2 };
+  isShowingPageErrorDialog = true;
+  try {
+    return await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title,
+      message,
+      detail,
+      buttons: buttons || ['重新加载', '回到登录页', '关闭'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    });
+  } finally {
+    isShowingPageErrorDialog = false;
+  }
+}
+
+async function navigateToLoginInternal(reason) {
+  if (!browserView || browserView.webContents.isDestroyed()) return;
+  console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
+
+  // 🔑 退出登录时清除所有登录相关数据
+  console.log('[Main] 清除退出登录数据...');
+
+  // 1. 清除 globalStorage 中的登录数据
+  delete globalStorage.last_page_url;
+  delete globalStorage.login_token;
+  delete globalStorage.login_expires;
+  delete globalStorage.login_gcc;
+  delete globalStorage.company_id;
+  delete globalStorage.user_info;
+  delete globalStorage.siteInfo;
+  delete globalStorage.current_site;
+  delete globalStorage.current_site_id;
+  delete globalStorage.current_site_name;
+  saveGlobalStorage();
+  console.log('[Main] ✅ 已清除 globalStorage 数据');
+
+  // 2. 清除 Cookies（token, access_token, site_id 等）
+  try {
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+    console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+    // 需要清除的 cookie 名称列表
+    const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+    let deletedCount = 0;
+    for (const cookie of cookies) {
+      if (cookiesToClear.includes(cookie.name)) {
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+        try {
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          deletedCount++;
+          console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+        } catch (err) {
+          console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+        }
+      }
+    }
+
+    // 也清除 localhost 的 cookies
+    await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+    await ses.flushStorageData();
+    console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+  } catch (err) {
+    console.error('[Main] ❌ 清除 cookies 失败:', err);
+  }
+
+  loadLocalPage(browserView.webContents, 'login.html');
+}
+
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
 // 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
 function addContentTypeFix(targetSession, label) {
@@ -280,116 +246,6 @@ function addContentTypeFix(targetSession, label) {
     callback({ responseHeaders });
   });
   console.log(`[Session] ✅ ${label} Content-Type 修复 + Set-Cookie SameSite 修复拦截器已添加`);
-}
-
-// 请求头身份策略：
-// 1) 自有域名：保留 zh.Cloud-browse 标记 + 专用识别头（便于后台识别）
-// 2) 第三方域名：强制标准 UA，避免风控把 UA 与 sec-ch-ua 判为异常
-function addIdentityHeaderPolicy(targetSession, label) {
-  // Electron 21 = Chromium 106（2022 年版本），部分平台已拒绝过旧的浏览器
-  // 为第三方域名请求伪装成更新的 Chrome 版本，避免被风控拒绝
-  const SPOOF_CHROME_VERSION = '120';
-  const SPOOFED_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${SPOOF_CHROME_VERSION}.0.0.0 Safari/537.36`;
-  const SPOOFED_SEC_CH_UA = `"Not_A Brand";v="8", "Chromium";v="${SPOOF_CHROME_VERSION}", "Google Chrome";v="${SPOOF_CHROME_VERSION}"`;
-
-  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const headers = details.requestHeaders || {};
-    if (isFirstPartyUrl(details.url)) {
-      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse', '1');
-      setHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version', APP_VERSION);
-    } else {
-      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse');
-      removeHeaderCaseInsensitive(headers, 'X-Cloud-Browse-Version');
-      if (isByteDanceUrl(details.url)) {
-        // 头条/字节系对客户端指纹更敏感，保持 JS 层与网络层一致，避免“页面看到 106，请求报 120”。
-        setHeaderCaseInsensitive(headers, 'User-Agent', STANDARD_USER_AGENT);
-        setHeaderCaseInsensitive(headers, 'sec-ch-ua', STANDARD_SEC_CH_UA);
-      } else {
-        // 其他第三方站点继续维持较新的 Chrome 指纹，降低旧 Chromium 被拦截概率。
-        setHeaderCaseInsensitive(headers, 'User-Agent', SPOOFED_USER_AGENT);
-        setHeaderCaseInsensitive(headers, 'sec-ch-ua', SPOOFED_SEC_CH_UA);
-      }
-    }
-
-    // 🔍 [临时诊断] Toutiao publish/draft API 请求头捕获
-    const url = details.url || '';
-    if (url.includes('/mp/agw/article/publish') || url.includes('/mp/agw/draft/')) {
-      const cookieHeader = headers['Cookie'] || headers['cookie'] || '';
-      const cookieNames = cookieHeader.split(';').map(c => (c.split('=')[0] || '').trim()).filter(Boolean);
-      const importantCookies = ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss', 'ttwid', 'csrf_session_id', 's_v_web_id', 'msToken'];
-
-      console.log('╔══════════════════════════════════════════════════════════╗');
-      console.log('║ [Toutiao API 诊断] 拦截到 publish/draft 请求            ║');
-      console.log('╚══════════════════════════════════════════════════════════╝');
-      console.log('[Toutiao API] URL:', url.slice(0, 120));
-      console.log('[Toutiao API] Method:', details.method);
-      console.log('[Toutiao API] User-Agent:', headers['User-Agent'] || '[无]');
-      console.log('[Toutiao API] sec-ch-ua:', headers['sec-ch-ua'] || '[无]');
-      console.log('[Toutiao API] x-secsdk-csrf-token:', headers['x-secsdk-csrf-token'] || '[无]');
-      console.log('[Toutiao API] tt-anti-token:', (headers['tt-anti-token'] || '[无]').slice(0, 30));
-      console.log('[Toutiao API] Cookie 数量:', cookieNames.length);
-      importantCookies.forEach(name => {
-        const found = cookieHeader.split(';').find(c => c.trim().startsWith(name + '='));
-        console.log(found ? `  ✅ ${name}` : `  ❌ ${name} = [缺失!]`);
-      });
-
-      // 保存到文件（包含完整 header 值）
-      const fs = require('fs');
-      const path = require('path');
-      const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
-      try {
-        if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
-        const dumpFile = path.join(dumpDir, `toutiao-api-headers-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-        const headersSafe = {};
-        for (const [k, v] of Object.entries(headers)) {
-          if (k.toLowerCase() === 'cookie') {
-            headersSafe[k] = `[${cookieNames.length}个] ${cookieNames.join(', ')}`;
-          } else {
-            headersSafe[k] = v;
-          }
-        }
-        fs.writeFileSync(dumpFile, JSON.stringify({
-          url: url,
-          method: details.method,
-          headers: headersSafe,
-          cookieNames,
-          importantCookieStatus: Object.fromEntries(importantCookies.map(name => {
-            const found = cookieHeader.split(';').find(c => c.trim().startsWith(name + '='));
-            return [name, found ? 'present' : 'MISSING'];
-          })),
-          fullCookieLength: cookieHeader.length,
-          timestamp: new Date().toISOString()
-        }, null, 2));
-        console.log('[Toutiao API] 📁 请求头已保存到:', dumpFile);
-      } catch (e) {
-        console.error('[Toutiao API] 保存失败:', e.message);
-      }
-    }
-
-    callback({ requestHeaders: headers });
-  });
-  console.log(`[Session] ✅ ${label} 身份头策略已添加（自有域名带标记，第三方标准 UA）`);
-}
-
-function handleSpecialSessionRequest(details, callback, label) {
-  const requestUrl = details.url || '';
-  const lowerUrl = requestUrl.toLowerCase();
-
-  if (lowerUrl.startsWith('bitbrowser:')) {
-    console.log(`[${label}] ❌ Blocked bitbrowser protocol:`, requestUrl);
-    callback({ cancel: true });
-    return true;
-  }
-
-  const isToutiaoMainFrame = details.resourceType === 'mainFrame' &&
-    (lowerUrl.includes('toutiao.com') || lowerUrl.includes('toutiaostatic.com'));
-  if (isToutiaoMainFrame) {
-    console.log(`[${label}] ⏩ Toutiao 主框架请求 - 保留 IndexedDB`);
-    callback({});
-    return true;
-  }
-
-  return false;
 }
 
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
@@ -523,7 +379,11 @@ function getVersionCheckUrl() {
         const urlObj = new URL(currentUrl);
         if (isDevHost(urlObj.host)) {
           console.log('[Update] 检测到开发环境:', urlObj.host);
-          return 'http://localhost:5173/browserVersion.json';
+          if (useLocalDevServer) {
+            console.log('[Update] 使用本地版本文件: http://localhost:5173/browserVersion.json');
+            return 'http://localhost:5173/browserVersion.json';
+          }
+          return config.domains.versionCheckUrl;
         } else {
           console.log('[Update] 检测到生产环境:', urlObj.host);
           return config.domains.versionCheckUrl;
@@ -703,7 +563,7 @@ async function fetchSiteInfo() {
 
   const apiBaseUrl = config.domains.geoPage;
   const requestUrl = `${apiBaseUrl}/newapi/site/info?company_unique_id=${companyUniqueId}`;
-  geoLog('🌐 请求: ' + requestUrl + ' (ENV=' + config.ENV + ')');
+  geoLog('🌐 请求: ' + requestUrl + ' (ENV=' + (config.CURRENT_ENV || config.ENV) + ')');
 
   // 使用 Electron net 模块发请求（走 Chromium 网络栈，与普通浏览器行为一致）
   // 手动从 persist:browserview session 获取 cookies 并附加到请求头
@@ -1002,7 +862,11 @@ function createWindow() {
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
   persistentSession.webRequest.onBeforeRequest((details, callback) => {
-    if (handleSpecialSessionRequest(details, callback, 'WebRequest')) {
+    const url = details.url;
+    // 检测非标准协议
+    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+      console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
+      callback({ cancel: true });
       return;
     }
     callback({});
@@ -1011,7 +875,6 @@ function createWindow() {
 
   // 🔴 修复外部页面 CSS/JS 乱码
   addContentTypeFix(persistentSession, '持久化 session');
-  addIdentityHeaderPolicy(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -1024,9 +887,10 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 主窗口保持带标记 UA，供自有系统识别浏览器来源
-  persistentSession.setUserAgent(TAGGED_USER_AGENT);
-  console.log('User-Agent set to:', TAGGED_USER_AGENT);
+  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  persistentSession.setUserAgent(customUA);
+  console.log('User-Agent set to:', customUA);
 
   // 监听下载事件
   persistentSession.on('will-download', (event, item, webContents) => {
@@ -1109,24 +973,46 @@ function createWindow() {
     console.error('[BrowserView] ❌ 渲染进程已退出！');
     console.error('[BrowserView] 退出原因:', details.reason);
     console.error('[BrowserView] 退出码:', details.exitCode);
-    // 尝试重新加载
     if (details.reason !== 'killed') {
-      console.log('[BrowserView] 🔄 尝试重新加载页面...');
-      setTimeout(() => {
-        if (browserView && !browserView.webContents.isDestroyed()) {
-          loadLocalPage(browserView.webContents, 'login.html').catch(err => {
+      (async () => {
+        const result = await showPageErrorDialog({
+          title: '页面异常',
+          message: '页面渲染进程异常退出，是否尝试恢复？',
+          detail: `原因: ${details.reason} 退出码: ${details.exitCode}`
+        });
+        if (result.response === 0) {
+          try {
+            browserView.webContents.reload();
+          } catch (err) {
             console.error('[BrowserView] ❌ 重新加载失败:', err);
-          });
+          }
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('render_process_gone');
         }
-      }, 1000);
+      })();
     }
   });
 
-  browserView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+  browserView.webContents.on('did-fail-load', async (event, errorCode, errorDescription, validatedURL) => {
     console.error('[BrowserView] ❌ 页面加载失败！');
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
     console.error('[BrowserView] 失败 URL:', validatedURL);
+    if (errorCode === -3) return; // 忽略导航中止
+    const result = await showPageErrorDialog({
+      title: '页面加载失败',
+      message: '页面加载失败，是否重试？',
+      detail: `错误码: ${errorCode} 描述: ${errorDescription}`
+    });
+    if (result.response === 0) {
+      try {
+        browserView.webContents.reload();
+      } catch (err) {
+        console.error('[BrowserView] ❌ 重试加载失败:', err);
+      }
+    } else if (result.response === 1) {
+      await navigateToLoginInternal('did_fail_load');
+    }
   });
 
   browserView.webContents.on('unresponsive', () => {
@@ -1139,6 +1025,45 @@ function createWindow() {
 
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
+
+  const blankCheckInterval = setInterval(async () => {
+    if (!browserView || browserView.webContents.isDestroyed()) return;
+    if (browserView.webContents.isLoading()) return;
+    const currentUrl = browserView.webContents.getURL();
+    if (!currentUrl || currentUrl === 'about:blank') return;
+
+    try {
+      const bodyHTML = await browserView.webContents.executeJavaScript(
+        'document.body ? document.body.innerHTML.trim().length : 0',
+        true
+      );
+      if (bodyHTML === 0) {
+        blankScreenConsecutive += 1;
+      } else {
+        blankScreenConsecutive = 0;
+      }
+
+      if (blankScreenConsecutive >= BLANK_SCREEN_CONSECUTIVE_THRESHOLD) {
+        blankScreenConsecutive = 0;
+        const result = await showPageErrorDialog({
+          title: '页面可能空白',
+          message: '检测到页面可能空白，是否刷新？',
+          detail: `URL: ${currentUrl}`
+        });
+        if (result.response === 0) {
+          browserView.webContents.reload();
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('blank_screen_check');
+        }
+      }
+    } catch (err) {
+      console.warn('[BrowserView] ⚠️ 白屏检测执行失败:', err.message);
+    }
+  }, BLANK_SCREEN_CHECK_INTERVAL);
+
+  mainWindow.on('closed', () => {
+    clearInterval(blankCheckInterval);
+  });
 
   // 监听窗口大小变化
   mainWindow.on('resize', () => {
@@ -1295,12 +1220,12 @@ function createWindow() {
       console.log('[BrowserView] 没有有效的登录 token，显示登录页');
       if (savedToken && savedExpires) {
         console.log('[BrowserView] Token 已过期，过期时间:', new Date(savedExpires * 1000).toLocaleString());
-        showTokenExpiredNotice('startup-check', savedExpires);
         // 清除过期的 token
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
+        await showSessionExpiredDialog('启动校验');
       }
     }
 
@@ -1335,9 +1260,16 @@ function createWindow() {
             );
             if (bodyHTML === 0) {
               console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
-              loadLocalPage(browserView.webContents, 'login.html').catch(err => {
-                console.error('[BrowserView] ❌ 白屏恢复重载失败:', err);
+              const result = await showPageErrorDialog({
+                title: '页面可能空白',
+                message: '检测到页面可能空白，是否刷新？',
+                detail: '启动后白屏检测触发'
               });
+              if (result.response === 0) {
+                browserView.webContents.reload();
+              } else if (result.response === 1) {
+                await navigateToLoginInternal('blank_screen_startup');
+              }
             } else {
               console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
             }
@@ -1678,7 +1610,9 @@ function createWindow() {
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
-    const isThirdPartyAuth = config.isThirdPartyUrl(url);
+    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
+                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
+                             url.includes('channels.weixin.qq.com');
 
     if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
       try {
@@ -1735,7 +1669,9 @@ function createWindow() {
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
-    const isThirdPartyAuth = config.isThirdPartyUrl(url);
+    const isThirdPartyAuth = url.includes('douyin.com') || url.includes('xiaohongshu.com') ||
+                             url.includes('baidu.com') || url.includes('weixin.qq.com') ||
+                             url.includes('channels.weixin.qq.com');
 
     if (shouldCheckAuth && !isLoginPage && !isLocalFile && !isThirdPartyAuth) {
       try {
@@ -1849,24 +1785,20 @@ function createWindow() {
 
     // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = config.isOwnPlatformUrl(url);
+    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
-      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (isTokenExpired) {
-          showTokenExpiredNotice('did-navigate-in-page', savedExpires);
+        if (!isHandlingExpiredToken) {
+          isHandlingExpiredToken = true;
+          await showSessionExpiredDialog('页面内跳转');
+          await navigateToLoginInternal('token_expired_in_page');
+          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
         }
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
@@ -1918,24 +1850,20 @@ function createWindow() {
 
     // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = config.isOwnPlatformUrl(url);
+    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
-      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (isTokenExpired) {
-          showTokenExpiredNotice('did-navigate', savedExpires);
+        if (!isHandlingExpiredToken) {
+          isHandlingExpiredToken = true;
+          await showSessionExpiredDialog('页面导航');
+          await navigateToLoginInternal('token_expired_navigate');
+          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
         }
-        // 清除过期数据
-        delete globalStorage.login_token;
-        delete globalStorage.login_expires;
-        delete globalStorage.login_gcc;
-        saveGlobalStorage();
-        loadLocalPage(browserView.webContents, 'login.html');
         return;
       }
     }
@@ -2031,14 +1959,6 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
-
-    // 子窗口统一使用标准 UA，避免第三方平台风控将其识别为改写浏览器
-    try {
-      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-      console.log('[Window Created] 子窗口 User-Agent 已设为标准 UA');
-    } catch (e) {
-      console.warn('[Window Created] 设置子窗口 User-Agent 失败:', e?.message || e);
-    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -2845,7 +2765,7 @@ app.on('window-all-closed', function () {
 // 🔑 获取域名配置（供渲染进程使用）
 ipcMain.handle('get-domain-config', () => {
   return {
-    ENV: config.ENV,
+    ENV: config.CURRENT_ENV || config.ENV,
     isProduction: isProduction,
     domains: config.domains,
     // 便捷 URL（根据 ENV 配置）
@@ -2896,32 +2816,60 @@ ipcMain.handle('check-session-status', async () => {
     const ses = browserView.webContents.session;
     const cookies = await ses.cookies.get({});
 
-    // 动态检查所有平台的登录凭证（基于 domain-config.js 配置）
-    const platformStatus = {};
+    // 检查特定平台的登录凭证 cookies（不只是数量，而是关键的登录 cookie）
+    const douyinCookies = cookies.filter(c => c.domain.includes('douyin.com'));
+    const xiaohongshuCookies = cookies.filter(c => c.domain.includes('xiaohongshu.com'));
+    const weixinCookies = cookies.filter(c => c.domain.includes('weixin.qq.com'));
+    const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
 
-    Object.entries(config.platformDomains).forEach(([platform, domains]) => {
-      const platformCookies = cookies.filter(c =>
-        domains.some(domain => c.domain.includes(domain))
-      );
+    // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
+    // 扩大检测范围，避免漏检
+    const douyinLoggedIn = douyinCookies.some(c =>
+      c.name === 'sessionid' ||
+      c.name === 'sessionid_ss' ||
+      c.name === 'passport_csrf_token' ||
+      c.name === 'sid_guard' ||
+      c.name === 'uid_tt' ||
+      c.name === 'uid_tt_ss' ||
+      c.name === 'ttwid' ||
+      c.name === 'passport_auth_status'
+    );
 
-      // 获取该平台的关键登录 Cookie 名称
-      const loginCookieNames = config.platformLoginCookies[platform] || [];
-      const isLoggedIn = platformCookies.some(c =>
-        loginCookieNames.includes(c.name)
-      );
+    const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
+      c.name === 'web_session' ||
+      c.name === 'websectiga' ||
+      c.name === 'sec_poison_id' ||
+      c.name === 'a1' ||
+      c.name === 'webId'
+    );
 
-      platformStatus[platform] = {
-        count: platformCookies.length,
-        loggedIn: isLoggedIn
-      };
-    });
+    const weixinLoggedIn = weixinCookies.some(c =>
+      c.name === 'wxuin' ||
+      c.name === 'pass_ticket' ||
+      c.name === 'slave_user' ||
+      c.name === 'slave_sid'
+    );
+
+    const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
+      c.name === 'BDUSS' ||
+      c.name === 'STOKEN' ||
+      c.name === 'BAIDUID' ||
+      c.name === 'BIDUPSID'
+    );
+
+    const platformStatus = {
+      douyin: { count: douyinCookies.length, loggedIn: douyinLoggedIn },
+      xiaohongshu: { count: xiaohongshuCookies.length, loggedIn: xiaohongshuLoggedIn },
+      weixin: { count: weixinCookies.length, loggedIn: weixinLoggedIn },
+      baijiahao: { count: baijiahaoCookies.length, loggedIn: baijiahaoLoggedIn }
+    };
 
     console.log('[Session Check] Cookie 统计:', {
       total: cookies.length,
-      platforms: Object.entries(platformStatus).reduce((acc, [platform, status]) => {
-        acc[platform] = `${status.count} cookies, loggedIn: ${status.loggedIn}`;
-        return acc;
-      }, {})
+      douyin: `${douyinCookies.length} cookies, loggedIn: ${douyinLoggedIn}`,
+      xiaohongshu: `${xiaohongshuCookies.length} cookies, loggedIn: ${xiaohongshuLoggedIn}`,
+      weixin: `${weixinCookies.length} cookies, loggedIn: ${weixinLoggedIn}`,
+      baijiahao: `${baijiahaoCookies.length} cookies, loggedIn: ${baijiahaoLoggedIn}`
     });
 
     return {
@@ -2978,63 +2926,7 @@ ipcMain.handle('navigate-to', async (event, url) => {
 
 // 导航到登录页
 ipcMain.handle('navigate-to-login', async () => {
-  if (browserView) {
-    console.log('[Main] 导航到登录页:', LOGIN_URL);
-
-    // 🔑 退出登录时清除所有登录相关数据
-    console.log('[Main] 清除退出登录数据...');
-
-    // 1. 清除 globalStorage 中的登录数据
-    delete globalStorage.last_page_url;
-    delete globalStorage.login_token;
-    delete globalStorage.login_expires;
-    delete globalStorage.login_gcc;
-    delete globalStorage.company_id;
-    delete globalStorage.user_info;
-    delete globalStorage.siteInfo;
-    delete globalStorage.current_site;
-    delete globalStorage.current_site_id;
-    delete globalStorage.current_site_name;
-    saveGlobalStorage();
-    console.log('[Main] ✅ 已清除 globalStorage 数据');
-
-    // 2. 清除 Cookies（token, access_token, site_id 等）
-    try {
-      const ses = browserView.webContents.session;
-      const cookies = await ses.cookies.get({});
-      console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
-
-      // 需要清除的 cookie 名称列表
-      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
-
-      let deletedCount = 0;
-      for (const cookie of cookies) {
-        if (cookiesToClear.includes(cookie.name)) {
-          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
-          try {
-            await ses.cookies.remove(cookieUrl, cookie.name);
-            deletedCount++;
-            console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
-          } catch (err) {
-            console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
-          }
-        }
-      }
-
-      // 也清除 localhost 的 cookies
-      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
-
-      await ses.flushStorageData();
-      console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
-    } catch (err) {
-      console.error('[Main] ❌ 清除 cookies 失败:', err);
-    }
-
-    loadLocalPage(browserView.webContents, 'login.html');
-  }
+  await navigateToLoginInternal('ipc');
 });
 
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
@@ -4257,19 +4149,22 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      windowSession.setUserAgent(STANDARD_USER_AGENT);
+      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
-        if (handleSpecialSessionRequest(details, callback, 'Temp Session WebRequest')) {
+        const reqUrl = details.url;
+        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
+          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', reqUrl);
+          callback({ cancel: true });
           return;
         }
         callback({});
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
-      addIdentityHeaderPolicy(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4290,14 +4185,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
       }
     });
-
-    // open-new-window 创建的发布/授权窗口统一使用标准 UA
-    try {
-      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-      console.log('[Window Manager] 子窗口 User-Agent 已设为标准 UA');
-    } catch (e) {
-      console.warn('[Window Manager] 设置子窗口 User-Agent 失败:', e?.message || e);
-    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -4320,8 +4207,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
-    const openedAt = Date.now();
-    let hasShownRedirectAuthNotice = false;
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -4433,14 +4318,17 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     if (sessionType !== 'persistent') {
       windowSession.webRequest.onBeforeRequest((details, callback) => {
         const reqUrl = details.url;
+        // 阻止 bitbrowser:// 协议
+        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
+          console.log('[Window WebRequest] ❌ Blocked bitbrowser:', reqUrl);
+          callback({ cancel: true });
+          return;
+        }
         // HTTP→HTTPS 升级：163.com 的所有请求（主页面 + API 子请求）
         if (reqUrl && reqUrl.startsWith('http://mp.163.com/')) {
           const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
           console.log(`[Window WebRequest] 🔒 HTTP→HTTPS: ${reqUrl}`);
           callback({ redirectURL: httpsUrl });
-          return;
-        }
-        if (handleSpecialSessionRequest(details, callback, 'Window WebRequest')) {
           return;
         }
         callback({});
@@ -4509,123 +4397,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         }
       }
       await injectScriptForUrl(newWindow.webContents, navUrl);
-    });
-
-    // 🔑 Redirect 检测：当页面导航离开预期 URL 时通知首页
-    // 覆盖场景：服务端 302 重定向、JS window.location 跳转、表单提交跳转
-    const expectedUrl = url;
-    newWindow.webContents.on('did-navigate', (event, navUrl) => {
-      // 跳过中间页（预设 localStorage 时的 favicon.ico 加载）
-      if (navUrl === 'about:blank' || navUrl.endsWith('/favicon.ico')) return;
-
-      try {
-        const expected = new URL(expectedUrl);
-        const actual = new URL(navUrl);
-
-        // 比较 origin + pathname，忽略 query string 和 hash
-        const isSameOrigin = actual.origin === expected.origin;
-        const isSamePath = actual.pathname === expected.pathname;
-
-        if (!isSameOrigin || !isSamePath) {
-          console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
-          const windowId = newWindow.id;
-
-          // 1. 自动上报后台接口（异步，不阻塞）
-          (async () => {
-            try {
-              const publishDataKey = `publish_data_window_${windowId}`;
-              const publishData = globalStorage[publishDataKey];
-              const publishId = publishData?.video?.dyPlatform?.id;
-
-              if (publishId) {
-                const statisticsUrl = `${config.domains.apiDomain}/api/mediaauth/tjlogerror`;
-                const errorData = {
-                  id: publishId,
-                  status_text: `页面被重定向: ${navUrl}`,
-                  context: {
-                    url: navUrl,
-                    expectedUrl: expectedUrl,
-                    timestamp: new Date().toISOString(),
-                    platform: 'redirect-detection',
-                  }
-                };
-                const scanData = { data: JSON.stringify(errorData) };
-                const postData = JSON.stringify(scanData);
-                const urlObj = new URL(statisticsUrl);
-                const requestModule = urlObj.protocol === 'https:' ? https : http;
-
-                const options = {
-                  hostname: urlObj.hostname,
-                  port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-                  path: urlObj.pathname,
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData),
-                  }
-                };
-
-                const req = requestModule.request(options, (res) => {
-                  console.log(`[Window Redirect] ✅ 上报后台成功, statusCode: ${res.statusCode}`);
-                });
-                req.on('error', (e) => {
-                  console.error(`[Window Redirect] ❌ 上报后台失败:`, e.message);
-                });
-                req.write(postData);
-                req.end();
-
-                console.log(`[Window Redirect] 📤 已上报后台, publishId: ${publishId}`);
-              } else {
-                console.log('[Window Redirect] ⚠️ 未找到 publishId，跳过上报');
-              }
-            } catch (err) {
-              console.error('[Window Redirect] ❌ 上报异常:', err);
-            }
-          })();
-
-          // 2. 通知首页（通过 postMessage，复用现有的 onMessageFromOtherPage 通道）
-          if (browserView && !browserView.webContents.isDestroyed()) {
-            const redirectMsg = JSON.stringify({
-              type: 'publish-redirected',
-              windowId: windowId,
-              expectedUrl: expectedUrl,
-              actualUrl: navUrl,
-              isSameOrigin: isSameOrigin,
-              timestamp: Date.now()
-            });
-            browserView.webContents.executeJavaScript(`
-              window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${redirectMsg} }, '*');
-            `).catch(() => {});
-
-            // 同时发送 window-redirected 事件（供 onWindowRedirected 回调使用）
-            browserView.webContents.send('window-redirected', {
-              windowId: windowId,
-              expectedUrl: expectedUrl,
-              actualUrl: navUrl,
-              isSameOrigin: isSameOrigin,
-              timestamp: Date.now()
-            });
-            console.log('[Window Redirect] ✅ 已通知首页页面发生跳转');
-          }
-
-          // 发布窗口打开后短时间内被重定向到登录/非发布页，提示用户重新登录
-          const accountInfo = windowAccountMap.get(newWindow.id);
-          const openedRecently = Date.now() - openedAt < 45 * 1000;
-          const loginRedirect = isLikelyLoginUrl(navUrl);
-          const publishToNonPublishRedirect = isLikelyPublishUrl(expectedUrl) && !isLikelyPublishUrl(navUrl);
-
-          if (!hasShownRedirectAuthNotice && accountInfo && openedRecently && (loginRedirect || publishToNonPublishRedirect)) {
-            hasShownRedirectAuthNotice = true;
-            showPublishLoginRedirectNotice(newWindow, {
-              platform: accountInfo.platform,
-              expectedUrl,
-              actualUrl: navUrl
-            });
-          }
-        }
-      } catch (e) {
-        // URL 解析失败，忽略
-      }
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
@@ -4697,122 +4468,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 等待一下确保 localStorage 写入
       await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    // ========== 头条设备 Cookie 补全 ==========
-    // 头条 publish 接口依赖 tt_webid 和已验证的 s_v_web_id，
-    // 但 Electron 临时 session 中这些 Cookie 可能缺失或处于未验证状态。
-    // 在页面加载前补全，确保页面 JS 和后续 API 请求能携带正确的设备标识。
-    // 注意：Chromium 要求 SameSite=None 必须 Secure=true，否则 cookie 会被静默丢弃。
-    if (url.includes('toutiao.com')) {
-      console.log('[Window Manager] 🔍 检测到头条页面，检查设备 Cookie...');
-      try {
-        const allCookies = await windowSession.cookies.get({});
-        const hasTtWebid = allCookies.some(c => c.name === 'tt_webid');
-        const svWebIdCookie = allCookies.find(c => c.name === 's_v_web_id');
-        const hasTtcid = allCookies.some(c => c.name === 'ttcid');
-        const hasTtScid = allCookies.some(c => c.name === 'tt_scid');
-
-        // 1. 补全 tt_webid（19位雪花ID格式，头条设备标识）
-        if (!hasTtWebid) {
-          const ts = BigInt(Date.now());
-          const rand = BigInt(Math.floor(Math.random() * (2 ** 22)));
-          const ttWebid = String(ts * BigInt(2 ** 22) + rand);
-          await windowSession.cookies.set({
-            url: 'https://mp.toutiao.com/',
-            name: 'tt_webid',
-            value: ttWebid,
-            domain: '.toutiao.com',
-            path: '/',
-            secure: true,
-            httpOnly: false,
-            sameSite: 'no_restriction',
-            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-          });
-          console.log('[Window Manager] ✅ 已补全 tt_webid:', ttWebid);
-        }
-
-        // 2. 修复 s_v_web_id（去掉 verify_ 前缀，标记为已验证状态）
-        if (svWebIdCookie && svWebIdCookie.value.startsWith('verify_')) {
-          const fixedValue = svWebIdCookie.value.replace('verify_', '');
-          await windowSession.cookies.set({
-            url: `https://${(svWebIdCookie.domain || 'mp.toutiao.com').replace(/^\./, '')}/`,
-            name: 's_v_web_id',
-            value: fixedValue,
-            domain: svWebIdCookie.domain || 'mp.toutiao.com',
-            path: svWebIdCookie.path || '/',
-            secure: true,
-            httpOnly: svWebIdCookie.httpOnly || false,
-            sameSite: 'no_restriction',
-            expirationDate: svWebIdCookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-          });
-          console.log('[Window Manager] ✅ 已修复 s_v_web_id: verify_xxx → xxx');
-        } else if (!svWebIdCookie) {
-          // 如果完全没有 s_v_web_id，生成一个已验证格式的值
-          const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-          const seg = (len) => Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-          const svWebId = `${seg(8)}_${seg(8)}_${seg(4)}_${seg(4)}_${seg(4)}_${seg(16)}`;
-          await windowSession.cookies.set({
-            url: 'https://mp.toutiao.com/',
-            name: 's_v_web_id',
-            value: svWebId,
-            domain: 'mp.toutiao.com',
-            path: '/',
-            secure: true,
-            httpOnly: false,
-            sameSite: 'no_restriction',
-            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-          });
-          console.log('[Window Manager] ✅ 已生成 s_v_web_id:', svWebId);
-        }
-
-        // 3. 补全 ttcid（32位hex + 2位数字，追踪标识）
-        if (!hasTtcid) {
-          const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-          const ttcid = hex + Math.floor(Math.random() * 100).toString().padStart(2, '0');
-          await windowSession.cookies.set({
-            url: 'https://mp.toutiao.com/',
-            name: 'ttcid',
-            value: ttcid,
-            domain: 'mp.toutiao.com',
-            path: '/',
-            secure: true,
-            httpOnly: false,
-            sameSite: 'no_restriction',
-            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-          });
-          console.log('[Window Manager] ✅ 已补全 ttcid:', ttcid);
-        }
-
-        // 4. 补全 tt_scid（base64格式追踪标识）
-        if (!hasTtScid) {
-          const scidChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-';
-          const ttScid = Array.from({ length: 64 }, () => scidChars[Math.floor(Math.random() * scidChars.length)]).join('');
-          await windowSession.cookies.set({
-            url: 'https://mp.toutiao.com/',
-            name: 'tt_scid',
-            value: ttScid,
-            domain: 'mp.toutiao.com',
-            path: '/',
-            secure: true,
-            httpOnly: false,
-            sameSite: 'no_restriction',
-            expirationDate: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-          });
-          console.log('[Window Manager] ✅ 已补全 tt_scid');
-        }
-
-        // 打印最终 Cookie 状态
-        const finalCookies = await windowSession.cookies.get({});
-        const deviceCookieNames = ['tt_webid', 's_v_web_id', 'ttwid', 'ttcid', 'tt_scid', 'odin_tt', 'csrf_session_id'];
-        const deviceStatus = deviceCookieNames.map(name => {
-          const c = finalCookies.find(x => x.name === name);
-          return `${name}: ${c ? '✅' : '❌'}`;
-        });
-        console.log('[Window Manager] 📋 头条设备 Cookie 状态:', deviceStatus.join(', '));
-      } catch (err) {
-        console.error('[Window Manager] ⚠️ 头条设备 Cookie 补全失败:', err.message);
-      }
     }
 
     // 加载目标 URL
@@ -5798,11 +5453,15 @@ function getAccountSession(platform, accountId) {
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
-  accountSession.setUserAgent(STANDARD_USER_AGENT);
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  accountSession.setUserAgent(customUA);
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
   accountSession.webRequest.onBeforeRequest((details, callback) => {
-    if (handleSpecialSessionRequest(details, callback, `Account Session ${partitionName}`)) {
+    const url = details.url;
+    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
+      console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
+      callback({ cancel: true });
       return;
     }
     callback({});
@@ -5812,7 +5471,6 @@ function getAccountSession(platform, accountId) {
   accountSessions.set(partitionName, accountSession);
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
   addContentTypeFix(accountSession, `账号 session ${partitionName}`);
-  addIdentityHeaderPolicy(accountSession, `账号 session ${partitionName}`);
 
   return accountSession;
 }
@@ -5853,7 +5511,6 @@ function ensurePlatformAccounts() {
       douyin: [],
       xiaohongshu: [],
       baijiahao: [],
-      toutiao: [],
       weixin: [],
       shipinhao: []
     };
@@ -6110,7 +5767,6 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
       douyin: ['douyin.com'],
       xiaohongshu: ['xiaohongshu.com'],
       baijiahao: ['baidu.com'],
-      toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
       weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
       shipinhao: ['channels.weixin.qq.com']
     };
@@ -6172,7 +5828,6 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
       douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
       xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
       baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
-      toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
       weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
       shipinhao: ['wxuin', 'pass_ticket']
     };

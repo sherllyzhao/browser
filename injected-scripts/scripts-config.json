@@ -1,6 +1,6 @@
 {
   "remoteConfig": {
-    "enabled": true,
+    "enabled": false,
     "baseUrl": "https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/",
     "devBaseUrl": "http://localhost:5173/injected-scripts/",
     "cachePolicy": "no-cache",
