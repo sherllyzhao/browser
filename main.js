@@ -1934,6 +1934,7 @@ function createWindow() {
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
   browserView.webContents.setWindowOpenHandler(({ url }) => {
     console.log('[Window Open] Request to open:', url);
+    const isBareToutiao = shouldSkipScriptInjection(url);
 
     // 过滤自定义协议（如 bitbrowser://），阻止系统弹出"需要使用新应用"对话框
     if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
@@ -1968,21 +1969,29 @@ function createWindow() {
 
     console.log('[Window Open] ✅ Opening new window for:', url);
 
+    if (isBareToutiao) {
+      console.log('[Window Open] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
+    }
+
+    const webPreferences = {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false, // 禁用沙箱以支持 window.opener
+      session: browserView.webContents.session, // 使用相同的 session
+      backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+      autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+    };
+    if (!isBareToutiao) {
+      webPreferences.preload = path.join(__dirname, 'content-preload.js');
+    }
+
     // 使用 allow 模式，保持 window.opener 引用
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
         width: 1200,
         height: 800,
-        webPreferences: {
-          preload: path.join(__dirname, 'content-preload.js'),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: false, // 禁用沙箱以支持 window.opener
-          session: browserView.webContents.session, // 使用相同的 session
-          backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
-          autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
-        }
+        webPreferences
       }
     };
   });
@@ -2035,6 +2044,7 @@ function createWindow() {
     // 拦截子窗口打开新窗口的请求，阻止自定义协议
     newWindow.webContents.setWindowOpenHandler(({ url }) => {
       console.log('[New Window Open] Request to open:', url);
+      const isBareToutiao = shouldSkipScriptInjection(url);
 
       // 过滤自定义协议（如 bitbrowser://）
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
@@ -2042,21 +2052,27 @@ function createWindow() {
         return { action: 'deny' };
       }
 
+      if (isBareToutiao) {
+        console.log('[New Window Open] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
+      }
       console.log('[New Window Open] ✅ Allowing:', url);
+      const webPreferences = {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        session: browserView.webContents.session,
+        backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+        autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+      };
+      if (!isBareToutiao) {
+        webPreferences.preload = path.join(__dirname, 'content-preload.js');
+      }
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
           width: 1200,
           height: 800,
-          webPreferences: {
-            preload: path.join(__dirname, 'content-preload.js'),
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: false,
-            session: browserView.webContents.session,
-            backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
-            autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
-          }
+          webPreferences
         }
       };
     });
@@ -2151,12 +2167,20 @@ function createWindow() {
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window] Page loaded:', currentURL);
+      if (shouldSkipScriptInjection(currentURL)) {
+        console.log('[New Window] Skip script injection for Toutiao:', currentURL);
+        return;
+      }
       await injectScriptForUrl(newWindow.webContents, currentURL);
     });
 
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, url) => {
       console.log('[New Window] SPA Navigation:', url);
+      if (shouldSkipScriptInjection(url)) {
+        console.log('[New Window] Skip script injection for Toutiao:', url);
+        return;
+      }
       await injectScriptForUrl(newWindow.webContents, url);
     });
   });
@@ -3942,6 +3966,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     console.log('[Window Manager] options.platform:', options.platform);
     console.log('[Window Manager] options.accountId:', options.accountId);
     console.log('[Window Manager] options.sessionData:', options.sessionData ? '有数据' : '无数据');
+    const isBareToutiao = shouldSkipScriptInjection(url);
+    if (isBareToutiao) {
+      console.log('[Window Manager] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
+    }
 
     if (options.platform && options.accountId) {
       // 多账号模式：使用指定账号的持久化 session
@@ -4203,18 +4231,22 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[Window Manager] 使用持久化 session');
     }
 
+    const windowWebPreferences = {
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: windowSession,
+      backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+      autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+    };
+    if (!isBareToutiao) {
+      windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
+    }
+
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
       icon: appIcon, // 使用 nativeImage 加载的图标
-      webPreferences: {
-        preload: path.join(__dirname, 'content-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        session: windowSession,
-        backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
-        autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
-      }
+      webPreferences: windowWebPreferences
     });
 
     // 添加到子窗口列表
@@ -4380,6 +4412,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     newWindow.webContents.on('dom-ready', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
+      if (shouldSkipScriptInjection(currentURL)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
+        return;
+      }
 
       // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
       await scriptManager.getScript(currentURL).then(async (script) => {
@@ -4412,12 +4448,20 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 🔑 补充脚本注入（与 did-create-window 保持一致）
       // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
-      await injectScriptForUrl(newWindow.webContents, currentURL);
+      if (shouldSkipScriptInjection(currentURL)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
+      } else {
+        await injectScriptForUrl(newWindow.webContents, currentURL);
+      }
     });
 
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      if (shouldSkipScriptInjection(navUrl)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', navUrl);
+        return;
+      }
       const script = await scriptManager.getScript(navUrl);
       if (script) {
         try {
