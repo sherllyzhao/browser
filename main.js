@@ -19,6 +19,7 @@ const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
 let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
 let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
@@ -102,10 +103,17 @@ const LOGIN_FILE_PATH = path.join(__dirname, 'login.html'); // 用于 loadFile()
 const HOME_URL = LOGIN_URL;
 
 // 加载本地页面（使用 loadFile 确保 MIME 类型正确，解决 CSS 渲染成文字的问题）
+// 如果 loadFile 失败（如 mklink 符号链接导致中文路径编码异常），则用正确编码的 file:// URL 重试
 function loadLocalPage(webContents, pageName) {
   const filePath = path.join(__dirname, pageName);
   console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
-  return webContents.loadFile(filePath);
+  return webContents.loadFile(filePath).catch(err => {
+    console.warn(`[loadLocalPage] loadFile 失败 (${err.code || err.message})，尝试 loadURL fallback`);
+    // 使用 URL 构造器正确编码中文路径（符号链接/特殊路径场景）
+    const fileUrl = require('url').pathToFileURL(filePath).href;
+    console.log(`[loadLocalPage] fallback loadURL: ${fileUrl}`);
+    return webContents.loadURL(fileUrl);
+  });
 }
 
 function shouldShowPageErrorDialog() {
@@ -747,7 +755,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true
+      webviewTag: true,
+      backgroundThrottling: false // 禁用后台节流，防止长时间不操作页面空白
     }
   });
 
@@ -1053,43 +1062,36 @@ function createWindow() {
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
 
-  const blankCheckInterval = setInterval(async () => {
+  // ========== 定期心跳，保持页面活跃 ==========
+  // 防止 Chromium 长时间不操作时对页面进行后台节流
+  const HEARTBEAT_INTERVAL = 30 * 1000; // 每 30 秒发送一次心跳
+  const heartbeatInterval = setInterval(async () => {
     if (!browserView || browserView.webContents.isDestroyed()) return;
     if (browserView.webContents.isLoading()) return;
     const currentUrl = browserView.webContents.getURL();
     if (!currentUrl || currentUrl === 'about:blank') return;
 
     try {
-      const bodyHTML = await browserView.webContents.executeJavaScript(
-        'document.body ? document.body.innerHTML.trim().length : 0',
-        true
-      );
-      if (bodyHTML === 0) {
-        blankScreenConsecutive += 1;
-      } else {
-        blankScreenConsecutive = 0;
-      }
+      // 执行一个简单的 JavaScript 代码，保持页面活跃
+      // 这会防止 Chromium 对页面进行后台节流
+      await browserView.webContents.executeJavaScript(`
+        (function() {
+          // 更新一个全局变量，标记页面仍然活跃
+          window.__browserHeartbeat__ = Date.now();
+          // 触发一个自定义事件，让页面知道浏览器仍在监控
+          const event = new CustomEvent('__browser_heartbeat__', { detail: { timestamp: Date.now() } });
+          document.dispatchEvent(event);
+        })()
+      `, true);
 
-      if (blankScreenConsecutive >= BLANK_SCREEN_CONSECUTIVE_THRESHOLD) {
-        blankScreenConsecutive = 0;
-        const result = await showPageErrorDialog({
-          title: '页面可能空白',
-          message: '检测到页面可能空白，是否刷新？',
-          detail: `URL: ${currentUrl}`
-        });
-        if (result.response === 0) {
-          browserView.webContents.reload();
-        } else if (result.response === 1) {
-          await navigateToLoginInternal('blank_screen_check');
-        }
-      }
+      console.log('[BrowserView] 💓 心跳信号已发送，保持页面活跃');
     } catch (err) {
-      console.warn('[BrowserView] ⚠️ 白屏检测执行失败:', err.message);
+      console.warn('[BrowserView] ⚠️ 心跳信号发送失败:', err.message);
     }
-  }, BLANK_SCREEN_CHECK_INTERVAL);
+  }, HEARTBEAT_INTERVAL);
 
   mainWindow.on('closed', () => {
-    clearInterval(blankCheckInterval);
+    clearInterval(heartbeatInterval);
   });
 
   // 监听窗口大小变化
@@ -1220,20 +1222,9 @@ function createWindow() {
         // 🔑 根据上次退出的项目类型，跳转到对应首页
         const savedProject = globalStorage.last_project;
         if (savedProject === 'geo') {
-          // 先调 API 获取最新 siteInfo，检查 is_geo
-          console.log('[BrowserView] 📍 上次退出时在 geo 项目，重新检查 geo 权限...');
-          const siteResult = await fetchSiteInfo();
-          const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
-
-          if (siteInfo && siteInfo.is_geo === 1) {
-            // geo 权限通过，跳转到 geo 首页
-            startUrl = config.getGeoUrl();
-            console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
-          } else {
-            // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
-            console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
-            startUrl = '__LOCAL_NOT_PURCHASE_GEO__';
-          }
+          // 直接跳转到 geo 首页，不检查权限
+          startUrl = config.getGeoUrl();
+          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
           // 默认 aigc 项目首页
           startUrl = config.getAigcUrl();
@@ -1265,10 +1256,7 @@ function createWindow() {
 
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
     let loadPage;
-    if (startUrl === '__LOCAL_NOT_PURCHASE_GEO__') {
-      // GEO 权限不通过，使用 loadFile + query 参数正确加载本地页面
-      loadPage = browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notPurchase), { query: { system: 'geo' } });
-    } else if (startUrl.startsWith('file://')) {
+    if (startUrl.startsWith('file://')) {
       loadPage = loadLocalPage(browserView.webContents, path.basename(startUrl));
     } else {
       loadPage = browserView.webContents.loadURL(startUrl);
@@ -1627,17 +1615,21 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        // 先尝试用本地 token 恢复登录（避免 PHP session 过期时误清还有效的 token）
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_url');
+        }
+      }
       return;
     }
 
     // 🔑 检查登录状态（Cookie 中的 token, access_token, PHPSESSID）
-    // 排除：登录页、本地文件、第三方平台授权页
+    // 排除：登录页、本地文件、第三方平台授权页、正在跳转登录页
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1665,8 +1657,8 @@ function createWindow() {
           delete globalStorage.login_expires;
           delete globalStorage.login_gcc;
           saveGlobalStorage();
-          // 跳转到登录页
-          loadLocalPage(browserView.webContents, 'login.html');
+          // 跳转到登录页（通过 navigateToLoginInternal 统一走防重入逻辑）
+          await navigateToLoginInternal('cookie_missing');
           return;
         }
       } catch (err) {
@@ -1687,16 +1679,20 @@ function createWindow() {
 
     const shouldRedirectToLogin = loginRedirectUrls.some(pattern => url.includes(pattern));
     if (shouldRedirectToLogin) {
-      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL，跳转到本地登录页');
-      delete globalStorage.login_token;
-      delete globalStorage.login_expires;
-      delete globalStorage.login_gcc;
-      saveGlobalStorage();
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Auth Check - DOM Ready] ⚠️ 检测到登录/首页重定向URL');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Auth Check - DOM Ready] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('login_redirect_dom_ready');
+        }
+      }
       return;
     }
 
     // 检查登录状态（与 did-navigate 相同的逻辑）
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const shouldCheckAuth = url.startsWith('http://') || url.startsWith('https://');
     const isLoginPage = url.includes('login.html') || url.includes('/login');
     const isLocalFile = url.startsWith('file://');
@@ -1716,11 +1712,7 @@ function createWindow() {
 
         if (!hasToken || !hasAccessToken) {
           console.log('[Auth Check - DOM Ready] ⚠️ 缺少登录凭证，跳转到登录页');
-          delete globalStorage.login_token;
-          delete globalStorage.login_expires;
-          delete globalStorage.login_gcc;
-          saveGlobalStorage();
-          loadLocalPage(browserView.webContents, 'login.html');
+          await navigateToLoginInternal('cookie_missing_dom_ready');
           return;
         }
       } catch (err) {
@@ -1806,16 +1798,24 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Navigation] 🔄 检测到远程登录页(in-page)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_in_page');
+        }
+      }
       return;
     }
 
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
+    // 🔑 检测 token 有效性（登录检查优先于权限检查）
     // 仅在访问自己平台时检测，不影响第三方平台
+    // 正在跳转登录页时跳过
+    if (isNavigatingToLogin) return;
     const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
     if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
       const savedToken = globalStorage.login_token;
@@ -1834,28 +1834,6 @@ function createWindow() {
       }
     }
 
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
-    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
-    if (url.includes(':8080') || url.includes(geoHost)) {
-      console.log('[Geo Auth Check] 检测到 geo 页面，重新获取站点信息...');
-      const siteResult = await fetchSiteInfo();
-      const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
-      geoLog('[did-navigate-in-page] URL: ' + url);
-      geoLog('[did-navigate-in-page] siteResult.success=' + siteResult.success + ', is_geo=' + siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check] ⚠️ 未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        // 通知 renderer 更新 Tab 选中状态为 GEO
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('url-changed', notPurchaseUrl);
-        }
-        return;
-      }
-      console.log('[Geo Auth Check] ✅ geo 权限检查通过');
-    }
-
     mainWindow.webContents.send('url-changed', url);
     // 根据 URL 判断是否需要隐藏公共头部
     updateHeaderVisibility(url);
@@ -1867,68 +1845,25 @@ function createWindow() {
   // 监听页面加载完成，注入自定义脚本
   browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
 
-  // 监听完整页面导航，检测远程登录页和 token 有效性
+  // 监听完整页面导航，检测远程登录页和 GEO 权限
+  // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
   browserView.webContents.on('did-navigate', async (event, url) => {
-    console.log(`[Navigation] 页面导航 → ${url}`);
+    console.log(`[Navigation] 页面导航(补充检测) → ${url}`);
 
-    // 检测远程登录页，自动跳转到本地登录页
+    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
     if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
         (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页，跳转到本地登录页...');
-      loadLocalPage(browserView.webContents, 'login.html');
+      console.log('[Navigation] 🔄 检测到远程登录页(did-navigate)');
+      if (!isNavigatingToLogin) {
+        const restored = await tryRestoreLoginWithToken(lastValidUrl);
+        if (!restored) {
+          console.log('[Navigation] Token 无效，跳转到本地登录页');
+          await navigateToLoginInternal('remote_login_navigate');
+        }
+      }
       return;
     }
 
-    // 🔑 优先检测 token 有效性（登录检查优先于权限检查）
-    // 仅在访问自己平台时检测，不影响第三方平台
-    const isOwnPlatform = url.includes('china9.cn') || url.includes('localhost:5173') || url.includes('localhost:8080');
-    if (isOwnPlatform && !url.includes('login.html') && !url.includes('#/login')) {
-      const savedToken = globalStorage.login_token;
-      const savedExpires = globalStorage.login_expires;
-      const now = Math.floor(Date.now() / 1000);
-
-      if (!savedToken || !savedExpires || savedExpires <= now) {
-        console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
-        if (!isHandlingExpiredToken) {
-          isHandlingExpiredToken = true;
-          await showSessionExpiredDialog('页面导航');
-          await navigateToLoginInternal('token_expired_navigate');
-          setTimeout(() => { isHandlingExpiredToken = false; }, 2000);
-        }
-        return;
-      }
-    }
-
-    // 🔑 已登录状态下，检查 geo 页面权限（仅真正的 GEO 域名才检查）
-    const geoHost = config.domains.geoPage.replace('https://', '').replace('http://', '');
-    if (url.includes(':8080') || url.includes(geoHost)) {
-      console.log('[Geo Auth Check - did-navigate] 检测到 geo 页面，先用缓存检查，同时后台刷新...');
-      const siteInfo = globalStorage.siteInfo;
-      console.log('[Geo Auth Check - did-navigate] is_geo:', siteInfo?.is_geo);
-
-      if (!siteInfo || !siteInfo.is_geo || siteInfo.is_geo !== 1) {
-        console.log('[Geo Auth Check - did-navigate] ⚠️ 缓存显示未购买 geo 产品，跳转到未购买页面');
-        const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
-        browserView.webContents.loadURL(notPurchaseUrl);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('url-changed', notPurchaseUrl);
-        }
-        return;
-      }
-      console.log('[Geo Auth Check - did-navigate] ✅ 缓存显示 geo 权限通过');
-
-      // 后台异步刷新 siteInfo 缓存（不阻塞导航）
-      fetchSiteInfo().then(result => {
-        if (result.success && result.data && (!result.data.is_geo || result.data.is_geo !== 1)) {
-          console.log('[Geo Auth Check - did-navigate] ⚠️ 最新数据显示 geo 权限已失效，跳转到未购买页面');
-          const notPurchaseUrl = 'file:///' + __dirname.replace(/\\/g, '/') + '/' + config.placeholderPages.notPurchase + '?system=geo';
-          browserView.webContents.loadURL(notPurchaseUrl);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('url-changed', notPurchaseUrl);
-          }
-        }
-      }).catch(() => {});
-    }
   });
 
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
@@ -1991,7 +1926,15 @@ function createWindow() {
       overrideBrowserWindowOptions: {
         width: 1200,
         height: 800,
-        webPreferences
+        webPreferences: {
+          preload: path.join(__dirname, 'content-preload.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false, // 禁用沙箱以支持 window.opener
+          session: browserView.webContents.session, // 使用相同的 session
+          backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+          autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+        }
       }
     };
   });
@@ -2212,6 +2155,47 @@ function updateHeaderVisibility(url) {
     // 更新 BrowserView 边界
     updateBrowserViewBounds(isScriptPanelOpen);
     console.log('[Header] 公共头部:', isHeaderHidden ? '隐藏' : '显示');
+  }
+}
+
+// 跳转到登录页（统一入口，防重入）
+async function navigateToLoginInternal(source) {
+  if (isNavigatingToLogin) {
+    console.log(`[navigateToLoginInternal] 已在跳转中，忽略来源: ${source}`);
+    return;
+  }
+  isNavigatingToLogin = true;
+  console.log(`[navigateToLoginInternal] 开始跳转到登录页，来源: ${source}`);
+
+  try {
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      console.error('[navigateToLoginInternal] BrowserView 不可用');
+      return;
+    }
+
+    // 隐藏公共头部
+    isHeaderHidden = true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('toggle-header', false);
+    }
+    updateBrowserViewBounds(isScriptPanelOpen);
+
+    // 使用 loadFile 加载登录页（避免 file:// 中文路径编码问题）
+    await loadLocalPage(browserView.webContents, 'login.html');
+
+    // 通知 renderer URL 变化
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('url-changed', LOGIN_URL);
+    }
+
+    console.log('[navigateToLoginInternal] ✅ 已跳转到登录页');
+  } catch (err) {
+    console.error('[navigateToLoginInternal] ❌ 跳转失败:', err);
+  } finally {
+    // 延迟重置标志，防止快速重入
+    setTimeout(() => {
+      isNavigatingToLogin = false;
+    }, 1000);
   }
 }
 
