@@ -145,7 +145,13 @@
       "Bash(python:*)",
       "Bash(git -C:*)",
       "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 2; echo \"已清理进程\")",
-      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 1; echo \"已清理\")"
+      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 1; echo \"已清理\")",
+      "Bash(test:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(pip install Pillow)",
+      "Bash(pip3 install:*)",
+      "Bash(where magick:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []

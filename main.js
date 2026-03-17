@@ -2484,10 +2484,14 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
-// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
-// 必须在 app.whenReady() 之前调用
-app.disableHardwareAcceleration();
-console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+// 🖥️ 禁用 GPU 硬件加速 - 解决某些 Windows 电脑因显卡驱动不兼容导致的白屏问题
+// macOS GPU 驱动稳定，禁用反而可能导致渲染异常，因此仅 Windows 禁用
+if (process.platform === 'win32') {
+  app.disableHardwareAcceleration();
+  console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+} else {
+  console.log('[GPU] ℹ️ macOS 保持硬件加速启用');
+}
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
@@ -2498,17 +2502,20 @@ app.commandLine.appendSwitch('disable-extensions');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 // 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
 app.commandLine.appendSwitch('no-sandbox');
-// 🛡️ 安全软件兼容性优化（电脑管家/360等）
-// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
-app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-app.commandLine.appendSwitch('in-process-gpu');
+// 🛡️ 安全软件兼容性优化（电脑管家/360等）- 仅 Windows 需要
+if (process.platform === 'win32') {
+  // 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
+  app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+  app.commandLine.appendSwitch('in-process-gpu');
+  console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并）');
+}
 // 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
+console.log('[Compatibility] ✅ 防后台节流已启用');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
