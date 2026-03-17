@@ -153,8 +153,7 @@ const config = {
     10: 'txh',  // 腾讯号
     11: 'xl',   // 新浪号
     12: 'zh',   // 知乎
-    13: 'tt',   // 头条号
-    14: 'tt',   // 头条号（兼容）
+    14: 'tt',   // 头条号
   },
   platformNameMap: {
     'dy': 'douyin',
@@ -260,16 +259,7 @@ window.addEventListener('message', (event) => {
       console.log('[BrowserAPI] 检测到 FROM_HOME 消息');
       if (messageCallbacks.fromHome) {
         console.log('[BrowserAPI] 调用 fromHome 回调，数据:', event.data.data);
-        console.log('[BrowserAPI] 回调函数类型:', typeof messageCallbacks.fromHome);
-        try {
-          const result = messageCallbacks.fromHome(event.data.data);
-          console.log('[BrowserAPI] 回调返回值:', result);
-          if (result && typeof result.catch === 'function') {
-            result.catch(err => console.error('[BrowserAPI] fromHome 回调 Promise 错误:', err));
-          }
-        } catch (e) {
-          console.error('[BrowserAPI] fromHome 回调同步错误:', e);
-        }
+        messageCallbacks.fromHome(event.data.data);
       } else {
         console.warn('[BrowserAPI] ⚠️ fromHome 回调未注册！');
       }
@@ -332,34 +322,15 @@ contextBridge.exposeInMainWorld('browserAPI', {
       const urlMap = config.platformPublishUrls;
       const platformMap = config.platformIdMap;
       const platformFullNameMap = config.platformNameMap;
-      const resolvePlatform = (element) => {
-        const mediaId = element?.account_info?.media?.id;
-        if (platformMap[mediaId]) {
-          return platformMap[mediaId];
-        }
-
-        // 兼容后台新增平台 ID 未及时同步的情况：按平台名称兜底
-        const mediaName = `${element?.account_info?.media?.name || ''}`.toLowerCase();
-        if (mediaName.includes('头条') || mediaName.includes('toutiao')) {
-          return 'tt';
-        }
-
-        return null;
-      };
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
-          const platform = resolvePlatform(element);
+          const platform = platformMap[element.account_info.media.id];
           const platformFullName = platformFullNameMap[platform];
           const url = urlMap[platform];
           console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
-
-          if (!platform || !url) {
-            console.error(`❌ [${index + 1}] 不支持的平台，media.id=${element?.account_info?.media?.id}, media.name=${element?.account_info?.media?.name || ''}`);
-            continue;
-          }
 
           // 构建 openNewWindow 的 options
           // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
@@ -513,16 +484,6 @@ contextBridge.exposeInMainWorld('browserAPI', {
       callback(data);
     });
     console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
-  },
-
-  // 监听新窗口页面跳转事件（首页使用，用于检测发布页被第三方平台重定向的情况）
-  // data: { windowId, expectedUrl, actualUrl, isSameOrigin, timestamp }
-  onWindowRedirected: (callback) => {
-    ipcRenderer.on('window-redirected', (event, data) => {
-      console.log('[BrowserAPI] 收到 window-redirected 事件:', data);
-      callback(data);
-    });
-    console.log('[BrowserAPI] onWindowRedirected 监听器已注册');
   },
 
   // 清除所有监听器（用于组件卸载）

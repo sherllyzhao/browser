@@ -138,7 +138,14 @@
       "Bash(git -c http.sslVerify=false push origin --delete v1.0.7)",
       "Bash(git tag:*)",
       "Bash(git -c http.sslVerify=false push origin --delete v1.0.6)",
-      "Bash(git -c http.sslVerify=false push origin v1.0.6)"
+      "Bash(git -c http.sslVerify=false push origin v1.0.6)",
+      "Bash(python3:*)",
+      "Bash(do node -c \"$file\")",
+      "Bash(echo:*)",
+      "Bash(python:*)",
+      "Bash(git -C:*)",
+      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 2; echo \"已清理进程\")",
+      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 1; echo \"已清理\")"
     ],
     "deny": [],
     "ask": []

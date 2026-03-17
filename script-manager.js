@@ -11,6 +11,7 @@ class ScriptManager {
     this.manifest = {};
     this.configLoaded = false; // 标记配置是否已加载
     this.configLoadPromise = null; // 配置加载 Promise（用于等待异步加载完成）
+    this.isDevMode = !require('electron').app.isPackaged; // 开发模式用本地文件，打包用远程
 
     this.init();
   }
@@ -411,18 +412,50 @@ class ScriptManager {
     return scriptContents.join('\n\n');
   }
 
-  // URL 模式匹配
+  // URL 模式匹配（支持通配符和查询参数）
   urlMatchesPattern(url, pattern) {
-    // 支持 * 通配符
-    // 例如: http://localhost:5173/* 匹配 http://localhost:5173/任何路径
+    // 支持 * 通配符和查询参数匹配
+    // 例如:
+    //   http://localhost:5173/* 匹配任何路径
+    //   https://example.com/page?target=image 匹配包含 target=image 的 URL（其他参数随意）
+    //   https://example.com/page?target=image&type=carousel 匹配同时包含这两个参数的 URL
 
-    // 将模式转换为正则表达式
-    const regexPattern = pattern
+    // 分离基础 URL 和查询参数
+    const [patternBase, patternQuery] = pattern.split('?');
+    const [urlBase, urlQuery] = url.split('?');
+
+    // 匹配基础 URL（支持通配符）
+    const baseRegexPattern = patternBase
       .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // 转义正则特殊字符
       .replace(/\*/g, '.*'); // 将 * 替换为 .*
 
-    const regex = new RegExp(`^${regexPattern}$`);
-    return regex.test(url);
+    const baseRegex = new RegExp(`^${baseRegexPattern}$`);
+    if (!baseRegex.test(urlBase)) {
+      return false;
+    }
+
+    // 如果 pattern 没有查询参数，只需要基础 URL 匹配即可
+    if (!patternQuery) {
+      return true;
+    }
+
+    // 如果 pattern 有查询参数，URL 也必须有查询参数
+    if (!urlQuery) {
+      return false;
+    }
+
+    // 解析查询参数（支持多个参数，顺序无关）
+    const patternParams = new URLSearchParams(patternQuery);
+    const urlParams = new URLSearchParams(urlQuery);
+
+    // 检查 URL 是否包含 pattern 中的所有参数和值
+    for (const [key, value] of patternParams.entries()) {
+      if (urlParams.get(key) !== value) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   // 获取所有已保存的脚本列表

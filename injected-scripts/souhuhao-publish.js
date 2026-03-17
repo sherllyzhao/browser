@@ -182,8 +182,8 @@
 (async function () {
     'use strict';
 
-    // 🔑 平台配置（在 IIFE 内部定义，避免与授权脚本冲突）
-    const PLATFORM_CONFIG = {
+    // 🔑 平台配置（从 common.js 引用，避免重复定义）
+    const PLATFORM_CONFIG = window.PLATFORM_CONFIGS?.souhuhao || {
         name: '搜狐号',
         publishPagePath: '/contentManagement/news/addarticle',
         publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',

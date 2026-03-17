@@ -14,6 +14,11 @@
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
 const ENV = 'prod'; // 'dev' | 'prod'
+let CURRENT_ENV = ENV;
+// 可选：开发时通过 USE_REMOTE_AIGC_PAGE=1 强制走远端页面（不走 localhost）
+const useRemoteAigcPage = typeof process !== 'undefined'
+  && process.env
+  && process.env.USE_REMOTE_AIGC_PAGE === '1';
 
 // ===========================
 // 🔑 域名映射表（dev / prod 两套）
@@ -84,16 +89,36 @@ const DOMAINS = {
   },
 };
 
-// 当前生效的域名配置
-const domains = DOMAINS[ENV] || DOMAINS.dev;
+// 当前生效的域名配置（拷贝一份，避免污染 DOMAINS 模板）
+const initialDomains = DOMAINS[ENV] || DOMAINS.dev;
+const domains = {
+  ...initialDomains,
+  statisticsHosts: { ...(initialDomains.statisticsHosts || {}) },
+};
+let runtimeAigcPage = domains.aigcPage;
+let runtimeAigcPath = domains.aigcPath;
 
-// 🔑 未打包环境（npm start）自动指向 localhost:5173
-// 打包后 app.isPackaged === true，不影响 dev/prod 配置
+// 未打包环境默认：开发页走 localhost:5173；接口域名仍按 dev/prod 走
+// 可通过 START_ENV=prod 切换生产域名；可通过 USE_REMOTE_AIGC_PAGE=1 关闭 localhost 页面
 try {
   const { app } = require('electron');
   if (app && !app.isPackaged) {
-    domains.aigcPage = 'http://localhost:5173';
-    domains.aigcPath = '/';
+    // 开发启动默认走 dev 域名；可用 START_ENV=prod 临时切到生产域名
+    const startEnv = process.env && process.env.START_ENV === 'prod' ? 'prod' : 'dev';
+    const startDomains = DOMAINS[startEnv] || DOMAINS.dev;
+    CURRENT_ENV = startEnv;
+    Object.assign(domains, {
+      ...startDomains,
+      statisticsHosts: { ...(startDomains.statisticsHosts || {}) },
+    });
+    runtimeAigcPage = domains.aigcPage;
+    runtimeAigcPath = domains.aigcPath;
+
+    // 开发环境页面入口默认走 localhost，便于本地联调
+    if (startEnv === 'dev' && !useRemoteAigcPage) {
+      runtimeAigcPage = 'http://localhost:5173';
+      runtimeAigcPath = '/';
+    }
   }
 } catch (e) {
   // 非 Electron 环境（浏览器端引用），忽略
@@ -123,7 +148,7 @@ const DEV_HOSTS = [
  * @returns {string}
  */
 function getAigcUrl() {
-  return domains.aigcPage + domains.aigcPath;
+  return runtimeAigcPage + runtimeAigcPath;
 }
 
 /**
@@ -131,7 +156,7 @@ function getAigcUrl() {
  * @returns {string}
  */
 function getGeoUrl() {
-  return domains.aigcPage + domains.aigcPath + '#/geo/dashboard';
+  return domains.geoPage + domains.geoPath;
 }
 
 /**
@@ -159,12 +184,14 @@ function getCookieDomain() {
 }
 
 /**
- * 获取版本检查 URL（打包环境用远程，非打包用 localhost）
+ * 获取版本检查 URL（开发本地页走 localhost，其余走域名配置）
  * @param {boolean} isProduction - 是否为打包环境
  * @returns {string}
  */
 function getVersionCheckUrlByEnv(isProduction) {
-  if (!isProduction) return 'http://localhost:5173/browserVersion.json';
+  if (!isProduction && runtimeAigcPage.startsWith('http://localhost')) {
+    return 'http://localhost:5173/browserVersion.json';
+  }
   return domains.versionCheckUrl;
 }
 
@@ -190,6 +217,25 @@ function getStatisticsUrl(host, isError = false) {
 // 🔑 其他配置（来自原 config.js）
 // ===========================
 
+/**
+ * 判断 URL 是否为第三方平台（用于跳过登录检查等）
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isThirdPartyUrl(url) {
+  const allDomains = Object.values(platformDomains).flat();
+  return allDomains.some(domain => url.includes(domain));
+}
+
+/**
+ * 判断 URL 是否为自己平台（china9.cn 或开发环境）
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isOwnPlatformUrl(url) {
+  return url.includes('china9.cn') || DEV_HOSTS.some(h => url.includes(h));
+}
+
 // API 基础地址（默认值，实际会从主窗口 URL 自动获取）
 const apiBaseUrl = domains.aigcPage;
 
@@ -200,7 +246,12 @@ const platformApis = {
   baijiahao: '/api/mediaauth/bjhinfo',
   toutiao: '/api/mediaauth/ttinfo',
   weixin: '/api/mediaauth/sphinfo',
-  shipinhao: '/api/mediaauth/sphinfo'
+  shipinhao: '/api/mediaauth/sphinfo',
+  wangyihao: '/api/mediaauth/wyhinfo',
+  sohuhao: '/api/mediaauth/shinfo',
+  tengxunhao: '/api/mediaauth/txinfo',
+  xinlang: '/api/mediaauth/xlinfo',
+  zhihu: '/api/mediaauth/zhinfo'
 };
 
 // 各平台的 Cookie 域名（用于过滤）
@@ -210,7 +261,12 @@ const platformDomains = {
   baijiahao: ['baidu.com'],
   toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
   weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
-  shipinhao: ['channels.weixin.qq.com']
+  shipinhao: ['channels.weixin.qq.com'],
+  wangyihao: ['163.com', 'mp.163.com'],
+  sohuhao: ['sohu.com', 'mp.sohu.com'],
+  tengxunhao: ['qq.com', 'om.qq.com'],
+  xinlang: ['sina.com.cn', 'weibo.com', 'sina.cn'],
+  zhihu: ['zhihu.com', 'www.zhihu.com']
 };
 
 // 平台登录凭证 Cookie 名称（用于判断登录状态）
@@ -220,7 +276,12 @@ const platformLoginCookies = {
   toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
   weixin: ['wxuin', 'pass_ticket'],
   baijiahao: ['BDUSS', 'STOKEN'],
-  shipinhao: ['wxuin', 'pass_ticket']
+  shipinhao: ['wxuin', 'pass_ticket'],
+  wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
+  sohuhao: ['SUV', 'IPLOC', 'sct'],
+  tengxunhao: ['pgv_pvid', 'RK', 'ptcz'],
+  xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
+  zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
 
 // 平台短名称到长名称的映射
@@ -230,7 +291,12 @@ const platformNameMap = {
   'sph': 'shipinhao',
   'bjh': 'baijiahao',
   'tt': 'toutiao',
-  'wx': 'weixin'
+  'wx': 'weixin',
+  'wyh': 'wangyihao',
+  'shh': 'sohuhao',
+  'txh': 'tengxunhao',
+  'xl': 'xinlang',
+  'zh': 'zhihu'
 };
 
 // 平台 ID 到短名称的映射（来自后台 media.id）
@@ -239,7 +305,12 @@ const platformIdMap = {
   4: 'bjh',   // 百家号
   6: 'xhs',   // 小红书
   7: 'sph',   // 视频号
-  13: 'tt',   // 头条号
+  8: 'wyh',   // 网易号
+  9: 'shh',   // 搜狐号
+  10: 'txh',  // 腾讯号
+  11: 'xl',   // 新浪号
+  12: 'zh',   // 知乎
+  13: 'xg',   // 西瓜号
   14: 'tt'    // 头条号（兼容）
 };
 
@@ -249,6 +320,12 @@ const platformPublishUrls = {
   xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
   sph: 'https://channels.weixin.qq.com/platform/post/create',
   bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
+  wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+  shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+  txh: 'https://om.qq.com/main/creation/article',
+  xl: 'https://card.weibo.com/article/v5/editor#/draft',
+  zh: 'https://zhuanlan.zhihu.com/write',
+  xg: 'https://creator.douyin.com/creator-micro/content/upload',
   tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
 };
 
@@ -268,6 +345,7 @@ const placeholderPages = {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ENV,
+    CURRENT_ENV,
     DOMAINS,
     domains,
     DEV_HOSTS,
@@ -278,6 +356,8 @@ if (typeof module !== 'undefined' && module.exports) {
     getCookieDomain,
     getVersionCheckUrlByEnv,
     getStatisticsUrl,
+    isThirdPartyUrl,
+    isOwnPlatformUrl,
     // 其他配置
     apiBaseUrl,
     platformApis,
@@ -294,6 +374,7 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof window !== 'undefined') {
   window.DOMAIN_CONFIG = {
     ENV,
+    CURRENT_ENV,
     DOMAINS,
     domains,
     DEV_HOSTS,
@@ -304,6 +385,8 @@ if (typeof window !== 'undefined') {
     getCookieDomain,
     getVersionCheckUrlByEnv,
     getStatisticsUrl,
+    isThirdPartyUrl,
+    isOwnPlatformUrl,
     // 其他配置
     apiBaseUrl,
     platformApis,

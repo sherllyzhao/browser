@@ -1,6 +1,6 @@
 {
   "remoteConfig": {
-    "enabled": true,
+    "enabled": false,
     "baseUrl": "https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/",
     "devBaseUrl": "http://localhost:5173/injected-scripts/",
     "cachePolicy": "no-cache",
@@ -20,8 +20,9 @@
     "https://api.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
     "https://apidev.china9.cn/api/mediaauth/*": ["common.js", "common-creator.js"],
     "https://creator.douyin.com/creator-micro/content/upload*": ["common.js", "douyin-publish.js"],
-    "https://creator.xiaohongshu.com/publish/publish*": ["common.js", "xiaohongshu-publish.js"],
-    "https://creator.xiaohongshu.com/publish/publish?source=&published=true": ["common.js", "publish-success.js"],
+    "https://creator.xiaohongshu.com/publish/publish?target=video": ["common.js", "xiaohongshu-publish.js"],
+    "https://creator.xiaohongshu.com/publish/publish?target=image": ["common.js", "xiaohongshu-publish-image.js"],
+    "https://creator.xiaohongshu.com/publish/publish?published=true": ["common.js", "publish-success.js"],
     "https://creator.xiaohongshu.com/publish/success*": ["common.js", "publish-success.js"],
     "https://channels.weixin.qq.com/platform/post/create*": ["common.js", "shipinhao-publish.js"],
     "https://channels.weixin.qq.com/platform/post/list*": ["common.js", "publish-success.js"],
