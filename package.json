@@ -76,7 +76,8 @@
       "category": "public.app-category.productivity"
     },
     "dmg": {
-      "title": "${productName} ${version}",
+      "title": "ZhCloud-Browser ${version}",
+      "background": null,
       "contents": [
         {
           "x": 130,
