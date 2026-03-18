@@ -1043,6 +1043,10 @@ function createWindow() {
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
     console.error('[BrowserView] 失败 URL:', validatedURL);
+
+    if (errorCode !== -3) {
+      setTimeout(() => finishInitialBrowserViewLoading('did-fail-load'), 0);
+    }
   });
 
   browserView.webContents.on('unresponsive', () => {
@@ -1056,6 +1060,33 @@ function createWindow() {
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
 
+  let isInitialBrowserViewLoadPending = true;
+  let initialBrowserViewLoadingStartedAt = Date.now();
+  const finishInitialBrowserViewLoading = (reason) => {
+    if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
+      return;
+    }
+
+    const currentUrl = browserView.webContents.getURL();
+    if (!currentUrl || currentUrl === 'about:blank') {
+      return;
+    }
+
+    const elapsed = Date.now() - initialBrowserViewLoadingStartedAt;
+    const minVisibleDuration = 500;
+    const delay = Math.max(0, minVisibleDuration - elapsed);
+
+    setTimeout(() => {
+      if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
+        return;
+      }
+
+      isInitialBrowserViewLoadPending = false;
+      console.log(`[Loading] BrowserView 首屏加载完成，来源: ${reason}, URL: ${currentUrl}, 延迟隐藏: ${delay}ms`);
+      setGlobalLoadingState(false);
+    }, delay);
+  };
+
   // 监听窗口大小变化
   mainWindow.on('resize', () => {
     updateBrowserViewBounds(isScriptPanelOpen);
@@ -1066,6 +1097,8 @@ function createWindow() {
   process.nextTick(async () => {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
+    initialBrowserViewLoadingStartedAt = Date.now();
+    setGlobalLoadingState(true, '正在启动浏览器...');
 
     // 🔑 等待缓存清理完成
     console.log('[BrowserView] 等待缓存清理完成...');
@@ -1838,8 +1871,14 @@ function createWindow() {
     await injectScriptForCurrentPage();
   });
 
+  browserView.webContents.on('did-stop-loading', () => {
+    finishInitialBrowserViewLoading('did-stop-loading');
+  });
+
   // 监听页面加载完成，注入自定义脚本
-  browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
+  browserView.webContents.on('did-finish-load', async () => {
+    await injectScriptForCurrentPage();
+  });
 
   // 监听完整页面导航，检测远程登录页和 GEO 权限
   // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
@@ -2133,8 +2172,36 @@ function createWindow() {
 
 // 是否隐藏公共头部（登录页时隐藏）
 let isHeaderHidden = false;
+let isGlobalLoadingVisible = true;
+
+function setGlobalLoadingState(visible, text = '') {
+  isGlobalLoadingVisible = visible;
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    if (visible) {
+      browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      updateBrowserViewBounds(isScriptPanelOpen);
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('global-loading-state-changed', { visible, text });
+  }
+
+  console.log(`[Loading] ${visible ? '显示' : '隐藏'}全局加载遮罩${text ? `: ${text}` : ''}`);
+}
 
 function updateBrowserViewBounds(scriptPanelOpen = false) {
+  if (!mainWindow || !browserView || browserView.webContents.isDestroyed()) {
+    return;
+  }
+
+  if (isGlobalLoadingVisible) {
+    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    return;
+  }
+
   const { width, height } = mainWindow.getContentBounds();
   // 公共头部高度 50px（登录页时隐藏）
   // 开发工具栏已移除，统一使用公共头部
@@ -3155,9 +3222,7 @@ ipcMain.handle('refresh-page', async () => {
 // 显示全局加载遮罩（隐藏 BrowserView）
 ipcMain.handle('show-global-loading', async () => {
   if (browserView && mainWindow) {
-    // 将 BrowserView 移出可视区域
-    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
-    console.log('[Loading] 显示全局加载遮罩，隐藏 BrowserView');
+    setGlobalLoadingState(true);
     return { success: true };
   }
   return { success: false };
@@ -3166,9 +3231,7 @@ ipcMain.handle('show-global-loading', async () => {
 // 隐藏全局加载遮罩（恢复 BrowserView）
 ipcMain.handle('hide-global-loading', async () => {
   if (browserView && mainWindow) {
-    // 恢复 BrowserView 位置
-    updateBrowserViewBounds(isScriptPanelOpen);
-    console.log('[Loading] 隐藏全局加载遮罩，恢复 BrowserView');
+    setGlobalLoadingState(false);
     return { success: true };
   }
   return { success: false };
@@ -6744,10 +6807,21 @@ ipcMain.handle('save-session-to-backend', async (event) => {
 
 // ========== AI 智能体 ==========
 
+function getSerializableAiPresets() {
+  return Object.fromEntries(
+    Object.entries(PRESET_PROVIDERS).map(([providerKey, preset]) => {
+      const serializablePreset = Object.fromEntries(
+        Object.entries(preset).filter(([, value]) => typeof value !== 'function')
+      );
+      return [providerKey, serializablePreset];
+    })
+  );
+}
+
 // 获取 AI 配置
 ipcMain.handle('ai-get-config', async () => {
   const aiConfig = globalStorage['ai_config'] || null;
-  return { success: true, config: aiConfig, presets: PRESET_PROVIDERS };
+  return { success: true, config: aiConfig, presets: getSerializableAiPresets() };
 });
 
 // 保存 AI 配置

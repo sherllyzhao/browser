@@ -7,6 +7,24 @@
   'use strict';
 
   const LOG_PREFIX = '[AI发布]';
+  const DOM_SNAPSHOT_LIMITS = {
+    normal: {
+      maxElements: 70,
+      maxButtons: 18,
+      maxNotices: 8,
+      textLength: 40,
+      valueLength: 60,
+      noticeTextLength: 100,
+    },
+    compact: {
+      maxElements: 35,
+      maxButtons: 8,
+      maxNotices: 5,
+      textLength: 24,
+      valueLength: 36,
+      noticeTextLength: 60,
+    },
+  };
 
   // 防止重复执行
   if (window.__AI_PUBLISH_LOADED__) {
@@ -132,8 +150,28 @@
   /**
    * 提取页面的精简 DOM 结构
    */
-  function extractPageStructure() {
-    const elements = [];
+  function extractPageStructure(mode = 'normal') {
+    const limits = DOM_SNAPSHOT_LIMITS[mode] || DOM_SNAPSHOT_LIMITS.normal;
+    const candidates = [];
+    const seenSelectors = new Set();
+    let rawElementCount = 0;
+    let keptButtonCount = 0;
+
+    function limitText(value, maxLength) {
+      const text = String(value || '').trim().replace(/\s+/g, ' ');
+      return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+    }
+
+    function getElementPriority(el, info) {
+      const text = `${info.label || ''} ${info.placeholder || ''} ${info.text || ''}`.toLowerCase();
+      if (info.type === 'file') return 100;
+      if (info.contenteditable || info.tag === 'textarea') return 95;
+      if (info.tag === 'input' && !['checkbox', 'radio', 'submit', 'button'].includes(info.type || '')) return 90;
+      if (info.tag === 'select') return 85;
+      if (/发布|提交|保存|下一步|定时|封面|话题|标签|分类|标题|简介|描述/.test(text)) return 80;
+      if (info.tag === 'button' || info.type === 'submit') return 40;
+      return 20;
+    }
 
     // 可交互元素选择器
     const interactiveSelectors = [
@@ -149,6 +187,7 @@
 
     document.querySelectorAll(interactiveSelectors).forEach(el => {
       if (!isVisible(el) && el.type !== 'file') return;
+      rawElementCount++;
 
       const info = {
         tag: el.tagName.toLowerCase(),
@@ -156,8 +195,8 @@
         selector: generateSelector(el),
         label: findLabel(el),
         placeholder: el.placeholder || '',
-        value: (el.value || '').substring(0, 50),
-        text: (el.textContent || '').trim().substring(0, 50),
+        value: limitText(el.value || '', limits.valueLength),
+        text: limitText(el.textContent || '', limits.textLength),
         contenteditable: el.getAttribute('contenteditable') === 'true',
         disabled: el.disabled || false,
         required: el.required || false,
@@ -170,30 +209,58 @@
         }
       });
 
-      elements.push(info);
+      if (!info.selector || seenSelectors.has(info.selector)) return;
+
+      const priority = getElementPriority(el, info);
+      if ((info.tag === 'button' || info.type === 'submit' || info.type === 'button') && priority < 80) {
+        if (keptButtonCount >= limits.maxButtons) return;
+        keptButtonCount++;
+      }
+
+      seenSelectors.add(info.selector);
+      candidates.push({ ...info, priority });
     });
 
     // 也提取页面上的提示信息（toast、alert、错误提示等）
     const notices = [];
+    const seenNoticeSelectors = new Set();
     document.querySelectorAll(
       '[class*="toast"], [class*="Toast"], [class*="notice"], [class*="Notice"], ' +
       '[class*="alert"], [class*="Alert"], [class*="error"], [class*="Error"], ' +
       '[class*="success"], [class*="Success"], [class*="message"], [class*="Message"], ' +
       '[role="alert"], [role="status"]'
     ).forEach(el => {
-      const text = (el.textContent || '').trim();
-      if (text.length > 0 && text.length < 200 && isVisible(el)) {
-        notices.push({ text, selector: generateSelector(el) });
+      const text = limitText(el.textContent || '', limits.noticeTextLength);
+      const selector = generateSelector(el);
+      if (text.length > 0 && isVisible(el) && selector && !seenNoticeSelectors.has(selector)) {
+        seenNoticeSelectors.add(selector);
+        notices.push({ text, selector });
       }
     });
 
+    candidates.sort((a, b) => b.priority - a.priority);
+    const elements = candidates.slice(0, limits.maxElements).map(({ priority, ...info }) => info);
+
     return {
       url: window.location.href,
-      title: document.title,
+      title: limitText(document.title, 60),
+      snapshotMode: mode,
+      rawElementCount,
       elementCount: elements.length,
       elements,
-      notices,
+      notices: notices.slice(0, limits.maxNotices),
+      truncated: rawElementCount > elements.length || notices.length > limits.maxNotices,
     };
+  }
+
+  function isContextWindowLimitError(error) {
+    const message = String(error || '').toLowerCase();
+    return (
+      message.includes('context window limit') ||
+      message.includes('maximum number of input and output tokens') ||
+      message.includes('tokens exceeded') ||
+      message.includes('code":"5021')
+    );
   }
 
   // ===========================
@@ -303,6 +370,146 @@
     }
   }
 
+  function buildPublishDataHints(publishData) {
+    const hints = {
+      title: [],
+      content: [],
+      schedule: [],
+      tags: [],
+      category: [],
+      media: [],
+    };
+
+    const normalized = publishData && typeof publishData === 'object' ? publishData : {};
+
+    function visit(value, path = '') {
+      if (value == null) return;
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return;
+        const lowerPath = path.toLowerCase();
+        if (/title|caption/.test(lowerPath)) hints.title.push(trimmed);
+        if (/intro|content|description|summary|text/.test(lowerPath)) hints.content.push(trimmed);
+        if (/send_time|schedule|publish.*time|time/.test(lowerPath)) hints.schedule.push(trimmed);
+        if (/tag|topic|keyword/.test(lowerPath)) hints.tags.push(trimmed);
+        if (/category|label/.test(lowerPath)) hints.category.push(trimmed);
+        if (/video|image|cover|thumb|url/.test(lowerPath)) hints.media.push(trimmed);
+        return;
+      }
+
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        const lowerPath = path.toLowerCase();
+        if (/send_set|schedule|timing/.test(lowerPath)) {
+          hints.schedule.push(String(value));
+        }
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${path}[${index}]`));
+        return;
+      }
+
+      if (typeof value === 'object') {
+        Object.entries(value).forEach(([key, child]) => {
+          visit(child, path ? `${path}.${key}` : key);
+        });
+      }
+    }
+
+    visit(normalized);
+
+    Object.keys(hints).forEach(key => {
+      hints[key] = Array.from(new Set(hints[key].filter(Boolean)));
+    });
+
+    return hints;
+  }
+
+  function shouldSkipActionForMissingParam(action, hints) {
+    if (!action || !action.action) {
+      return { skip: true, reason: '动作无效' };
+    }
+
+    if (action.action === 'publish' || action.action === 'upload') {
+      return { skip: false };
+    }
+
+    const haystack = [
+      action.description,
+      action.selector,
+      action.field,
+      action.value,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    const actionValue = typeof action.value === 'string' ? action.value.trim() : action.value;
+    const hasNonEmptyValue = !(
+      actionValue == null ||
+      actionValue === '' ||
+      (Array.isArray(actionValue) && actionValue.length === 0)
+    );
+
+    if ((action.action === 'fill' || action.action === 'fill_rich' || action.action === 'select') && !hasNonEmptyValue) {
+      return { skip: true, reason: '填写/选择动作缺少非空 value' };
+    }
+
+    if (/标题|title|caption/.test(haystack)) {
+      return hints.title.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供标题参数' };
+    }
+
+    if (/简介|正文|描述|内容|summary|intro|content|text/.test(haystack)) {
+      return hints.content.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供正文参数' };
+    }
+
+    if (/定时|发布时间|schedule|time/.test(haystack)) {
+      return hints.schedule.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供定时参数' };
+    }
+
+    if (/标签|话题|topic|tag|keyword/.test(haystack)) {
+      return hints.tags.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供标签/话题参数' };
+    }
+
+    if (/分类|category|label/.test(haystack)) {
+      return hints.category.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供分类参数' };
+    }
+
+    if (/封面|图片|视频|cover|image|video|thumb/.test(haystack)) {
+      return hints.media.length > 0
+        ? { skip: false }
+        : { skip: true, reason: '未提供媒体参数' };
+    }
+
+    return { skip: false };
+  }
+
+  function filterActionsByPublishData(actions, publishData) {
+    const hints = buildPublishDataHints(publishData);
+    const filteredActions = [];
+    const skippedActions = [];
+
+    for (const action of actions || []) {
+      const decision = shouldSkipActionForMissingParam(action, hints);
+      if (decision.skip) {
+        skippedActions.push({ ...action, skipReason: decision.reason });
+        continue;
+      }
+      filteredActions.push(action);
+    }
+
+    return { filteredActions, skippedActions, hints };
+  }
+
   /**
    * 批量执行操作（按步骤顺序，每步间隔 500ms）
    */
@@ -349,8 +556,8 @@
     // Step 1: 提取 DOM 结构
     console.log(`${LOG_PREFIX} 📊 步骤1: 提取页面结构...`);
     await sleep(2000); // 等待页面完全加载
-    const domData = extractPageStructure();
-    console.log(`${LOG_PREFIX} 提取到 ${domData.elementCount} 个可交互元素`);
+    let domData = extractPageStructure('normal');
+    console.log(`${LOG_PREFIX} 提取到 ${domData.elementCount}/${domData.rawElementCount} 个可交互元素 (mode=${domData.snapshotMode})`);
 
     if (domData.elementCount === 0) {
       console.error(`${LOG_PREFIX} ❌ 页面没有找到可交互元素`);
@@ -359,7 +566,14 @@
 
     // Step 2: 调用 AI 分析
     console.log(`${LOG_PREFIX} 🤖 步骤2: AI 分析页面结构...`);
-    const analyzeResult = await window.browserAPI.aiAnalyzePage(domData, publishData);
+    let analyzeResult = await window.browserAPI.aiAnalyzePage(domData, publishData);
+
+    if (!analyzeResult.success && isContextWindowLimitError(analyzeResult.error)) {
+      console.warn(`${LOG_PREFIX} ⚠️ 上下文超限，切换 compact 快照重试...`);
+      domData = extractPageStructure('compact');
+      console.log(`${LOG_PREFIX} compact 模式提取 ${domData.elementCount}/${domData.rawElementCount} 个可交互元素`);
+      analyzeResult = await window.browserAPI.aiAnalyzePage(domData, publishData);
+    }
 
     if (!analyzeResult.success) {
       console.error(`${LOG_PREFIX} ❌ AI 分析失败:`, analyzeResult.error);
@@ -374,9 +588,17 @@
 
     console.log(`${LOG_PREFIX} ✅ AI 识别为: ${aiResult.pageName}, 共 ${aiResult.actions.length} 个操作`);
 
+    const filteredPlan = filterActionsByPublishData(aiResult.actions, publishData);
+    if (filteredPlan.skippedActions.length > 0) {
+      console.log(`${LOG_PREFIX} ⏭️ 因缺少参数跳过 ${filteredPlan.skippedActions.length} 个动作`);
+      filteredPlan.skippedActions.forEach(action => {
+        console.log(`${LOG_PREFIX}   - 跳过 ${action.action} ${action.description || action.selector || ''} | reason=${action.skipReason}`);
+      });
+    }
+
     // Step 3: 执行填写操作
     console.log(`${LOG_PREFIX} ✍️ 步骤3: 执行表单填写...`);
-    const execResult = await executeActions(aiResult.actions);
+    const execResult = await executeActions(filteredPlan.filteredActions);
 
     // 处理文件上传
     if (execResult.uploadFields.length > 0) {
@@ -425,6 +647,7 @@
       publishButton: execResult.publishButton?.selector || null,
       uploadFields: execResult.uploadFields,
       actions: execResult.results,
+      skippedActions: filteredPlan.skippedActions,
     };
   }
 
@@ -467,6 +690,11 @@
   console.log(`${LOG_PREFIX}   __AI_AGENT__.publish({title:'标题', content:'内容'})          // 完整发布`);
   console.log(`${LOG_PREFIX}   __AI_AGENT__.extractDOM()                                     // 查看 DOM`);
   console.log(`${LOG_PREFIX}   __AI_AGENT__.detectResult()                                   // 检测结果`);
+
+  if (window.__AI_PUBLISH_DISABLE_AUTO_START__) {
+    console.log(`${LOG_PREFIX} ⏸️ 检测到禁用自动流程标记，仅暴露 API，不自动接管发布流程`);
+    return;
+  }
 
   // ===========================
   // 5. 页面跳转拦截

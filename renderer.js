@@ -15,6 +15,16 @@ if (window.electronAPI && window.electronAPI.onMainLog) {
 
 // ========== 公共头部显示/隐藏 ==========
 const commonHeader = document.getElementById('__browser_common_header__');
+const globalLoadingMask = document.getElementById('__global_loading_mask__');
+const globalLoadingText = globalLoadingMask ? globalLoadingMask.querySelector('.loading-text') : null;
+
+function setGlobalLoadingMask(visible, text) {
+  if (!globalLoadingMask) return;
+  if (typeof text === 'string' && globalLoadingText) {
+    globalLoadingText.textContent = text;
+  }
+  globalLoadingMask.classList.toggle('show', visible);
+}
 
 // 初始化时检查是否需要隐藏头部
 (async () => {
@@ -39,6 +49,13 @@ if (window.electronAPI && window.electronAPI.onToggleHeader) {
     if (commonHeader) {
       commonHeader.style.display = show ? 'flex' : 'none';
     }
+  });
+}
+
+if (window.electronAPI && window.electronAPI.onGlobalLoadingStateChanged) {
+  window.electronAPI.onGlobalLoadingStateChanged(({ visible, text }) => {
+    console.log('[Loading] 收到全局加载状态:', visible, text || '');
+    setGlobalLoadingMask(visible, text);
   });
 }
 

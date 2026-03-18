@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUrlChanged: (callback) => ipcRenderer.on('url-changed', (event, url) => callback(url)),
   onToggleHeader: (callback) => ipcRenderer.on('toggle-header', (event, show) => callback(show)),
   onMainLog: (callback) => ipcRenderer.on('main-log', (event, msg) => callback(msg)),
+  onGlobalLoadingStateChanged: (callback) => ipcRenderer.on('global-loading-state-changed', (event, payload) => callback(payload)),
 
   // 消息通信
   sendToContent: (message) => ipcRenderer.send('main-to-content', message),

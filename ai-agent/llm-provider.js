@@ -48,6 +48,7 @@ class LLMProvider {
     const provider = config.provider || 'groq';
     const preset = PRESET_PROVIDERS[provider] || PRESET_PROVIDERS.custom;
 
+    this.providerKey = provider;
     this.providerName = preset.name;
     // Cloudflare 需要用 accountId 动态拼接 baseUrl
     if (provider === 'cloudflare' && config.accountId) {
@@ -58,6 +59,7 @@ class LLMProvider {
     this.apiKey = config.apiKey || '';
     this.model = config.model || preset.defaultModel;
     this.timeout = config.timeout || 30000; // 30秒超时
+    this.maxRetries = config.maxRetries || 2;
   }
 
   /**
@@ -84,7 +86,7 @@ class LLMProvider {
     const startTime = Date.now();
 
     try {
-      const response = await this._request(url, body);
+      const response = await this._requestWithRetry(url, body);
       const elapsed = Date.now() - startTime;
       console.log(`[AI Agent] ✅ 响应成功，耗时 ${elapsed}ms`);
 
@@ -102,6 +104,52 @@ class LLMProvider {
   /**
    * 发送 HTTP 请求
    */
+  async _requestWithRetry(url, body) {
+    let lastError = null;
+    const maxAttempts = Math.max(1, this.maxRetries + 1);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (attempt > 1) {
+          console.warn(`[AI Agent] 第 ${attempt}/${maxAttempts} 次重试 ${this.providerName} 请求...`);
+        }
+        return await this._request(url, body);
+      } catch (error) {
+        lastError = error;
+        if (!this._shouldRetryNetworkError(error) || attempt >= maxAttempts) {
+          throw this._decorateRequestError(error);
+        }
+        await this._sleep(800 * attempt);
+      }
+    }
+
+    throw this._decorateRequestError(lastError);
+  }
+
+  _shouldRetryNetworkError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+      message.includes('client network socket disconnected') ||
+      message.includes('econnreset') ||
+      message.includes('etimedout') ||
+      message.includes('socket hang up') ||
+      message.includes('network socket') ||
+      message.includes('secure tls connection')
+    );
+  }
+
+  _decorateRequestError(error) {
+    const message = String(error?.message || error || '');
+    if (this.providerKey === 'cloudflare' && this._shouldRetryNetworkError(error)) {
+      return new Error(`${message}；Cloudflare Workers AI 网络/TLS 握手失败，通常是代理/VPN 或直连链路问题，不是 API Key 格式错误`);
+    }
+    return error instanceof Error ? error : new Error(message);
+  }
+
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   _request(url, body) {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);

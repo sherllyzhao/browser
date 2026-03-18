@@ -15,6 +15,9 @@ const ANALYZE_PAGE_PROMPT = `你是一个网页表单自动化助手。你的任
 7. 如果有文件上传区域（视频/图片），action 设为 "upload"，标注 field 字段名
 8. 忽略不相关的元素（导航栏、侧边栏、广告等）
 9. 如果页面不是表单/发布页面，返回 {"isForm": false, "reason": "原因说明"}
+10. 只能为“发布数据中明确存在且非空”的字段生成 fill / fill_rich / select / check / click 动作
+11. 如果某个字段没有对应参数，禁止为了“清空”“占位”“默认值”去点击或填写相关 DOM
+12. publish 动作可以保留在最后，但前置字段动作必须严格受发布参数约束
 
 ## 返回格式
 {
@@ -62,7 +65,7 @@ function buildAnalyzeMessages(domData, publishData) {
     { role: 'system', content: ANALYZE_PAGE_PROMPT },
     {
       role: 'user',
-      content: `## 页面 DOM 结构\n\`\`\`json\n${JSON.stringify(domData, null, 2)}\n\`\`\`\n\n## 需要填写的发布数据\n\`\`\`json\n${JSON.stringify(simplifiedData, null, 2)}\n\`\`\``
+      content: `页面DOM结构:${JSON.stringify(domData)}\n发布数据:${JSON.stringify(simplifiedData)}`
     }
   ];
 }
@@ -77,7 +80,7 @@ function buildDetectMessages(domData) {
     { role: 'system', content: DETECT_RESULT_PROMPT },
     {
       role: 'user',
-      content: `## 点击发布后的页面状态\n\`\`\`json\n${JSON.stringify(domData, null, 2)}\n\`\`\``
+      content: `点击发布后的页面状态:${JSON.stringify(domData)}`
     }
   ];
 }
@@ -88,20 +91,79 @@ function buildDetectMessages(domData) {
 function simplifyPublishData(data) {
   if (!data) return {};
   const result = {};
-  const keepFields = [
+  const MAX_STRING_LENGTH = 500;
+  const MAX_ARRAY_ITEMS = 10;
+  const keepLeafFields = [
     'title', 'content', 'description', 'intro', 'tags', 'keywords',
     'category', 'cover', 'video_url', 'image_urls', 'sendlog',
-    'video', 'article', 'text', 'summary', 'topic', 'topics'
+    'text', 'summary', 'topic', 'topics', 'send_time', 'send_set',
+    'url', 'label', 'caption'
   ];
+
+  function truncateString(value) {
+    const str = String(value || '');
+    return str.length > MAX_STRING_LENGTH ? `${str.slice(0, MAX_STRING_LENGTH)}...` : str;
+  }
+
+  function isRelevantMediaPath(path, key) {
+    const lowerPath = `${path}.${key}`.toLowerCase();
+    return (
+      lowerPath.includes('video') ||
+      lowerPath.includes('image') ||
+      lowerPath.includes('cover') ||
+      lowerPath.includes('thumb')
+    );
+  }
+
+  function shouldKeepPrimitive(key, path) {
+    const lowerKey = key.toLowerCase();
+    if (keepLeafFields.includes(lowerKey)) {
+      if (lowerKey === 'url') {
+        return isRelevantMediaPath(path, key);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function normalizeArray(arr) {
+    return arr
+      .slice(0, MAX_ARRAY_ITEMS)
+      .map(item => {
+        if (item == null) return null;
+        if (typeof item === 'string') return truncateString(item);
+        if (typeof item === 'number' || typeof item === 'boolean') return item;
+        return null;
+      })
+      .filter(item => item !== null);
+  }
 
   function extract(obj, prefix = '') {
     if (!obj || typeof obj !== 'object') return;
     for (const [key, value] of Object.entries(obj)) {
-      const lowerKey = key.toLowerCase();
-      if (keepFields.some(f => lowerKey.includes(f))) {
-        result[prefix ? `${prefix}.${key}` : key] = value;
-      } else if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
-        extract(value, prefix ? `${prefix}.${key}` : key);
+      const path = prefix ? `${prefix}.${key}` : key;
+
+      if (value == null) continue;
+
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        if (shouldKeepPrimitive(key, prefix)) {
+          result[path] = typeof value === 'string' ? truncateString(value) : value;
+        }
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        if (shouldKeepPrimitive(key, prefix)) {
+          const normalized = normalizeArray(value);
+          if (normalized.length > 0) {
+            result[path] = normalized;
+          }
+        }
+        continue;
+      }
+
+      if (typeof value === 'object') {
+        extract(value, path);
       }
     }
   }
