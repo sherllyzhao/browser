@@ -91,7 +91,7 @@
   "devDependencies": {
     "cross-env": "^10.1.0",
     "electron": "^21.4.4",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
     "fs-extra": "^11.2.0"

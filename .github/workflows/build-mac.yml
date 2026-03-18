@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-12
+    runs-on: macos-15
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: false
@@ -42,10 +42,14 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Prepare macOS icon
         run: |
-          # icon.png is actually an ICO file, need to extract and resize for macOS
-          # Extract the 256x256 PNG from ICO, then upscale to 1024x1024
+          # Extract the largest PNG from ICO, then upscale to 1024x1024
           python3 -c "
           import struct
           with open('icon.ico', 'rb') as f:
