@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-13
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: false
