@@ -297,6 +297,716 @@ function shouldSkipScriptInjection(url = '') {
 }
 
 const childWindows = []; // 跟踪所有打开的子窗口
+const toutiaoBarePublishState = new Map();
+
+function firstNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const nested = firstNonEmptyValue(...value);
+      if (nested) return nested;
+      continue;
+    }
+    if (typeof value === 'object') {
+      const nested = firstNonEmptyValue(
+        value.url,
+        value.src,
+        value.uri,
+        value.href,
+        value.origin,
+        value.value,
+        value.path,
+        value.file_url
+      );
+      if (nested) return nested;
+      continue;
+    }
+    return String(value);
+  }
+  return '';
+}
+
+function extractToutiaoCoverUrl(publishData = {}) {
+  const element = publishData?.element || {};
+  const video = publishData?.video?.video || {};
+  const formData = publishData?.video?.formData || {};
+  const sendlog = video?.sendlog || element?.sendlog || {};
+
+  return firstNonEmptyValue(
+    video.cover,
+    video.cover_url,
+    video.coverUrl,
+    video.cover_uri,
+    video.thumb_uri,
+    video.thumb,
+    video.thumb_url,
+    video.poster,
+    video.poster_url,
+    video.url,
+    formData.cover,
+    formData.cover_url,
+    formData.coverUrl,
+    formData.cover_uri,
+    formData.thumb_uri,
+    formData.thumb_url,
+    formData.url,
+    element.cover,
+    element.cover_url,
+    element.coverUrl,
+    element.cover_uri,
+    element.thumb_uri,
+    element.thumb_url,
+    element.thumb,
+    element.poster,
+    element.poster_url,
+    element.image,
+    element.image_url,
+    element.imageUrl,
+    element.url,
+    element.pic,
+    element.pic_url,
+    element.pics,
+    element.images,
+    element.covers,
+    sendlog.cover,
+    sendlog.cover_url,
+    sendlog.coverUrl,
+    sendlog.thumb_uri,
+    sendlog.image,
+    sendlog.images
+  );
+}
+
+function extractToutiaoPublishPayload(publishData = {}) {
+  return {
+    rawTitle: publishData?.video?.video?.title || publishData?.element?.title || '',
+    intro: publishData?.video?.video?.intro || publishData?.element?.intro || '',
+    rawContent: publishData?.video?.video?.content || publishData?.element?.content || '',
+    cover: extractToutiaoCoverUrl(publishData),
+    sendSet: publishData?.video?.formData?.send_set ?? publishData?.element?.formData?.send_set ?? 1,
+    sendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || '',
+    publishId: publishData?.video?.dyPlatform?.id || publishData?.element?.id || '',
+    rawSendSet: publishData?.video?.formData?.send_set ?? publishData?.element?.formData?.send_set,
+    rawSendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || ''
+  };
+}
+
+async function waitForToutiaoPublishData(windowId, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const publishData = globalStorage[`publish_data_window_${windowId}`];
+    if (publishData) {
+      return publishData;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return null;
+}
+
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
+
+function downloadImageAsBase64(downloadUrl, redirectCount = 0) {
+  return new Promise((resolve) => {
+    if (!downloadUrl) {
+      resolve({ success: false, error: 'No URL provided' });
+      return;
+    }
+
+    if (redirectCount > 5) {
+      resolve({ success: false, error: 'Too many redirects' });
+      return;
+    }
+
+    const protocol = downloadUrl.startsWith('https') ? https : http;
+    const request = protocol.get(downloadUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        let redirectUrl = response.headers.location;
+        if (!redirectUrl.startsWith('http')) {
+          const urlObj = new URL(downloadUrl);
+          redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+        }
+        resolve(downloadImageAsBase64(redirectUrl, redirectCount + 1));
+        return;
+      }
+
+      if (response.statusCode !== 200) {
+        resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
+        return;
+      }
+
+      const contentLength = parseInt(response.headers['content-length'], 10);
+      if (contentLength && contentLength > MAX_IMAGE_SIZE) {
+        response.destroy();
+        resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB` });
+        return;
+      }
+
+      const chunks = [];
+      let totalSize = 0;
+      const contentType = response.headers['content-type'] || 'image/jpeg';
+
+      response.on('data', (chunk) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_IMAGE_SIZE) {
+          response.destroy();
+          resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      response.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve({
+          success: true,
+          data: buffer.toString('base64'),
+          contentType,
+          size: buffer.length
+        });
+      });
+
+      response.on('error', (err) => {
+        resolve({ success: false, error: err.message });
+      });
+    });
+
+    request.on('error', (err) => {
+      resolve({ success: false, error: err.message });
+    });
+
+    request.setTimeout(30000, () => {
+      request.destroy();
+      resolve({ success: false, error: 'Download timeout (30s)' });
+    });
+  });
+}
+
+function postMessageToHomePages(message) {
+  const messageStr = JSON.stringify(message);
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    browserView.webContents.executeJavaScript(`
+      (function() {
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
+        const currentUrl = window.location.href;
+        const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+        if (isHome) {
+          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+        }
+      })();
+    `).catch(err => console.error('[Toutiao Bare Publish] Failed to notify BrowserView:', err));
+  }
+
+  childWindows.forEach((childWindow, index) => {
+    if (childWindow && !childWindow.isDestroyed()) {
+      childWindow.webContents.executeJavaScript(`
+        (function() {
+          const homeUrls = ${JSON.stringify(HOME_URLS)};
+          const currentUrl = window.location.href;
+          const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+          if (isHome) {
+            window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+          }
+        })();
+      `).catch(err => console.error(`[Toutiao Bare Publish] Failed to notify child window ${index}:`, err));
+    }
+  });
+}
+
+function buildToutiaoBarePublishScript(payload) {
+  return `
+    (async () => {
+      const payload = ${JSON.stringify(payload)};
+      const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const textOf = (el) => (el?.textContent || '').trim();
+      const visible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return true;
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (Number(style.opacity || '1') === 0) return false;
+        return true;
+      };
+      const parsePlainTextFromHtml = (html) => {
+        if (!html) return '';
+        if (typeof html !== 'string') return String(html);
+        if (!/[<>]/.test(html)) return html.trim();
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        return (temp.innerText || temp.textContent || '').trim();
+      };
+      const normalizeTitle = (title) => {
+        const clean = String(title || '').trim();
+        return clean || '测试文章';
+      };
+      const normalizeContent = (content, intro, title) => {
+        const contentText = parsePlainTextFromHtml(content).trim();
+        if (contentText) return contentText;
+        const introText = parsePlainTextFromHtml(intro).trim();
+        if (introText) return introText;
+        return String(title || '测试文章').trim() || '测试文章';
+      };
+      const setNativeValue = (el, value) => {
+        const proto = el.tagName.toLowerCase() === 'textarea'
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        const prev = el.value;
+        if (setter) setter.call(el, value);
+        else el.value = value;
+        if (el._valueTracker) el._valueTracker.setValue(prev);
+      };
+      const findTitleInput = () => {
+        const selectors = [
+          'textarea[placeholder*="请输入文章标题"]',
+          'textarea[placeholder*="文章标题"]',
+          'textarea[placeholder*="标题"]',
+          'input[placeholder*="标题"]'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(document.querySelectorAll(selector));
+          const target = list.find(el => visible(el) && el.getBoundingClientRect().width > 120);
+          if (target) return target;
+          if (list[0]) return list[0];
+        }
+        return null;
+      };
+      const findEditor = () => {
+        const list = Array.from(document.querySelectorAll('.ProseMirror, [contenteditable="true"]')).filter(el => !el.closest('input, textarea'));
+        return list.find(visible) || list[0] || null;
+      };
+      const findButton = (matcher, allowHidden = false) => {
+        const list = Array.from(document.querySelectorAll('button')).filter(btn => matcher(textOf(btn), btn));
+        if (list.length === 0) return null;
+        const target = list.find(visible);
+        if (target) return target;
+        return allowHidden ? list[0] : null;
+      };
+      const clickButton = (btn) => {
+        if (!btn) return false;
+        try { btn.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+        btn.click();
+        return true;
+      };
+      const readToast = () => {
+        const selectors = [
+          '.byte-message-notice-content-text',
+          '.byte-message-content',
+          '.semi-toast-content-text',
+          '.arco-message-content'
+        ];
+        for (const selector of selectors) {
+          const el = document.querySelector(selector);
+          const text = textOf(el);
+          if (text && text.length < 180) return text;
+        }
+        return '';
+      };
+      const findVisibleHint = () => {
+        const selectors = [
+          '.byte-form-item-help',
+          '.byte-form-item-msg',
+          '.byte-form-item-explain',
+          '.byte-message-content',
+          '.byte-message-notice-content-text',
+          '.semi-toast-content-text',
+          '.arco-message-content',
+          '[class*="error"]',
+          '[class*="hint"]',
+          '[class*="tips"]'
+        ];
+        for (const selector of selectors) {
+          const nodes = document.querySelectorAll(selector);
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const text = textOf(el);
+            if (!text || text.length > 180) continue;
+            if (/标题不能为空|还需输入|封面|失败|错误|请先|违规|超限|驳回/.test(text)) return text;
+          }
+        }
+        return '';
+      };
+      const findCoverUploadError = () => {
+        const selectors = [
+          '.pic-select-image-item.size-err',
+          '.pic-select-image-item .size-err',
+          '.pic-select-image-item .error',
+          '[class*="size-err"]',
+          '[class*="image-item-error"]'
+        ];
+        for (const selector of selectors) {
+          const nodes = document.querySelectorAll(selector);
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const text = textOf(el) || textOf(el.parentElement) || '';
+            if (!text) continue;
+            if (/尺寸过小|尺寸不足|图片过小|分辨率过低|上传失败|格式不支持|封面.*失败/.test(text)) {
+              return text;
+            }
+          }
+        }
+        return '';
+      };
+      const isPreviewLayerVisible = () => {
+        const signals = ['仅支持预览', '返回编辑', '确认发布', '立即发布'];
+        return Array.from(document.querySelectorAll('button,div,span,p')).some(el => {
+          if (!visible(el)) return false;
+          const text = textOf(el);
+          return text && signals.some(signal => text.includes(signal));
+        });
+      };
+      const findVisibleButtonByText = (buttonText) => {
+        return Array.from(document.querySelectorAll('button')).find(btn => visible(btn) && textOf(btn) === buttonText) || null;
+      };
+      const ensureCoverFile = async () => {
+        if (!payload.coverData || !payload.coverContentType) {
+          return null;
+        }
+        const binary = atob(payload.coverData);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        let ext = '.jpg';
+        const contentType = String(payload.coverContentType || 'image/jpeg').toLowerCase();
+        if (contentType.includes('png')) ext = '.png';
+        if (contentType.includes('webp')) ext = '.webp';
+        if (contentType.includes('gif')) ext = '.gif';
+        if (contentType.includes('bmp')) ext = '.bmp';
+        return new File([bytes], 'toutiao-cover' + ext, { type: payload.coverContentType });
+      };
+      const waitForCoverReady = async (timeoutMs = 12000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          const coverError = findCoverUploadError();
+          if (coverError) {
+            return { ready: false, error: coverError };
+          }
+          const ready = !!document.querySelector(
+            '.article-cover-images img, .article-cover img, [class*="cover"] img, .article-cover-images [class*="uploaded"], .article-cover-images [class*="image"]'
+          ) || !!Array.from(document.querySelectorAll('.article-cover-images button, .article-cover button, .article-cover-images div'))
+            .find(el => /编辑|替换|预览/.test(textOf(el)));
+          if (ready) return { ready: true, error: '' };
+          await delay(600);
+        }
+        return { ready: false, error: findCoverUploadError() };
+      };
+      const tryUploadCover = async (coverUrl, title) => {
+        const coverRoot = document.querySelector('.article-cover, .pgc-edit-cell .edit-label');
+        if (coverRoot && coverRoot.scrollIntoView) {
+          coverRoot.scrollIntoView({ behavior: 'auto', block: 'center' });
+          await delay(250);
+        }
+        const coverTrigger = Array.from(document.querySelectorAll('.article-cover-add, [class*="cover-add"]')).find(visible);
+        if (!coverTrigger) return { ok: false, reason: 'cover-trigger-not-found' };
+        coverTrigger.click();
+        await delay(900);
+        const fileInput = Array.from(document.querySelectorAll('input[type="file"]')).find(el => {
+          const accept = (el.getAttribute('accept') || '').toLowerCase();
+          return accept.includes('image') || accept.includes('png') || accept.includes('jpg') || accept === 'image/*';
+        }) || document.querySelector('input[type="file"]');
+        if (!fileInput) return { ok: false, reason: 'cover-file-input-not-found' };
+        const file = await ensureCoverFile();
+        if (!file) return { ok: false, reason: coverUrl ? 'cover-download-failed' : 'cover-missing' };
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        await delay(1200);
+        const modalConfirmBtn = findButton((t) => t === '确定' || t === '完成' || t === '使用', true);
+        if (modalConfirmBtn && !modalConfirmBtn.disabled) {
+          clickButton(modalConfirmBtn);
+          await delay(1000);
+        }
+        const coverState = await waitForCoverReady(12000);
+        if (!coverState.ready) {
+          return {
+            ok: false,
+            reason: coverState.error ? 'cover-invalid' : 'cover-not-ready',
+            hint: coverState.error || findVisibleHint()
+          };
+        }
+        return { ok: true };
+      };
+      const trySetSchedule = async (sendSet, sendTime) => {
+        if (+sendSet !== 2 || !sendTime) return { ok: true, skipped: true };
+        const scheduleToggle = Array.from(document.querySelectorAll('label, span, button, div')).find(el => {
+          const text = (el.textContent || '').trim();
+          return text.includes('定时发布');
+        });
+        if (scheduleToggle) {
+          scheduleToggle.click();
+          await delay(500);
+        }
+        const timeInput = Array.from(document.querySelectorAll('input')).find(el => {
+          const ph = (el.placeholder || '') + (el.getAttribute('aria-label') || '');
+          return ph.includes('时间') || ph.includes('日期') || ph.includes('发布时间');
+        });
+        if (!timeInput) return { ok: false, reason: 'schedule-input-not-found' };
+        setNativeValue(timeInput, sendTime);
+        timeInput.dispatchEvent(new Event('input', { bubbles: true }));
+        timeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        await delay(500);
+        return { ok: true };
+      };
+
+      const title = normalizeTitle(payload.rawTitle);
+      const content = normalizeContent(payload.rawContent, payload.intro, title);
+      const logs = [];
+      const push = (step, extra = {}) => logs.push({ step, ...extra, ts: Date.now() });
+      push('start', {
+        href: location.href,
+        title,
+        cover: payload.cover || '',
+        sendSet: payload.sendSet,
+        sendTime: payload.sendTime,
+        rawSendSet: payload.rawSendSet,
+        rawSendTime: payload.rawSendTime
+      });
+
+      const readyStart = Date.now();
+      let titleInput = null;
+      let editor = null;
+      while (Date.now() - readyStart < 120000) {
+        titleInput = findTitleInput();
+        editor = findEditor();
+        if (titleInput && editor) break;
+        await delay(1000);
+      }
+      if (!titleInput || !editor) {
+        return { success: false, reason: 'editor-not-ready', href: location.href, logs };
+      }
+
+      titleInput.focus();
+      setNativeValue(titleInput, title);
+      try {
+        titleInput.dispatchEvent(new InputEvent('beforeinput', {
+          bubbles: true, cancelable: true, inputType: 'insertText', data: title
+        }));
+      } catch (_) {}
+      titleInput.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: title
+      }));
+      titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+      titleInput.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+      await delay(900);
+      push('title-filled', { value: titleInput.value || '' });
+
+      editor.focus();
+      editor.innerHTML = '';
+      for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        editor.appendChild(p);
+      }
+      editor.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: content
+      }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      editor.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+      await delay(900);
+      push('content-filled', { length: (editor.innerText || '').trim().length });
+
+      const coverResult = await tryUploadCover(payload.cover, title);
+      push('cover-finished', coverResult);
+      if (!coverResult.ok) {
+        return { success: false, reason: coverResult.reason || 'cover-failed', hint: coverResult.hint || '', href: location.href, logs };
+      }
+
+      const scheduleResult = await trySetSchedule(payload.sendSet, payload.sendTime);
+      push('schedule-finished', scheduleResult);
+
+      let publishBtn = null;
+      for (let i = 0; i < 8; i++) {
+        publishBtn =
+          findButton((t) => t === '预览并发布' || t === '发布' || t.includes('发布文章'), true) ||
+          document.querySelector('button.publish-btn-last, button[class*="publish-btn-last"]');
+        if (publishBtn && !publishBtn.disabled) break;
+        await delay(600);
+      }
+      if (!publishBtn) {
+        return { success: false, reason: 'publish-btn-not-found', hint: findVisibleHint(), href: location.href, logs };
+      }
+
+      clickButton(publishBtn);
+      push('publish-clicked', { text: textOf(publishBtn) });
+      await delay(1200);
+
+      let previewReady = false;
+      for (let i = 0; i < 20; i++) {
+        const backBtn = findVisibleButtonByText('返回编辑');
+        const previewHint = isPreviewLayerVisible();
+        if (backBtn || previewHint) {
+          previewReady = true;
+          push('preview-ready', { attempt: i + 1, hasBackBtn: !!backBtn, previewHint });
+          break;
+        }
+        await delay(400);
+      }
+
+      let secondConfirmed = false;
+      for (let i = 0; i < 30; i++) {
+        const confirmBtn = findVisibleButtonByText('确认发布') || findVisibleButtonByText('立即发布');
+        if (confirmBtn && !confirmBtn.disabled) {
+          clickButton(confirmBtn);
+          push('secondary-confirm-clicked', { text: textOf(confirmBtn), attempt: i + 1 });
+          secondConfirmed = true;
+          await delay(1000);
+          break;
+        }
+        await delay(400);
+      }
+      if (!secondConfirmed) {
+        push('secondary-confirm-missing', { previewReady, hint: findVisibleHint() });
+      }
+
+      const resultStart = Date.now();
+      const timeout = 80000;
+      let lastToast = '';
+      while (Date.now() - resultStart < timeout) {
+        await delay(1200);
+        const href = location.href;
+        if (href.includes('/profile_v4/graphic/manage') || href.includes('/profile_v4/graphic/articles')) {
+          return { success: true, reason: 'list-page', href, logs, publishId: payload.publishId };
+        }
+        const toast = readToast();
+        if (toast) {
+          lastToast = toast;
+          if (/发布成功|提交成功|成功/.test(toast)) {
+            return { success: true, reason: 'toast-success', toast, href, logs, publishId: payload.publishId };
+          }
+          if (/失败|错误|异常|不能为空|请先|违规|超限|驳回/.test(toast)) {
+            return { success: false, reason: 'toast-failed', toast, href, logs, publishId: payload.publishId };
+          }
+        }
+        const hint = findVisibleHint();
+        if (hint) {
+          return { success: false, reason: 'validation-hint', hint, href, logs, publishId: payload.publishId };
+        }
+      }
+
+      return {
+        success: false,
+        reason: isPreviewLayerVisible() ? 'need-secondary-confirm' : 'timeout',
+        toast: lastToast,
+        hint: findVisibleHint(),
+        href: location.href,
+        logs,
+        publishId: payload.publishId
+      };
+    })()
+  `;
+}
+
+async function maybeRunBareToutiaoPublish(targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  const currentURL = targetWindow.webContents.getURL();
+  if (!shouldSkipScriptInjection(currentURL) || !currentURL.includes('/profile_v4/graphic/publish')) {
+    return;
+  }
+
+  const windowId = targetWindow.id;
+  const state = toutiaoBarePublishState.get(windowId);
+  if (state === 'running' || state === 'done') {
+    return;
+  }
+
+  toutiaoBarePublishState.set(windowId, 'running');
+  try {
+    const publishData = await waitForToutiaoPublishData(windowId, 15000);
+    if (!publishData) {
+      console.warn(`[Toutiao Bare Publish] ⚠️ 未找到窗口 ${windowId} 的发布数据`);
+      toutiaoBarePublishState.set(windowId, 'idle');
+      return;
+    }
+
+    const payload = extractToutiaoPublishPayload(publishData);
+    if (payload.cover) {
+      const coverDownload = await downloadImageAsBase64(payload.cover);
+      if (!coverDownload.success) {
+        console.error('[Toutiao Bare Publish] ❌ 封面下载失败:', {
+          windowId,
+          cover: payload.cover,
+          error: coverDownload.error
+        });
+        postMessageToHomePages({
+          type: 'toutiao-bare-publish-result',
+          data: {
+            windowId,
+            success: false,
+            reason: 'cover-download-failed',
+            toast: '',
+            hint: `封面下载失败: ${coverDownload.error || 'unknown error'}`,
+            href: currentURL,
+            publishId: payload.publishId || '',
+            timestamp: Date.now()
+          }
+        });
+        toutiaoBarePublishState.set(windowId, 'failed');
+        return;
+      }
+      payload.coverData = coverDownload.data;
+      payload.coverContentType = coverDownload.contentType || 'image/jpeg';
+      payload.coverSize = coverDownload.size || 0;
+    }
+    console.log('[Toutiao Bare Publish] 开始自动发布:', {
+      windowId,
+      title: payload.rawTitle,
+      cover: payload.cover,
+      coverSize: payload.coverSize || 0,
+      sendSet: payload.sendSet,
+      sendTime: payload.sendTime,
+      rawSendSet: payload.rawSendSet,
+      rawSendTime: payload.rawSendTime
+    });
+
+    const result = await targetWindow.webContents.executeJavaScript(buildToutiaoBarePublishScript(payload), true);
+    console.log('[Toutiao Bare Publish] 执行结果:', { windowId, result });
+
+    postMessageToHomePages({
+      type: 'toutiao-bare-publish-result',
+      data: {
+        windowId,
+        success: !!result?.success,
+        reason: result?.reason || '',
+        toast: result?.toast || '',
+        hint: result?.hint || '',
+        href: result?.href || currentURL,
+        publishId: payload.publishId || '',
+        timestamp: Date.now()
+      }
+    });
+
+    if (result?.success) {
+      toutiaoBarePublishState.set(windowId, 'done');
+      setTimeout(() => {
+        if (!targetWindow.isDestroyed()) {
+          targetWindow.close();
+        }
+      }, 1200);
+      return;
+    }
+
+    toutiaoBarePublishState.set(windowId, 'failed');
+  } catch (err) {
+    console.error(`[Toutiao Bare Publish] ❌ 窗口 ${windowId} 自动发布失败:`, err);
+    toutiaoBarePublishState.set(windowId, 'failed');
+  }
+}
 
 // ===========================
 // 单实例锁定 - 确保只运行一个浏览器实例
@@ -1527,6 +2237,18 @@ function createWindow() {
   // 监听用户点击链接（在导航开始前触发，可捕获原始目标 URL）
   browserView.webContents.on('will-navigate', (event, url) => {
     console.log(`[Navigation] 用户点击链接 → ${url}`);
+    if (shouldSkipScriptInjection(url)) {
+      console.log('[Navigation] 🧼 主 BrowserView 命中 Toutiao，改为裸窗口打开:', url);
+      event.preventDefault();
+      pendingNavigationUrl = null;
+      setImmediate(async () => {
+        const result = await openManagedChildWindow(url);
+        if (!result.success) {
+          console.error('[Navigation] ❌ 打开 Toutiao 裸窗口失败:', result.error);
+        }
+      });
+      return;
+    }
     // 记录用户点击的目标 URL（即使会被重定向）
     if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
@@ -2091,6 +2813,7 @@ function createWindow() {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
+      toutiaoBarePublishState.delete(windowId);
     });
 
     // 开发环境自动打开 DevTools
@@ -2112,6 +2835,7 @@ function createWindow() {
       console.log('[New Window] Page loaded:', currentURL);
       if (shouldSkipScriptInjection(currentURL)) {
         console.log('[New Window] Skip script injection for Toutiao:', currentURL);
+        await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
       await injectScriptForUrl(newWindow.webContents, currentURL);
@@ -2122,6 +2846,7 @@ function createWindow() {
       console.log('[New Window] SPA Navigation:', url);
       if (shouldSkipScriptInjection(url)) {
         console.log('[New Window] Skip script injection for Toutiao:', url);
+        await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
       await injectScriptForUrl(newWindow.webContents, url);
@@ -2958,9 +3683,14 @@ ipcMain.handle('native-click', async (event, x, y) => {
 
 // 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
+  if (shouldSkipScriptInjection(url)) {
+    return openManagedChildWindow(url);
+  }
   if (browserView) {
     browserView.webContents.loadURL(url);
+    return { success: true };
   }
+  return { success: false, error: 'No browser view available' };
 });
 
 // 导航到登录页
@@ -3927,10 +4657,10 @@ ipcMain.handle('show-company-menu', async (event, companies, currentUniqueId) =>
   });
 });
 
-// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
+// 统一的新窗口创建逻辑
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
 // options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）
-ipcMain.handle('open-new-window', async (event, url, options = {}) => {
+async function openManagedChildWindow(url, options = {}) {
   if (!url) {
     return { success: false, error: 'No URL provided' };
   }
@@ -4232,6 +4962,22 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
+    const publishDataKey = `publish_data_window_${newWindow.id}`;
+    if (isBareToutiao) {
+      if (globalStorage[publishDataKey]) {
+        delete globalStorage[publishDataKey];
+        console.log(`[Window Manager] 🧹 清理头条窗口旧发布数据: ${publishDataKey}`);
+      }
+      if (options.publishData && typeof options.publishData === 'object') {
+        globalStorage[publishDataKey] = {
+          ...options.publishData,
+          windowId: newWindow.id,
+          createdAt: options.publishData.createdAt || Date.now()
+        };
+        console.log(`[Window Manager] ✅ 已预写入头条发布数据: ${publishDataKey}`);
+      }
+      saveGlobalStorage();
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -4316,6 +5062,12 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
+      }
+      toutiaoBarePublishState.delete(windowId);
+      if (isBareToutiao && globalStorage[publishDataKey]) {
+        delete globalStorage[publishDataKey];
+        saveGlobalStorage();
+        console.log(`[Window Manager] 🧹 已清理头条发布数据: ${publishDataKey}`);
       }
       // 清理窗口账号映射
       if (windowAccountMap.has(windowId)) {
@@ -4434,6 +5186,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
       if (shouldSkipScriptInjection(currentURL)) {
         console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
+        await maybeRunBareToutiaoPublish(newWindow);
       } else {
         await injectScriptForUrl(newWindow.webContents, currentURL);
       }
@@ -4444,6 +5197,7 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
       if (shouldSkipScriptInjection(navUrl)) {
         console.log('[New Window API] Skip script injection for Toutiao:', navUrl);
+        await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
       const script = await scriptManager.getScript(navUrl);
@@ -4535,6 +5289,11 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+}
+
+// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
+ipcMain.handle('open-new-window', async (event, url, options = {}) => {
+  return openManagedChildWindow(url, options);
 });
 
 // 从内容页面在当前窗口打开 URL
@@ -4544,6 +5303,9 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
   }
 
   try {
+    if (shouldSkipScriptInjection(url)) {
+      return openManagedChildWindow(url);
+    }
     if (browserView) {
       browserView.webContents.loadURL(url);
       return { success: true };
@@ -5195,8 +5957,6 @@ ipcMain.handle('download-video', async (event, url) => {
 });
 
 // ========== 图片下载功能（通过主进程绕过跨域限制） ==========
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
-
 ipcMain.handle('download-image', async (event, url) => {
   console.log('[Image Download] 开始下载:', url);
 
@@ -5204,91 +5964,8 @@ ipcMain.handle('download-image', async (event, url) => {
     return { success: false, error: 'No URL provided' };
   }
 
-  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
-    return new Promise((resolve) => {
-      if (redirectCount > 5) {
-        resolve({ success: false, error: 'Too many redirects' });
-        return;
-      }
-
-      const protocol = downloadUrl.startsWith('https') ? https : http;
-
-      const request = protocol.get(downloadUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      }, (response) => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          let redirectUrl = response.headers.location;
-          if (!redirectUrl.startsWith('http')) {
-            const urlObj = new URL(downloadUrl);
-            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
-          }
-          console.log('[Image Download] 重定向到:', redirectUrl);
-          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
-          return;
-        }
-
-        if (response.statusCode !== 200) {
-          resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
-          return;
-        }
-
-        const contentLength = parseInt(response.headers['content-length'], 10);
-        if (contentLength && contentLength > MAX_IMAGE_SIZE) {
-          response.destroy();
-          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB)` });
-          return;
-        }
-
-        const chunks = [];
-        let totalSize = 0;
-        const contentType = response.headers['content-type'] || 'image/jpeg';
-
-        response.on('data', (chunk) => {
-          totalSize += chunk.length;
-          if (totalSize > MAX_IMAGE_SIZE) {
-            response.destroy();
-            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
-            return;
-          }
-          chunks.push(chunk);
-        });
-
-        response.on('end', () => {
-          const buffer = Buffer.concat(chunks);
-          const base64Data = buffer.toString('base64');
-          console.log('[Image Download] 下载完成，大小:', buffer.length, 'bytes');
-          chunks.length = 0;
-
-          resolve({
-            success: true,
-            data: base64Data,
-            contentType: contentType,
-            size: buffer.length
-          });
-        });
-
-        response.on('error', (err) => {
-          console.error('[Image Download] 响应错误:', err);
-          resolve({ success: false, error: err.message });
-        });
-      });
-
-      request.on('error', (err) => {
-        console.error('[Image Download] 请求错误:', err);
-        resolve({ success: false, error: err.message });
-      });
-
-      request.setTimeout(30000, () => {
-        request.destroy();
-        resolve({ success: false, error: 'Download timeout (30s)' });
-      });
-    });
-  };
-
   try {
-    return await downloadWithRedirect(url);
+    return await downloadImageAsBase64(url);
   } catch (err) {
     console.error('[Image Download] 异常:', err);
     return { success: false, error: err.message };

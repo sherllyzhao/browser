@@ -380,6 +380,28 @@ contextBridge.exposeInMainWorld('browserAPI', {
             }
           }
 
+          const basePublishData = {
+            element,
+            platform,
+            createdAt: Date.now(),
+            video: {
+              formData: element.formData || { title: element.title, send_set: 1 },
+              video: {
+                cover: element.url || element.image,
+                title: element.title,
+                intro: element.intro,
+                content: element.content,
+                url: element.url,
+                sendlog: element.sendlog || {
+                  title: element.title,
+                  intro: element.intro,
+                }
+              },
+              dyPlatform: element.dyPlatform || { id: element.id }
+            },
+          };
+          openOptions.publishData = basePublishData;
+
           // 打开新窗口，获取窗口 ID
           console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(openOptions, null, 2));
           const result = await ipcRenderer.invoke('open-new-window', url, openOptions);
@@ -393,24 +415,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
           // 用窗口 ID 作为 key 存储数据，避免多窗口冲突
           const publishData = {
-            element,
-            platform,
+            ...basePublishData,
             windowId,
-            video: {
-              formData: element.formData || { title: element.title, send_set: 1 },
-              video: {
-                cover: element.image,
-                title: element.title,
-                intro: element.intro,
-                content: element.content,
-                url: element.url,
-                sendlog: element.sendlog || {
-                  title: element.title,
-                  intro: element.intro,
-                }
-              },
-              dyPlatform: element.dyPlatform || { id: element.id }
-            },
           };
           await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
           console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
