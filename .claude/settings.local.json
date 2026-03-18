@@ -151,7 +151,8 @@
       "Bash(pip install Pillow)",
       "Bash(pip3 install:*)",
       "Bash(where magick:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(cd \"D:\\\\浏览器\\\\运营助手\" && node -e \"console.log\\(require\\('./node_modules/electron-builder/package.json'\\).version\\)\")"
     ],
     "deny": [],
     "ask": []
