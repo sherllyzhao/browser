@@ -983,60 +983,6 @@ const siteDropdownEl = document.getElementById('siteDropdown');
 // Token 过期自动跳转登录页（防重复跳转）
 let isRedirectingToLogin = false;
 let isPromptingTokenExpired = false;
-
-// Token 到期预警（默认提前 10 分钟）
-const TOKEN_EXPIRY_REMINDER_SECONDS = 10 * 60;
-const TOKEN_EXPIRY_CHECK_INTERVAL_MS = 60 * 1000;
-let tokenExpiryReminderTimer = null;
-let lastObservedExpiresAt = 0;
-let lastWarnedExpiresAt = 0;
-
-function formatExpiryTime(expiresAt) {
-  if (!expiresAt) return '未知';
-  return new Date(expiresAt * 1000).toLocaleString();
-}
-
-async function checkTokenExpiryReminder() {
-  if (!window.electronAPI || !window.electronAPI.getGlobalData) return;
-  if (isRedirectingToLogin) return;
-
-  try {
-    const loginToken = await window.electronAPI.getGlobalData('login_token');
-    const rawExpires = await window.electronAPI.getGlobalData('login_expires');
-    const expiresAt = Number(rawExpires || 0);
-
-    if (!loginToken || !expiresAt || Number.isNaN(expiresAt)) {
-      lastObservedExpiresAt = 0;
-      lastWarnedExpiresAt = 0;
-      return;
-    }
-
-    // token 刷新后重置提醒状态（按新的过期时间重新计算）
-    if (lastObservedExpiresAt !== expiresAt) {
-      lastObservedExpiresAt = expiresAt;
-      lastWarnedExpiresAt = 0;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const remainingSeconds = expiresAt - now;
-    if (remainingSeconds <= 0) return;
-
-    if (remainingSeconds <= TOKEN_EXPIRY_REMINDER_SECONDS && lastWarnedExpiresAt !== expiresAt) {
-      lastWarnedExpiresAt = expiresAt;
-      const remainingMinutes = Math.max(1, Math.ceil(remainingSeconds / 60));
-      alert(`登录状态将在约 ${remainingMinutes} 分钟后过期，请及时保存操作并重新登录。\n过期时间：${formatExpiryTime(expiresAt)}`);
-    }
-  } catch (err) {
-    console.error('[Auth Reminder] 到期预警检查失败:', err);
-  }
-}
-
-function startTokenExpiryReminder() {
-  if (tokenExpiryReminderTimer) return;
-  checkTokenExpiryReminder();
-  tokenExpiryReminderTimer = setInterval(checkTokenExpiryReminder, TOKEN_EXPIRY_CHECK_INTERVAL_MS);
-}
-
 async function handleTokenExpired() {
   if (isRedirectingToLogin) return;
   isRedirectingToLogin = true;
@@ -1046,10 +992,6 @@ async function handleTokenExpired() {
       isPromptingTokenExpired = true;
       alert('登录已过期，请重新登录。');
     }
-    const expiresAt = await window.electronAPI.getGlobalData('login_expires');
-    const expiresText = expiresAt ? new Date(expiresAt * 1000).toLocaleString() : '未知';
-    alert(`登录状态已过期，请重新登录。\n过期时间：${expiresText}`);
-
     if (window.electronAPI && window.electronAPI.removeGlobalData) {
       await window.electronAPI.removeGlobalData('user_info');
       await window.electronAPI.removeGlobalData('login_token');
@@ -1067,8 +1009,6 @@ async function handleTokenExpired() {
     }
     await window.electronAPI.navigateToLogin();
     setTimeout(() => { isPromptingTokenExpired = false; }, 2000);
-    // 延迟重置，给主进程导航事件处理留足时间
-    setTimeout(() => { isRedirectingToLogin = false; }, 5000);
   } catch (err) {
     console.error('[Auth] 跳转登录页失败:', err);
     isRedirectingToLogin = false;

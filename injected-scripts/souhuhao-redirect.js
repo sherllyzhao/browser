@@ -5,8 +5,8 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-// 🔑 平台配置（从 platform-config.json 中提取）
-const PLATFORM_CONFIG = {
+// 🔑 平台配置（从 common.js 引用，避免重复定义）
+const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souhuhao) || {
     name: '搜狐号',
     publishPagePath: '/contentManagement/news/addarticle',
     publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',

@@ -59,18 +59,25 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "icon.png",
       "category": "public.app-category.productivity"
     },
     "dmg": {
-      "title": "${productName} ${version}",
+      "title": "ZhCloud-Browser ${version}",
+      "background": null,
       "contents": [
         {
           "x": 130,
@@ -91,7 +98,7 @@
   "devDependencies": {
     "cross-env": "^10.1.0",
     "electron": "^21.4.4",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
     "fs-extra": "^11.2.0"
