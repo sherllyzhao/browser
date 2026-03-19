@@ -791,7 +791,7 @@ if (window.browserAPI) {
   <div id="__global_loading_mask__" class="global-loading-mask show">
     <div class="loading-content">
       <div class="loading-spinner"></div>
-      <div class="loading-text">正在启动浏览器...</div>
+      <div class="loading-text">正在加载页面...</div>
     </div>
   </div>
 
@@ -833,55 +833,6 @@ if (window.browserAPI) {
       font-size: 14px;
     }
   </style>
-
-  <!-- AI 配置弹窗 -->
-  <div class="ai-config-overlay" id="aiConfigOverlay">
-    <div class="ai-config-dialog">
-      <div class="dialog-header">
-        <h3>🤖 AI 智能体配置</h3>
-        <button class="dialog-close" id="aiConfigClose">✕</button>
-      </div>
-      <div class="dialog-body">
-        <div class="status-bar status-none" id="aiConfigStatus">
-          <span>⚠️</span><span>未配置 API Key</span>
-        </div>
-        <div class="form-group">
-          <label>服务商</label>
-          <select id="aiProvider">
-            <option value="groq">Groq（免费，需翻墙）</option>
-            <option value="openrouter">OpenRouter（部分免费，需翻墙）</option>
-            <option value="qwen">通义千问（国内直连，按量付费）</option>
-            <option value="openai">OpenAI（需翻墙，付费）</option>
-            <option value="cloudflare">Cloudflare Workers AI（免费额度，需翻墙）</option>
-            <option value="custom">自定义</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="aiApiKey" placeholder="输入 API Key...">
-          <div class="form-hint" id="aiKeyHint">Groq 免费申请: <a href="#" id="aiKeyLink" style="color:#409EFF;">console.groq.com</a></div>
-        </div>
-        <div class="form-group">
-          <label>模型 <span style="color:#909399;font-weight:normal;">（留空使用默认）</span></label>
-          <input type="text" id="aiModel" placeholder="留空使用默认模型">
-          <div class="form-hint" id="aiModelHint">默认: llama-3.3-70b-versatile</div>
-        </div>
-        <div class="form-group" id="aiAccountIdGroup" style="display:none;">
-          <label>Account ID</label>
-          <input type="text" id="aiAccountId" placeholder="输入 Cloudflare Account ID...">
-          <div class="form-hint">在 Cloudflare Dashboard → Workers AI 页面获取</div>
-        </div>
-        <div class="form-group" id="aiCustomUrlGroup" style="display:none;">
-          <label>自定义 API 地址</label>
-          <input type="text" id="aiCustomUrl" placeholder="https://your-api.com/v1">
-        </div>
-      </div>
-      <div class="dialog-footer">
-        <button class="btn-cancel" id="aiConfigCancel">取消</button>
-        <button class="btn-save" id="aiConfigSave">保存配置</button>
-      </div>
-    </div>
-  </div>
 
   <script src="domain-config.js"></script>
   <script src="renderer.js"></script>

@@ -13,6 +13,44 @@ if (window.electronAPI && window.electronAPI.onMainLog) {
   });
 }
 
+const globalLoadingMask = document.getElementById('__global_loading_mask__');
+const globalLoadingText = globalLoadingMask ? globalLoadingMask.querySelector('.loading-text') : null;
+let browserLoadingState = {
+  visible: true,
+  text: '正在加载页面...'
+};
+
+function applyBrowserLoadingState(state = {}) {
+  browserLoadingState = {
+    ...browserLoadingState,
+    ...state
+  };
+
+  if (globalLoadingText && browserLoadingState.text) {
+    globalLoadingText.textContent = browserLoadingState.text;
+  }
+
+  if (globalLoadingMask) {
+    globalLoadingMask.classList.toggle('show', !!browserLoadingState.visible);
+  }
+}
+
+applyBrowserLoadingState(browserLoadingState);
+
+if (window.electronAPI && window.electronAPI.getBrowserLoadingState) {
+  window.electronAPI.getBrowserLoadingState()
+    .then((state) => applyBrowserLoadingState(state))
+    .catch((err) => {
+      console.log('[Loading] 初始化同步状态失败:', err);
+    });
+}
+
+if (window.electronAPI && window.electronAPI.onBrowserLoadingState) {
+  window.electronAPI.onBrowserLoadingState((state) => {
+    applyBrowserLoadingState(state);
+  });
+}
+
 // ========== 公共头部显示/隐藏 ==========
 const commonHeader = document.getElementById('__browser_common_header__');
 const globalLoadingMask = document.getElementById('__global_loading_mask__');
@@ -1198,7 +1236,7 @@ async function selectSite(site, skipApiCall = false) {
       if (loadingMask) {
         loadingMask.classList.add('show');
       }
-      await window.electronAPI.showGlobalLoading();
+      await window.electronAPI.showGlobalLoading('正在切换站点...');
       console.log('[Site] 显示加载遮罩，隐藏 BrowserView');
 
       // 刷新 BrowserView 页面
@@ -1523,7 +1561,7 @@ async function selectCompany(company) {
     const loadingText = loadingMask ? loadingMask.querySelector('.loading-text') : null;
     if (loadingText) loadingText.textContent = '正在切换公司...';
     if (loadingMask) loadingMask.classList.add('show');
-    await window.electronAPI.showGlobalLoading();
+    await window.electronAPI.showGlobalLoading('正在切换公司...');
 
     // 调用切换接口
     const result = await switchCompanyApi(company.unique_id);

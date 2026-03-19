@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onToggleHeader: (callback) => ipcRenderer.on('toggle-header', (event, show) => callback(show)),
   onMainLog: (callback) => ipcRenderer.on('main-log', (event, msg) => callback(msg)),
   onGlobalLoadingStateChanged: (callback) => ipcRenderer.on('global-loading-state-changed', (event, payload) => callback(payload)),
+  onBrowserLoadingState: (callback) => ipcRenderer.on('browser-loading-state', (event, state) => callback(state)),
 
   // 消息通信
   sendToContent: (message) => ipcRenderer.send('main-to-content', message),
@@ -92,7 +93,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleSiteDropdown: (isOpen) => ipcRenderer.send('site-dropdown-toggle', isOpen),
 
   // 全局加载遮罩控制（隐藏/显示 BrowserView）
-  showGlobalLoading: () => ipcRenderer.invoke('show-global-loading'),
+  getBrowserLoadingState: () => ipcRenderer.invoke('get-browser-loading-state'),
+  showGlobalLoading: (text) => ipcRenderer.invoke('show-global-loading', { text }),
   hideGlobalLoading: () => ipcRenderer.invoke('hide-global-loading'),
 
   // 显示站点选择原生菜单（悬浮在所有内容之上）

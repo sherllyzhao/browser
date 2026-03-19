@@ -80,6 +80,32 @@ function removeHeaderCaseInsensitive(headers, key) {
   }
 }
 
+let isHandlingExpiredToken = false; // 防止过期处理重复触发
+let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
+let isShowingSessionExpiredDialog = false;
+let isShowingPageErrorDialog = false;
+let lastPageErrorDialogAt = 0;
+let blankScreenConsecutive = 0;
+const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
+const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
+const FORCE_BARE_TOUTIAO = true;
+const STARTUP_LOAD_READY_CHECK_DELAY = 900;
+const STARTUP_LOAD_MAX_RECOVERIES = 2;
+const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+
+let browserLoadingState = {
+  visible: true,
+  text: '正在加载页面...'
+};
+
+let startupLoadGuard = {
+  active: false,
+  targetUrl: '',
+  reloadCount: 0,
+  startedAt: 0,
+  timer: null
+};
+
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
 const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
@@ -247,7 +273,327 @@ const HOME_URL = LOGIN_URL;
 function loadLocalPage(webContents, pageName) {
   const filePath = path.join(__dirname, pageName);
   console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
-  return webContents.loadFile(filePath);
+  return webContents.loadFile(filePath).catch(err => {
+    console.warn(`[loadLocalPage] loadFile 失败 (${err.code || err.message})，尝试 loadURL fallback`);
+    // 使用 URL 构造器正确编码中文路径（符号链接/特殊路径场景）
+    const fileUrl = require('url').pathToFileURL(filePath).href;
+    console.log(`[loadLocalPage] fallback loadURL: ${fileUrl}`);
+    return webContents.loadURL(fileUrl);
+  });
+}
+
+function shouldShowPageErrorDialog() {
+  const now = Date.now();
+  if (now - lastPageErrorDialogAt < 15000) return false;
+  lastPageErrorDialogAt = now;
+  return true;
+}
+
+async function showSessionExpiredDialog(source) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (isShowingSessionExpiredDialog) return;
+  isShowingSessionExpiredDialog = true;
+  try {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: '登录已过期',
+      message: '登录已过期，请重新登录。',
+      detail: source ? `来源：${source}` : undefined,
+      buttons: ['回到登录页'],
+      defaultId: 0,
+      noLink: true
+    });
+  } finally {
+    isShowingSessionExpiredDialog = false;
+  }
+}
+
+async function showPageErrorDialog({ title, message, detail, buttons }) {
+  if (!mainWindow || mainWindow.isDestroyed()) return { response: 2 };
+  if (isShowingPageErrorDialog) return { response: 2 };
+  if (!shouldShowPageErrorDialog()) return { response: 2 };
+  isShowingPageErrorDialog = true;
+  try {
+    return await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title,
+      message,
+      detail,
+      buttons: buttons || ['重新加载', '回到登录页', '关闭'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    });
+  } finally {
+    isShowingPageErrorDialog = false;
+  }
+}
+
+function clearStartupLoadGuardTimer() {
+  if (startupLoadGuard.timer) {
+    clearTimeout(startupLoadGuard.timer);
+    startupLoadGuard.timer = null;
+  }
+}
+
+function setBrowserLoadingState(partialState = {}) {
+  browserLoadingState = {
+    ...browserLoadingState,
+    ...partialState
+  };
+
+  if (browserView && browserView.webContents && !browserView.webContents.isDestroyed()) {
+    if (browserLoadingState.visible) {
+      browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      updateBrowserViewBounds(isScriptPanelOpen);
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('browser-loading-state', browserLoadingState);
+  }
+}
+
+function beginStartupLoadGuard(targetUrl) {
+  clearStartupLoadGuardTimer();
+  startupLoadGuard = {
+    active: true,
+    targetUrl,
+    reloadCount: 0,
+    startedAt: Date.now(),
+    timer: null
+  };
+  setBrowserLoadingState({ visible: true, text: '正在加载页面...' });
+  console.log('[Startup Guard] ✅ 已开启首屏守卫:', targetUrl);
+}
+
+function finishStartupLoadGuard(reason = 'ready') {
+  if (!startupLoadGuard.active) return;
+  clearStartupLoadGuardTimer();
+  startupLoadGuard.active = false;
+  setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
+  console.log('[Startup Guard] ✅ 首屏守卫结束:', reason);
+}
+
+async function inspectBrowserViewReadiness() {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+    return { ready: false, reason: 'browserview-destroyed' };
+  }
+
+  return browserView.webContents.executeJavaScript(`
+    (() => {
+      try {
+        if (!document || !document.body) {
+          return { ready: false, reason: 'no-body' };
+        }
+
+        const body = document.body;
+        const htmlLength = (body.innerHTML || '').replace(/\\s+/g, '').length;
+        const textLength = (body.innerText || '').trim().length;
+        const childCount = body.children ? body.children.length : 0;
+
+        const hasVisibleElement = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || '1') !== 0
+            && rect.width > 24
+            && rect.height > 24;
+        };
+
+        const appRootSelectors = ['#app', '#root', '#__nuxt', '#layout', '[data-v-app]'];
+        const rootVisible = appRootSelectors.some((selector) => {
+          try {
+            return hasVisibleElement(document.querySelector(selector));
+          } catch (_) {
+            return false;
+          }
+        });
+
+        const visibleChildren = Array.from(body.children || []).some((el) => hasVisibleElement(el));
+        const hasKnownSpinner = !!document.querySelector('.loading, .spinner, .ant-spin, .el-loading-mask, .nprogress-busy, .v-progress-circular');
+        const ready = htmlLength > 80 && (textLength > 0 || rootVisible || visibleChildren || hasKnownSpinner);
+
+        return {
+          ready,
+          reason: ready ? 'visual-ready' : 'visual-not-ready',
+          htmlLength,
+          textLength,
+          childCount,
+          rootVisible,
+          visibleChildren,
+          hasKnownSpinner,
+          href: location.href
+        };
+      } catch (err) {
+        return {
+          ready: false,
+          reason: err && err.message ? err.message : String(err)
+        };
+      }
+    })()
+  `, true);
+}
+
+function retryStartupLoad(reason) {
+  if (!startupLoadGuard.active) return false;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
+  if (startupLoadGuard.reloadCount >= STARTUP_LOAD_MAX_RECOVERIES) return false;
+
+  clearStartupLoadGuardTimer();
+  startupLoadGuard.reloadCount += 1;
+  const targetUrl = startupLoadGuard.targetUrl || browserView.webContents.getURL() || LOGIN_URL;
+  const retryText = startupLoadGuard.reloadCount === 1
+    ? '页面加载较慢，正在重试...'
+    : '页面仍未恢复，正在再次尝试...';
+
+  setBrowserLoadingState({ visible: true, text: retryText });
+  console.warn(`[Startup Guard] ⚠️ ${reason}，准备第 ${startupLoadGuard.reloadCount} 次恢复: ${targetUrl}`);
+
+  setTimeout(() => {
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+    const loadPromise = targetUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(targetUrl))
+      : browserView.webContents.loadURL(targetUrl);
+    loadPromise.catch(err => {
+      console.error('[Startup Guard] ❌ 恢复加载失败:', err);
+    });
+  }, 1200);
+
+  return true;
+}
+
+function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHECK_DELAY) {
+  if (!startupLoadGuard.active) return;
+  clearStartupLoadGuardTimer();
+
+  startupLoadGuard.timer = setTimeout(async () => {
+    if (!startupLoadGuard.active) return;
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+
+    const elapsed = Date.now() - startupLoadGuard.startedAt;
+    if (elapsed > STARTUP_LOAD_MAX_WAIT_MS) {
+      console.warn(`[Startup Guard] ⚠️ 首屏等待超时: ${elapsed}ms`);
+      if (retryStartupLoad(`首屏等待超时 ${elapsed}ms`)) return;
+
+      finishStartupLoadGuard('timeout');
+      const result = await showPageErrorDialog({
+        title: '页面加载较慢',
+        message: '启动页加载超时，是否尝试恢复？',
+        detail: `触发点: ${reason}，等待时长: ${elapsed}ms`
+      });
+
+      if (result.response === 0) {
+        beginStartupLoadGuard(startupLoadGuard.targetUrl || LOGIN_URL);
+        browserView.webContents.reload();
+      } else if (result.response === 1) {
+        await navigateToLoginInternal('startup_load_timeout');
+      }
+      return;
+    }
+
+    try {
+      const state = await inspectBrowserViewReadiness();
+      if (state.ready) {
+        console.log('[Startup Guard] ✅ 首屏渲染检查通过:', state);
+        finishStartupLoadGuard(reason);
+        return;
+      }
+
+      console.warn('[Startup Guard] ⚠️ 首屏仍未就绪:', state);
+      if (browserView.webContents.isLoading()) {
+        scheduleStartupReadinessCheck(`${reason}:still-loading`, 1200);
+        return;
+      }
+
+      if (retryStartupLoad(`首屏检查未通过 (${state.reason || 'unknown'})`)) return;
+
+      finishStartupLoadGuard('visual-check-failed');
+      const result = await showPageErrorDialog({
+        title: '页面可能空白',
+        message: '启动后页面仍未正常渲染，是否尝试恢复？',
+        detail: `原因: ${state.reason || 'unknown'} | html=${state.htmlLength || 0} text=${state.textLength || 0} child=${state.childCount || 0}`
+      });
+
+      if (result.response === 0) {
+        beginStartupLoadGuard(startupLoadGuard.targetUrl || browserView.webContents.getURL() || LOGIN_URL);
+        browserView.webContents.reload();
+      } else if (result.response === 1) {
+        await navigateToLoginInternal('blank_screen_startup');
+      }
+    } catch (err) {
+      console.warn('[Startup Guard] ⚠️ 首屏检查执行失败:', err.message || err);
+      if (browserView.webContents.isLoading()) {
+        scheduleStartupReadinessCheck(`${reason}:check-failed-while-loading`, 1200);
+        return;
+      }
+
+      if (retryStartupLoad(`首屏检查失败 (${err.message || err})`)) return;
+      finishStartupLoadGuard('check-failed');
+    }
+  }, delayMs);
+}
+
+async function navigateToLoginInternal(reason) {
+  if (!browserView || browserView.webContents.isDestroyed()) return;
+  console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
+
+  // 🔑 退出登录时清除所有登录相关数据
+  console.log('[Main] 清除退出登录数据...');
+
+  // 1. 清除 globalStorage 中的登录数据
+  delete globalStorage.last_page_url;
+  delete globalStorage.login_token;
+  delete globalStorage.login_expires;
+  delete globalStorage.login_gcc;
+  delete globalStorage.company_id;
+  delete globalStorage.user_info;
+  delete globalStorage.siteInfo;
+  delete globalStorage.current_site;
+  delete globalStorage.current_site_id;
+  delete globalStorage.current_site_name;
+  saveGlobalStorage();
+  console.log('[Main] ✅ 已清除 globalStorage 数据');
+
+  // 2. 清除 Cookies（token, access_token, site_id 等）
+  try {
+    const ses = browserView.webContents.session;
+    const cookies = await ses.cookies.get({});
+    console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+    // 需要清除的 cookie 名称列表
+    const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+    let deletedCount = 0;
+    for (const cookie of cookies) {
+      if (cookiesToClear.includes(cookie.name)) {
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+        try {
+          await ses.cookies.remove(cookieUrl, cookie.name);
+          deletedCount++;
+          console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+        } catch (err) {
+          console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+        }
+      }
+    }
+
+    // 也清除 localhost 的 cookies
+    await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+    await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+    await ses.flushStorageData();
+    console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+  } catch (err) {
+    console.error('[Main] ❌ 清除 cookies 失败:', err);
+  }
+
+  loadLocalPage(browserView.webContents, 'login.html');
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
@@ -317,7 +663,1238 @@ function isHomeUrl(url) {
   return HOME_URLS.some(homeUrl => url.startsWith(homeUrl));
 }
 
+function isToutiaoHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host === 'toutiao.com' ||
+         host.endsWith('.toutiao.com') ||
+         host === 'toutiaostatic.com' ||
+         host.endsWith('.toutiaostatic.com');
+}
+
+function isToutiaoUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isToutiaoHost(parsed.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function shouldSkipScriptInjection(url = '') {
+  return FORCE_BARE_TOUTIAO && isToutiaoUrl(url);
+}
+
 const childWindows = []; // 跟踪所有打开的子窗口
+const toutiaoBarePublishState = new Map();
+
+function getStatisticsHostFromMainContext() {
+  const context = getStatisticsContextFromMain();
+  return context.host;
+}
+
+function getStatisticsContextFromMain() {
+  const candidates = [
+    browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.getURL() : '',
+    globalStorage.last_page_url || ''
+  ];
+
+  for (const rawUrl of candidates) {
+    if (!rawUrl) continue;
+    try {
+      const parsed = new URL(rawUrl);
+      return {
+        url: rawUrl,
+        host: parsed.host || ''
+      };
+    } catch (_) {}
+  }
+
+  return { url: '', host: '' };
+}
+
+function getMainStatisticsUrl(isError = false) {
+  const endpoint = isError ? 'tjlogerror' : 'tjlog';
+  const { url: currentUrl, host } = getStatisticsContextFromMain();
+  const specialUrlMap = {
+    'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+    'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
+    '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+    'localhost:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`
+  };
+
+  if (host && specialUrlMap[host]) {
+    return specialUrlMap[host];
+  }
+
+  if (currentUrl && (currentUrl.includes('/geo/') || currentUrl.includes('#/geo'))) {
+    const devHosts = ['localhost:5173', '127.0.0.1:5173', 'dev.china9.cn', 'www.dev.china9.cn'];
+    const isDev = devHosts.some(h => host.toLowerCase() === h);
+    const geoDomain = isDev ? 'https://jzt_dev_1.china9.cn' : 'https://zhjzt.china9.cn';
+    return `${geoDomain}/api/geo/${endpoint}`;
+  }
+
+  return `${config.getApiDomainUrl()}/api/mediaauth/${endpoint}`;
+}
+
+function sendMainStatisticsError(publishId, statusText, platform = '', extraContext = {}) {
+  return new Promise((resolve) => {
+    try {
+      const { url: currentUrl, host } = getStatisticsContextFromMain();
+      const url = getMainStatisticsUrl(true);
+      const payload = {
+        data: JSON.stringify({
+          id: publishId || '',
+          status_text: statusText || '发布失败',
+          context: {
+            platform: platform || 'unknown',
+            timestamp: new Date().toISOString(),
+            source: 'main-process',
+            currentUrl,
+            ...extraContext
+          }
+        })
+      };
+
+      console.log(`[${platform || '发布'}] 📤 主进程发送失败统计接口:`, {
+        publishId: publishId || '',
+        statusText,
+        url,
+        host
+      });
+
+      const request = net.request({
+        method: 'POST',
+        url
+      });
+      request.setHeader('Content-Type', 'application/json');
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', chunk => { body += chunk.toString(); });
+        response.on('end', () => {
+          console.log(`[${platform || '发布'}] ✅ 主进程失败统计接口响应:`, {
+            statusCode: response.statusCode,
+            body: body.slice(0, 500)
+          });
+          resolve({ success: response.statusCode >= 200 && response.statusCode < 300, statusCode: response.statusCode, body });
+        });
+      });
+      request.on('error', (error) => {
+        console.error(`[${platform || '发布'}] ❌ 主进程失败统计接口请求失败:`, error);
+        resolve({ success: false, error: error.message || String(error) });
+      });
+      request.write(JSON.stringify(payload));
+      request.end();
+    } catch (error) {
+      console.error(`[${platform || '发布'}] ❌ 构造主进程失败统计接口请求失败:`, error);
+      resolve({ success: false, error: error.message || String(error) });
+    }
+  });
+}
+
+function sendMainStatistics(publishId, platform = '', extraContext = {}) {
+  return new Promise((resolve) => {
+    try {
+      const { url: currentUrl, host } = getStatisticsContextFromMain();
+      const url = getMainStatisticsUrl(false);
+      const payload = {
+        data: JSON.stringify({
+          id: publishId || '',
+          context: {
+            platform: platform || 'unknown',
+            timestamp: new Date().toISOString(),
+            source: 'main-process',
+            currentUrl,
+            ...extraContext
+          }
+        })
+      };
+
+      console.log(`[${platform || '发布'}] 📤 主进程发送成功统计接口:`, {
+        publishId: publishId || '',
+        url,
+        host
+      });
+
+      const request = net.request({
+        method: 'POST',
+        url
+      });
+      request.setHeader('Content-Type', 'application/json');
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', chunk => { body += chunk.toString(); });
+        response.on('end', () => {
+          console.log(`[${platform || '发布'}] ✅ 主进程成功统计接口响应:`, {
+            statusCode: response.statusCode,
+            body: body.slice(0, 500)
+          });
+          resolve({ success: response.statusCode >= 200 && response.statusCode < 300, statusCode: response.statusCode, body });
+        });
+      });
+      request.on('error', (error) => {
+        console.error(`[${platform || '发布'}] ❌ 主进程成功统计接口请求失败:`, error);
+        resolve({ success: false, error: error.message || String(error) });
+      });
+      request.write(JSON.stringify(payload));
+      request.end();
+    } catch (error) {
+      console.error(`[${platform || '发布'}] ❌ 构造主进程成功统计接口请求失败:`, error);
+      resolve({ success: false, error: error.message || String(error) });
+    }
+  });
+}
+
+function firstNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const nested = firstNonEmptyValue(...value);
+      if (nested) return nested;
+      continue;
+    }
+    if (typeof value === 'object') {
+      const nested = firstNonEmptyValue(
+        value.url,
+        value.src,
+        value.uri,
+        value.href,
+        value.origin,
+        value.value,
+        value.path,
+        value.file_url
+      );
+      if (nested) return nested;
+      continue;
+    }
+    return String(value);
+  }
+  return '';
+}
+
+function extractToutiaoCoverUrl(publishData = {}) {
+  const element = publishData?.element || {};
+  const video = publishData?.video?.video || {};
+  const formData = publishData?.video?.formData || {};
+  const sendlog = video?.sendlog || element?.sendlog || {};
+
+  return firstNonEmptyValue(
+    video.cover,
+    video.cover_url,
+    video.coverUrl,
+    video.cover_uri,
+    video.thumb_uri,
+    video.thumb,
+    video.thumb_url,
+    video.poster,
+    video.poster_url,
+    video.url,
+    formData.cover,
+    formData.cover_url,
+    formData.coverUrl,
+    formData.cover_uri,
+    formData.thumb_uri,
+    formData.thumb_url,
+    formData.url,
+    element.cover,
+    element.cover_url,
+    element.coverUrl,
+    element.cover_uri,
+    element.thumb_uri,
+    element.thumb_url,
+    element.thumb,
+    element.poster,
+    element.poster_url,
+    element.image,
+    element.image_url,
+    element.imageUrl,
+    element.url,
+    element.pic,
+    element.pic_url,
+    element.pics,
+    element.images,
+    element.covers,
+    sendlog.cover,
+    sendlog.cover_url,
+    sendlog.coverUrl,
+    sendlog.thumb_uri,
+    sendlog.image,
+    sendlog.images
+  );
+}
+
+function extractToutiaoPublishPayload(publishData = {}) {
+  return {
+    rawTitle: publishData?.video?.video?.title || publishData?.element?.title || '',
+    intro: publishData?.video?.video?.intro || publishData?.element?.intro || '',
+    rawContent: publishData?.video?.video?.content || publishData?.element?.content || '',
+    cover: extractToutiaoCoverUrl(publishData),
+    sendSet: publishData?.video?.formData?.send_set ?? publishData?.element?.formData?.send_set ?? 1,
+    sendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || '',
+    publishId: publishData?.video?.dyPlatform?.id || publishData?.element?.id || '',
+    rawSendSet: publishData?.video?.formData?.send_set ?? publishData?.element?.formData?.send_set,
+    rawSendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || ''
+  };
+}
+
+async function waitForToutiaoPublishData(windowId, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const publishData = globalStorage[`publish_data_window_${windowId}`];
+    if (publishData) {
+      return publishData;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return null;
+}
+
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
+
+function downloadImageAsBase64(downloadUrl, redirectCount = 0) {
+  return new Promise((resolve) => {
+    if (!downloadUrl) {
+      resolve({ success: false, error: 'No URL provided' });
+      return;
+    }
+
+    if (redirectCount > 5) {
+      resolve({ success: false, error: 'Too many redirects' });
+      return;
+    }
+
+    const protocol = downloadUrl.startsWith('https') ? https : http;
+    const request = protocol.get(downloadUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        let redirectUrl = response.headers.location;
+        if (!redirectUrl.startsWith('http')) {
+          const urlObj = new URL(downloadUrl);
+          redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+        }
+        resolve(downloadImageAsBase64(redirectUrl, redirectCount + 1));
+        return;
+      }
+
+      if (response.statusCode !== 200) {
+        resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
+        return;
+      }
+
+      const contentLength = parseInt(response.headers['content-length'], 10);
+      if (contentLength && contentLength > MAX_IMAGE_SIZE) {
+        response.destroy();
+        resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB` });
+        return;
+      }
+
+      const chunks = [];
+      let totalSize = 0;
+      const contentType = response.headers['content-type'] || 'image/jpeg';
+
+      response.on('data', (chunk) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_IMAGE_SIZE) {
+          response.destroy();
+          resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      response.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve({
+          success: true,
+          data: buffer.toString('base64'),
+          contentType,
+          size: buffer.length
+        });
+      });
+
+      response.on('error', (err) => {
+        resolve({ success: false, error: err.message });
+      });
+    });
+
+    request.on('error', (err) => {
+      resolve({ success: false, error: err.message });
+    });
+
+    request.setTimeout(30000, () => {
+      request.destroy();
+      resolve({ success: false, error: 'Download timeout (30s)' });
+    });
+  });
+}
+
+function postMessageToHomePages(message) {
+  const messageStr = JSON.stringify(message);
+  console.log('[Toutiao Bare Publish] 📣 准备通知首页:', message);
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    browserView.webContents.executeJavaScript(`
+      (function() {
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
+        const currentUrl = window.location.href;
+        const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+        if (isHome) {
+          console.log('[Toutiao Bare Publish] BrowserView 首页收到主进程转发:', ${messageStr});
+          window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+        }
+      })();
+    `).catch(err => console.error('[Toutiao Bare Publish] Failed to notify BrowserView:', err));
+  }
+
+  childWindows.forEach((childWindow, index) => {
+    if (childWindow && !childWindow.isDestroyed()) {
+      childWindow.webContents.executeJavaScript(`
+        (function() {
+          const homeUrls = ${JSON.stringify(HOME_URLS)};
+          const currentUrl = window.location.href;
+          const isHome = homeUrls.some(url => currentUrl.startsWith(url));
+          if (isHome) {
+            console.log('[Toutiao Bare Publish] ChildWindow 首页收到主进程转发:', ${messageStr});
+            window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
+          }
+        })();
+      `).catch(err => console.error(`[Toutiao Bare Publish] Failed to notify child window ${index}:`, err));
+    }
+  });
+}
+
+function notifyToutiaoBarePublishFailure(data) {
+  const payload = {
+    type: 'toutiao-bare-publish-refresh',
+    data: {
+      ...data,
+      refresh: true,
+      message: '发布失败，刷新数据',
+      timestamp: Date.now()
+    }
+  };
+  console.log('[Toutiao Bare Publish] 🔄 发送失败刷新通知:', payload);
+  postMessageToHomePages(payload);
+  postMessageToHomePages('发布失败，刷新数据');
+}
+
+function notifyToutiaoBarePublishSuccess(data) {
+  const payload = {
+    type: 'toutiao-bare-publish-refresh',
+    data: {
+      ...data,
+      refresh: true,
+      message: '发布成功，刷新数据',
+      timestamp: Date.now()
+    }
+  };
+  console.log('[Toutiao Bare Publish] ✅ 发送成功刷新通知:', payload);
+  postMessageToHomePages(payload);
+  postMessageToHomePages('发布成功，刷新数据');
+}
+
+function writeMainDebugDump(prefix, content) {
+  try {
+    const prefixRaw = typeof prefix === 'string' ? prefix : 'debug';
+    const safePrefix = prefixRaw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'debug';
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${safePrefix}-${timestamp}.json`;
+    const filePath = path.join(dumpDir, fileName);
+    const serialized = typeof content === 'string' ? content : JSON.stringify(content ?? null, null, 2);
+    fs.writeFileSync(filePath, serialized, 'utf8');
+    console.log('[Debug Dump] ✅ 主进程调试文件已写入:', filePath);
+    return filePath;
+  } catch (err) {
+    console.error('[Debug Dump] ❌ 主进程调试文件写入失败:', err);
+    return '';
+  }
+}
+
+function buildToutiaoBarePublishScript(payload) {
+  return `
+    (async () => {
+      const payload = ${JSON.stringify(payload)};
+      const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const textOf = (el) => (el?.textContent || '').trim();
+      const visible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return true;
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (Number(style.opacity || '1') === 0) return false;
+        return true;
+      };
+      const parsePlainTextFromHtml = (html) => {
+        if (!html) return '';
+        if (typeof html !== 'string') return String(html);
+        if (!/[<>]/.test(html)) return html.trim();
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        return (temp.innerText || temp.textContent || '').trim();
+      };
+      const normalizeTitle = (title) => {
+        const clean = String(title || '').trim();
+        return clean || '测试文章';
+      };
+      const normalizeContent = (content, intro, title) => {
+        const contentText = parsePlainTextFromHtml(content).trim();
+        if (contentText) return contentText;
+        const introText = parsePlainTextFromHtml(intro).trim();
+        if (introText) return introText;
+        return String(title || '测试文章').trim() || '测试文章';
+      };
+      const setNativeValue = (el, value) => {
+        const proto = el.tagName.toLowerCase() === 'textarea'
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        const prev = el.value;
+        if (setter) setter.call(el, value);
+        else el.value = value;
+        if (el._valueTracker) el._valueTracker.setValue(prev);
+      };
+      const findTitleInput = () => {
+        const selectors = [
+          'textarea[placeholder*="请输入文章标题"]',
+          'textarea[placeholder*="文章标题"]',
+          'textarea[placeholder*="标题"]',
+          'input[placeholder*="标题"]'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(document.querySelectorAll(selector));
+          const target = list.find(el => visible(el) && el.getBoundingClientRect().width > 120);
+          if (target) return target;
+          if (list[0]) return list[0];
+        }
+        return null;
+      };
+      const findEditor = () => {
+        const list = Array.from(document.querySelectorAll('.ProseMirror, [contenteditable="true"]')).filter(el => !el.closest('input, textarea'));
+        return list.find(visible) || list[0] || null;
+      };
+      const findButton = (matcher, allowHidden = false) => {
+        const list = Array.from(document.querySelectorAll('button')).filter(btn => matcher(textOf(btn), btn));
+        if (list.length === 0) return null;
+        const target = list.find(visible);
+        if (target) return target;
+        return allowHidden ? list[0] : null;
+      };
+      const clickButton = (btn) => {
+        if (!btn) return false;
+        try { btn.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+        btn.click();
+        return true;
+      };
+      const readToast = () => {
+        const selectors = [
+          '.byte-message-notice-content-text',
+          '.byte-message-content',
+          '.semi-toast-content-text',
+          '.arco-message-content'
+        ];
+        for (const selector of selectors) {
+          const el = document.querySelector(selector);
+          const text = textOf(el);
+          if (text && text.length < 180) return text;
+        }
+        return '';
+      };
+      const findVisibleHint = () => {
+        const selectors = [
+          '.byte-form-item-help',
+          '.byte-form-item-msg',
+          '.byte-form-item-explain',
+          '.byte-message-content',
+          '.byte-message-notice-content-text',
+          '.semi-toast-content-text',
+          '.arco-message-content',
+          '[class*="error"]',
+          '[class*="hint"]',
+          '[class*="tips"]'
+        ];
+        for (const selector of selectors) {
+          const nodes = document.querySelectorAll(selector);
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const text = textOf(el);
+            if (!text || text.length > 180) continue;
+            if (/标题不能为空|还需输入|封面|失败|错误|请先|违规|超限|驳回/.test(text)) return text;
+          }
+        }
+        return '';
+      };
+      const findCoverUploadError = () => {
+        const selectors = [
+          '.pic-select-image-item.size-err',
+          '.pic-select-image-item .size-err',
+          '.pic-select-image-item .error',
+          '[class*="size-err"]',
+          '[class*="image-item-error"]'
+        ];
+        for (const selector of selectors) {
+          const nodes = document.querySelectorAll(selector);
+          for (const el of nodes) {
+            if (!visible(el)) continue;
+            const text = textOf(el) || textOf(el.parentElement) || '';
+            if (!text) continue;
+            if (/尺寸过小|尺寸不足|图片过小|分辨率过低|上传失败|格式不支持|封面.*失败/.test(text)) {
+              return text;
+            }
+          }
+        }
+        return '';
+      };
+      const isPreviewLayerVisible = () => {
+        const signals = ['仅支持预览', '返回编辑', '确认发布', '立即发布'];
+        return Array.from(document.querySelectorAll('button,div,span,p')).some(el => {
+          if (!visible(el)) return false;
+          const text = textOf(el);
+          return text && signals.some(signal => text.includes(signal));
+        });
+      };
+      const findVisibleButtonByText = (buttonText) => {
+        return Array.from(document.querySelectorAll('button')).find(btn => visible(btn) && textOf(btn) === buttonText) || null;
+      };
+      const findFooterScheduleButton = () => {
+        const selectors = [
+          'button.publish-btn:not(.publish-btn-last)',
+          'button[class*="publish-btn"]:not(.publish-btn-last):not([class*="publish-btn-last"])',
+          '.publish-footer button:not(.publish-btn-last)',
+          '.publish-footer-content button:not(.publish-btn-last)'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(document.querySelectorAll(selector));
+          const target = list.find(btn => visible(btn) && textOf(btn) === '定时发布');
+          if (target) return target;
+        }
+        return findButton((t, btn) => {
+          if (!visible(btn)) return false;
+          const cls = (btn.className || '').toString();
+          return t === '定时发布' && cls.includes('publish-btn') && !cls.includes('publish-btn-last');
+        }, true);
+      };
+      const findScheduleModal = () => {
+        return Array.from(document.querySelectorAll(
+          '[role="dialog"], .byte-modal, .byte-modal-wrap, .byte-modal-content, [class*="picker"], [class*="calendar"], [class*="popover"]'
+        )).find(el => {
+          if (!visible(el)) return false;
+          const titleEl = el.querySelector('.byte-modal-title');
+          const titleText = textOf(titleEl) || textOf(el);
+          return /(定时|发布时间|选择时间)/.test(titleText);
+        }) || null;
+      };
+      const findModalButton = (modal, matcher) => {
+        if (!modal) return null;
+        const list = Array.from(modal.querySelectorAll('button'));
+        return list.find(btn => visible(btn) && matcher(textOf(btn), btn)) || null;
+      };
+      const parseScheduleParts = (sendTime) => {
+        const value = String(sendTime || '').trim();
+        if (!value) return null;
+        const normalized = value.replace(/\\//g, '-').replace('T', ' ');
+        const match = normalized.match(/(\\d{4})-(\\d{1,2})-(\\d{1,2})\\s+(\\d{1,2}):(\\d{1,2})/);
+        if (!match) return null;
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const hour = Number(match[4]);
+        const minute = Number(match[5]);
+        if ([month, day, hour, minute].some(Number.isNaN)) return null;
+        return {
+          dayText: String(month).padStart(2, '0') + '月' + String(day).padStart(2, '0') + '日',
+          hourText: String(hour),
+          minuteText: String(minute)
+        };
+      };
+      const clickElement = (el) => {
+        if (!el) return false;
+        try { el.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+        try { el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch (_) {}
+        try { el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch (_) {}
+        try { el.click(); } catch (_) {}
+        return true;
+      };
+      const findScheduleSelectTriggers = (modal) => {
+        if (!modal) return [];
+        const selectors = [
+          '.byte-select-view',
+          '.byte-select-trigger',
+          '[class*="select"][class*="view"]',
+          '[class*="select"][class*="trigger"]'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(modal.querySelectorAll(selector)).filter(visible);
+          if (list.length >= 3) return list.slice(0, 3);
+        }
+        const fallbacks = Array.from(modal.querySelectorAll('input, button, div, span')).filter(el => {
+          if (!visible(el)) return false;
+          const text = textOf(el);
+          return /^\d{2}月\d{2}日$/.test(text) || /^\d{1,2}$/.test(text);
+        });
+        return fallbacks.slice(0, 3);
+      };
+      const pickDropdownOption = async (trigger, expectedText) => {
+        if (!trigger || !expectedText) return false;
+        clickElement(trigger);
+        await delay(400);
+        const findOption = () => {
+          const selectors = [
+            '.byte-select-option',
+            '.byte-option',
+            '[role="option"]',
+            '.byte-dropdown-menu-item',
+            '.byte-select-dropdown .byte-select-option-inner',
+            '.byte-select-option-inner'
+          ];
+          for (const selector of selectors) {
+            const list = Array.from(document.querySelectorAll(selector));
+            const exact = list.find(el => visible(el) && textOf(el) === expectedText);
+            if (exact) return exact;
+          }
+          const generic = Array.from(document.querySelectorAll('li, div, span, button')).find(el => {
+            if (!visible(el)) return false;
+            return textOf(el) === expectedText;
+          });
+          return generic || null;
+        };
+        const optionStart = Date.now();
+        let option = null;
+        while (Date.now() - optionStart < 5000) {
+          option = findOption();
+          if (option) break;
+          await delay(200);
+        }
+        if (!option) return false;
+        clickElement(option);
+        await delay(500);
+        return true;
+      };
+      const ensureCoverFile = async () => {
+        if (!payload.coverData || !payload.coverContentType) {
+          return null;
+        }
+        const binary = atob(payload.coverData);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        let ext = '.jpg';
+        const contentType = String(payload.coverContentType || 'image/jpeg').toLowerCase();
+        if (contentType.includes('png')) ext = '.png';
+        if (contentType.includes('webp')) ext = '.webp';
+        if (contentType.includes('gif')) ext = '.gif';
+        if (contentType.includes('bmp')) ext = '.bmp';
+        return new File([bytes], 'toutiao-cover' + ext, { type: payload.coverContentType });
+      };
+      const waitForCoverReady = async (timeoutMs = 12000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          const coverError = findCoverUploadError();
+          if (coverError) {
+            return { ready: false, error: coverError };
+          }
+          const ready = !!document.querySelector(
+            '.article-cover-images img, .article-cover img, [class*="cover"] img, .article-cover-images [class*="uploaded"], .article-cover-images [class*="image"]'
+          ) || !!Array.from(document.querySelectorAll('.article-cover-images button, .article-cover button, .article-cover-images div'))
+            .find(el => /编辑|替换|预览/.test(textOf(el)));
+          if (ready) return { ready: true, error: '' };
+          await delay(600);
+        }
+        return { ready: false, error: findCoverUploadError() };
+      };
+      const tryUploadCover = async (coverUrl, title) => {
+        const coverRoot = document.querySelector('.article-cover, .pgc-edit-cell .edit-label');
+        if (coverRoot && coverRoot.scrollIntoView) {
+          coverRoot.scrollIntoView({ behavior: 'auto', block: 'center' });
+          await delay(250);
+        }
+        const coverTrigger = Array.from(document.querySelectorAll('.article-cover-add, [class*="cover-add"]')).find(visible);
+        if (!coverTrigger) return { ok: false, reason: 'cover-trigger-not-found' };
+        coverTrigger.click();
+        await delay(900);
+        const fileInput = Array.from(document.querySelectorAll('input[type="file"]')).find(el => {
+          const accept = (el.getAttribute('accept') || '').toLowerCase();
+          return accept.includes('image') || accept.includes('png') || accept.includes('jpg') || accept === 'image/*';
+        }) || document.querySelector('input[type="file"]');
+        if (!fileInput) return { ok: false, reason: 'cover-file-input-not-found' };
+        const file = await ensureCoverFile();
+        if (!file) return { ok: false, reason: coverUrl ? 'cover-download-failed' : 'cover-missing' };
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        await delay(1200);
+        const modalConfirmBtn = findButton((t) => t === '确定' || t === '完成' || t === '使用', true);
+        if (modalConfirmBtn && !modalConfirmBtn.disabled) {
+          clickButton(modalConfirmBtn);
+          await delay(1000);
+        }
+        const coverState = await waitForCoverReady(12000);
+        if (!coverState.ready) {
+          return {
+            ok: false,
+            reason: coverState.error ? 'cover-invalid' : 'cover-not-ready',
+            hint: coverState.error || findVisibleHint()
+          };
+        }
+        return { ok: true };
+      };
+      const trySetSchedule = async (sendSet, sendTime) => {
+        if (+sendSet !== 2 || !sendTime) return { ok: true, skipped: true };
+        const scheduleParts = parseScheduleParts(sendTime);
+        if (!scheduleParts) {
+          return { ok: false, reason: 'schedule-time-invalid', hint: String(sendTime || '') };
+        }
+        const scheduleBtn = findFooterScheduleButton();
+        if (!scheduleBtn) return { ok: false, reason: 'schedule-btn-not-found' };
+        clickButton(scheduleBtn);
+        await delay(900);
+
+        const modalStart = Date.now();
+        let scheduleModal = null;
+        while (Date.now() - modalStart < 8000) {
+          scheduleModal = findScheduleModal();
+          if (scheduleModal) break;
+          await delay(300);
+        }
+        if (!scheduleModal) return { ok: false, reason: 'schedule-modal-not-opened' };
+        const triggers = findScheduleSelectTriggers(scheduleModal);
+        if (triggers.length < 3) {
+          return {
+            ok: false,
+            reason: 'schedule-select-trigger-not-found',
+            hint: textOf(scheduleModal).slice(0, 200)
+          };
+        }
+
+        const pickedDay = await pickDropdownOption(triggers[0], scheduleParts.dayText);
+        const pickedHour = await pickDropdownOption(triggers[1], scheduleParts.hourText);
+        const pickedMinute = await pickDropdownOption(triggers[2], scheduleParts.minuteText);
+        if (!pickedDay || !pickedHour || !pickedMinute) {
+          return {
+            ok: false,
+            reason: 'schedule-option-pick-failed',
+            hint: JSON.stringify({
+              expected: scheduleParts,
+              pickedDay,
+              pickedHour,
+              pickedMinute
+            })
+          };
+        }
+        await delay(800);
+
+        const confirmBtn = findModalButton(scheduleModal, (t) => {
+          if (!t) return false;
+          if (/取消|关闭|返回/.test(t)) return false;
+          return t === '确定' || t === '确认' || t === '完成' || t === '发布' || t.includes('定时发布');
+        });
+        if (!confirmBtn || confirmBtn.disabled) {
+          return {
+            ok: false,
+            reason: 'schedule-confirm-not-found',
+            hint: textOf(scheduleModal).slice(0, 200)
+          };
+        }
+        clickButton(confirmBtn);
+        await delay(1000);
+        return { ok: true, modal: true, confirmText: textOf(confirmBtn) };
+      };
+
+      const title = normalizeTitle(payload.rawTitle);
+      const content = normalizeContent(payload.rawContent, payload.intro, title);
+      const logs = [];
+      const push = (step, extra = {}) => logs.push({ step, ...extra, ts: Date.now() });
+      push('start', {
+        href: location.href,
+        title,
+        cover: payload.cover || '',
+        sendSet: payload.sendSet,
+        sendTime: payload.sendTime,
+        rawSendSet: payload.rawSendSet,
+        rawSendTime: payload.rawSendTime
+      });
+
+      const readyStart = Date.now();
+      let titleInput = null;
+      let editor = null;
+      while (Date.now() - readyStart < 120000) {
+        titleInput = findTitleInput();
+        editor = findEditor();
+        if (titleInput && editor) break;
+        await delay(1000);
+      }
+      if (!titleInput || !editor) {
+        return { success: false, reason: 'editor-not-ready', href: location.href, logs };
+      }
+
+      titleInput.focus();
+      setNativeValue(titleInput, title);
+      try {
+        titleInput.dispatchEvent(new InputEvent('beforeinput', {
+          bubbles: true, cancelable: true, inputType: 'insertText', data: title
+        }));
+      } catch (_) {}
+      titleInput.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: title
+      }));
+      titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+      titleInput.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+      await delay(900);
+      push('title-filled', { value: titleInput.value || '' });
+
+      editor.focus();
+      editor.innerHTML = '';
+      for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        editor.appendChild(p);
+      }
+      editor.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: content
+      }));
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      editor.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+      await delay(900);
+      push('content-filled', { length: (editor.innerText || '').trim().length });
+
+      const coverResult = await tryUploadCover(payload.cover, title);
+      push('cover-finished', coverResult);
+      if (!coverResult.ok) {
+        return { success: false, reason: coverResult.reason || 'cover-failed', hint: coverResult.hint || '', href: location.href, logs };
+      }
+
+      const scheduleResult = await trySetSchedule(payload.sendSet, payload.sendTime);
+      push('schedule-finished', scheduleResult);
+      if (!scheduleResult.ok) {
+        return { success: false, reason: scheduleResult.reason || 'schedule-failed', hint: scheduleResult.hint || '', href: location.href, logs };
+      }
+      if (+payload.sendSet === 2) {
+        let schedulePreviewReady = false;
+        for (let i = 0; i < 20; i++) {
+          const backBtn = findVisibleButtonByText('返回编辑');
+          const previewHint = isPreviewLayerVisible();
+          const finalScheduleBtn = findVisibleButtonByText('定时发布');
+          if ((backBtn || previewHint) && finalScheduleBtn && !finalScheduleBtn.disabled) {
+            schedulePreviewReady = true;
+            push('schedule-preview-ready', {
+              attempt: i + 1,
+              hasBackBtn: !!backBtn,
+              previewHint,
+              finalButtonText: textOf(finalScheduleBtn)
+            });
+            clickButton(finalScheduleBtn);
+            push('schedule-final-clicked', { text: textOf(finalScheduleBtn), attempt: i + 1 });
+            await delay(1200);
+            break;
+          }
+          await delay(400);
+        }
+        if (!schedulePreviewReady) {
+          return {
+            success: false,
+            reason: 'schedule-preview-not-ready',
+            hint: findVisibleHint(),
+            href: location.href,
+            logs
+          };
+        }
+
+        const scheduleWaitStart = Date.now();
+        const scheduleTimeout = 80000;
+        let lastToast = '';
+        while (Date.now() - scheduleWaitStart < scheduleTimeout) {
+          await delay(1200);
+          const href = location.href;
+          if (href.includes('/profile_v4/graphic/manage') || href.includes('/profile_v4/graphic/articles')) {
+            return { success: true, reason: 'schedule-list-page', href, logs, publishId: payload.publishId };
+          }
+          const toast = readToast();
+          if (toast) {
+            lastToast = toast;
+            if (/成功|已设置|已预约|定时/.test(toast) && !/失败|错误/.test(toast)) {
+              return { success: true, reason: 'schedule-toast-success', toast, href, logs, publishId: payload.publishId };
+            }
+            if (/失败|错误|无效|请先|过期/.test(toast)) {
+              return { success: false, reason: 'schedule-toast-error', toast, href, logs };
+            }
+          }
+        }
+        return { success: false, reason: 'schedule-result-timeout', toast: lastToast, href: location.href, logs };
+      }
+
+      let publishBtn = null;
+      for (let i = 0; i < 8; i++) {
+        publishBtn =
+          findButton((t) => t === '预览并发布' || t === '发布' || t.includes('发布文章'), true) ||
+          document.querySelector('button.publish-btn-last, button[class*="publish-btn-last"]');
+        if (publishBtn && !publishBtn.disabled) break;
+        await delay(600);
+      }
+      if (!publishBtn) {
+        return { success: false, reason: 'publish-btn-not-found', hint: findVisibleHint(), href: location.href, logs };
+      }
+
+      clickButton(publishBtn);
+      push('publish-clicked', { text: textOf(publishBtn) });
+      await delay(1200);
+
+      let previewReady = false;
+      for (let i = 0; i < 20; i++) {
+        const backBtn = findVisibleButtonByText('返回编辑');
+        const previewHint = isPreviewLayerVisible();
+        if (backBtn || previewHint) {
+          previewReady = true;
+          push('preview-ready', { attempt: i + 1, hasBackBtn: !!backBtn, previewHint });
+          break;
+        }
+        await delay(400);
+      }
+
+      let secondConfirmed = false;
+      for (let i = 0; i < 30; i++) {
+        const confirmBtn = findVisibleButtonByText('确认发布') || findVisibleButtonByText('立即发布');
+        if (confirmBtn && !confirmBtn.disabled) {
+          clickButton(confirmBtn);
+          push('secondary-confirm-clicked', { text: textOf(confirmBtn), attempt: i + 1 });
+          secondConfirmed = true;
+          await delay(1000);
+          break;
+        }
+        await delay(400);
+      }
+      if (!secondConfirmed) {
+        push('secondary-confirm-missing', { previewReady, hint: findVisibleHint() });
+      }
+
+      const resultStart = Date.now();
+      const timeout = 80000;
+      let lastToast = '';
+      while (Date.now() - resultStart < timeout) {
+        await delay(1200);
+        const href = location.href;
+        if (href.includes('/profile_v4/graphic/manage') || href.includes('/profile_v4/graphic/articles')) {
+          return { success: true, reason: 'list-page', href, logs, publishId: payload.publishId };
+        }
+        const toast = readToast();
+        if (toast) {
+          lastToast = toast;
+          if (/发布成功|提交成功|成功/.test(toast)) {
+            return { success: true, reason: 'toast-success', toast, href, logs, publishId: payload.publishId };
+          }
+          if (/失败|错误|异常|不能为空|请先|违规|超限|驳回/.test(toast)) {
+            return { success: false, reason: 'toast-failed', toast, href, logs, publishId: payload.publishId };
+          }
+        }
+        const hint = findVisibleHint();
+        if (hint) {
+          return { success: false, reason: 'validation-hint', hint, href, logs, publishId: payload.publishId };
+        }
+      }
+
+      return {
+        success: false,
+        reason: isPreviewLayerVisible() ? 'need-secondary-confirm' : 'timeout',
+        toast: lastToast,
+        hint: findVisibleHint(),
+        href: location.href,
+        logs,
+        publishId: payload.publishId
+      };
+    })()
+  `;
+}
+
+async function maybeRunBareToutiaoPublish(targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  const currentURL = targetWindow.webContents.getURL();
+  if (!shouldSkipScriptInjection(currentURL) || !currentURL.includes('/profile_v4/graphic/publish')) {
+    return;
+  }
+
+  const windowId = targetWindow.id;
+  const state = toutiaoBarePublishState.get(windowId);
+  if (state === 'running' || state === 'done') {
+    return;
+  }
+
+  toutiaoBarePublishState.set(windowId, 'running');
+  try {
+    const publishData = await waitForToutiaoPublishData(windowId, 15000);
+    if (!publishData) {
+      console.warn(`[Toutiao Bare Publish] ⚠️ 未找到窗口 ${windowId} 的发布数据`);
+      toutiaoBarePublishState.set(windowId, 'idle');
+      return;
+    }
+
+    const payload = extractToutiaoPublishPayload(publishData);
+    if (payload.cover) {
+      const coverDownload = await downloadImageAsBase64(payload.cover);
+      if (!coverDownload.success) {
+        await sendMainStatisticsError(payload.publishId || '', `封面下载失败: ${coverDownload.error || 'unknown error'}`, '头条发布', {
+          reason: 'cover-download-failed',
+          windowId,
+          href: currentURL
+        });
+        console.error('[Toutiao Bare Publish] ❌ 封面下载失败:', {
+          windowId,
+          cover: payload.cover,
+          error: coverDownload.error
+        });
+        postMessageToHomePages({
+          type: 'toutiao-bare-publish-result',
+          data: {
+            windowId,
+            success: false,
+            reason: 'cover-download-failed',
+            toast: '',
+            hint: `封面下载失败: ${coverDownload.error || 'unknown error'}`,
+            href: currentURL,
+            publishId: payload.publishId || '',
+            timestamp: Date.now()
+          }
+        });
+        notifyToutiaoBarePublishFailure({
+          windowId,
+          publishId: payload.publishId || '',
+          reason: 'cover-download-failed',
+          hint: `封面下载失败: ${coverDownload.error || 'unknown error'}`,
+          href: currentURL
+        });
+        toutiaoBarePublishState.set(windowId, 'failed');
+        return;
+      }
+      payload.coverData = coverDownload.data;
+      payload.coverContentType = coverDownload.contentType || 'image/jpeg';
+      payload.coverSize = coverDownload.size || 0;
+    }
+    console.log('[Toutiao Bare Publish] 开始自动发布:', {
+      windowId,
+      title: payload.rawTitle,
+      cover: payload.cover,
+      coverSize: payload.coverSize || 0,
+      sendSet: payload.sendSet,
+      sendTime: payload.sendTime,
+      rawSendSet: payload.rawSendSet,
+      rawSendTime: payload.rawSendTime
+    });
+    writeMainDebugDump('toutiao-bare-before-run', {
+      stage: 'before-run',
+      windowId,
+      currentURL,
+      payload
+    });
+
+    const result = await targetWindow.webContents.executeJavaScript(buildToutiaoBarePublishScript(payload), true);
+    console.log('[Toutiao Bare Publish] 执行结果:', { windowId, result });
+    writeMainDebugDump('toutiao-bare-result', {
+      stage: 'result',
+      windowId,
+      currentURL,
+      payload,
+      result
+    });
+
+    if (!result?.success) {
+      const failureText = result?.hint || result?.toast || result?.reason || '发布失败';
+      await sendMainStatisticsError(payload.publishId || '', failureText, '头条发布', {
+        reason: result?.reason || 'bare-publish-failed',
+        windowId,
+        href: result?.href || currentURL
+      });
+      notifyToutiaoBarePublishFailure({
+        windowId,
+        publishId: payload.publishId || '',
+        reason: result?.reason || 'bare-publish-failed',
+        hint: result?.hint || '',
+        toast: result?.toast || '',
+        href: result?.href || currentURL
+      });
+    }
+
+    postMessageToHomePages({
+      type: 'toutiao-bare-publish-result',
+      data: {
+        windowId,
+        success: !!result?.success,
+        reason: result?.reason || '',
+        toast: result?.toast || '',
+        hint: result?.hint || '',
+        href: result?.href || currentURL,
+        publishId: payload.publishId || '',
+        timestamp: Date.now()
+      }
+    });
+
+    if (result?.success) {
+      if (payload.publishId) {
+        await sendMainStatistics(payload.publishId, '头条发布', {
+          reason: result?.reason || 'bare-publish-success',
+          windowId,
+          href: result?.href || currentURL
+        });
+      }
+      notifyToutiaoBarePublishSuccess({
+        windowId,
+        publishId: payload.publishId || '',
+        reason: result?.reason || 'bare-publish-success',
+        href: result?.href || currentURL
+      });
+      toutiaoBarePublishState.set(windowId, 'done');
+      setTimeout(() => {
+        if (!targetWindow.isDestroyed()) {
+          targetWindow.close();
+        }
+      }, 1200);
+      return;
+    }
+
+    toutiaoBarePublishState.set(windowId, 'failed');
+  } catch (err) {
+    console.error(`[Toutiao Bare Publish] ❌ 窗口 ${windowId} 自动发布失败:`, err);
+    const currentURLForError = !targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()
+      ? targetWindow.webContents.getURL()
+      : '';
+    writeMainDebugDump('toutiao-bare-exception', {
+      stage: 'exception',
+      windowId,
+      currentURL: currentURLForError,
+      error: {
+        message: err?.message || String(err),
+        stack: err?.stack || ''
+      }
+    });
+    await sendMainStatisticsError('', err?.message || '头条裸发布异常', '头条发布', {
+      reason: 'bare-publish-exception',
+      windowId,
+      href: currentURLForError
+    });
+    notifyToutiaoBarePublishFailure({
+      windowId,
+      publishId: '',
+      reason: 'bare-publish-exception',
+      hint: err?.message || '头条裸发布异常',
+      href: currentURLForError
+    });
+    toutiaoBarePublishState.set(windowId, 'failed');
+  }
+}
 
 // ===========================
 // 单实例锁定 - 确保只运行一个浏览器实例
@@ -511,6 +2088,10 @@ async function checkForUpdate() {
           console.error('[Update] 解析响应失败:', err.message);
           resolve({ hasUpdate: false, error: err.message });
         }
+      });
+      res.on('error', (err) => {
+        console.error('[Update] 响应流错误:', err.message);
+        resolve({ hasUpdate: false, error: err.message });
       });
     });
 
@@ -772,7 +2353,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true
+      webviewTag: true,
+      backgroundThrottling: false // 禁用后台节流，防止长时间不操作页面空白
     }
   });
 
@@ -880,36 +2462,11 @@ function createWindow() {
   // 获取或创建持久化 session（禁用 HTTP 缓存，只保留 cookies 和 storage）
   const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
-  // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
-  // 添加 5 秒超时保护，防止 clearCache 在某些电脑上挂起导致页面永远不加载
-  let cacheCleared = false;
-  const clearCachePromise = Promise.race([
-    (async () => {
-      try {
-        // 清理 HTTP 缓存
-        await persistentSession.clearCache();
-        console.log('[Session] ✅ HTTP 缓存已清理');
-
-        // 清理 Code Cache（JavaScript 编译缓存）
-        await persistentSession.clearCodeCaches({});
-        console.log('[Session] ✅ Code Cache 已清理');
-
-        cacheCleared = true;
-      } catch (err) {
-        console.error('[Session] ⚠️ 清理缓存失败:', err);
-        cacheCleared = true; // 即使失败也继续
-      }
-    })(),
-    new Promise((resolve) => {
-      setTimeout(() => {
-        if (!cacheCleared) {
-          console.warn('[Session] ⚠️ 清理缓存超时（5秒），跳过继续加载页面');
-          cacheCleared = true;
-        }
-        resolve();
-      }, 5000);
-    })
-  ]);
+  // 持久化 session 已禁用 HTTP 缓存，启动期不再额外清理 cache/code cache。
+  // 之前的清理动作会在部分 Windows 机器上触发磁盘缓存异常，反而放大首屏白屏概率。
+  const clearCachePromise = Promise.resolve().then(() => {
+    console.log('[Session] ℹ️ 已跳过启动期缓存清理，首屏恢复改由启动守卫负责');
+  });
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -927,7 +2484,6 @@ function createWindow() {
 
   // 🔴 修复外部页面 CSS/JS 乱码
   addContentTypeFix(persistentSession, '持久化 session');
-  addIdentityHeaderPolicy(persistentSession, '持久化 session');
 
   // 打印 session 存储路径
   console.log('========================================');
@@ -940,9 +2496,10 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 主窗口保持带标记 UA，供自有系统识别浏览器来源
-  persistentSession.setUserAgent(TAGGED_USER_AGENT);
-  console.log('User-Agent set to:', TAGGED_USER_AGENT);
+  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  persistentSession.setUserAgent(customUA);
+  console.log('User-Agent set to:', customUA);
 
   // 监听下载事件
   persistentSession.on('will-download', (event, item, webContents) => {
@@ -1020,6 +2577,18 @@ function createWindow() {
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
 
+  browserView.webContents.on('did-start-loading', () => {
+    if (!startupLoadGuard.active) return;
+    const text = startupLoadGuard.reloadCount > 0 ? '页面加载较慢，正在恢复...' : '正在加载页面...';
+    setBrowserLoadingState({ visible: true, text });
+  });
+
+  browserView.webContents.on('did-stop-loading', () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('did-stop-loading', 700);
+    }
+  });
+
   // 🔍 P3: 渲染进程崩溃监听 - 方便远程排查白屏问题
   browserView.webContents.on('render-process-gone', (event, details) => {
     console.error('[BrowserView] ❌ 渲染进程已退出！');
@@ -1046,6 +2615,24 @@ function createWindow() {
 
     if (errorCode !== -3) {
       setTimeout(() => finishInitialBrowserViewLoading('did-fail-load'), 0);
+    if (errorCode === -3) return; // 忽略导航中止
+    if (startupLoadGuard.active && retryStartupLoad(`did-fail-load ${errorCode}: ${errorDescription}`)) {
+      return;
+    }
+    finishStartupLoadGuard('did-fail-load');
+    const result = await showPageErrorDialog({
+      title: '页面加载失败',
+      message: '页面加载失败，是否重试？',
+      detail: `错误码: ${errorCode} 描述: ${errorDescription}`
+    });
+    if (result.response === 0) {
+      try {
+        browserView.webContents.reload();
+      } catch (err) {
+        console.error('[BrowserView] ❌ 重试加载失败:', err);
+      }
+    } else if (result.response === 1) {
+      await navigateToLoginInternal('did_fail_load');
     }
   });
 
@@ -1060,32 +2647,38 @@ function createWindow() {
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
 
-  let isInitialBrowserViewLoadPending = true;
-  let initialBrowserViewLoadingStartedAt = Date.now();
-  const finishInitialBrowserViewLoading = (reason) => {
-    if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
-      return;
-    }
-
+  // ========== 定期心跳，保持页面活跃 ==========
+  // 防止 Chromium 长时间不操作时对页面进行后台节流
+  const HEARTBEAT_INTERVAL = 30 * 1000; // 每 30 秒发送一次心跳
+  const heartbeatInterval = setInterval(async () => {
+    if (!browserView || browserView.webContents.isDestroyed()) return;
+    if (browserView.webContents.isLoading()) return;
     const currentUrl = browserView.webContents.getURL();
-    if (!currentUrl || currentUrl === 'about:blank') {
-      return;
+    if (!currentUrl || currentUrl === 'about:blank') return;
+
+    try {
+      // 执行一个简单的 JavaScript 代码，保持页面活跃
+      // 这会防止 Chromium 对页面进行后台节流
+      await browserView.webContents.executeJavaScript(`
+        (function() {
+          // 更新一个全局变量，标记页面仍然活跃
+          window.__browserHeartbeat__ = Date.now();
+          // 触发一个自定义事件，让页面知道浏览器仍在监控
+          const event = new CustomEvent('__browser_heartbeat__', { detail: { timestamp: Date.now() } });
+          document.dispatchEvent(event);
+        })()
+      `, true);
+
+      console.log('[BrowserView] 💓 心跳信号已发送，保持页面活跃');
+    } catch (err) {
+      console.warn('[BrowserView] ⚠️ 心跳信号发送失败:', err.message);
     }
+  }, HEARTBEAT_INTERVAL);
 
-    const elapsed = Date.now() - initialBrowserViewLoadingStartedAt;
-    const minVisibleDuration = 500;
-    const delay = Math.max(0, minVisibleDuration - elapsed);
-
-    setTimeout(() => {
-      if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
-        return;
-      }
-
-      isInitialBrowserViewLoadPending = false;
-      console.log(`[Loading] BrowserView 首屏加载完成，来源: ${reason}, URL: ${currentUrl}, 延迟隐藏: ${delay}ms`);
-      setGlobalLoadingState(false);
-    }, delay);
-  };
+  mainWindow.on('closed', () => {
+    clearInterval(heartbeatInterval);
+    clearStartupLoadGuardTimer();
+  });
 
   // 监听窗口大小变化
   mainWindow.on('resize', () => {
@@ -1097,13 +2690,9 @@ function createWindow() {
   process.nextTick(async () => {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
-    initialBrowserViewLoadingStartedAt = Date.now();
-    setGlobalLoadingState(true, '正在启动浏览器...');
 
-    // 🔑 等待缓存清理完成
-    console.log('[BrowserView] 等待缓存清理完成...');
-    await clearCachePromise;
-    console.log('[BrowserView] ✅ 缓存清理完成，开始加载页面');
+    console.log('[BrowserView] 启动期缓存清理已改为后台执行，不阻塞首页');
+    clearCachePromise.catch(() => {});
 
     // 检查是否有保存的登录 token
     const savedToken = globalStorage.login_token;
@@ -1217,20 +2806,9 @@ function createWindow() {
         // 🔑 根据上次退出的项目类型，跳转到对应首页
         const savedProject = globalStorage.last_project;
         if (savedProject === 'geo') {
-          // 先调 API 获取最新 siteInfo，检查 is_geo
-          console.log('[BrowserView] 📍 上次退出时在 geo 项目，重新检查 geo 权限...');
-          const siteResult = await fetchSiteInfo();
-          const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
-
-          if (siteInfo && siteInfo.is_geo === 1) {
-            // geo 权限通过，跳转到 geo 首页
-            startUrl = config.getGeoUrl();
-            console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
-          } else {
-            // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
-            console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
-            startUrl = '__LOCAL_NOT_PURCHASE_GEO__';
-          }
+          // 直接跳转到 geo 首页，不检查权限
+          startUrl = config.getGeoUrl();
+          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
         } else {
           // 默认 aigc 项目首页
           startUrl = config.getAigcUrl();
@@ -1244,7 +2822,6 @@ function createWindow() {
       console.log('[BrowserView] 没有有效的登录 token，显示登录页');
       if (savedToken && savedExpires) {
         console.log('[BrowserView] Token 已过期，过期时间:', new Date(savedExpires * 1000).toLocaleString());
-        showTokenExpiredNotice('startup-check', savedExpires);
         // 清除过期的 token
         delete globalStorage.login_token;
         delete globalStorage.login_expires;
@@ -1263,58 +2840,43 @@ function createWindow() {
 
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
     let loadPage;
-    if (startUrl === '__LOCAL_NOT_PURCHASE_GEO__') {
-      // GEO 权限不通过，使用 loadFile + query 参数正确加载本地页面
-      loadPage = browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notPurchase), { query: { system: 'geo' } });
-    } else if (startUrl.startsWith('file://')) {
+    if (startUrl.startsWith('file://')) {
       loadPage = loadLocalPage(browserView.webContents, path.basename(startUrl));
     } else {
       loadPage = browserView.webContents.loadURL(startUrl);
     }
 
+    beginStartupLoadGuard(startUrl);
+
     loadPage
       .then(() => {
         console.log('[BrowserView] ✅ 页面加载调用成功');
-        // 🔍 白屏检测：loadFile 可能回调成功但 GPU 渲染失败导致页面实际为空
-        // 10秒后检查页面是否有内容，没有则重新加载
-        setTimeout(async () => {
-          if (!browserView || browserView.webContents.isDestroyed()) return;
-          try {
-            const bodyHTML = await browserView.webContents.executeJavaScript(
-              'document.body ? document.body.innerHTML.trim().length : 0'
-            );
-            if (bodyHTML === 0) {
-              console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
-              const result = await showPageErrorDialog({
-                title: '页面可能空白',
-                message: '检测到页面可能空白，是否刷新？',
-                detail: '启动后白屏检测触发'
-              });
-              if (result.response === 0) {
-                browserView.webContents.reload();
-              } else if (result.response === 1) {
-                await navigateToLoginInternal('blank_screen_startup');
-              }
-            } else {
-              console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
-            }
-          } catch (e) {
-            console.warn('[BrowserView] ⚠️ 白屏检测执行失败（渲染进程可能已崩溃）:', e.message);
-          }
-        }, 10000);
+        scheduleStartupReadinessCheck('loadPage.then', 1000);
       })
-      .catch(err => {
+      .catch(async err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
-        // 失败后3秒重试一次
-        setTimeout(() => {
-          console.log('[BrowserView] 🔄 3秒后重试加载...');
+        if (startupLoadGuard.active && retryStartupLoad(`initial-load failed: ${err.message || err}`)) {
+          return;
+        }
+
+        finishStartupLoadGuard('initial-load-failed');
+        const result = await showPageErrorDialog({
+          title: '页面加载失败',
+          message: '启动页加载失败，是否重试？',
+          detail: err.message || String(err)
+        });
+
+        if (result.response === 0) {
+          beginStartupLoadGuard(startUrl);
           const retryLoad = startUrl.startsWith('file://')
             ? loadLocalPage(browserView.webContents, path.basename(startUrl))
             : browserView.webContents.loadURL(startUrl);
           retryLoad.catch(e => {
             console.error('[BrowserView] ❌ 重试失败:', e);
           });
-        }, 3000);
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('load_page_failed_startup');
+        }
       });
   });
 
@@ -1332,6 +2894,10 @@ function createWindow() {
     console.log('==================================================');
     console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
+    if (shouldSkipScriptInjection(url)) {
+      console.log('[Script Injection] Skip for Toutiao URL:', url);
+      return;
+    }
 
     // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
     // 如果异常，保持隐藏状态；如果正常，移除预防性隐藏样式
@@ -1533,6 +3099,18 @@ function createWindow() {
   // 监听用户点击链接（在导航开始前触发，可捕获原始目标 URL）
   browserView.webContents.on('will-navigate', (event, url) => {
     console.log(`[Navigation] 用户点击链接 → ${url}`);
+    if (shouldSkipScriptInjection(url)) {
+      console.log('[Navigation] 🧼 主 BrowserView 命中 Toutiao，改为裸窗口打开:', url);
+      event.preventDefault();
+      pendingNavigationUrl = null;
+      setImmediate(async () => {
+        const result = await openManagedChildWindow(url);
+        if (!result.success) {
+          console.error('[Navigation] ❌ 打开 Toutiao 裸窗口失败:', result.error);
+        }
+      });
+      return;
+    }
     // 记录用户点击的目标 URL（即使会被重定向）
     if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
@@ -1675,6 +3253,10 @@ function createWindow() {
 
   // 🔑 监听页面 DOM 准备完成（刷新页面时也会触发）
   browserView.webContents.on('dom-ready', async () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('dom-ready', 800);
+    }
+
     const url = browserView.webContents.getURL();
     console.log(`[DOM Ready] 页面准备完成 → ${url}`);
 
@@ -1827,7 +3409,6 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
-      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
@@ -1849,8 +3430,10 @@ function createWindow() {
     await injectScriptForCurrentPage();
   });
 
-  browserView.webContents.on('did-stop-loading', () => {
-    finishInitialBrowserViewLoading('did-stop-loading');
+  browserView.webContents.on('did-finish-load', () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('did-finish-load', 900);
+    }
   });
 
   // 监听页面加载完成，注入自定义脚本
@@ -1876,6 +3459,7 @@ function createWindow() {
       }
       return;
     }
+
   });
 
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
@@ -1954,14 +3538,6 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
-
-    // 子窗口统一使用标准 UA，避免第三方平台风控将其识别为改写浏览器
-    try {
-      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-      console.log('[Window Created] 子窗口 User-Agent 已设为标准 UA');
-    } catch (e) {
-      console.warn('[Window Created] 设置子窗口 User-Agent 失败:', e?.message || e);
-    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -2156,6 +3732,13 @@ function createWindow() {
 let isHeaderHidden = false;
 
 function updateBrowserViewBounds(scriptPanelOpen = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+  if (browserLoadingState.visible) {
+    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    return;
+  }
+
   const { width, height } = mainWindow.getContentBounds();
   // 公共头部高度 50px（登录页时隐藏）
   // 开发工具栏已移除，统一使用公共头部
@@ -2188,6 +3771,47 @@ function updateHeaderVisibility(url) {
     // 更新 BrowserView 边界
     updateBrowserViewBounds(isScriptPanelOpen);
     console.log('[Header] 公共头部:', isHeaderHidden ? '隐藏' : '显示');
+  }
+}
+
+// 跳转到登录页（统一入口，防重入）
+async function navigateToLoginInternal(source) {
+  if (isNavigatingToLogin) {
+    console.log(`[navigateToLoginInternal] 已在跳转中，忽略来源: ${source}`);
+    return;
+  }
+  isNavigatingToLogin = true;
+  console.log(`[navigateToLoginInternal] 开始跳转到登录页，来源: ${source}`);
+
+  try {
+    if (!browserView || browserView.webContents.isDestroyed()) {
+      console.error('[navigateToLoginInternal] BrowserView 不可用');
+      return;
+    }
+
+    // 隐藏公共头部
+    isHeaderHidden = true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('toggle-header', false);
+    }
+    updateBrowserViewBounds(isScriptPanelOpen);
+
+    // 使用 loadFile 加载登录页（避免 file:// 中文路径编码问题）
+    await loadLocalPage(browserView.webContents, 'login.html');
+
+    // 通知 renderer URL 变化
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('url-changed', LOGIN_URL);
+    }
+
+    console.log('[navigateToLoginInternal] ✅ 已跳转到登录页');
+  } catch (err) {
+    console.error('[navigateToLoginInternal] ❌ 跳转失败:', err);
+  } finally {
+    // 延迟重置标志，防止快速重入
+    setTimeout(() => {
+      isNavigatingToLogin = false;
+    }, 1000);
   }
 }
 
@@ -2310,14 +3934,10 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
-// 🖥️ 禁用 GPU 硬件加速 - 解决某些 Windows 电脑因显卡驱动不兼容导致的白屏问题
-// macOS GPU 驱动稳定，禁用反而可能导致渲染异常，因此仅 Windows 禁用
-if (process.platform === 'win32') {
-  app.disableHardwareAcceleration();
-  console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
-} else {
-  console.log('[GPU] ℹ️ macOS 保持硬件加速启用');
-}
+// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
+// 必须在 app.whenReady() 之前调用
+app.disableHardwareAcceleration();
+console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
@@ -2341,7 +3961,7 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log('[Compatibility] ✅ 防后台节流已启用');
+console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -2957,70 +4577,19 @@ ipcMain.handle('native-click', async (event, x, y) => {
 
 // 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
+  if (shouldSkipScriptInjection(url)) {
+    return openManagedChildWindow(url);
+  }
   if (browserView) {
     browserView.webContents.loadURL(url);
+    return { success: true };
   }
+  return { success: false, error: 'No browser view available' };
 });
 
 // 导航到登录页
 ipcMain.handle('navigate-to-login', async () => {
-  if (browserView) {
-    console.log('[Main] 导航到登录页:', LOGIN_URL);
-
-    // 🔑 退出登录时清除所有登录相关数据
-    console.log('[Main] 清除退出登录数据...');
-
-    // 1. 清除 globalStorage 中的登录数据
-    delete globalStorage.last_page_url;
-    delete globalStorage.login_token;
-    delete globalStorage.login_expires;
-    delete globalStorage.login_gcc;
-    delete globalStorage.company_id;
-    delete globalStorage.user_info;
-    delete globalStorage.siteInfo;
-    delete globalStorage.current_site;
-    delete globalStorage.current_site_id;
-    delete globalStorage.current_site_name;
-    saveGlobalStorage();
-    console.log('[Main] ✅ 已清除 globalStorage 数据');
-
-    // 2. 清除 Cookies（token, access_token, site_id 等）
-    try {
-      const ses = browserView.webContents.session;
-      const cookies = await ses.cookies.get({});
-      console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
-
-      // 需要清除的 cookie 名称列表
-      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
-
-      let deletedCount = 0;
-      for (const cookie of cookies) {
-        if (cookiesToClear.includes(cookie.name)) {
-          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
-          try {
-            await ses.cookies.remove(cookieUrl, cookie.name);
-            deletedCount++;
-            console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
-          } catch (err) {
-            console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
-          }
-        }
-      }
-
-      // 也清除 localhost 的 cookies
-      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
-      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
-
-      await ses.flushStorageData();
-      console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
-    } catch (err) {
-      console.error('[Main] ❌ 清除 cookies 失败:', err);
-    }
-
-    loadLocalPage(browserView.webContents, 'login.html');
-  }
+  await navigateToLoginInternal('ipc');
 });
 
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
@@ -3982,10 +5551,10 @@ ipcMain.handle('show-company-menu', async (event, companies, currentUniqueId) =>
   });
 });
 
-// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
+// 统一的新窗口创建逻辑
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
 // options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）
-ipcMain.handle('open-new-window', async (event, url, options = {}) => {
+async function openManagedChildWindow(url, options = {}) {
   if (!url) {
     return { success: false, error: 'No URL provided' };
   }
@@ -4005,6 +5574,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     console.log('[Window Manager] options.platform:', options.platform);
     console.log('[Window Manager] options.accountId:', options.accountId);
     console.log('[Window Manager] options.sessionData:', options.sessionData ? '有数据' : '无数据');
+    const isBareToutiao = shouldSkipScriptInjection(url);
+    if (isBareToutiao) {
+      console.log('[Window Manager] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
+    }
 
     if (options.platform && options.accountId) {
       // 多账号模式：使用指定账号的持久化 session
@@ -4242,8 +5815,9 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
-      // 临时 session 使用标准 UA（不带标记，避免第三方平台风控）
-      windowSession.setUserAgent(STANDARD_USER_AGENT);
+      // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
+      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
@@ -4258,7 +5832,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
-      addIdentityHeaderPolicy(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4266,26 +5839,38 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       console.log('[Window Manager] 使用持久化 session');
     }
 
+    const windowWebPreferences = {
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: windowSession,
+      backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+      autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+    };
+    if (!isBareToutiao) {
+      windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
+    }
+
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
       icon: appIcon, // 使用 nativeImage 加载的图标
-      webPreferences: {
-        preload: path.join(__dirname, 'content-preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        session: windowSession,
-        backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
-        autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
-      }
+      webPreferences: windowWebPreferences
     });
-
-    // open-new-window 创建的发布/授权窗口统一使用标准 UA
-    try {
-      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-      console.log('[Window Manager] 子窗口 User-Agent 已设为标准 UA');
-    } catch (e) {
-      console.warn('[Window Manager] 设置子窗口 User-Agent 失败:', e?.message || e);
+    const publishDataKey = `publish_data_window_${newWindow.id}`;
+    if (isBareToutiao) {
+      if (globalStorage[publishDataKey]) {
+        delete globalStorage[publishDataKey];
+        console.log(`[Window Manager] 🧹 清理头条窗口旧发布数据: ${publishDataKey}`);
+      }
+      if (options.publishData && typeof options.publishData === 'object') {
+        globalStorage[publishDataKey] = {
+          ...options.publishData,
+          windowId: newWindow.id,
+          createdAt: options.publishData.createdAt || Date.now()
+        };
+        console.log(`[Window Manager] ✅ 已预写入头条发布数据: ${publishDataKey}`);
+      }
+      saveGlobalStorage();
     }
 
     // 添加到子窗口列表
@@ -4309,8 +5894,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
-    const openedAt = Date.now();
-    let hasShownRedirectAuthNotice = false;
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -4373,6 +5956,12 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
+      }
+      toutiaoBarePublishState.delete(windowId);
+      if (isBareToutiao && globalStorage[publishDataKey]) {
+        delete globalStorage[publishDataKey];
+        saveGlobalStorage();
+        console.log(`[Window Manager] 🧹 已清理头条发布数据: ${publishDataKey}`);
       }
       // 清理窗口账号映射
       if (windowAccountMap.has(windowId)) {
@@ -4453,6 +6042,10 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
     newWindow.webContents.on('dom-ready', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
+      if (shouldSkipScriptInjection(currentURL)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
+        return;
+      }
 
       // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
       await scriptManager.getScript(currentURL).then(async (script) => {
@@ -4485,12 +6078,22 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
 
       // 🔑 补充脚本注入（与 did-create-window 保持一致）
       // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
-      await injectScriptForUrl(newWindow.webContents, currentURL);
+      if (shouldSkipScriptInjection(currentURL)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
+        await maybeRunBareToutiaoPublish(newWindow);
+      } else {
+        await injectScriptForUrl(newWindow.webContents, currentURL);
+      }
     });
 
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      if (shouldSkipScriptInjection(navUrl)) {
+        console.log('[New Window API] Skip script injection for Toutiao:', navUrl);
+        await maybeRunBareToutiaoPublish(newWindow);
+        return;
+      }
       const script = await scriptManager.getScript(navUrl);
       if (script) {
         try {
@@ -4501,123 +6104,6 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
         }
       }
       await injectScriptForUrl(newWindow.webContents, navUrl);
-    });
-
-    // 🔑 Redirect 检测：当页面导航离开预期 URL 时通知首页
-    // 覆盖场景：服务端 302 重定向、JS window.location 跳转、表单提交跳转
-    const expectedUrl = url;
-    newWindow.webContents.on('did-navigate', (event, navUrl) => {
-      // 跳过中间页（预设 localStorage 时的 favicon.ico 加载）
-      if (navUrl === 'about:blank' || navUrl.endsWith('/favicon.ico')) return;
-
-      try {
-        const expected = new URL(expectedUrl);
-        const actual = new URL(navUrl);
-
-        // 比较 origin + pathname，忽略 query string 和 hash
-        const isSameOrigin = actual.origin === expected.origin;
-        const isSamePath = actual.pathname === expected.pathname;
-
-        if (!isSameOrigin || !isSamePath) {
-          console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
-          const windowId = newWindow.id;
-
-          // 1. 自动上报后台接口（异步，不阻塞）
-          (async () => {
-            try {
-              const publishDataKey = `publish_data_window_${windowId}`;
-              const publishData = globalStorage[publishDataKey];
-              const publishId = publishData?.video?.dyPlatform?.id;
-
-              if (publishId) {
-                const statisticsUrl = `${config.domains.apiDomain}/api/mediaauth/tjlogerror`;
-                const errorData = {
-                  id: publishId,
-                  status_text: `页面被重定向: ${navUrl}`,
-                  context: {
-                    url: navUrl,
-                    expectedUrl: expectedUrl,
-                    timestamp: new Date().toISOString(),
-                    platform: 'redirect-detection',
-                  }
-                };
-                const scanData = { data: JSON.stringify(errorData) };
-                const postData = JSON.stringify(scanData);
-                const urlObj = new URL(statisticsUrl);
-                const requestModule = urlObj.protocol === 'https:' ? https : http;
-
-                const options = {
-                  hostname: urlObj.hostname,
-                  port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-                  path: urlObj.pathname,
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData),
-                  }
-                };
-
-                const req = requestModule.request(options, (res) => {
-                  console.log(`[Window Redirect] ✅ 上报后台成功, statusCode: ${res.statusCode}`);
-                });
-                req.on('error', (e) => {
-                  console.error(`[Window Redirect] ❌ 上报后台失败:`, e.message);
-                });
-                req.write(postData);
-                req.end();
-
-                console.log(`[Window Redirect] 📤 已上报后台, publishId: ${publishId}`);
-              } else {
-                console.log('[Window Redirect] ⚠️ 未找到 publishId，跳过上报');
-              }
-            } catch (err) {
-              console.error('[Window Redirect] ❌ 上报异常:', err);
-            }
-          })();
-
-          // 2. 通知首页（通过 postMessage，复用现有的 onMessageFromOtherPage 通道）
-          if (browserView && !browserView.webContents.isDestroyed()) {
-            const redirectMsg = JSON.stringify({
-              type: 'publish-redirected',
-              windowId: windowId,
-              expectedUrl: expectedUrl,
-              actualUrl: navUrl,
-              isSameOrigin: isSameOrigin,
-              timestamp: Date.now()
-            });
-            browserView.webContents.executeJavaScript(`
-              window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${redirectMsg} }, '*');
-            `).catch(() => {});
-
-            // 同时发送 window-redirected 事件（供 onWindowRedirected 回调使用）
-            browserView.webContents.send('window-redirected', {
-              windowId: windowId,
-              expectedUrl: expectedUrl,
-              actualUrl: navUrl,
-              isSameOrigin: isSameOrigin,
-              timestamp: Date.now()
-            });
-            console.log('[Window Redirect] ✅ 已通知首页页面发生跳转');
-          }
-
-          // 发布窗口打开后短时间内被重定向到登录/非发布页，提示用户重新登录
-          const accountInfo = windowAccountMap.get(newWindow.id);
-          const openedRecently = Date.now() - openedAt < 45 * 1000;
-          const loginRedirect = isLikelyLoginUrl(navUrl);
-          const publishToNonPublishRedirect = isLikelyPublishUrl(expectedUrl) && !isLikelyPublishUrl(navUrl);
-
-          if (!hasShownRedirectAuthNotice && accountInfo && openedRecently && (loginRedirect || publishToNonPublishRedirect)) {
-            hasShownRedirectAuthNotice = true;
-            showPublishLoginRedirectNotice(newWindow, {
-              platform: accountInfo.platform,
-              expectedUrl,
-              actualUrl: navUrl
-            });
-          }
-        }
-      } catch (e) {
-        // URL 解析失败，忽略
-      }
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
@@ -4697,6 +6183,11 @@ ipcMain.handle('open-new-window', async (event, url, options = {}) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+}
+
+// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
+ipcMain.handle('open-new-window', async (event, url, options = {}) => {
+  return openManagedChildWindow(url, options);
 });
 
 // 从内容页面在当前窗口打开 URL
@@ -4706,6 +6197,9 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
   }
 
   try {
+    if (shouldSkipScriptInjection(url)) {
+      return openManagedChildWindow(url);
+    }
     if (browserView) {
       browserView.webContents.loadURL(url);
       return { success: true };
@@ -5357,8 +6851,6 @@ ipcMain.handle('download-video', async (event, url) => {
 });
 
 // ========== 图片下载功能（通过主进程绕过跨域限制） ==========
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
-
 ipcMain.handle('download-image', async (event, url) => {
   console.log('[Image Download] 开始下载:', url);
 
@@ -5366,91 +6858,8 @@ ipcMain.handle('download-image', async (event, url) => {
     return { success: false, error: 'No URL provided' };
   }
 
-  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
-    return new Promise((resolve) => {
-      if (redirectCount > 5) {
-        resolve({ success: false, error: 'Too many redirects' });
-        return;
-      }
-
-      const protocol = downloadUrl.startsWith('https') ? https : http;
-
-      const request = protocol.get(downloadUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      }, (response) => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          let redirectUrl = response.headers.location;
-          if (!redirectUrl.startsWith('http')) {
-            const urlObj = new URL(downloadUrl);
-            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
-          }
-          console.log('[Image Download] 重定向到:', redirectUrl);
-          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
-          return;
-        }
-
-        if (response.statusCode !== 200) {
-          resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
-          return;
-        }
-
-        const contentLength = parseInt(response.headers['content-length'], 10);
-        if (contentLength && contentLength > MAX_IMAGE_SIZE) {
-          response.destroy();
-          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB)` });
-          return;
-        }
-
-        const chunks = [];
-        let totalSize = 0;
-        const contentType = response.headers['content-type'] || 'image/jpeg';
-
-        response.on('data', (chunk) => {
-          totalSize += chunk.length;
-          if (totalSize > MAX_IMAGE_SIZE) {
-            response.destroy();
-            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
-            return;
-          }
-          chunks.push(chunk);
-        });
-
-        response.on('end', () => {
-          const buffer = Buffer.concat(chunks);
-          const base64Data = buffer.toString('base64');
-          console.log('[Image Download] 下载完成，大小:', buffer.length, 'bytes');
-          chunks.length = 0;
-
-          resolve({
-            success: true,
-            data: base64Data,
-            contentType: contentType,
-            size: buffer.length
-          });
-        });
-
-        response.on('error', (err) => {
-          console.error('[Image Download] 响应错误:', err);
-          resolve({ success: false, error: err.message });
-        });
-      });
-
-      request.on('error', (err) => {
-        console.error('[Image Download] 请求错误:', err);
-        resolve({ success: false, error: err.message });
-      });
-
-      request.setTimeout(30000, () => {
-        request.destroy();
-        resolve({ success: false, error: 'Download timeout (30s)' });
-      });
-    });
-  };
-
   try {
-    return await downloadWithRedirect(url);
+    return await downloadImageAsBase64(url);
   } catch (err) {
     console.error('[Image Download] 异常:', err);
     return { success: false, error: err.message };
