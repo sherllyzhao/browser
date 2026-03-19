@@ -1043,6 +1043,10 @@ function createWindow() {
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
     console.error('[BrowserView] 失败 URL:', validatedURL);
+
+    if (errorCode !== -3) {
+      setTimeout(() => finishInitialBrowserViewLoading('did-fail-load'), 0);
+    }
   });
 
   browserView.webContents.on('unresponsive', () => {
@@ -1056,6 +1060,33 @@ function createWindow() {
   mainWindow.setBrowserView(browserView);
   updateBrowserViewBounds();
 
+  let isInitialBrowserViewLoadPending = true;
+  let initialBrowserViewLoadingStartedAt = Date.now();
+  const finishInitialBrowserViewLoading = (reason) => {
+    if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
+      return;
+    }
+
+    const currentUrl = browserView.webContents.getURL();
+    if (!currentUrl || currentUrl === 'about:blank') {
+      return;
+    }
+
+    const elapsed = Date.now() - initialBrowserViewLoadingStartedAt;
+    const minVisibleDuration = 500;
+    const delay = Math.max(0, minVisibleDuration - elapsed);
+
+    setTimeout(() => {
+      if (!isInitialBrowserViewLoadPending || !browserView || browserView.webContents.isDestroyed()) {
+        return;
+      }
+
+      isInitialBrowserViewLoadPending = false;
+      console.log(`[Loading] BrowserView 首屏加载完成，来源: ${reason}, URL: ${currentUrl}, 延迟隐藏: ${delay}ms`);
+      setGlobalLoadingState(false);
+    }, delay);
+  };
+
   // 监听窗口大小变化
   mainWindow.on('resize', () => {
     updateBrowserViewBounds(isScriptPanelOpen);
@@ -1066,6 +1097,8 @@ function createWindow() {
   process.nextTick(async () => {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
+    initialBrowserViewLoadingStartedAt = Date.now();
+    setGlobalLoadingState(true, '正在启动浏览器...');
 
     // 🔑 等待缓存清理完成
     console.log('[BrowserView] 等待缓存清理完成...');
@@ -1184,9 +1217,20 @@ function createWindow() {
         // 🔑 根据上次退出的项目类型，跳转到对应首页
         const savedProject = globalStorage.last_project;
         if (savedProject === 'geo') {
-          // 直接跳转到 geo 首页，不检查权限
-          startUrl = config.getGeoUrl();
-          console.log('[BrowserView] 📍 恢复到 geo 项目首页:', startUrl);
+          // 先调 API 获取最新 siteInfo，检查 is_geo
+          console.log('[BrowserView] 📍 上次退出时在 geo 项目，重新检查 geo 权限...');
+          const siteResult = await fetchSiteInfo();
+          const siteInfo = siteResult.success ? siteResult.data : globalStorage.siteInfo;
+
+          if (siteInfo && siteInfo.is_geo === 1) {
+            // geo 权限通过，跳转到 geo 首页
+            startUrl = config.getGeoUrl();
+            console.log('[BrowserView] ✅ geo 权限通过，恢复到 geo 项目首页:', startUrl);
+          } else {
+            // geo 权限不通过，跳转到未购买页面（使用特殊标记，后续用 loadFile 加载）
+            console.log('[BrowserView] ⚠️ geo 权限不通过 (is_geo:', siteInfo?.is_geo, ')，跳转到未购买页面');
+            startUrl = '__LOCAL_NOT_PURCHASE_GEO__';
+          }
         } else {
           // 默认 aigc 项目首页
           startUrl = config.getAigcUrl();
@@ -1206,6 +1250,7 @@ function createWindow() {
         delete globalStorage.login_expires;
         delete globalStorage.login_gcc;
         saveGlobalStorage();
+        await showSessionExpiredDialog('启动校验');
       }
     }
 
@@ -1218,7 +1263,10 @@ function createWindow() {
 
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
     let loadPage;
-    if (startUrl.startsWith('file://')) {
+    if (startUrl === '__LOCAL_NOT_PURCHASE_GEO__') {
+      // GEO 权限不通过，使用 loadFile + query 参数正确加载本地页面
+      loadPage = browserView.webContents.loadFile(path.join(__dirname, config.placeholderPages.notPurchase), { query: { system: 'geo' } });
+    } else if (startUrl.startsWith('file://')) {
       loadPage = loadLocalPage(browserView.webContents, path.basename(startUrl));
     } else {
       loadPage = browserView.webContents.loadURL(startUrl);
@@ -1284,10 +1332,6 @@ function createWindow() {
     console.log('==================================================');
     console.log(`[Script Injection] Window ID: ${windowId} ${isNewWindow ? '(New Window)' : '(Main/BrowserView)'}`);
     console.log('[Script Injection] Checking URL:', url);
-    if (shouldSkipScriptInjection(url)) {
-      console.log('[Script Injection] Skip for Toutiao URL:', url);
-      return;
-    }
 
     // 页面状态预检查脚本 - 检测CSS代码是否被当作文本显示
     // 如果异常，保持隐藏状态；如果正常，移除预防性隐藏样式
@@ -1489,18 +1533,6 @@ function createWindow() {
   // 监听用户点击链接（在导航开始前触发，可捕获原始目标 URL）
   browserView.webContents.on('will-navigate', (event, url) => {
     console.log(`[Navigation] 用户点击链接 → ${url}`);
-    if (shouldSkipScriptInjection(url)) {
-      console.log('[Navigation] 🧼 主 BrowserView 命中 Toutiao，改为裸窗口打开:', url);
-      event.preventDefault();
-      pendingNavigationUrl = null;
-      setImmediate(async () => {
-        const result = await openManagedChildWindow(url);
-        if (!result.success) {
-          console.error('[Navigation] ❌ 打开 Toutiao 裸窗口失败:', result.error);
-        }
-      });
-      return;
-    }
     // 记录用户点击的目标 URL（即使会被重定向）
     if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
@@ -1795,6 +1827,7 @@ function createWindow() {
       const savedToken = globalStorage.login_token;
       const savedExpires = globalStorage.login_expires;
       const now = Math.floor(Date.now() / 1000);
+      const isTokenExpired = !!(savedToken && savedExpires && savedExpires <= now);
 
       if (!savedToken || !savedExpires || savedExpires <= now) {
         console.log('[Navigation] ⚠️ Token 无效或已过期，跳转到登录页...');
@@ -1816,8 +1849,14 @@ function createWindow() {
     await injectScriptForCurrentPage();
   });
 
+  browserView.webContents.on('did-stop-loading', () => {
+    finishInitialBrowserViewLoading('did-stop-loading');
+  });
+
   // 监听页面加载完成，注入自定义脚本
-  browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
+  browserView.webContents.on('did-finish-load', async () => {
+    await injectScriptForCurrentPage();
+  });
 
   // 监听完整页面导航，检测远程登录页和 GEO 权限
   // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
@@ -1915,6 +1954,14 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
+
+    // 子窗口统一使用标准 UA，避免第三方平台风控将其识别为改写浏览器
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Created] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Created] 设置子窗口 User-Agent 失败:', e?.message || e);
+    }
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -2141,47 +2188,6 @@ function updateHeaderVisibility(url) {
     // 更新 BrowserView 边界
     updateBrowserViewBounds(isScriptPanelOpen);
     console.log('[Header] 公共头部:', isHeaderHidden ? '隐藏' : '显示');
-  }
-}
-
-// 跳转到登录页（统一入口，防重入）
-async function navigateToLoginInternal(source) {
-  if (isNavigatingToLogin) {
-    console.log(`[navigateToLoginInternal] 已在跳转中，忽略来源: ${source}`);
-    return;
-  }
-  isNavigatingToLogin = true;
-  console.log(`[navigateToLoginInternal] 开始跳转到登录页，来源: ${source}`);
-
-  try {
-    if (!browserView || browserView.webContents.isDestroyed()) {
-      console.error('[navigateToLoginInternal] BrowserView 不可用');
-      return;
-    }
-
-    // 隐藏公共头部
-    isHeaderHidden = true;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('toggle-header', false);
-    }
-    updateBrowserViewBounds(isScriptPanelOpen);
-
-    // 使用 loadFile 加载登录页（避免 file:// 中文路径编码问题）
-    await loadLocalPage(browserView.webContents, 'login.html');
-
-    // 通知 renderer URL 变化
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('url-changed', LOGIN_URL);
-    }
-
-    console.log('[navigateToLoginInternal] ✅ 已跳转到登录页');
-  } catch (err) {
-    console.error('[navigateToLoginInternal] ❌ 跳转失败:', err);
-  } finally {
-    // 延迟重置标志，防止快速重入
-    setTimeout(() => {
-      isNavigatingToLogin = false;
-    }, 1000);
   }
 }
 
@@ -2951,19 +2957,70 @@ ipcMain.handle('native-click', async (event, x, y) => {
 
 // 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
-  if (shouldSkipScriptInjection(url)) {
-    return openManagedChildWindow(url);
-  }
   if (browserView) {
     browserView.webContents.loadURL(url);
-    return { success: true };
   }
-  return { success: false, error: 'No browser view available' };
 });
 
 // 导航到登录页
 ipcMain.handle('navigate-to-login', async () => {
-  await navigateToLoginInternal('ipc');
+  if (browserView) {
+    console.log('[Main] 导航到登录页:', LOGIN_URL);
+
+    // 🔑 退出登录时清除所有登录相关数据
+    console.log('[Main] 清除退出登录数据...');
+
+    // 1. 清除 globalStorage 中的登录数据
+    delete globalStorage.last_page_url;
+    delete globalStorage.login_token;
+    delete globalStorage.login_expires;
+    delete globalStorage.login_gcc;
+    delete globalStorage.company_id;
+    delete globalStorage.user_info;
+    delete globalStorage.siteInfo;
+    delete globalStorage.current_site;
+    delete globalStorage.current_site_id;
+    delete globalStorage.current_site_name;
+    saveGlobalStorage();
+    console.log('[Main] ✅ 已清除 globalStorage 数据');
+
+    // 2. 清除 Cookies（token, access_token, site_id 等）
+    try {
+      const ses = browserView.webContents.session;
+      const cookies = await ses.cookies.get({});
+      console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+      // 需要清除的 cookie 名称列表
+      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+      let deletedCount = 0;
+      for (const cookie of cookies) {
+        if (cookiesToClear.includes(cookie.name)) {
+          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+          try {
+            await ses.cookies.remove(cookieUrl, cookie.name);
+            deletedCount++;
+            console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+          } catch (err) {
+            console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+          }
+        }
+      }
+
+      // 也清除 localhost 的 cookies
+      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+      await ses.flushStorageData();
+      console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+    } catch (err) {
+      console.error('[Main] ❌ 清除 cookies 失败:', err);
+    }
+
+    loadLocalPage(browserView.webContents, 'login.html');
+  }
 });
 
 // 跳转到本地 HTML 页面（用于从远程页面跳转到 not-available.html 等本地页面）
@@ -3925,10 +3982,10 @@ ipcMain.handle('show-company-menu', async (event, companies, currentUniqueId) =>
   });
 });
 
-// 统一的新窗口创建逻辑
+// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
 // options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）
-async function openManagedChildWindow(url, options = {}) {
+ipcMain.handle('open-new-window', async (event, url, options = {}) => {
   if (!url) {
     return { success: false, error: 'No URL provided' };
   }
@@ -3948,10 +4005,6 @@ async function openManagedChildWindow(url, options = {}) {
     console.log('[Window Manager] options.platform:', options.platform);
     console.log('[Window Manager] options.accountId:', options.accountId);
     console.log('[Window Manager] options.sessionData:', options.sessionData ? '有数据' : '无数据');
-    const isBareToutiao = shouldSkipScriptInjection(url);
-    if (isBareToutiao) {
-      console.log('[Window Manager] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
-    }
 
     if (options.platform && options.accountId) {
       // 多账号模式：使用指定账号的持久化 session
@@ -4193,7 +4246,6 @@ async function openManagedChildWindow(url, options = {}) {
       windowSession.setUserAgent(STANDARD_USER_AGENT);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
-
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
         const reqUrl = details.url;
@@ -4206,6 +4258,7 @@ async function openManagedChildWindow(url, options = {}) {
       });
       console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
+      addIdentityHeaderPolicy(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
       windowSession = browserView.webContents.session;
@@ -4213,38 +4266,26 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用持久化 session');
     }
 
-    const windowWebPreferences = {
-      contextIsolation: true,
-      nodeIntegration: false,
-      session: windowSession,
-      backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
-      autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
-    };
-    if (!isBareToutiao) {
-      windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
-    }
-
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
       icon: appIcon, // 使用 nativeImage 加载的图标
-      webPreferences: windowWebPreferences
+      webPreferences: {
+        preload: path.join(__dirname, 'content-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        session: windowSession,
+        backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
+        autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
+      }
     });
-    const publishDataKey = `publish_data_window_${newWindow.id}`;
-    if (isBareToutiao) {
-      if (globalStorage[publishDataKey]) {
-        delete globalStorage[publishDataKey];
-        console.log(`[Window Manager] 🧹 清理头条窗口旧发布数据: ${publishDataKey}`);
-      }
-      if (options.publishData && typeof options.publishData === 'object') {
-        globalStorage[publishDataKey] = {
-          ...options.publishData,
-          windowId: newWindow.id,
-          createdAt: options.publishData.createdAt || Date.now()
-        };
-        console.log(`[Window Manager] ✅ 已预写入头条发布数据: ${publishDataKey}`);
-      }
-      saveGlobalStorage();
+
+    // open-new-window 创建的发布/授权窗口统一使用标准 UA
+    try {
+      newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+      console.log('[Window Manager] 子窗口 User-Agent 已设为标准 UA');
+    } catch (e) {
+      console.warn('[Window Manager] 设置子窗口 User-Agent 失败:', e?.message || e);
     }
 
     // 添加到子窗口列表
@@ -4268,6 +4309,8 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
+    const openedAt = Date.now();
+    let hasShownRedirectAuthNotice = false;
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -4330,12 +4373,6 @@ async function openManagedChildWindow(url, options = {}) {
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
-      }
-      toutiaoBarePublishState.delete(windowId);
-      if (isBareToutiao && globalStorage[publishDataKey]) {
-        delete globalStorage[publishDataKey];
-        saveGlobalStorage();
-        console.log(`[Window Manager] 🧹 已清理头条发布数据: ${publishDataKey}`);
       }
       // 清理窗口账号映射
       if (windowAccountMap.has(windowId)) {
@@ -4416,10 +4453,6 @@ async function openManagedChildWindow(url, options = {}) {
     newWindow.webContents.on('dom-ready', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
-      if (shouldSkipScriptInjection(currentURL)) {
-        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
-        return;
-      }
 
       // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
       await scriptManager.getScript(currentURL).then(async (script) => {
@@ -4452,22 +4485,12 @@ async function openManagedChildWindow(url, options = {}) {
 
       // 🔑 补充脚本注入（与 did-create-window 保持一致）
       // dom-ready 可能因远程脚本拉取延迟导致注入失败，did-finish-load 作为保底
-      if (shouldSkipScriptInjection(currentURL)) {
-        console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
-        await maybeRunBareToutiaoPublish(newWindow);
-      } else {
-        await injectScriptForUrl(newWindow.webContents, currentURL);
-      }
+      await injectScriptForUrl(newWindow.webContents, currentURL);
     });
 
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
-      if (shouldSkipScriptInjection(navUrl)) {
-        console.log('[New Window API] Skip script injection for Toutiao:', navUrl);
-        await maybeRunBareToutiaoPublish(newWindow);
-        return;
-      }
       const script = await scriptManager.getScript(navUrl);
       if (script) {
         try {
@@ -4478,6 +4501,123 @@ async function openManagedChildWindow(url, options = {}) {
         }
       }
       await injectScriptForUrl(newWindow.webContents, navUrl);
+    });
+
+    // 🔑 Redirect 检测：当页面导航离开预期 URL 时通知首页
+    // 覆盖场景：服务端 302 重定向、JS window.location 跳转、表单提交跳转
+    const expectedUrl = url;
+    newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      // 跳过中间页（预设 localStorage 时的 favicon.ico 加载）
+      if (navUrl === 'about:blank' || navUrl.endsWith('/favicon.ico')) return;
+
+      try {
+        const expected = new URL(expectedUrl);
+        const actual = new URL(navUrl);
+
+        // 比较 origin + pathname，忽略 query string 和 hash
+        const isSameOrigin = actual.origin === expected.origin;
+        const isSamePath = actual.pathname === expected.pathname;
+
+        if (!isSameOrigin || !isSamePath) {
+          console.log(`[Window Redirect] ⚠️ 检测到页面跳转: 预期=${expectedUrl}, 实际=${navUrl}`);
+          const windowId = newWindow.id;
+
+          // 1. 自动上报后台接口（异步，不阻塞）
+          (async () => {
+            try {
+              const publishDataKey = `publish_data_window_${windowId}`;
+              const publishData = globalStorage[publishDataKey];
+              const publishId = publishData?.video?.dyPlatform?.id;
+
+              if (publishId) {
+                const statisticsUrl = `${config.domains.apiDomain}/api/mediaauth/tjlogerror`;
+                const errorData = {
+                  id: publishId,
+                  status_text: `页面被重定向: ${navUrl}`,
+                  context: {
+                    url: navUrl,
+                    expectedUrl: expectedUrl,
+                    timestamp: new Date().toISOString(),
+                    platform: 'redirect-detection',
+                  }
+                };
+                const scanData = { data: JSON.stringify(errorData) };
+                const postData = JSON.stringify(scanData);
+                const urlObj = new URL(statisticsUrl);
+                const requestModule = urlObj.protocol === 'https:' ? https : http;
+
+                const options = {
+                  hostname: urlObj.hostname,
+                  port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                  path: urlObj.pathname,
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(postData),
+                  }
+                };
+
+                const req = requestModule.request(options, (res) => {
+                  console.log(`[Window Redirect] ✅ 上报后台成功, statusCode: ${res.statusCode}`);
+                });
+                req.on('error', (e) => {
+                  console.error(`[Window Redirect] ❌ 上报后台失败:`, e.message);
+                });
+                req.write(postData);
+                req.end();
+
+                console.log(`[Window Redirect] 📤 已上报后台, publishId: ${publishId}`);
+              } else {
+                console.log('[Window Redirect] ⚠️ 未找到 publishId，跳过上报');
+              }
+            } catch (err) {
+              console.error('[Window Redirect] ❌ 上报异常:', err);
+            }
+          })();
+
+          // 2. 通知首页（通过 postMessage，复用现有的 onMessageFromOtherPage 通道）
+          if (browserView && !browserView.webContents.isDestroyed()) {
+            const redirectMsg = JSON.stringify({
+              type: 'publish-redirected',
+              windowId: windowId,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            browserView.webContents.executeJavaScript(`
+              window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${redirectMsg} }, '*');
+            `).catch(() => {});
+
+            // 同时发送 window-redirected 事件（供 onWindowRedirected 回调使用）
+            browserView.webContents.send('window-redirected', {
+              windowId: windowId,
+              expectedUrl: expectedUrl,
+              actualUrl: navUrl,
+              isSameOrigin: isSameOrigin,
+              timestamp: Date.now()
+            });
+            console.log('[Window Redirect] ✅ 已通知首页页面发生跳转');
+          }
+
+          // 发布窗口打开后短时间内被重定向到登录/非发布页，提示用户重新登录
+          const accountInfo = windowAccountMap.get(newWindow.id);
+          const openedRecently = Date.now() - openedAt < 45 * 1000;
+          const loginRedirect = isLikelyLoginUrl(navUrl);
+          const publishToNonPublishRedirect = isLikelyPublishUrl(expectedUrl) && !isLikelyPublishUrl(navUrl);
+
+          if (!hasShownRedirectAuthNotice && accountInfo && openedRecently && (loginRedirect || publishToNonPublishRedirect)) {
+            hasShownRedirectAuthNotice = true;
+            showPublishLoginRedirectNotice(newWindow, {
+              platform: accountInfo.platform,
+              expectedUrl,
+              actualUrl: navUrl
+            });
+          }
+        }
+      } catch (e) {
+        // URL 解析失败，忽略
+      }
     });
 
     // 🔑 检查是否需要预设 localStorage（解决搜狐号等平台首次打开跳转首页的问题）
@@ -4557,11 +4697,6 @@ async function openManagedChildWindow(url, options = {}) {
   } catch (err) {
     return { success: false, error: err.message };
   }
-}
-
-// 从内容页面打开新窗口（始终创建新窗口，不受模式影响）
-ipcMain.handle('open-new-window', async (event, url, options = {}) => {
-  return openManagedChildWindow(url, options);
 });
 
 // 从内容页面在当前窗口打开 URL
@@ -4571,9 +4706,6 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
   }
 
   try {
-    if (shouldSkipScriptInjection(url)) {
-      return openManagedChildWindow(url);
-    }
     if (browserView) {
       browserView.webContents.loadURL(url);
       return { success: true };
@@ -5225,6 +5357,8 @@ ipcMain.handle('download-video', async (event, url) => {
 });
 
 // ========== 图片下载功能（通过主进程绕过跨域限制） ==========
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB 限制
+
 ipcMain.handle('download-image', async (event, url) => {
   console.log('[Image Download] 开始下载:', url);
 
@@ -5232,8 +5366,91 @@ ipcMain.handle('download-image', async (event, url) => {
     return { success: false, error: 'No URL provided' };
   }
 
+  const downloadWithRedirect = (downloadUrl, redirectCount = 0) => {
+    return new Promise((resolve) => {
+      if (redirectCount > 5) {
+        resolve({ success: false, error: 'Too many redirects' });
+        return;
+      }
+
+      const protocol = downloadUrl.startsWith('https') ? https : http;
+
+      const request = protocol.get(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      }, (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          let redirectUrl = response.headers.location;
+          if (!redirectUrl.startsWith('http')) {
+            const urlObj = new URL(downloadUrl);
+            redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+          }
+          console.log('[Image Download] 重定向到:', redirectUrl);
+          resolve(downloadWithRedirect(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        if (response.statusCode !== 200) {
+          resolve({ success: false, error: `HTTP error: ${response.statusCode}` });
+          return;
+        }
+
+        const contentLength = parseInt(response.headers['content-length'], 10);
+        if (contentLength && contentLength > MAX_IMAGE_SIZE) {
+          response.destroy();
+          resolve({ success: false, error: `File too large: ${Math.round(contentLength / 1024 / 1024)}MB (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB)` });
+          return;
+        }
+
+        const chunks = [];
+        let totalSize = 0;
+        const contentType = response.headers['content-type'] || 'image/jpeg';
+
+        response.on('data', (chunk) => {
+          totalSize += chunk.length;
+          if (totalSize > MAX_IMAGE_SIZE) {
+            response.destroy();
+            resolve({ success: false, error: `Download exceeded size limit: ${Math.round(totalSize / 1024 / 1024)}MB` });
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const base64Data = buffer.toString('base64');
+          console.log('[Image Download] 下载完成，大小:', buffer.length, 'bytes');
+          chunks.length = 0;
+
+          resolve({
+            success: true,
+            data: base64Data,
+            contentType: contentType,
+            size: buffer.length
+          });
+        });
+
+        response.on('error', (err) => {
+          console.error('[Image Download] 响应错误:', err);
+          resolve({ success: false, error: err.message });
+        });
+      });
+
+      request.on('error', (err) => {
+        console.error('[Image Download] 请求错误:', err);
+        resolve({ success: false, error: err.message });
+      });
+
+      request.setTimeout(30000, () => {
+        request.destroy();
+        resolve({ success: false, error: 'Download timeout (30s)' });
+      });
+    });
+  };
+
   try {
-    return await downloadImageAsBase64(url);
+    return await downloadWithRedirect(url);
   } catch (err) {
     console.error('[Image Download] 异常:', err);
     return { success: false, error: err.message };
@@ -5515,6 +5732,7 @@ function ensurePlatformAccounts() {
       douyin: [],
       xiaohongshu: [],
       baijiahao: [],
+      toutiao: [],
       weixin: [],
       shipinhao: []
     };
@@ -5771,6 +5989,7 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
       douyin: ['douyin.com'],
       xiaohongshu: ['xiaohongshu.com'],
       baijiahao: ['baidu.com'],
+      toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
       weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
       shipinhao: ['channels.weixin.qq.com']
     };
@@ -5832,6 +6051,7 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
       douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
       xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
       baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
+      toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
       weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
       shipinhao: ['wxuin', 'pass_ticket']
     };
@@ -6540,5 +6760,99 @@ ipcMain.handle('save-session-to-backend', async (event) => {
   } catch (err) {
     console.error('[Save Session] 保存失败:', err);
     return { success: false, error: err.message };
+  }
+});
+
+// ========== AI 智能体 ==========
+
+function getSerializableAiPresets() {
+  return Object.fromEntries(
+    Object.entries(PRESET_PROVIDERS).map(([providerKey, preset]) => {
+      const serializablePreset = Object.fromEntries(
+        Object.entries(preset).filter(([, value]) => typeof value !== 'function')
+      );
+      return [providerKey, serializablePreset];
+    })
+  );
+}
+
+// 获取 AI 配置
+ipcMain.handle('ai-get-config', async () => {
+  const aiConfig = globalStorage['ai_config'] || null;
+  return { success: true, config: aiConfig, presets: getSerializableAiPresets() };
+});
+
+// 保存 AI 配置
+ipcMain.handle('ai-set-config', async (event, config) => {
+  globalStorage['ai_config'] = config;
+  saveGlobalStorage();
+  console.log('[AI Agent] 配置已保存:', config.provider, config.model);
+  return { success: true };
+});
+
+// AI 分析页面并生成填写指令
+ipcMain.handle('ai-analyze-page', async (event, domData, publishData) => {
+  console.log('[AI Agent] ========== 分析页面 ==========');
+  try {
+    const aiConfig = globalStorage['ai_config'];
+    if (!aiConfig || !aiConfig.apiKey) {
+      return { success: false, error: '请先配置 AI API Key。通过 browserAPI.setGlobalData("ai_config", {provider: "groq", apiKey: "your_key"}) 设置' };
+    }
+
+    const provider = new LLMProvider(aiConfig);
+    const messages = buildAnalyzeMessages(domData, publishData);
+    const response = await provider.chat(messages);
+
+    // 解析 JSON 响应
+    let result;
+    try {
+      // 去掉可能的 markdown 代码块标记
+      let cleaned = response.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      result = JSON.parse(cleaned);
+    } catch (e) {
+      console.error('[AI Agent] JSON 解析失败:', response.substring(0, 500));
+      return { success: false, error: 'AI 返回格式异常', raw: response };
+    }
+
+    console.log('[AI Agent] ✅ 分析完成:', result.isForm ? `${result.actions?.length || 0} 个操作` : '非表单页面');
+    return { success: true, result };
+  } catch (error) {
+    console.error('[AI Agent] ❌ 分析失败:', error.message);
+    return { success: false, error: error.message };
+  }
+});
+
+// AI 检测发布结果
+ipcMain.handle('ai-detect-result', async (event, domData) => {
+  console.log('[AI Agent] ========== 检测发布结果 ==========');
+  try {
+    const aiConfig = globalStorage['ai_config'];
+    if (!aiConfig || !aiConfig.apiKey) {
+      return { success: false, error: 'AI 未配置' };
+    }
+
+    const provider = new LLMProvider(aiConfig);
+    const messages = buildDetectMessages(domData);
+    const response = await provider.chat(messages);
+
+    let result;
+    try {
+      let cleaned = response.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      result = JSON.parse(cleaned);
+    } catch (e) {
+      return { success: false, error: 'AI 返回格式异常', raw: response };
+    }
+
+    console.log('[AI Agent] ✅ 检测结果:', result.status, result.message);
+    return { success: true, result };
+  } catch (error) {
+    console.error('[AI Agent] ❌ 检测失败:', error.message);
+    return { success: false, error: error.message };
   }
 });
