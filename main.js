@@ -79,6 +79,22 @@ let blankScreenConsecutive = 0;
 const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
 const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 const FORCE_BARE_TOUTIAO = true;
+const STARTUP_LOAD_READY_CHECK_DELAY = 900;
+const STARTUP_LOAD_MAX_RECOVERIES = 2;
+const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+
+let browserLoadingState = {
+  visible: true,
+  text: '正在加载页面...'
+};
+
+let startupLoadGuard = {
+  active: false,
+  targetUrl: '',
+  reloadCount: 0,
+  startedAt: 0,
+  timer: null
+};
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
@@ -302,6 +318,214 @@ async function showPageErrorDialog({ title, message, detail, buttons }) {
   } finally {
     isShowingPageErrorDialog = false;
   }
+}
+
+function clearStartupLoadGuardTimer() {
+  if (startupLoadGuard.timer) {
+    clearTimeout(startupLoadGuard.timer);
+    startupLoadGuard.timer = null;
+  }
+}
+
+function setBrowserLoadingState(partialState = {}) {
+  browserLoadingState = {
+    ...browserLoadingState,
+    ...partialState
+  };
+
+  if (browserView && browserView.webContents && !browserView.webContents.isDestroyed()) {
+    if (browserLoadingState.visible) {
+      browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      updateBrowserViewBounds(isScriptPanelOpen);
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('browser-loading-state', browserLoadingState);
+  }
+}
+
+function beginStartupLoadGuard(targetUrl) {
+  clearStartupLoadGuardTimer();
+  startupLoadGuard = {
+    active: true,
+    targetUrl,
+    reloadCount: 0,
+    startedAt: Date.now(),
+    timer: null
+  };
+  setBrowserLoadingState({ visible: true, text: '正在加载页面...' });
+  console.log('[Startup Guard] ✅ 已开启首屏守卫:', targetUrl);
+}
+
+function finishStartupLoadGuard(reason = 'ready') {
+  if (!startupLoadGuard.active) return;
+  clearStartupLoadGuardTimer();
+  startupLoadGuard.active = false;
+  setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
+  console.log('[Startup Guard] ✅ 首屏守卫结束:', reason);
+}
+
+async function inspectBrowserViewReadiness() {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+    return { ready: false, reason: 'browserview-destroyed' };
+  }
+
+  return browserView.webContents.executeJavaScript(`
+    (() => {
+      try {
+        if (!document || !document.body) {
+          return { ready: false, reason: 'no-body' };
+        }
+
+        const body = document.body;
+        const htmlLength = (body.innerHTML || '').replace(/\\s+/g, '').length;
+        const textLength = (body.innerText || '').trim().length;
+        const childCount = body.children ? body.children.length : 0;
+
+        const hasVisibleElement = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || '1') !== 0
+            && rect.width > 24
+            && rect.height > 24;
+        };
+
+        const appRootSelectors = ['#app', '#root', '#__nuxt', '#layout', '[data-v-app]'];
+        const rootVisible = appRootSelectors.some((selector) => {
+          try {
+            return hasVisibleElement(document.querySelector(selector));
+          } catch (_) {
+            return false;
+          }
+        });
+
+        const visibleChildren = Array.from(body.children || []).some((el) => hasVisibleElement(el));
+        const hasKnownSpinner = !!document.querySelector('.loading, .spinner, .ant-spin, .el-loading-mask, .nprogress-busy, .v-progress-circular');
+        const ready = htmlLength > 80 && (textLength > 0 || rootVisible || visibleChildren || hasKnownSpinner);
+
+        return {
+          ready,
+          reason: ready ? 'visual-ready' : 'visual-not-ready',
+          htmlLength,
+          textLength,
+          childCount,
+          rootVisible,
+          visibleChildren,
+          hasKnownSpinner,
+          href: location.href
+        };
+      } catch (err) {
+        return {
+          ready: false,
+          reason: err && err.message ? err.message : String(err)
+        };
+      }
+    })()
+  `, true);
+}
+
+function retryStartupLoad(reason) {
+  if (!startupLoadGuard.active) return false;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
+  if (startupLoadGuard.reloadCount >= STARTUP_LOAD_MAX_RECOVERIES) return false;
+
+  clearStartupLoadGuardTimer();
+  startupLoadGuard.reloadCount += 1;
+  const targetUrl = startupLoadGuard.targetUrl || browserView.webContents.getURL() || LOGIN_URL;
+  const retryText = startupLoadGuard.reloadCount === 1
+    ? '页面加载较慢，正在重试...'
+    : '页面仍未恢复，正在再次尝试...';
+
+  setBrowserLoadingState({ visible: true, text: retryText });
+  console.warn(`[Startup Guard] ⚠️ ${reason}，准备第 ${startupLoadGuard.reloadCount} 次恢复: ${targetUrl}`);
+
+  setTimeout(() => {
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+    const loadPromise = targetUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(targetUrl))
+      : browserView.webContents.loadURL(targetUrl);
+    loadPromise.catch(err => {
+      console.error('[Startup Guard] ❌ 恢复加载失败:', err);
+    });
+  }, 1200);
+
+  return true;
+}
+
+function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHECK_DELAY) {
+  if (!startupLoadGuard.active) return;
+  clearStartupLoadGuardTimer();
+
+  startupLoadGuard.timer = setTimeout(async () => {
+    if (!startupLoadGuard.active) return;
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+
+    const elapsed = Date.now() - startupLoadGuard.startedAt;
+    if (elapsed > STARTUP_LOAD_MAX_WAIT_MS) {
+      console.warn(`[Startup Guard] ⚠️ 首屏等待超时: ${elapsed}ms`);
+      if (retryStartupLoad(`首屏等待超时 ${elapsed}ms`)) return;
+
+      finishStartupLoadGuard('timeout');
+      const result = await showPageErrorDialog({
+        title: '页面加载较慢',
+        message: '启动页加载超时，是否尝试恢复？',
+        detail: `触发点: ${reason}，等待时长: ${elapsed}ms`
+      });
+
+      if (result.response === 0) {
+        beginStartupLoadGuard(startupLoadGuard.targetUrl || LOGIN_URL);
+        browserView.webContents.reload();
+      } else if (result.response === 1) {
+        await navigateToLoginInternal('startup_load_timeout');
+      }
+      return;
+    }
+
+    try {
+      const state = await inspectBrowserViewReadiness();
+      if (state.ready) {
+        console.log('[Startup Guard] ✅ 首屏渲染检查通过:', state);
+        finishStartupLoadGuard(reason);
+        return;
+      }
+
+      console.warn('[Startup Guard] ⚠️ 首屏仍未就绪:', state);
+      if (browserView.webContents.isLoading()) {
+        scheduleStartupReadinessCheck(`${reason}:still-loading`, 1200);
+        return;
+      }
+
+      if (retryStartupLoad(`首屏检查未通过 (${state.reason || 'unknown'})`)) return;
+
+      finishStartupLoadGuard('visual-check-failed');
+      const result = await showPageErrorDialog({
+        title: '页面可能空白',
+        message: '启动后页面仍未正常渲染，是否尝试恢复？',
+        detail: `原因: ${state.reason || 'unknown'} | html=${state.htmlLength || 0} text=${state.textLength || 0} child=${state.childCount || 0}`
+      });
+
+      if (result.response === 0) {
+        beginStartupLoadGuard(startupLoadGuard.targetUrl || browserView.webContents.getURL() || LOGIN_URL);
+        browserView.webContents.reload();
+      } else if (result.response === 1) {
+        await navigateToLoginInternal('blank_screen_startup');
+      }
+    } catch (err) {
+      console.warn('[Startup Guard] ⚠️ 首屏检查执行失败:', err.message || err);
+      if (browserView.webContents.isLoading()) {
+        scheduleStartupReadinessCheck(`${reason}:check-failed-while-loading`, 1200);
+        return;
+      }
+
+      if (retryStartupLoad(`首屏检查失败 (${err.message || err})`)) return;
+      finishStartupLoadGuard('check-failed');
+    }
+  }, delayMs);
 }
 
 async function navigateToLoginInternal(reason) {
@@ -2229,36 +2453,11 @@ function createWindow() {
   // 获取或创建持久化 session（禁用 HTTP 缓存，只保留 cookies 和 storage）
   const persistentSession = session.fromPartition('persist:browserview', { cache: false });
 
-  // 🔑 启动时彻底清理可能残留的缓存文件（解决 CSS 渲染成文字的问题）
-  // 添加 5 秒超时保护，防止 clearCache 在某些电脑上挂起导致页面永远不加载
-  let cacheCleared = false;
-  const clearCachePromise = Promise.race([
-    (async () => {
-      try {
-        // 清理 HTTP 缓存
-        await persistentSession.clearCache();
-        console.log('[Session] ✅ HTTP 缓存已清理');
-
-        // 清理 Code Cache（JavaScript 编译缓存）
-        await persistentSession.clearCodeCaches({});
-        console.log('[Session] ✅ Code Cache 已清理');
-
-        cacheCleared = true;
-      } catch (err) {
-        console.error('[Session] ⚠️ 清理缓存失败:', err);
-        cacheCleared = true; // 即使失败也继续
-      }
-    })(),
-    new Promise((resolve) => {
-      setTimeout(() => {
-        if (!cacheCleared) {
-          console.warn('[Session] ⚠️ 清理缓存超时（5秒），跳过继续加载页面');
-          cacheCleared = true;
-        }
-        resolve();
-      }, 5000);
-    })
-  ]);
+  // 持久化 session 已禁用 HTTP 缓存，启动期不再额外清理 cache/code cache。
+  // 之前的清理动作会在部分 Windows 机器上触发磁盘缓存异常，反而放大首屏白屏概率。
+  const clearCachePromise = Promise.resolve().then(() => {
+    console.log('[Session] ℹ️ 已跳过启动期缓存清理，首屏恢复改由启动守卫负责');
+  });
 
   // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
   // 使用 <all_urls> 拦截所有请求
@@ -2369,6 +2568,18 @@ function createWindow() {
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
 
+  browserView.webContents.on('did-start-loading', () => {
+    if (!startupLoadGuard.active) return;
+    const text = startupLoadGuard.reloadCount > 0 ? '页面加载较慢，正在恢复...' : '正在加载页面...';
+    setBrowserLoadingState({ visible: true, text });
+  });
+
+  browserView.webContents.on('did-stop-loading', () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('did-stop-loading', 700);
+    }
+  });
+
   // 🔍 P3: 渲染进程崩溃监听 - 方便远程排查白屏问题
   browserView.webContents.on('render-process-gone', (event, details) => {
     console.error('[BrowserView] ❌ 渲染进程已退出！');
@@ -2400,6 +2611,10 @@ function createWindow() {
     console.error('[BrowserView] 错误描述:', errorDescription);
     console.error('[BrowserView] 失败 URL:', validatedURL);
     if (errorCode === -3) return; // 忽略导航中止
+    if (startupLoadGuard.active && retryStartupLoad(`did-fail-load ${errorCode}: ${errorDescription}`)) {
+      return;
+    }
+    finishStartupLoadGuard('did-fail-load');
     const result = await showPageErrorDialog({
       title: '页面加载失败',
       message: '页面加载失败，是否重试？',
@@ -2457,6 +2672,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     clearInterval(heartbeatInterval);
+    clearStartupLoadGuardTimer();
   });
 
   // 监听窗口大小变化
@@ -2470,10 +2686,8 @@ function createWindow() {
     console.log('=== 首页加载开始 ===');
     console.log(`[BrowserView] isProduction: ${isProduction}`);
 
-    // 🔑 等待缓存清理完成
-    console.log('[BrowserView] 等待缓存清理完成...');
-    await clearCachePromise;
-    console.log('[BrowserView] ✅ 缓存清理完成，开始加载页面');
+    console.log('[BrowserView] 启动期缓存清理已改为后台执行，不阻塞首页');
+    clearCachePromise.catch(() => {});
 
     // 检查是否有保存的登录 token
     const savedToken = globalStorage.login_token;
@@ -2627,49 +2841,37 @@ function createWindow() {
       loadPage = browserView.webContents.loadURL(startUrl);
     }
 
+    beginStartupLoadGuard(startUrl);
+
     loadPage
       .then(() => {
         console.log('[BrowserView] ✅ 页面加载调用成功');
-        // 🔍 白屏检测：loadFile 可能回调成功但 GPU 渲染失败导致页面实际为空
-        // 10秒后检查页面是否有内容，没有则重新加载
-        setTimeout(async () => {
-          if (!browserView || browserView.webContents.isDestroyed()) return;
-          try {
-            const bodyHTML = await browserView.webContents.executeJavaScript(
-              'document.body ? document.body.innerHTML.trim().length : 0'
-            );
-            if (bodyHTML === 0) {
-              console.warn('[BrowserView] ⚠️ 白屏检测：页面加载成功但内容为空，尝试重新加载');
-              const result = await showPageErrorDialog({
-                title: '页面可能空白',
-                message: '检测到页面可能空白，是否刷新？',
-                detail: '启动后白屏检测触发'
-              });
-              if (result.response === 0) {
-                browserView.webContents.reload();
-              } else if (result.response === 1) {
-                await navigateToLoginInternal('blank_screen_startup');
-              }
-            } else {
-              console.log('[BrowserView] ✅ 白屏检测：页面内容正常，长度:', bodyHTML);
-            }
-          } catch (e) {
-            console.warn('[BrowserView] ⚠️ 白屏检测执行失败（渲染进程可能已崩溃）:', e.message);
-          }
-        }, 10000);
+        scheduleStartupReadinessCheck('loadPage.then', 1000);
       })
-      .catch(err => {
+      .catch(async err => {
         console.error('[BrowserView] ❌ 页面加载失败:', err);
-        // 失败后3秒重试一次
-        setTimeout(() => {
-          console.log('[BrowserView] 🔄 3秒后重试加载...');
+        if (startupLoadGuard.active && retryStartupLoad(`initial-load failed: ${err.message || err}`)) {
+          return;
+        }
+
+        finishStartupLoadGuard('initial-load-failed');
+        const result = await showPageErrorDialog({
+          title: '页面加载失败',
+          message: '启动页加载失败，是否重试？',
+          detail: err.message || String(err)
+        });
+
+        if (result.response === 0) {
+          beginStartupLoadGuard(startUrl);
           const retryLoad = startUrl.startsWith('file://')
             ? loadLocalPage(browserView.webContents, path.basename(startUrl))
             : browserView.webContents.loadURL(startUrl);
           retryLoad.catch(e => {
             console.error('[BrowserView] ❌ 重试失败:', e);
           });
-        }, 3000);
+        } else if (result.response === 1) {
+          await navigateToLoginInternal('load_page_failed_startup');
+        }
       });
   });
 
@@ -3046,6 +3248,10 @@ function createWindow() {
 
   // 🔑 监听页面 DOM 准备完成（刷新页面时也会触发）
   browserView.webContents.on('dom-ready', async () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('dom-ready', 800);
+    }
+
     const url = browserView.webContents.getURL();
     console.log(`[DOM Ready] 页面准备完成 → ${url}`);
 
@@ -3217,6 +3423,12 @@ function createWindow() {
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
     // 单页应用路由切换时也需要注入脚本
     await injectScriptForCurrentPage();
+  });
+
+  browserView.webContents.on('did-finish-load', () => {
+    if (startupLoadGuard.active) {
+      scheduleStartupReadinessCheck('did-finish-load', 900);
+    }
   });
 
   // 监听页面加载完成，注入自定义脚本
@@ -3513,6 +3725,13 @@ function createWindow() {
 let isHeaderHidden = false;
 
 function updateBrowserViewBounds(scriptPanelOpen = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+  if (browserLoadingState.visible) {
+    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    return;
+  }
+
   const { width, height } = mainWindow.getContentBounds();
   // 公共头部高度 50px（登录页时隐藏）
   // 开发工具栏已移除，统一使用公共头部
@@ -3708,14 +3927,10 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
-// 🖥️ 禁用 GPU 硬件加速 - 解决某些 Windows 电脑因显卡驱动不兼容导致的白屏问题
-// macOS GPU 驱动稳定，禁用反而可能导致渲染异常，因此仅 Windows 禁用
-if (process.platform === 'win32') {
-  app.disableHardwareAcceleration();
-  console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
-} else {
-  console.log('[GPU] ℹ️ macOS 保持硬件加速启用');
-}
+// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
+// 必须在 app.whenReady() 之前调用
+app.disableHardwareAcceleration();
+console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
@@ -3739,7 +3954,7 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log('[Compatibility] ✅ 防后台节流已启用');
+console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -4520,11 +4735,15 @@ ipcMain.handle('refresh-page', async () => {
   }
 });
 
+ipcMain.handle('get-browser-loading-state', async () => browserLoadingState);
+
 // 显示全局加载遮罩（隐藏 BrowserView）
-ipcMain.handle('show-global-loading', async () => {
+ipcMain.handle('show-global-loading', async (event, options = {}) => {
   if (browserView && mainWindow) {
-    // 将 BrowserView 移出可视区域
-    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+    setBrowserLoadingState({
+      visible: true,
+      text: options && options.text ? options.text : (browserLoadingState.text || '正在加载页面...')
+    });
     console.log('[Loading] 显示全局加载遮罩，隐藏 BrowserView');
     return { success: true };
   }
@@ -4534,8 +4753,7 @@ ipcMain.handle('show-global-loading', async () => {
 // 隐藏全局加载遮罩（恢复 BrowserView）
 ipcMain.handle('hide-global-loading', async () => {
   if (browserView && mainWindow) {
-    // 恢复 BrowserView 位置
-    updateBrowserViewBounds(isScriptPanelOpen);
+    setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
     console.log('[Loading] 隐藏全局加载遮罩，恢复 BrowserView');
     return { success: true };
   }
@@ -5593,10 +5811,10 @@ async function openManagedChildWindow(url, options = {}) {
       sessionType = 'temporary';
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
-      // 临时 session 使用标准 UA（不带标记，避免第三方平台风控）
-      windowSession.setUserAgent(STANDARD_USER_AGENT);
+      // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
+      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
-
 
       // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
       windowSession.webRequest.onBeforeRequest((details, callback) => {
@@ -6860,8 +7078,9 @@ function getAccountSession(platform, accountId) {
   // 创建新的持久化 session（禁用 HTTP 缓存，避免 CSS 渲染异常）
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
-  // 账号 session 使用标准 UA（不带标记，避免第三方平台风控）
-  accountSession.setUserAgent(STANDARD_USER_AGENT);
+  // 配置 User-Agent（与主 session 保持一致）
+  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  accountSession.setUserAgent(customUA);
 
   // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
   accountSession.webRequest.onBeforeRequest((details, callback) => {

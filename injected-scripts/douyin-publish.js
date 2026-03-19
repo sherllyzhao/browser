@@ -379,8 +379,6 @@ async function publishApi(dataObj) {
     const coverCheckInterval = 2000;
     const maxCoverRetries = 30; // 🔑 最大重试次数（30次 * 2秒 = 60秒内尝试设置封面）
     let coverRetryCount = 0;
-    let coverCheckPassed = false;
-    let coverCheckStatusText = '';
 
     while (Date.now() - coverCheckStartTime < coverCheckTimeout && coverRetryCount < maxCoverRetries) {
       coverRetryCount++;
@@ -398,12 +396,8 @@ async function publishApi(dataObj) {
 
       if (currentText.includes('封面检测通过')) {
         console.log('[封面检测] ✅ 检测通过');
-        coverCheckPassed = true;
         break;
       }
-
-      // 记录最新的封面检测状态文本
-      coverCheckStatusText = currentText;
 
       // 尝试设置封面
       console.log('[封面检测] ⚠️ 未通过，尝试设置封面...');
@@ -578,16 +572,7 @@ async function publishApi(dataObj) {
       localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
     }
     localStorage.removeItem('PUBLISH_SUCCESS_DATA');
-    // 确定错误信息：优先用 toast 消息，其次检查封面检测状态，最后用默认提示
-    let errorMessage = lastToastMessage;
-    if (!errorMessage && !coverCheckPassed && coverCheckStatusText) {
-      errorMessage = '封面检测未通过: ' + coverCheckStatusText;
-      console.log('[抖音发布] ⚠️ 封面检测未通过，作为错误信息上报:', coverCheckStatusText);
-    }
-    if (!errorMessage) {
-      errorMessage = '发布超时，未跳转到成功页';
-    }
-    await sendStatisticsError(publishId, errorMessage, '抖音发布');
+    await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '抖音发布');
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
   } catch (error) {

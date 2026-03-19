@@ -205,7 +205,7 @@
                   follow: 0,
                   follower_count: user.ability.total_fans,
                   video: user.ability.publish_num,
-                  uid: user.app_id,
+                  uid: user.id,
                   favoriting_count: 0,
                   total_favorited: 0,
                   company_id: companyId,
