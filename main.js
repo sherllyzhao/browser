@@ -299,6 +299,163 @@ function shouldSkipScriptInjection(url = '') {
 const childWindows = []; // 跟踪所有打开的子窗口
 const toutiaoBarePublishState = new Map();
 
+function getStatisticsHostFromMainContext() {
+  const context = getStatisticsContextFromMain();
+  return context.host;
+}
+
+function getStatisticsContextFromMain() {
+  const candidates = [
+    browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.getURL() : '',
+    globalStorage.last_page_url || ''
+  ];
+
+  for (const rawUrl of candidates) {
+    if (!rawUrl) continue;
+    try {
+      const parsed = new URL(rawUrl);
+      return {
+        url: rawUrl,
+        host: parsed.host || ''
+      };
+    } catch (_) {}
+  }
+
+  return { url: '', host: '' };
+}
+
+function getMainStatisticsUrl(isError = false) {
+  const endpoint = isError ? 'tjlogerror' : 'tjlog';
+  const { url: currentUrl, host } = getStatisticsContextFromMain();
+  const specialUrlMap = {
+    'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+    'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
+    '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
+    'localhost:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`
+  };
+
+  if (host && specialUrlMap[host]) {
+    return specialUrlMap[host];
+  }
+
+  if (currentUrl && (currentUrl.includes('/geo/') || currentUrl.includes('#/geo'))) {
+    const devHosts = ['localhost:5173', '127.0.0.1:5173', 'dev.china9.cn', 'www.dev.china9.cn'];
+    const isDev = devHosts.some(h => host.toLowerCase() === h);
+    const geoDomain = isDev ? 'https://jzt_dev_1.china9.cn' : 'https://zhjzt.china9.cn';
+    return `${geoDomain}/api/geo/${endpoint}`;
+  }
+
+  return `${config.getApiDomainUrl()}/api/mediaauth/${endpoint}`;
+}
+
+function sendMainStatisticsError(publishId, statusText, platform = '', extraContext = {}) {
+  return new Promise((resolve) => {
+    try {
+      const { url: currentUrl, host } = getStatisticsContextFromMain();
+      const url = getMainStatisticsUrl(true);
+      const payload = {
+        data: JSON.stringify({
+          id: publishId || '',
+          status_text: statusText || '发布失败',
+          context: {
+            platform: platform || 'unknown',
+            timestamp: new Date().toISOString(),
+            source: 'main-process',
+            currentUrl,
+            ...extraContext
+          }
+        })
+      };
+
+      console.log(`[${platform || '发布'}] 📤 主进程发送失败统计接口:`, {
+        publishId: publishId || '',
+        statusText,
+        url,
+        host
+      });
+
+      const request = net.request({
+        method: 'POST',
+        url
+      });
+      request.setHeader('Content-Type', 'application/json');
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', chunk => { body += chunk.toString(); });
+        response.on('end', () => {
+          console.log(`[${platform || '发布'}] ✅ 主进程失败统计接口响应:`, {
+            statusCode: response.statusCode,
+            body: body.slice(0, 500)
+          });
+          resolve({ success: response.statusCode >= 200 && response.statusCode < 300, statusCode: response.statusCode, body });
+        });
+      });
+      request.on('error', (error) => {
+        console.error(`[${platform || '发布'}] ❌ 主进程失败统计接口请求失败:`, error);
+        resolve({ success: false, error: error.message || String(error) });
+      });
+      request.write(JSON.stringify(payload));
+      request.end();
+    } catch (error) {
+      console.error(`[${platform || '发布'}] ❌ 构造主进程失败统计接口请求失败:`, error);
+      resolve({ success: false, error: error.message || String(error) });
+    }
+  });
+}
+
+function sendMainStatistics(publishId, platform = '', extraContext = {}) {
+  return new Promise((resolve) => {
+    try {
+      const { url: currentUrl, host } = getStatisticsContextFromMain();
+      const url = getMainStatisticsUrl(false);
+      const payload = {
+        data: JSON.stringify({
+          id: publishId || '',
+          context: {
+            platform: platform || 'unknown',
+            timestamp: new Date().toISOString(),
+            source: 'main-process',
+            currentUrl,
+            ...extraContext
+          }
+        })
+      };
+
+      console.log(`[${platform || '发布'}] 📤 主进程发送成功统计接口:`, {
+        publishId: publishId || '',
+        url,
+        host
+      });
+
+      const request = net.request({
+        method: 'POST',
+        url
+      });
+      request.setHeader('Content-Type', 'application/json');
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', chunk => { body += chunk.toString(); });
+        response.on('end', () => {
+          console.log(`[${platform || '发布'}] ✅ 主进程成功统计接口响应:`, {
+            statusCode: response.statusCode,
+            body: body.slice(0, 500)
+          });
+          resolve({ success: response.statusCode >= 200 && response.statusCode < 300, statusCode: response.statusCode, body });
+        });
+      });
+      request.on('error', (error) => {
+        console.error(`[${platform || '发布'}] ❌ 主进程成功统计接口请求失败:`, error);
+        resolve({ success: false, error: error.message || String(error) });
+      });
+      request.write(JSON.stringify(payload));
+      request.end();
+    } catch (error) {
+      console.error(`[${platform || '发布'}] ❌ 构造主进程成功统计接口请求失败:`, error);
+      resolve({ success: false, error: error.message || String(error) });
+    }
+  });
+}
+
 function firstNonEmptyValue(...values) {
   for (const value of values) {
     if (value === undefined || value === null) continue;
@@ -492,6 +649,7 @@ function downloadImageAsBase64(downloadUrl, redirectCount = 0) {
 
 function postMessageToHomePages(message) {
   const messageStr = JSON.stringify(message);
+  console.log('[Toutiao Bare Publish] 📣 准备通知首页:', message);
 
   if (browserView && !browserView.webContents.isDestroyed()) {
     browserView.webContents.executeJavaScript(`
@@ -500,6 +658,7 @@ function postMessageToHomePages(message) {
         const currentUrl = window.location.href;
         const isHome = homeUrls.some(url => currentUrl.startsWith(url));
         if (isHome) {
+          console.log('[Toutiao Bare Publish] BrowserView 首页收到主进程转发:', ${messageStr});
           window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
         }
       })();
@@ -514,12 +673,64 @@ function postMessageToHomePages(message) {
           const currentUrl = window.location.href;
           const isHome = homeUrls.some(url => currentUrl.startsWith(url));
           if (isHome) {
+            console.log('[Toutiao Bare Publish] ChildWindow 首页收到主进程转发:', ${messageStr});
             window.postMessage({ type: 'FROM_OTHER_PAGE', data: ${messageStr} }, '*');
           }
         })();
       `).catch(err => console.error(`[Toutiao Bare Publish] Failed to notify child window ${index}:`, err));
     }
   });
+}
+
+function notifyToutiaoBarePublishFailure(data) {
+  const payload = {
+    type: 'toutiao-bare-publish-refresh',
+    data: {
+      ...data,
+      refresh: true,
+      message: '发布失败，刷新数据',
+      timestamp: Date.now()
+    }
+  };
+  console.log('[Toutiao Bare Publish] 🔄 发送失败刷新通知:', payload);
+  postMessageToHomePages(payload);
+  postMessageToHomePages('发布失败，刷新数据');
+}
+
+function notifyToutiaoBarePublishSuccess(data) {
+  const payload = {
+    type: 'toutiao-bare-publish-refresh',
+    data: {
+      ...data,
+      refresh: true,
+      message: '发布成功，刷新数据',
+      timestamp: Date.now()
+    }
+  };
+  console.log('[Toutiao Bare Publish] ✅ 发送成功刷新通知:', payload);
+  postMessageToHomePages(payload);
+  postMessageToHomePages('发布成功，刷新数据');
+}
+
+function writeMainDebugDump(prefix, content) {
+  try {
+    const prefixRaw = typeof prefix === 'string' ? prefix : 'debug';
+    const safePrefix = prefixRaw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'debug';
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${safePrefix}-${timestamp}.json`;
+    const filePath = path.join(dumpDir, fileName);
+    const serialized = typeof content === 'string' ? content : JSON.stringify(content ?? null, null, 2);
+    fs.writeFileSync(filePath, serialized, 'utf8');
+    console.log('[Debug Dump] ✅ 主进程调试文件已写入:', filePath);
+    return filePath;
+  } catch (err) {
+    console.error('[Debug Dump] ❌ 主进程调试文件写入失败:', err);
+    return '';
+  }
 }
 
 function buildToutiaoBarePublishScript(payload) {
@@ -669,6 +880,119 @@ function buildToutiaoBarePublishScript(payload) {
       const findVisibleButtonByText = (buttonText) => {
         return Array.from(document.querySelectorAll('button')).find(btn => visible(btn) && textOf(btn) === buttonText) || null;
       };
+      const findFooterScheduleButton = () => {
+        const selectors = [
+          'button.publish-btn:not(.publish-btn-last)',
+          'button[class*="publish-btn"]:not(.publish-btn-last):not([class*="publish-btn-last"])',
+          '.publish-footer button:not(.publish-btn-last)',
+          '.publish-footer-content button:not(.publish-btn-last)'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(document.querySelectorAll(selector));
+          const target = list.find(btn => visible(btn) && textOf(btn) === '定时发布');
+          if (target) return target;
+        }
+        return findButton((t, btn) => {
+          if (!visible(btn)) return false;
+          const cls = (btn.className || '').toString();
+          return t === '定时发布' && cls.includes('publish-btn') && !cls.includes('publish-btn-last');
+        }, true);
+      };
+      const findScheduleModal = () => {
+        return Array.from(document.querySelectorAll(
+          '[role="dialog"], .byte-modal, .byte-modal-wrap, .byte-modal-content, [class*="picker"], [class*="calendar"], [class*="popover"]'
+        )).find(el => {
+          if (!visible(el)) return false;
+          const titleEl = el.querySelector('.byte-modal-title');
+          const titleText = textOf(titleEl) || textOf(el);
+          return /(定时|发布时间|选择时间)/.test(titleText);
+        }) || null;
+      };
+      const findModalButton = (modal, matcher) => {
+        if (!modal) return null;
+        const list = Array.from(modal.querySelectorAll('button'));
+        return list.find(btn => visible(btn) && matcher(textOf(btn), btn)) || null;
+      };
+      const parseScheduleParts = (sendTime) => {
+        const value = String(sendTime || '').trim();
+        if (!value) return null;
+        const normalized = value.replace(/\\//g, '-').replace('T', ' ');
+        const match = normalized.match(/(\\d{4})-(\\d{1,2})-(\\d{1,2})\\s+(\\d{1,2}):(\\d{1,2})/);
+        if (!match) return null;
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const hour = Number(match[4]);
+        const minute = Number(match[5]);
+        if ([month, day, hour, minute].some(Number.isNaN)) return null;
+        return {
+          dayText: String(month).padStart(2, '0') + '月' + String(day).padStart(2, '0') + '日',
+          hourText: String(hour),
+          minuteText: String(minute)
+        };
+      };
+      const clickElement = (el) => {
+        if (!el) return false;
+        try { el.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+        try { el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch (_) {}
+        try { el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch (_) {}
+        try { el.click(); } catch (_) {}
+        return true;
+      };
+      const findScheduleSelectTriggers = (modal) => {
+        if (!modal) return [];
+        const selectors = [
+          '.byte-select-view',
+          '.byte-select-trigger',
+          '[class*="select"][class*="view"]',
+          '[class*="select"][class*="trigger"]'
+        ];
+        for (const selector of selectors) {
+          const list = Array.from(modal.querySelectorAll(selector)).filter(visible);
+          if (list.length >= 3) return list.slice(0, 3);
+        }
+        const fallbacks = Array.from(modal.querySelectorAll('input, button, div, span')).filter(el => {
+          if (!visible(el)) return false;
+          const text = textOf(el);
+          return /^\d{2}月\d{2}日$/.test(text) || /^\d{1,2}$/.test(text);
+        });
+        return fallbacks.slice(0, 3);
+      };
+      const pickDropdownOption = async (trigger, expectedText) => {
+        if (!trigger || !expectedText) return false;
+        clickElement(trigger);
+        await delay(400);
+        const findOption = () => {
+          const selectors = [
+            '.byte-select-option',
+            '.byte-option',
+            '[role="option"]',
+            '.byte-dropdown-menu-item',
+            '.byte-select-dropdown .byte-select-option-inner',
+            '.byte-select-option-inner'
+          ];
+          for (const selector of selectors) {
+            const list = Array.from(document.querySelectorAll(selector));
+            const exact = list.find(el => visible(el) && textOf(el) === expectedText);
+            if (exact) return exact;
+          }
+          const generic = Array.from(document.querySelectorAll('li, div, span, button')).find(el => {
+            if (!visible(el)) return false;
+            return textOf(el) === expectedText;
+          });
+          return generic || null;
+        };
+        const optionStart = Date.now();
+        let option = null;
+        while (Date.now() - optionStart < 5000) {
+          option = findOption();
+          if (option) break;
+          await delay(200);
+        }
+        if (!option) return false;
+        clickElement(option);
+        await delay(500);
+        return true;
+      };
       const ensureCoverFile = async () => {
         if (!payload.coverData || !payload.coverContentType) {
           return null;
@@ -741,24 +1065,64 @@ function buildToutiaoBarePublishScript(payload) {
       };
       const trySetSchedule = async (sendSet, sendTime) => {
         if (+sendSet !== 2 || !sendTime) return { ok: true, skipped: true };
-        const scheduleToggle = Array.from(document.querySelectorAll('label, span, button, div')).find(el => {
-          const text = (el.textContent || '').trim();
-          return text.includes('定时发布');
-        });
-        if (scheduleToggle) {
-          scheduleToggle.click();
-          await delay(500);
+        const scheduleParts = parseScheduleParts(sendTime);
+        if (!scheduleParts) {
+          return { ok: false, reason: 'schedule-time-invalid', hint: String(sendTime || '') };
         }
-        const timeInput = Array.from(document.querySelectorAll('input')).find(el => {
-          const ph = (el.placeholder || '') + (el.getAttribute('aria-label') || '');
-          return ph.includes('时间') || ph.includes('日期') || ph.includes('发布时间');
+        const scheduleBtn = findFooterScheduleButton();
+        if (!scheduleBtn) return { ok: false, reason: 'schedule-btn-not-found' };
+        clickButton(scheduleBtn);
+        await delay(900);
+
+        const modalStart = Date.now();
+        let scheduleModal = null;
+        while (Date.now() - modalStart < 8000) {
+          scheduleModal = findScheduleModal();
+          if (scheduleModal) break;
+          await delay(300);
+        }
+        if (!scheduleModal) return { ok: false, reason: 'schedule-modal-not-opened' };
+        const triggers = findScheduleSelectTriggers(scheduleModal);
+        if (triggers.length < 3) {
+          return {
+            ok: false,
+            reason: 'schedule-select-trigger-not-found',
+            hint: textOf(scheduleModal).slice(0, 200)
+          };
+        }
+
+        const pickedDay = await pickDropdownOption(triggers[0], scheduleParts.dayText);
+        const pickedHour = await pickDropdownOption(triggers[1], scheduleParts.hourText);
+        const pickedMinute = await pickDropdownOption(triggers[2], scheduleParts.minuteText);
+        if (!pickedDay || !pickedHour || !pickedMinute) {
+          return {
+            ok: false,
+            reason: 'schedule-option-pick-failed',
+            hint: JSON.stringify({
+              expected: scheduleParts,
+              pickedDay,
+              pickedHour,
+              pickedMinute
+            })
+          };
+        }
+        await delay(800);
+
+        const confirmBtn = findModalButton(scheduleModal, (t) => {
+          if (!t) return false;
+          if (/取消|关闭|返回/.test(t)) return false;
+          return t === '确定' || t === '确认' || t === '完成' || t === '发布' || t.includes('定时发布');
         });
-        if (!timeInput) return { ok: false, reason: 'schedule-input-not-found' };
-        setNativeValue(timeInput, sendTime);
-        timeInput.dispatchEvent(new Event('input', { bubbles: true }));
-        timeInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        await delay(500);
-        return { ok: true };
+        if (!confirmBtn || confirmBtn.disabled) {
+          return {
+            ok: false,
+            reason: 'schedule-confirm-not-found',
+            hint: textOf(scheduleModal).slice(0, 200)
+          };
+        }
+        clickButton(confirmBtn);
+        await delay(1000);
+        return { ok: true, modal: true, confirmText: textOf(confirmBtn) };
       };
 
       const title = normalizeTitle(payload.rawTitle);
@@ -826,6 +1190,62 @@ function buildToutiaoBarePublishScript(payload) {
 
       const scheduleResult = await trySetSchedule(payload.sendSet, payload.sendTime);
       push('schedule-finished', scheduleResult);
+      if (!scheduleResult.ok) {
+        return { success: false, reason: scheduleResult.reason || 'schedule-failed', hint: scheduleResult.hint || '', href: location.href, logs };
+      }
+      if (+payload.sendSet === 2) {
+        let schedulePreviewReady = false;
+        for (let i = 0; i < 20; i++) {
+          const backBtn = findVisibleButtonByText('返回编辑');
+          const previewHint = isPreviewLayerVisible();
+          const finalScheduleBtn = findVisibleButtonByText('定时发布');
+          if ((backBtn || previewHint) && finalScheduleBtn && !finalScheduleBtn.disabled) {
+            schedulePreviewReady = true;
+            push('schedule-preview-ready', {
+              attempt: i + 1,
+              hasBackBtn: !!backBtn,
+              previewHint,
+              finalButtonText: textOf(finalScheduleBtn)
+            });
+            clickButton(finalScheduleBtn);
+            push('schedule-final-clicked', { text: textOf(finalScheduleBtn), attempt: i + 1 });
+            await delay(1200);
+            break;
+          }
+          await delay(400);
+        }
+        if (!schedulePreviewReady) {
+          return {
+            success: false,
+            reason: 'schedule-preview-not-ready',
+            hint: findVisibleHint(),
+            href: location.href,
+            logs
+          };
+        }
+
+        const scheduleWaitStart = Date.now();
+        const scheduleTimeout = 80000;
+        let lastToast = '';
+        while (Date.now() - scheduleWaitStart < scheduleTimeout) {
+          await delay(1200);
+          const href = location.href;
+          if (href.includes('/profile_v4/graphic/manage') || href.includes('/profile_v4/graphic/articles')) {
+            return { success: true, reason: 'schedule-list-page', href, logs, publishId: payload.publishId };
+          }
+          const toast = readToast();
+          if (toast) {
+            lastToast = toast;
+            if (/成功|已设置|已预约|定时/.test(toast) && !/失败|错误/.test(toast)) {
+              return { success: true, reason: 'schedule-toast-success', toast, href, logs, publishId: payload.publishId };
+            }
+            if (/失败|错误|无效|请先|过期/.test(toast)) {
+              return { success: false, reason: 'schedule-toast-error', toast, href, logs };
+            }
+          }
+        }
+        return { success: false, reason: 'schedule-result-timeout', toast: lastToast, href: location.href, logs };
+      }
 
       let publishBtn = null;
       for (let i = 0; i < 8; i++) {
@@ -938,6 +1358,11 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
     if (payload.cover) {
       const coverDownload = await downloadImageAsBase64(payload.cover);
       if (!coverDownload.success) {
+        await sendMainStatisticsError(payload.publishId || '', `封面下载失败: ${coverDownload.error || 'unknown error'}`, '头条发布', {
+          reason: 'cover-download-failed',
+          windowId,
+          href: currentURL
+        });
         console.error('[Toutiao Bare Publish] ❌ 封面下载失败:', {
           windowId,
           cover: payload.cover,
@@ -956,6 +1381,13 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
             timestamp: Date.now()
           }
         });
+        notifyToutiaoBarePublishFailure({
+          windowId,
+          publishId: payload.publishId || '',
+          reason: 'cover-download-failed',
+          hint: `封面下载失败: ${coverDownload.error || 'unknown error'}`,
+          href: currentURL
+        });
         toutiaoBarePublishState.set(windowId, 'failed');
         return;
       }
@@ -973,9 +1405,39 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
       rawSendSet: payload.rawSendSet,
       rawSendTime: payload.rawSendTime
     });
+    writeMainDebugDump('toutiao-bare-before-run', {
+      stage: 'before-run',
+      windowId,
+      currentURL,
+      payload
+    });
 
     const result = await targetWindow.webContents.executeJavaScript(buildToutiaoBarePublishScript(payload), true);
     console.log('[Toutiao Bare Publish] 执行结果:', { windowId, result });
+    writeMainDebugDump('toutiao-bare-result', {
+      stage: 'result',
+      windowId,
+      currentURL,
+      payload,
+      result
+    });
+
+    if (!result?.success) {
+      const failureText = result?.hint || result?.toast || result?.reason || '发布失败';
+      await sendMainStatisticsError(payload.publishId || '', failureText, '头条发布', {
+        reason: result?.reason || 'bare-publish-failed',
+        windowId,
+        href: result?.href || currentURL
+      });
+      notifyToutiaoBarePublishFailure({
+        windowId,
+        publishId: payload.publishId || '',
+        reason: result?.reason || 'bare-publish-failed',
+        hint: result?.hint || '',
+        toast: result?.toast || '',
+        href: result?.href || currentURL
+      });
+    }
 
     postMessageToHomePages({
       type: 'toutiao-bare-publish-result',
@@ -992,6 +1454,19 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
     });
 
     if (result?.success) {
+      if (payload.publishId) {
+        await sendMainStatistics(payload.publishId, '头条发布', {
+          reason: result?.reason || 'bare-publish-success',
+          windowId,
+          href: result?.href || currentURL
+        });
+      }
+      notifyToutiaoBarePublishSuccess({
+        windowId,
+        publishId: payload.publishId || '',
+        reason: result?.reason || 'bare-publish-success',
+        href: result?.href || currentURL
+      });
       toutiaoBarePublishState.set(windowId, 'done');
       setTimeout(() => {
         if (!targetWindow.isDestroyed()) {
@@ -1004,6 +1479,30 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
     toutiaoBarePublishState.set(windowId, 'failed');
   } catch (err) {
     console.error(`[Toutiao Bare Publish] ❌ 窗口 ${windowId} 自动发布失败:`, err);
+    const currentURLForError = !targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()
+      ? targetWindow.webContents.getURL()
+      : '';
+    writeMainDebugDump('toutiao-bare-exception', {
+      stage: 'exception',
+      windowId,
+      currentURL: currentURLForError,
+      error: {
+        message: err?.message || String(err),
+        stack: err?.stack || ''
+      }
+    });
+    await sendMainStatisticsError('', err?.message || '头条裸发布异常', '头条发布', {
+      reason: 'bare-publish-exception',
+      windowId,
+      href: currentURLForError
+    });
+    notifyToutiaoBarePublishFailure({
+      windowId,
+      publishId: '',
+      reason: 'bare-publish-exception',
+      hint: err?.message || '头条裸发布异常',
+      href: currentURLForError
+    });
     toutiaoBarePublishState.set(windowId, 'failed');
   }
 }

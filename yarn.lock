@@ -779,7 +779,7 @@ electron-publish@24.13.1:
     lazy-val "^1.0.5"
     mime "^2.5.2"
 
-electron@21.4.4:
+electron@^21.4.4:
   version "21.4.4"
   resolved "https://registry.npmmirror.com/electron/-/electron-21.4.4.tgz"
   integrity sha512-N5O7y7Gtt7mDgkJLkW49ETiT8M3myZ9tNIEvGTKhpBduX4WdgMj6c3hYeYBD6XW7SvbRkWEQaTl25RNday8Xpw==

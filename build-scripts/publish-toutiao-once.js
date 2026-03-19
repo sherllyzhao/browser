@@ -125,6 +125,24 @@ async function runPublish(app, publishTitle, publishContent, mode = 'immediate')
           if (v) return v;
           return allowHidden ? list[0] : null;
         };
+        const findFooterScheduleButton = () => {
+          const selectors = [
+            'button.publish-btn:not(.publish-btn-last)',
+            'button[class*="publish-btn"]:not(.publish-btn-last):not([class*="publish-btn-last"])',
+            '.publish-footer button:not(.publish-btn-last)',
+            '.publish-footer-content button:not(.publish-btn-last)'
+          ];
+          for (const selector of selectors) {
+            const list = Array.from(document.querySelectorAll(selector));
+            const target = list.find(btn => visible(btn) && textOf(btn) === '定时发布');
+            if (target) return target;
+          }
+          return findButton((t, btn) => {
+            if (!visible(btn)) return false;
+            const cls = (btn.className || '').toString();
+            return t === '定时发布' && cls.includes('publish-btn') && !cls.includes('publish-btn-last');
+          }, true);
+        };
 
         const clickButton = (btn) => {
           if (!btn) return false;
@@ -303,16 +321,23 @@ async function runPublish(app, publishTitle, publishContent, mode = 'immediate')
         }
 
         if (publishMode === 'schedule_probe') {
-          const scheduleBtn = findButton((t) => t === '定时发布', true);
+          const scheduleBtn = findFooterScheduleButton();
           if (!scheduleBtn) {
             return { success: false, reason: 'schedule-btn-not-found', logs };
           }
+          push('schedule-btn-found', { text: textOf(scheduleBtn), className: scheduleBtn.className || '' });
           clickButton(scheduleBtn);
           await delay(900);
-          const modalOpened = Array.from(document.querySelectorAll(
-            '.byte-modal-wrapper, .byte-modal, .semi-modal, .arco-modal, [class*="picker"], [class*="calendar"], [class*="popover"]'
-          )).some(el => visible(el) && /(定时|发布时间|选择时间)/.test(textOf(el)));
-          push('schedule-opened', { modalOpened });
+          const scheduleModal = Array.from(document.querySelectorAll(
+            '[role="dialog"], .byte-modal, .byte-modal-wrap, .byte-modal-content, [class*="picker"], [class*="calendar"], [class*="popover"]'
+          )).find(el => {
+            if (!visible(el)) return false;
+            const titleEl = el.querySelector('.byte-modal-title');
+            const titleText = textOf(titleEl) || textOf(el);
+            return /(定时|发布时间|选择时间)/.test(titleText);
+          });
+          const modalOpened = !!scheduleModal;
+          push('schedule-opened', { modalOpened, modalText: scheduleModal ? textOf(scheduleModal).slice(0, 120) : '' });
           if (!modalOpened) {
             return { success: false, reason: 'schedule-modal-not-opened', logs };
           }
