@@ -4124,29 +4124,92 @@ app.whenReady().then(async () => {
   if (isProduction) {
     const logPath = path.join(app.getPath('userData'), 'app.log');
     const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    let canMirrorToConsole = true;
 
     // 保存原始 console 方法
     const originalLog = console.log;
     const originalError = console.error;
     const originalWarn = console.warn;
 
-    // 重定向 console 输出到文件和控制台
+    function stringifyLogArg(arg) {
+      if (typeof arg === 'string') return arg;
+      if (arg instanceof Error) {
+        return arg.stack || `${arg.name}: ${arg.message}`;
+      }
+      if (typeof arg === 'object' && arg !== null) {
+        try {
+          return JSON.stringify(arg);
+        } catch (_) {
+          return Object.prototype.toString.call(arg);
+        }
+      }
+      return String(arg);
+    }
+
+    function writeToLogStream(level, args) {
+      try {
+        if (logStream.destroyed || !logStream.writable) return;
+        const msg = args.map(stringifyLogArg).join(' ');
+        logStream.write(`[${level} ${new Date().toLocaleString()}] ${msg}\n`);
+      } catch (_) {
+        // 日志写文件失败不能影响主流程
+      }
+    }
+
+    function disableConsoleMirror(reason) {
+      if (!canMirrorToConsole) return;
+      canMirrorToConsole = false;
+      writeToLogStream('WARN', [`[Console Mirror] 控制台输出已禁用: ${reason || 'unknown'}`]);
+    }
+
+    function mirrorToOriginalConsole(method, args) {
+      if (!canMirrorToConsole) return;
+      try {
+        method.apply(console, args);
+      } catch (err) {
+        const errorCode = err && err.code ? err.code : '';
+        if (errorCode === 'EPIPE' || errorCode === 'ERR_STREAM_DESTROYED') {
+          disableConsoleMirror(errorCode);
+          return;
+        }
+        disableConsoleMirror(errorCode || err?.message || 'mirror-failed');
+      }
+    }
+
+    logStream.on('error', (err) => {
+      mirrorToOriginalConsole(originalWarn, ['[Log Stream] 日志文件写入失败:', err && err.message ? err.message : err]);
+    });
+
+    if (process.stdout && typeof process.stdout.on === 'function') {
+      process.stdout.on('error', (err) => {
+        if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
+          disableConsoleMirror(err.code);
+        }
+      });
+    }
+
+    if (process.stderr && typeof process.stderr.on === 'function') {
+      process.stderr.on('error', (err) => {
+        if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
+          disableConsoleMirror(err.code);
+        }
+      });
+    }
+
+    // 重定向 console 输出到文件和控制台；日志异常不能反向打崩主进程
     console.log = function(...args) {
-      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
-      originalLog.apply(console, args);
+      writeToLogStream('LOG', args);
+      mirrorToOriginalConsole(originalLog, args);
     };
 
     console.error = function(...args) {
-      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
-      originalError.apply(console, args);
+      writeToLogStream('ERROR', args);
+      mirrorToOriginalConsole(originalError, args);
     };
 
     console.warn = function(...args) {
-      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
-      originalWarn.apply(console, args);
+      writeToLogStream('WARN', args);
+      mirrorToOriginalConsole(originalWarn, args);
     };
 
     console.log('=================================');
