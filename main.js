@@ -47,6 +47,90 @@ let startupLoadGuard = {
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
 let globalStorage = {};
 const getGlobalStoragePath = () => path.join(app.getPath('userData'), 'global-storage.json');
+const getLocalPlatformConfigPath = () => path.join(__dirname, 'injected-scripts', 'platform-config.json');
+
+async function fetchJsonWithElectronNet(targetUrl, timeout = 10000) {
+  return await new Promise((resolve, reject) => {
+    const request = net.request(targetUrl);
+    let timer = null;
+
+    request.on('response', (response) => {
+      if (response.statusCode !== 200) {
+        reject(new Error(`HTTP ${response.statusCode}`));
+        return;
+      }
+
+      let raw = '';
+      response.on('data', (chunk) => {
+        raw += chunk.toString();
+      });
+      response.on('end', () => {
+        try {
+          resolve(JSON.parse(raw));
+        } catch (error) {
+          reject(new Error(`Invalid JSON: ${error.message}`));
+        }
+      });
+    });
+
+    request.on('error', (error) => {
+      reject(error);
+    });
+
+    timer = setTimeout(() => {
+      request.abort();
+      reject(new Error('Request timeout'));
+    }, timeout);
+
+    request.on('close', () => {
+      if (timer) clearTimeout(timer);
+    });
+
+    request.end();
+  });
+}
+
+function loadLocalPlatformConfig() {
+  const configPath = getLocalPlatformConfigPath();
+  const content = fs.readFileSync(configPath, 'utf8');
+  return JSON.parse(content);
+}
+
+async function loadRuntimePlatformConfig() {
+  const configPath = getLocalPlatformConfigPath();
+  const remoteUrl = `${config.domains.remoteScriptsBase}platform-config.json?v=${Date.now()}`;
+
+  if (!app.isPackaged) {
+    const localConfig = loadLocalPlatformConfig();
+    return {
+      success: true,
+      source: 'local',
+      path: configPath,
+      config: localConfig
+    };
+  }
+
+  try {
+    const remoteConfig = await fetchJsonWithElectronNet(remoteUrl, 10000);
+    return {
+      success: true,
+      source: 'remote',
+      url: remoteUrl,
+      config: remoteConfig
+    };
+  } catch (error) {
+    console.error('[PlatformConfig] 远程加载失败，回退本地配置:', error.message);
+    const localConfig = loadLocalPlatformConfig();
+    return {
+      success: true,
+      source: 'local-fallback',
+      path: configPath,
+      remoteUrl,
+      fallbackReason: error.message,
+      config: localConfig
+    };
+  }
+}
 
 // 加载持久化数据
 function loadGlobalStorage() {
@@ -242,16 +326,17 @@ async function inspectBrowserViewReadiness() {
         const htmlLength = (body.innerHTML || '').replace(/\\s+/g, '').length;
         const textLength = (body.innerText || '').trim().length;
         const childCount = body.children ? body.children.length : 0;
+        const bodyRect = body.getBoundingClientRect();
 
-        const hasVisibleElement = (el) => {
+        const hasVisibleElement = (el, minSize = 24) => {
           if (!el) return false;
           const style = window.getComputedStyle(el);
           const rect = el.getBoundingClientRect();
           return style.display !== 'none'
             && style.visibility !== 'hidden'
             && Number(style.opacity || '1') !== 0
-            && rect.width > 24
-            && rect.height > 24;
+            && rect.width >= minSize
+            && rect.height >= minSize;
         };
 
         const appRootSelectors = ['#app', '#root', '#__nuxt', '#layout', '[data-v-app]'];
@@ -265,7 +350,26 @@ async function inspectBrowserViewReadiness() {
 
         const visibleChildren = Array.from(body.children || []).some((el) => hasVisibleElement(el));
         const hasKnownSpinner = !!document.querySelector('.loading, .spinner, .ant-spin, .el-loading-mask, .nprogress-busy, .v-progress-circular');
-        const ready = htmlLength > 80 && (textLength > 0 || rootVisible || visibleChildren || hasKnownSpinner);
+        const meaningfulVisualElement = !!document.querySelector(
+          'main, section, article, aside, header, footer, nav, table, ul, ol, li, form, img, svg, canvas, video, iframe, [role=\"main\"], [role=\"dialog\"]'
+        );
+        const visibleSampleElements = Array.from(document.querySelectorAll('body *'))
+          .slice(0, 80)
+          .filter((el) => hasVisibleElement(el, 12))
+          .length;
+        const bodyHasViewportSize = bodyRect.width >= 200 && bodyRect.height >= 120;
+        const likelyRenderedShell = htmlLength > 1000 && childCount >= 3 && bodyHasViewportSize;
+        const ready = (
+          htmlLength > 80 && (
+            textLength > 0
+            || rootVisible
+            || visibleChildren
+            || hasKnownSpinner
+            || meaningfulVisualElement
+            || visibleSampleElements >= 2
+            || likelyRenderedShell
+          )
+        );
 
         return {
           ready,
@@ -273,9 +377,14 @@ async function inspectBrowserViewReadiness() {
           htmlLength,
           textLength,
           childCount,
+          bodyWidth: Math.round(bodyRect.width || 0),
+          bodyHeight: Math.round(bodyRect.height || 0),
           rootVisible,
           visibleChildren,
           hasKnownSpinner,
+          meaningfulVisualElement,
+          visibleSampleElements,
+          likelyRenderedShell,
           href: location.href
         };
       } catch (err) {
@@ -4261,6 +4370,10 @@ ipcMain.handle('get-domain-config', () => {
     cookieDomain: config.getCookieDomain(),
     DEV_HOSTS: config.DEV_HOSTS
   };
+});
+
+ipcMain.handle('get-platform-config', async () => {
+  return await loadRuntimePlatformConfig();
 });
 
 // 获取当前应用版本
