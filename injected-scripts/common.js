@@ -638,6 +638,166 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
     };
 
+    function decodeBase64ToBytes(base64Data) {
+        const binaryString = atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+    }
+
+    function detectMimeTypeFromBytes(bytes, fallbackType = "application/octet-stream") {
+        if (!bytes || bytes.length < 4) {
+            return fallbackType;
+        }
+
+        if (
+            bytes.length >= 8 &&
+            bytes[0] === 0x89 &&
+            bytes[1] === 0x50 &&
+            bytes[2] === 0x4E &&
+            bytes[3] === 0x47 &&
+            bytes[4] === 0x0D &&
+            bytes[5] === 0x0A &&
+            bytes[6] === 0x1A &&
+            bytes[7] === 0x0A
+        ) {
+            return "image/png";
+        }
+
+        if (
+            bytes.length >= 6 &&
+            bytes[0] === 0x47 &&
+            bytes[1] === 0x49 &&
+            bytes[2] === 0x46 &&
+            bytes[3] === 0x38 &&
+            (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+            bytes[5] === 0x61
+        ) {
+            return "image/gif";
+        }
+
+        if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+            return "image/jpeg";
+        }
+
+        if (
+            bytes.length >= 12 &&
+            bytes[0] === 0x52 &&
+            bytes[1] === 0x49 &&
+            bytes[2] === 0x46 &&
+            bytes[3] === 0x46 &&
+            bytes[8] === 0x57 &&
+            bytes[9] === 0x45 &&
+            bytes[10] === 0x42 &&
+            bytes[11] === 0x50
+        ) {
+            return "image/webp";
+        }
+
+        if (bytes[0] === 0x42 && bytes[1] === 0x4D) {
+            return "image/bmp";
+        }
+
+        return fallbackType;
+    }
+
+    function normalizeDownloadedResult(result, fallbackType = "application/octet-stream", label = "downloadFile") {
+        const sourceType = String(result?.contentType || fallbackType || "application/octet-stream")
+            .split(";")[0]
+            .trim()
+            .toLowerCase();
+        const bytes = decodeBase64ToBytes(result.data);
+        const detectedType = detectMimeTypeFromBytes(bytes, sourceType);
+        const contentType = detectedType || sourceType || fallbackType;
+
+        if (sourceType && detectedType && sourceType !== detectedType) {
+            console.warn(`[${label}] ⚠️ 响应头类型与文件签名不一致:`, {
+                headerType: sourceType,
+                detectedType,
+            });
+        }
+
+        return {
+            bytes,
+            blob: new Blob([bytes], { type: contentType }),
+            contentType,
+            sourceType,
+            detectedType,
+        };
+    }
+
+    async function normalizeBlobResult(blob, fallbackType = "application/octet-stream", label = "downloadFile") {
+        const sourceType = String(blob?.type || fallbackType || "application/octet-stream")
+            .split(";")[0]
+            .trim()
+            .toLowerCase();
+
+        if (typeof blob?.arrayBuffer !== "function") {
+            return {
+                blob,
+                contentType: sourceType || fallbackType,
+                sourceType,
+                detectedType: sourceType || fallbackType,
+            };
+        }
+
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const detectedType = detectMimeTypeFromBytes(bytes, sourceType || fallbackType);
+        const contentType = detectedType || sourceType || fallbackType;
+
+        if (sourceType && detectedType && sourceType !== detectedType) {
+            console.warn(`[${label}] ⚠️ Blob 类型与文件签名不一致:`, {
+                headerType: sourceType,
+                detectedType,
+            });
+        }
+
+        return {
+            blob: new Blob([bytes], { type: contentType }),
+            contentType,
+            sourceType,
+            detectedType,
+        };
+    }
+
+    function resolveImageExtension(pathImage, contentType) {
+        const normalizedType = String(contentType || "").toLowerCase();
+        if (normalizedType.includes("jpeg") || normalizedType.includes("jpg")) return ".jpg";
+        if (normalizedType.includes("png")) return ".png";
+        if (normalizedType.includes("gif")) return ".gif";
+        if (normalizedType.includes("webp")) return ".webp";
+        if (normalizedType.includes("bmp")) return ".bmp";
+        if (normalizedType.includes("svg")) return ".svg";
+        if (normalizedType.includes("ico")) return ".ico";
+
+        if (pathImage && pathImage.includes(".")) {
+            const urlExt = pathImage.split(".").pop().split("?")[0].toLowerCase();
+            if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico"].includes(urlExt)) {
+                return urlExt === "jpeg" ? ".jpg" : `.${urlExt}`;
+            }
+        }
+
+        return ".jpg";
+    }
+
+    function createUnsupportedImageError(contentType, pathImage, detectedType = "", sourceType = "") {
+        const normalizedType = String(contentType || "").toLowerCase();
+        const isGif = normalizedType.includes("gif");
+        const error = new Error(
+            isGif
+                ? "检测到原图为 GIF 格式，小红书不支持 GIF 及其转化图片，请更换 PNG/JPG/WebP 静态图"
+                : `检测到不支持的图片格式: ${normalizedType || "unknown"}`
+        );
+        error.code = isGif ? "UNSUPPORTED_GIF_IMAGE" : "UNSUPPORTED_IMAGE_TYPE";
+        error.contentType = normalizedType || "unknown";
+        error.detectedType = detectedType || normalizedType || "unknown";
+        error.sourceType = sourceType || normalizedType || "unknown";
+        error.pathImage = pathImage || "";
+        return error;
+    }
+
     // 通用文件下载函数（绕过跨域限制）
     window.downloadFile = async function (url, defaultType = "application/octet-stream") {
         if (!url) {
@@ -649,33 +809,39 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         let blob;
         let contentType = defaultType;
 
+        const isImageDownload = String(defaultType || "").toLowerCase().startsWith("image/");
+        const downloadByMainProcess = isImageDownload && window.browserAPI?.downloadImage
+            ? window.browserAPI.downloadImage
+            : window.browserAPI?.downloadVideo;
+
         // 优先使用主进程下载（绕过跨域限制）
-        if (window.browserAPI?.downloadVideo) {
+        if (downloadByMainProcess) {
             console.log("[downloadFile] 使用主进程下载...");
-            const result = await window.browserAPI.downloadVideo(url);
+            const result = await downloadByMainProcess(url);
 
             if (!result.success) {
                 throw new Error("Download failed: " + result.error);
             }
 
-            // 将 base64 转换为 Blob
-            const binaryString = atob(result.data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            blob = new Blob([bytes], { type: result.contentType });
-            contentType = result.contentType;
+            const normalized = normalizeDownloadedResult(result, defaultType, "downloadFile");
+            blob = normalized.blob;
+            contentType = normalized.contentType;
             console.log("[downloadFile] 主进程下载成功，大小:", result.size, "bytes, 类型:", contentType);
         } else {
             // 回退到 fetch（可能有跨域问题）
-            console.log("[downloadFile] browserAPI.downloadVideo 不可用，使用 fetch...");
+            console.log("[downloadFile] browserAPI 下载能力不可用，使用 fetch...");
             const response = await fetch(url);
             if (!response.ok) {
                 throw new Error("HTTP error! status: " + response.status);
             }
-            blob = await response.blob();
-            contentType = response.headers.get("Content-Type") || blob.type || defaultType;
+            const downloadedBlob = await response.blob();
+            const normalized = await normalizeBlobResult(
+                downloadedBlob,
+                response.headers.get("Content-Type") || downloadedBlob.type || defaultType,
+                "downloadFile"
+            );
+            blob = normalized.blob;
+            contentType = normalized.contentType;
         }
 
         return { blob, contentType };
@@ -785,7 +951,13 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 上传图片到input元素
     window.uploadImage = async function (dataObj, shadowRoot = undefined) {
-        const pathImage = dataObj?.image?.image?.url;
+        const pathImage = dataObj?.sourceUrl
+            || dataObj?.video?.video?.url
+            || dataObj?.video?.video?.cover
+            || dataObj?.element?.image
+            || dataObj?.element?.image_url
+            || dataObj?.element?.imageUrl
+            || dataObj?.element?.url;
         console.log("🚀 ~ uploadImage ~ pathImage: ", pathImage);
         if (!pathImage) {
             //alert('No image URL found');
@@ -800,33 +972,43 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         // 优先使用主进程下载（绕过跨域限制），添加重试机制防止并发下载时连接被重置
         const downloadResult = await retryOperation(
             async () => {
-                if (window.browserAPI?.downloadVideo) {
+                if (window.browserAPI?.downloadImage || window.browserAPI?.downloadVideo) {
                     console.log("[uploadImage] 使用主进程下载...");
-                    const result = await window.browserAPI.downloadVideo(pathImage);
+                    const downloader = window.browserAPI.downloadImage || window.browserAPI.downloadVideo;
+                    const result = await downloader(pathImage);
 
                     if (!result.success) {
                         throw new Error("Image download failed: " + result.error);
                     }
 
-                    // 将 base64 转换为 Blob
-                    const binaryString = atob(result.data);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    const downloadedBlob = new Blob([bytes], { type: result.contentType });
+                    const normalized = normalizeDownloadedResult(result, "image/jpeg", "uploadImage");
+                    const downloadedBlob = normalized.blob;
                     console.log("[uploadImage] 主进程下载成功，大小:", result.size, "bytes");
-                    return { blob: downloadedBlob, contentType: result.contentType };
+                    return {
+                        blob: downloadedBlob,
+                        contentType: normalized.contentType,
+                        sourceType: normalized.sourceType,
+                        detectedType: normalized.detectedType,
+                    };
                 } else {
                     // 回退到 fetch（可能有跨域问题）
-                    console.log("[uploadImage] browserAPI.downloadVideo 不可用，使用 fetch...");
+                    console.log("[uploadImage] browserAPI 下载能力不可用，使用 fetch...");
                     const response = await fetch(pathImage);
                     if (!response.ok) {
                         throw new Error("HTTP error! status: " + response.status);
                     }
                     const downloadedBlob = await response.blob();
-                    const type = response.headers.get("Content-Type") || downloadedBlob.type || "image/jpeg";
-                    return { blob: downloadedBlob, contentType: type };
+                    const normalized = await normalizeBlobResult(
+                        downloadedBlob,
+                        response.headers.get("Content-Type") || downloadedBlob.type || "image/jpeg",
+                        "uploadImage"
+                    );
+                    return {
+                        blob: normalized.blob,
+                        contentType: normalized.contentType,
+                        sourceType: normalized.sourceType,
+                        detectedType: normalized.detectedType,
+                    };
                 }
             },
             5,
@@ -836,29 +1018,26 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         blob = downloadResult.blob;
         contentType = downloadResult.contentType;
 
-        // 从 URL 或 Content-Type 中提取文件扩展名
-        let extension = ".jpg"; // 默认扩展名
-        if (pathImage.includes(".")) {
-            const urlExt = pathImage.split(".").pop().split("?")[0].toLowerCase();
-            if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico"].includes(urlExt)) {
-                extension = "." + urlExt;
-            }
-        } else if (contentType.includes("jpeg") || contentType.includes("jpg")) {
-            extension = ".jpg";
-        } else if (contentType.includes("png")) {
-            extension = ".png";
-        } else if (contentType.includes("gif")) {
-            extension = ".gif";
-        } else if (contentType.includes("webp")) {
-            extension = ".webp";
-        } else if (contentType.includes("bmp")) {
-            extension = ".bmp";
-        } else if (contentType.includes("svg")) {
-            extension = ".svg";
+        if (String(contentType || "").toLowerCase().includes("gif")) {
+            console.warn("[uploadImage] ⚠️ 检测到 GIF 图片，已在上传前拦截:", {
+                pathImage,
+                contentType,
+                detectedType: downloadResult.detectedType,
+                sourceType: downloadResult.sourceType,
+            });
+            throw createUnsupportedImageError(
+                contentType,
+                pathImage,
+                downloadResult.detectedType,
+                downloadResult.sourceType
+            );
         }
 
+        // 从 URL 或 Content-Type 中提取文件扩展名
+        const extension = resolveImageExtension(pathImage, contentType);
+
         // 构建文件名，确保有扩展名
-        let fileName = dataObj?.image?.formData?.title || "image";
+        let fileName = dataObj?.video?.formData?.title || dataObj?.image?.formData?.title || "image";
         if (!fileName.toLowerCase().endsWith(extension.toLowerCase())) {
             fileName = fileName + extension;
         }

@@ -131,18 +131,6 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 // 配置（内联，因为 preload 脚本沙盒环境不能使用 path 模块）
 const config = {
-  platformPublishUrls: {
-    dy: 'https://creator.douyin.com/creator-micro/content/upload',
-    xhs: 'https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video&openFilePicker=true',
-    sph: 'https://channels.weixin.qq.com/platform/post/create',
-    bjh: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1',
-    wyh: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
-    shh: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
-    txh: 'https://om.qq.com/main/creation/article',
-    xl: 'https://card.weibo.com/article/v5/editor#/draft',
-    zh: 'https://zhuanlan.zhihu.com/write',
-    tt: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
-  },
   platformIdMap: {
     1: 'dy',    // 抖音
     4: 'bjh',   // 百家号
@@ -169,6 +157,206 @@ const config = {
     'tt': 'toutiao'
   }
 };
+
+const PLATFORM_CONFIG_ALIASES = {
+  sohuhao: 'souhuhao',
+  souhuhao: 'sohuhao',
+  tengxunhao: 'tengxvnhao',
+  tengxvnhao: 'tengxunhao',
+  xinlang: 'xinlang',
+  zhihu: 'zhihu'
+};
+
+const LOCAL_PLATFORM_CONFIG_FALLBACK = {
+  platforms: {
+    souhuhao: {
+      publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+      publishPageUrls: {
+        video: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+        article: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle'
+      }
+    },
+    douyin: {
+      publishPageUrl: 'https://creator.douyin.com/creator-micro/content/upload',
+      publishPageUrls: {
+        video: 'https://creator.douyin.com/creator-micro/content/upload',
+        article: 'https://creator.douyin.com/creator-micro/content/upload'
+      }
+    },
+    xiaohongshu: {
+      publishPageUrl: 'https://creator.xiaohongshu.com/publish/publish',
+      publishPageUrls: {
+        video: 'https://creator.xiaohongshu.com/publish/publish?target=video',
+        article: 'https://creator.xiaohongshu.com/publish/publish?target=image'
+      }
+    },
+    baijiahao: {
+      publishPageUrl: 'https://baijiahao.baidu.com/builder/rc/edit',
+      publishPageUrls: {
+        video: 'https://baijiahao.baidu.com/builder/rc/edit?type=video',
+        article: 'https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1'
+      }
+    },
+    wangyihao: {
+      publishPageUrl: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+      publishPageUrls: {
+        video: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+        article: 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
+      }
+    },
+    shipinhao: {
+      publishPageUrl: 'https://channels.weixin.qq.com/platform/post/create',
+      publishPageUrls: {
+        video: 'https://channels.weixin.qq.com/platform/post/create',
+        article: 'https://channels.weixin.qq.com/platform/post/create'
+      }
+    },
+    tengxvnhao: {
+      publishPageUrl: 'https://om.qq.com/main/creation/article',
+      publishPageUrls: {
+        video: 'https://om.qq.com/main/creation/article',
+        article: 'https://om.qq.com/main/creation/article'
+      }
+    },
+    tengxunhao: {
+      publishPageUrl: 'https://om.qq.com/main/creation/article',
+      publishPageUrls: {
+        video: 'https://om.qq.com/main/creation/article',
+        article: 'https://om.qq.com/main/creation/article'
+      }
+    },
+    xinlang: {
+      publishPageUrl: 'https://card.weibo.com/article/v5/editor#/draft',
+      publishPageUrls: {
+        video: 'https://card.weibo.com/article/v5/editor#/draft',
+        article: 'https://card.weibo.com/article/v5/editor#/draft'
+      }
+    },
+    zhihu: {
+      publishPageUrl: 'https://zhuanlan.zhihu.com/write',
+      publishPageUrls: {
+        video: 'https://zhuanlan.zhihu.com/write',
+        article: 'https://zhuanlan.zhihu.com/write'
+      }
+    },
+    toutiao: {
+      publishPageUrl: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc',
+      publishPageUrls: {
+        video: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc',
+        article: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc'
+      }
+    }
+  }
+};
+
+const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.flv', '.wmv', '.mpeg', '.mpg'];
+const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg', '.heic'];
+
+function getFileExtensionFromUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+
+  try {
+    const normalizedUrl = rawUrl.startsWith('//') ? `https:${rawUrl}` : rawUrl;
+    const pathname = new URL(normalizedUrl).pathname || '';
+    return pathname.slice(pathname.lastIndexOf('.')).toLowerCase();
+  } catch (error) {
+    const cleanUrl = rawUrl.split('?')[0].split('#')[0];
+    const lastDotIndex = cleanUrl.lastIndexOf('.');
+    if (lastDotIndex === -1) return '';
+    return cleanUrl.slice(lastDotIndex).toLowerCase();
+  }
+}
+
+function detectPublishContentType(element) {
+  const candidateUrls = [
+    element?.url,
+    element?.image,
+    element?.cover,
+    element?.image_url,
+    element?.imageUrl
+  ].filter(Boolean);
+
+  for (const candidateUrl of candidateUrls) {
+    const extension = getFileExtensionFromUrl(candidateUrl);
+    if (VIDEO_EXTENSIONS.includes(extension)) {
+      return { contentType: 'video', extension, sourceUrl: candidateUrl };
+    }
+    if (IMAGE_EXTENSIONS.includes(extension)) {
+      return { contentType: 'article', extension, sourceUrl: candidateUrl };
+    }
+  }
+
+  return {
+    contentType: 'article',
+    extension: '',
+    sourceUrl: candidateUrls[0] || ''
+  };
+}
+
+let runtimePlatformConfig = null;
+let runtimePlatformConfigPromise = null;
+
+function mergePlatformConfig(remoteConfig) {
+  const mergedPlatforms = {
+    ...(LOCAL_PLATFORM_CONFIG_FALLBACK.platforms || {}),
+    ...((remoteConfig && remoteConfig.platforms) || {})
+  };
+
+  return {
+    ...LOCAL_PLATFORM_CONFIG_FALLBACK,
+    ...(remoteConfig || {}),
+    platforms: mergedPlatforms
+  };
+}
+
+function buildPlatformPublishUrlMap(platformConfig) {
+  const platforms = (platformConfig && platformConfig.platforms) || {};
+  const result = {};
+
+  for (const [shortPlatform, fullPlatform] of Object.entries(config.platformNameMap)) {
+    const aliasPlatform = PLATFORM_CONFIG_ALIASES[fullPlatform];
+    const platformItem = platforms[fullPlatform] || (aliasPlatform ? platforms[aliasPlatform] : null);
+    if (!platformItem) continue;
+
+    const publishPageUrls = platformItem.publishPageUrls || {};
+    result[shortPlatform] = {
+      video: publishPageUrls.video || platformItem.publishPageUrl || '',
+      article: publishPageUrls.article || platformItem.publishPageUrl || ''
+    };
+  }
+
+  return result;
+}
+
+async function getRuntimePlatformConfig() {
+  if (runtimePlatformConfig) {
+    return runtimePlatformConfig;
+  }
+
+  if (!runtimePlatformConfigPromise) {
+    runtimePlatformConfigPromise = ipcRenderer.invoke('get-platform-config')
+      .then((result) => {
+        const remoteConfig = result && result.success ? result.config : null;
+        const mergedConfig = mergePlatformConfig(remoteConfig);
+        runtimePlatformConfig = mergedConfig;
+        console.log('[content-preload] ✅ 平台配置已加载:', {
+          source: result?.source || 'fallback',
+          platformCount: Object.keys(mergedConfig.platforms || {}).length
+        });
+        return runtimePlatformConfig;
+      })
+      .catch((error) => {
+        console.error('[content-preload] ❌ 加载平台配置失败，使用本地兜底:', error);
+        runtimePlatformConfig = mergePlatformConfig(null);
+        return runtimePlatformConfig;
+      })
+      .finally(() => {
+        runtimePlatformConfigPromise = null;
+      });
+  }
+
+  return runtimePlatformConfigPromise;
+}
 
 // 检测是否为生产环境（打包后运行）
 // 使用多种方式判断，确保准确
@@ -318,19 +506,27 @@ contextBridge.exposeInMainWorld('browserAPI', {
       console.log('[BrowserAPI] ✅ 已存储 publish_data 到全局存储');
       console.log(`[BrowserAPI] 📋 共有 ${dataArray.length} 篇文章待发布`);
 
-      // 使用配置文件中的映射
-      const urlMap = config.platformPublishUrls;
       const platformMap = config.platformIdMap;
       const platformFullNameMap = config.platformNameMap;
 
       // 使用立即执行的异步函数 + for...of 确保顺序执行
       (async () => {
+        const platformConfig = await getRuntimePlatformConfig();
+        const urlMap = buildPlatformPublishUrlMap(platformConfig);
+
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
           const platform = platformMap[element.account_info.media.id];
           const platformFullName = platformFullNameMap[platform];
-          const url = urlMap[platform];
-          console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, url: ${url}`);
+          const publishTarget = detectPublishContentType(element);
+          const platformUrls = urlMap[platform] || {};
+          const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
+          console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, contentType: ${publishTarget.contentType}, ext: ${publishTarget.extension || 'unknown'}, url: ${url}`);
+
+          if (!url) {
+            console.error(`❌ [${index + 1}] 未找到发布地址: platform=${platform}, contentType=${publishTarget.contentType}`);
+            continue;
+          }
 
           // 构建 openNewWindow 的 options
           // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
@@ -380,18 +576,28 @@ contextBridge.exposeInMainWorld('browserAPI', {
             }
           }
 
+          const publishSourceUrl = publishTarget.sourceUrl
+            || element.url
+            || element.image
+            || element.image_url
+            || element.imageUrl
+            || '';
+
           const basePublishData = {
             element,
             platform,
             createdAt: Date.now(),
+            contentType: publishTarget.contentType,
+            detectedFileExtension: publishTarget.extension,
+            sourceUrl: publishSourceUrl,
             video: {
               formData: element.formData || { title: element.title, send_set: 1 },
               video: {
-                cover: element.url || element.image,
+                cover: element.cover || element.image || element.image_url || element.imageUrl || element.url,
                 title: element.title,
                 intro: element.intro,
                 content: element.content,
-                url: element.url,
+                url: publishSourceUrl,
                 sendlog: element.sendlog || {
                   title: element.title,
                   intro: element.intro,
@@ -670,6 +876,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 🔑 获取域名配置（集中配置）
   getDomainConfig: () => ipcRenderer.invoke('get-domain-config'),
+  // 🔑 获取平台发布配置（开发环境读本地，生产环境走远程）
+  getPlatformConfig: () => getRuntimePlatformConfig(),
 
   // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
   nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y)

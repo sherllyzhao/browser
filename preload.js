@@ -123,5 +123,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
 
   // 🔑 获取域名配置（集中配置）
-  getDomainConfig: () => ipcRenderer.invoke('get-domain-config')
+  getDomainConfig: () => ipcRenderer.invoke('get-domain-config'),
+  getPlatformConfig: () => ipcRenderer.invoke('get-platform-config')
 });
