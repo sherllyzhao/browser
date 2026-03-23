@@ -80,14 +80,6 @@ function removeHeaderCaseInsensitive(headers, key) {
   }
 }
 
-let isHandlingExpiredToken = false; // 防止过期处理重复触发
-let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
-let isShowingSessionExpiredDialog = false;
-let isShowingPageErrorDialog = false;
-let lastPageErrorDialogAt = 0;
-let blankScreenConsecutive = 0;
-const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
-const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
@@ -2805,7 +2797,7 @@ function createWindow() {
     }
   });
 
-  browserView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+  browserView.webContents.on('did-fail-load', async (event, errorCode, errorDescription, validatedURL) => {
     console.error('[BrowserView] ❌ 页面加载失败！');
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
@@ -2813,6 +2805,7 @@ function createWindow() {
 
     if (errorCode !== -3) {
       setTimeout(() => finishInitialBrowserViewLoading('did-fail-load'), 0);
+    }
     if (errorCode === -3) return; // 忽略导航中止
     if (startupLoadGuard.active && retryStartupLoad(`did-fail-load ${errorCode}: ${errorDescription}`)) {
       return;
