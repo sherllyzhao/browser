@@ -1,10 +1,12 @@
-let introFilled = false; // 标记 intro 是否已填写
-let fillFormRunning = false; // 标记 fillFormData 是否正在执行
-let publishRunning = false; // 标记发布是否正在执行，防止重复点击
+var introFilled = false; // 标记 intro 是否已填写
+var fillFormRunning = false; // 标记 fillFormData 是否正在执行
+var publishRunning = false; // 标记发布是否正在执行，防止重复点击
+var aiFallbackRunning = false; // 标记 AI 兜底流程，防止重复触发
+var FORCE_SIMULATE_DOUYIN_FAIL = true; // 联调用：强制主链路失效，验证 AI 兜底接管
 
 // 防重复标志：确保数据只处理一次
-let isProcessing = false;
-let hasProcessed = false;
+var isProcessing = false;
+var hasProcessed = false;
 
 /**
  * 抖音创作者平台发布脚本
@@ -590,6 +592,103 @@ async function publishApi(dataObj) {
   }
 }
 
+async function runAiFallback(dataObj, reason = '') {
+  if (aiFallbackRunning) {
+    console.warn('[抖音发布] ⚠️ AI 兜底已在执行中，跳过重复触发');
+    return { success: false, error: 'AI 兜底已在执行中' };
+  }
+
+  if (!window.__AI_AGENT__ || typeof window.__AI_AGENT__.publish !== 'function') {
+    console.warn('[抖音发布] ⚠️ AI 兜底不可用，未注入 __AI_AGENT__');
+    return { success: false, error: 'AI 兜底不可用' };
+  }
+
+  aiFallbackRunning = true;
+  console.log('[抖音发布] 🤖 启动 AI 兜底流程，原因:', reason || '主链路失败');
+  updateAiFallbackBanner(`当前模式：AI 兜底接管中\n原因：${reason || '主链路失败'}`);
+
+  try {
+    const aiResult = await window.__AI_AGENT__.publish(dataObj, {
+      autoPublish: true,
+      autoDetectResult: true,
+    });
+    console.log('[抖音发布] 🤖 AI 兜底结果:', aiResult);
+    if (aiResult?.success) {
+      updateAiFallbackBanner('当前模式：AI 兜底执行完成\n结果：已提交发布流程');
+    } else {
+      updateAiFallbackBanner(`当前模式：AI 兜底执行失败\n原因：${aiResult?.error || '未知错误'}`);
+    }
+    return aiResult;
+  } catch (error) {
+    console.error('[抖音发布] ❌ AI 兜底执行失败:', error);
+    updateAiFallbackBanner(`当前模式：AI 兜底执行失败\n原因：${error.message || '未知错误'}`);
+    return { success: false, error: error.message };
+  } finally {
+    aiFallbackRunning = false;
+  }
+}
+
+async function shouldSimulatePrimaryFlowFailure() {
+  try {
+    if (FORCE_SIMULATE_DOUYIN_FAIL) {
+      return true;
+    }
+
+    let flag = null;
+
+    if (window.browserAPI && typeof window.browserAPI.getGlobalData === 'function') {
+      try {
+        flag = await window.browserAPI.getGlobalData('SIMULATE_DOUYIN_FAIL');
+      } catch (globalError) {
+        console.warn('[抖音发布] ⚠️ 读取全局 SIMULATE_DOUYIN_FAIL 失败:', globalError);
+      }
+    }
+
+    if (flag == null) {
+      flag = localStorage.getItem('SIMULATE_DOUYIN_FAIL');
+    }
+
+    const normalized = String(flag || '').trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  } catch (error) {
+    console.warn('[抖音发布] ⚠️ 读取 SIMULATE_DOUYIN_FAIL 失败:', error);
+    return false;
+  }
+}
+
+function updateAiFallbackBanner(message) {
+  try {
+    const id = '__douyin_ai_fallback_banner__';
+    let banner = document.getElementById(id);
+
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = id;
+      banner.style.cssText = [
+        'position:fixed',
+        'top:16px',
+        'right:16px',
+        'z-index:2147483647',
+        'max-width:360px',
+        'padding:10px 14px',
+        'border-radius:10px',
+        'background:rgba(17,24,39,0.92)',
+        'color:#fff',
+        'font-size:13px',
+        'line-height:1.5',
+        'box-shadow:0 8px 24px rgba(0,0,0,0.28)',
+        'pointer-events:none',
+        'white-space:pre-wrap',
+      ].join(';');
+      document.documentElement.appendChild(banner);
+    }
+
+    banner.textContent = message;
+  } catch (error) {
+    console.warn('[抖音发布] ⚠️ 更新 AI 接管横幅失败:', error);
+  }
+}
+
 // 填写表单数据
 async function fillFormData(dataObj) {
   // 防止并发执行
@@ -602,6 +701,16 @@ async function fillFormData(dataObj) {
   fillFormRunning = true;
 
   try {
+    const shouldSimulateFailure = await shouldSimulatePrimaryFlowFailure();
+
+    if (shouldSimulateFailure) {
+      updateAiFallbackBanner('当前模式：已开启主链路失效模拟\n下一步将切换到 AI 兜底');
+    }
+
+    if (shouldSimulateFailure) {
+      throw new Error('模拟主链路失效: SIMULATE_DOUYIN_FAIL 已开启');
+    }
+
     const titleAndIntro = dataObj.video.video.sendlog;
     // alert(JSON.stringify(titleAndIntro));
     await retryOperation(async () => {
@@ -1017,13 +1126,20 @@ async function fillFormData(dataObj) {
   } catch (error) {
     // 捕获填写表单过程中的任何错误（封面检测之前的错误）
     console.error('[抖音发布] fillFormData 错误:', error);
-    // 发送错误上报
-    const publishId = dataObj?.video?.dyPlatform?.id;
-    if (publishId) {
-      await sendStatisticsError(publishId, error.message || '填写表单失败', '抖音发布');
+    const aiResult = await runAiFallback(dataObj, error.message || '填写表单失败');
+    if (!aiResult || !aiResult.success) {
+      // 发送错误上报
+      const publishId = dataObj?.video?.dyPlatform?.id;
+      if (publishId) {
+        await sendStatisticsError(
+          publishId,
+          `填写表单失败，且 AI 兜底失败: ${aiResult?.error || error.message || 'unknown error'}`,
+          '抖音发布'
+        );
+      }
+      // 填写表单失败也要关闭窗口，不阻塞下一个任务
+      await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
     }
-    // 填写表单失败也要关闭窗口，不阻塞下一个任务
-    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
   } finally {
     // 无论成功还是失败，都重置标记
     fillFormRunning = false;

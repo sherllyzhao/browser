@@ -32,6 +32,7 @@
   - script injection on mapped URLs
   - IPC messaging between home and child windows
   - session persistence after app restart
+- Every code change must enter a tester-style verification step before user handoff: check whether the modified code has obvious issues and whether the changed behavior works as expected, then notify the user for acceptance.
 - For script changes, test at least one success and one failure path per platform.
 - After every JavaScript edit, explicitly verify that any newly introduced runtime variables/functions are defined before use. For injected scripts, add a symbol-existence self-check (`typeof ...`) or equivalent guard on critical paths before considering the change complete.
 
