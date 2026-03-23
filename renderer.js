@@ -465,9 +465,19 @@ const openFolderBtn = document.getElementById('openFolderBtn');
 const clearAllBtn = document.getElementById('clearAllBtn');
 
 let currentUrl = '';
+const hasNavigationToolbar =
+  !!(homeBtn && backBtn && forwardBtn && refreshBtn && newWindowModeBtn && urlInput && goBtn && devtoolsBtn);
+const hasScriptPanelFeature =
+  !!(toggleScriptBtn && scriptPanel && scriptUrlDisplay && scriptEditor && saveScriptBtn && executeNowBtn && clearScriptBtn);
+const hasScriptManagerFeature =
+  !!(scriptList && scriptCount && importBtn && exportBtn && openFolderBtn && clearAllBtn);
 
 // 加载并显示脚本列表
 async function loadScriptList() {
+  if (!hasScriptManagerFeature) {
+    return;
+  }
+
   const scripts = await window.electronAPI.getAllScripts();
 
   scriptCount.textContent = scripts.length;
@@ -532,25 +542,27 @@ function formatBytes(bytes) {
 }
 
 // 导航功能
-homeBtn.addEventListener('click', async () => {
-  await window.electronAPI.goHome();
-});
+if (hasNavigationToolbar) {
+  homeBtn.addEventListener('click', async () => {
+    await window.electronAPI.goHome();
+  });
 
-backBtn.addEventListener('click', async () => {
-  await window.electronAPI.goBack();
-});
+  backBtn.addEventListener('click', async () => {
+    await window.electronAPI.goBack();
+  });
 
-forwardBtn.addEventListener('click', async () => {
-  await window.electronAPI.goForward();
-});
+  forwardBtn.addEventListener('click', async () => {
+    await window.electronAPI.goForward();
+  });
 
-refreshBtn.addEventListener('click', async () => {
-  await window.electronAPI.refreshPage();
-});
+  refreshBtn.addEventListener('click', async () => {
+    await window.electronAPI.refreshPage();
+  });
 
-devtoolsBtn.addEventListener('click', async () => {
-  await window.electronAPI.openDevTools();
-});
+  devtoolsBtn.addEventListener('click', async () => {
+    await window.electronAPI.openDevTools();
+  });
+}
 
 // 测试 Loading 效果按钮
 const testLoadingBtn = document.getElementById('testLoadingBtn');
@@ -607,13 +619,19 @@ if (testLoadingBtn) {
 }
 
 // 新窗口模式切换
-newWindowModeBtn.addEventListener('click', async () => {
-  const result = await window.electronAPI.toggleNewWindowMode();
-  updateNewWindowModeButton(result.openInNewWindow);
-});
+if (newWindowModeBtn) {
+  newWindowModeBtn.addEventListener('click', async () => {
+    const result = await window.electronAPI.toggleNewWindowMode();
+    updateNewWindowModeButton(result.openInNewWindow);
+  });
+}
 
 // 更新新窗口模式按钮显示
 function updateNewWindowModeButton(openInNewWindow) {
+  if (!newWindowModeBtn) {
+    return;
+  }
+
   if (openInNewWindow) {
     newWindowModeBtn.textContent = '🪟 新窗口';
     newWindowModeBtn.title = '当前模式：新窗口打开\n点击切换为当前窗口模式';
@@ -623,35 +641,39 @@ function updateNewWindowModeButton(openInNewWindow) {
   }
 }
 
-goBtn.addEventListener('click', async () => {
-  const url = urlInput.value.trim();
-  if (url) {
-    await window.electronAPI.navigateTo(url);
-  }
-});
-
-urlInput.addEventListener('keypress', async (e) => {
-  if (e.key === 'Enter') {
+if (goBtn && urlInput) {
+  goBtn.addEventListener('click', async () => {
     const url = urlInput.value.trim();
     if (url) {
       await window.electronAPI.navigateTo(url);
     }
-  }
-});
+  });
+
+  urlInput.addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      const url = urlInput.value.trim();
+      if (url) {
+        await window.electronAPI.navigateTo(url);
+      }
+    }
+  });
+}
 
 // 监听 URL 变化
 window.electronAPI.onUrlChanged(async (url) => {
   currentUrl = url;
-  currentUrlDisplay.textContent = url;
-  urlInput.value = url;
-  scriptUrlDisplay.textContent = url;
+  if (currentUrlDisplay) currentUrlDisplay.textContent = url;
+  if (urlInput) urlInput.value = url;
+  if (scriptUrlDisplay) scriptUrlDisplay.textContent = url;
 
   // 更新公共头部的 Tab 选中状态
   updateActiveTab(url);
 
   // 加载该 URL 对应的脚本
-  const savedScript = await window.electronAPI.getInjectScript(url);
-  scriptEditor.value = savedScript;
+  if (scriptEditor) {
+    const savedScript = await window.electronAPI.getInjectScript(url);
+    scriptEditor.value = savedScript;
+  }
 
   // 刷新脚本列表
   await loadScriptList();
@@ -1978,7 +2000,9 @@ if (currentCompanyEl) {
     });
   }
 
-  console.log('初始化完成，面板初始位置:', window.getComputedStyle(scriptPanel).right);
+  if (scriptPanel) {
+    console.log('初始化完成，面板初始位置:', window.getComputedStyle(scriptPanel).right);
+  }
 })();
 
 
