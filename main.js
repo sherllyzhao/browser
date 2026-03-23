@@ -5008,6 +5008,10 @@ ipcMain.handle('refresh-page', async () => {
   }
 });
 
+ipcMain.handle('get-browser-loading-state', async () => {
+  return { ...browserLoadingState };
+});
+
 // 显示全局加载遮罩（隐藏 BrowserView）
 ipcMain.handle('show-global-loading', async () => {
   if (browserView && mainWindow) {

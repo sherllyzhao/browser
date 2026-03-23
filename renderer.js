@@ -16,7 +16,7 @@ if (window.electronAPI && window.electronAPI.onMainLog) {
 const globalLoadingMask = document.getElementById('__global_loading_mask__');
 const globalLoadingText = globalLoadingMask ? globalLoadingMask.querySelector('.loading-text') : null;
 let browserLoadingState = {
-  visible: true,
+  visible: false,
   text: '正在加载页面...'
 };
 
@@ -53,8 +53,6 @@ if (window.electronAPI && window.electronAPI.onBrowserLoadingState) {
 
 // ========== 公共头部显示/隐藏 ==========
 const commonHeader = document.getElementById('__browser_common_header__');
-const globalLoadingMask = document.getElementById('__global_loading_mask__');
-const globalLoadingText = globalLoadingMask ? globalLoadingMask.querySelector('.loading-text') : null;
 
 function setGlobalLoadingMask(visible, text) {
   if (!globalLoadingMask) return;
