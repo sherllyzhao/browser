@@ -30,6 +30,8 @@ const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
 const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+const REFRESH_LOAD_READY_CHECK_DELAY = 600;
+const REFRESH_LOAD_MAX_WAIT_MS = 15000;
 
 let browserLoadingState = {
   visible: true,
@@ -40,6 +42,12 @@ let startupLoadGuard = {
   active: false,
   targetUrl: '',
   reloadCount: 0,
+  startedAt: 0,
+  timer: null
+};
+
+let refreshLoadGuard = {
+  active: false,
   startedAt: 0,
   timer: null
 };
@@ -270,6 +278,13 @@ function clearStartupLoadGuardTimer() {
   }
 }
 
+function clearRefreshLoadGuardTimer() {
+  if (refreshLoadGuard.timer) {
+    clearTimeout(refreshLoadGuard.timer);
+    refreshLoadGuard.timer = null;
+  }
+}
+
 function setBrowserLoadingState(partialState = {}) {
   browserLoadingState = {
     ...browserLoadingState,
@@ -308,6 +323,25 @@ function finishStartupLoadGuard(reason = 'ready') {
   startupLoadGuard.active = false;
   setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
   console.log('[Startup Guard] ✅ 首屏守卫结束:', reason);
+}
+
+function beginRefreshLoadGuard(text = '正在刷新页面...') {
+  clearRefreshLoadGuardTimer();
+  refreshLoadGuard = {
+    active: true,
+    startedAt: Date.now(),
+    timer: null
+  };
+  setBrowserLoadingState({ visible: true, text });
+  console.log('[Refresh Guard] ✅ 已开启刷新守卫');
+}
+
+function finishRefreshLoadGuard(reason = 'ready') {
+  if (!refreshLoadGuard.active) return;
+  clearRefreshLoadGuardTimer();
+  refreshLoadGuard.active = false;
+  setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
+  console.log('[Refresh Guard] ✅ 刷新守卫结束:', reason);
 }
 
 async function inspectBrowserViewReadiness() {
@@ -492,6 +526,47 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
 
       if (retryStartupLoad(`首屏检查失败 (${err.message || err})`)) return;
       finishStartupLoadGuard('check-failed');
+    }
+  }, delayMs);
+}
+
+function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHECK_DELAY) {
+  if (!refreshLoadGuard.active) return;
+  clearRefreshLoadGuardTimer();
+
+  refreshLoadGuard.timer = setTimeout(async () => {
+    if (!refreshLoadGuard.active) return;
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+
+    const elapsed = Date.now() - refreshLoadGuard.startedAt;
+    if (elapsed > REFRESH_LOAD_MAX_WAIT_MS) {
+      console.warn(`[Refresh Guard] ⚠️ 刷新等待超时: ${elapsed}ms`);
+      finishRefreshLoadGuard('timeout');
+      return;
+    }
+
+    try {
+      const state = await inspectBrowserViewReadiness();
+      if (state.ready) {
+        console.log('[Refresh Guard] ✅ 刷新渲染检查通过:', state);
+        finishRefreshLoadGuard(reason);
+        return;
+      }
+
+      console.warn('[Refresh Guard] ⚠️ 刷新后页面仍未就绪:', state);
+      if (browserView.webContents.isLoading()) {
+        scheduleRefreshReadinessCheck(`${reason}:still-loading`, 900);
+        return;
+      }
+
+      scheduleRefreshReadinessCheck(`${reason}:visual-not-ready`, 900);
+    } catch (err) {
+      console.warn('[Refresh Guard] ⚠️ 刷新检查执行失败:', err.message || err);
+      if (browserView.webContents.isLoading()) {
+        scheduleRefreshReadinessCheck(`${reason}:check-failed-while-loading`, 900);
+        return;
+      }
+      finishRefreshLoadGuard('check-failed');
     }
   }, delayMs);
 }
@@ -2525,14 +2600,25 @@ function createWindow() {
   browserView.setBackgroundColor('#f2f7fa');
 
   browserView.webContents.on('did-start-loading', () => {
-    if (!startupLoadGuard.active) return;
-    const text = startupLoadGuard.reloadCount > 0 ? '页面加载较慢，正在恢复...' : '正在加载页面...';
-    setBrowserLoadingState({ visible: true, text });
+    if (startupLoadGuard.active) {
+      const text = startupLoadGuard.reloadCount > 0 ? '页面加载较慢，正在恢复...' : '正在加载页面...';
+      setBrowserLoadingState({ visible: true, text });
+      return;
+    }
+
+    if (refreshLoadGuard.active) {
+      setBrowserLoadingState({ visible: true, text: '正在刷新页面...' });
+    }
   });
 
   browserView.webContents.on('did-stop-loading', () => {
     if (startupLoadGuard.active) {
       scheduleStartupReadinessCheck('did-stop-loading', 700);
+      return;
+    }
+
+    if (refreshLoadGuard.active) {
+      scheduleRefreshReadinessCheck('did-stop-loading', 400);
     }
   });
 
@@ -3206,6 +3292,8 @@ function createWindow() {
   browserView.webContents.on('dom-ready', async () => {
     if (startupLoadGuard.active) {
       scheduleStartupReadinessCheck('dom-ready', 800);
+    } else if (refreshLoadGuard.active) {
+      scheduleRefreshReadinessCheck('dom-ready', 500);
     }
 
     const url = browserView.webContents.getURL();
@@ -3384,6 +3472,11 @@ function createWindow() {
   browserView.webContents.on('did-finish-load', () => {
     if (startupLoadGuard.active) {
       scheduleStartupReadinessCheck('did-finish-load', 900);
+      return;
+    }
+
+    if (refreshLoadGuard.active) {
+      scheduleRefreshReadinessCheck('did-finish-load', 500);
     }
   });
 
@@ -4678,6 +4771,7 @@ ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
 // 刷新页面
 ipcMain.handle('refresh-page', async () => {
   if (browserView) {
+    beginRefreshLoadGuard('正在刷新页面...');
     browserView.webContents.reload();
   }
 });
@@ -4805,6 +4899,7 @@ ipcMain.handle('content-refresh', async (event) => {
   try {
     // 检查是否来自 BrowserView
     if (browserView && event.sender === browserView.webContents) {
+      beginRefreshLoadGuard('正在刷新页面...');
       browserView.webContents.reload();
       return { success: true };
     }
