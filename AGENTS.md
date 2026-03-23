@@ -33,6 +33,7 @@
   - IPC messaging between home and child windows
   - session persistence after app restart
 - For script changes, test at least one success and one failure path per platform.
+- After every JavaScript edit, explicitly verify that any newly introduced runtime variables/functions are defined before use. For injected scripts, add a symbol-existence self-check (`typeof ...`) or equivalent guard on critical paths before considering the change complete.
 
 ## Commit & Pull Request Guidelines
 - Follow Conventional Commit prefixes seen in history: `feat:`, `fix:`, `chore:`.

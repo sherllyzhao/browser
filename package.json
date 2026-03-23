@@ -77,7 +77,7 @@
     },
     "dmg": {
       "title": "ZhCloud-Browser ${version}",
-      "background": null,
+      "backgroundColor": "#ffffff",
       "contents": [
         {
           "x": 130,
