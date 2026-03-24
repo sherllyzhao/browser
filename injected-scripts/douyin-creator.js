@@ -11,7 +11,7 @@
   // ===========================
   // 防止脚本重复注入
   // ===========================
-  if (window.__DOUYIN_SCRIPT_LOADED__) {
+  if (window.__DOUYIN_CREATOR_SCRIPT_LOADED__) {
     console.log('[抖音授权] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
@@ -25,7 +25,7 @@
     }
   }
 
-  window.__DOUYIN_SCRIPT_LOADED__ = true;
+  window.__DOUYIN_CREATOR_SCRIPT_LOADED__ = true;
 
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {

@@ -26,6 +26,7 @@ let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
 let blankScreenConsecutive = 0;
+let injectScriptForUrl = async () => {};
 const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
 const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 
@@ -433,12 +434,9 @@ function setBrowserLoadingState(partialState = {}) {
     ...partialState
   };
 
-  if (browserView && browserView.webContents && !browserView.webContents.isDestroyed()) {
-    if (browserLoadingState.visible) {
-      browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
-    } else if (mainWindow && !mainWindow.isDestroyed()) {
-      updateBrowserViewBounds(isScriptPanelOpen);
-    }
+  if (browserView && browserView.webContents && !browserView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
+    // 始终保持 BrowserView 真实尺寸，避免加载检测拿到 0x0 视口导致误判白屏。
+    updateBrowserViewBounds(isScriptPanelOpen);
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -535,15 +533,26 @@ async function inspectBrowserViewReadiness() {
           .length;
         const bodyHasViewportSize = bodyRect.width >= 200 && bodyRect.height >= 120;
         const likelyRenderedShell = htmlLength > 1000 && childCount >= 3 && bodyHasViewportSize;
+        const hasMeaningfulText = textLength >= 8;
+        const hasMeaningfulVisualContent = (
+          meaningfulVisualElement
+          || visibleSampleElements >= 3
+          || (visibleChildren && childCount >= 2)
+          || likelyRenderedShell
+        );
         const ready = (
-          htmlLength > 80 && (
-            textLength > 0
+          htmlLength > 80
+          && bodyHasViewportSize
+          && (
+            hasMeaningfulText
             || rootVisible
-            || visibleChildren
-            || hasKnownSpinner
-            || meaningfulVisualElement
-            || visibleSampleElements >= 2
-            || likelyRenderedShell
+            || hasMeaningfulVisualContent
+          )
+          && !(
+            hasKnownSpinner
+            && !hasMeaningfulText
+            && !rootVisible
+            && !hasMeaningfulVisualContent
           )
         );
 
@@ -555,6 +564,8 @@ async function inspectBrowserViewReadiness() {
           childCount,
           bodyWidth: Math.round(bodyRect.width || 0),
           bodyHeight: Math.round(bodyRect.height || 0),
+          hasMeaningfulText,
+          hasMeaningfulVisualContent,
           rootVisible,
           visibleChildren,
           hasKnownSpinner,
@@ -713,63 +724,70 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
   }, delayMs);
 }
 
-async function navigateToLoginInternal(reason) {
-  if (!browserView || browserView.webContents.isDestroyed()) return;
-  console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
+async function restoreLoginSessionCookies(targetSession) {
+  const savedToken = globalStorage.login_token;
+  const savedExpires = globalStorage.login_expires;
+  const now = Math.floor(Date.now() / 1000);
 
-  // 🔑 退出登录时清除所有登录相关数据
-  console.log('[Main] 清除退出登录数据...');
-
-  // 1. 清除 globalStorage 中的登录数据
-  delete globalStorage.last_page_url;
-  delete globalStorage.login_token;
-  delete globalStorage.login_expires;
-  delete globalStorage.login_gcc;
-  delete globalStorage.company_id;
-  delete globalStorage.user_info;
-  delete globalStorage.siteInfo;
-  delete globalStorage.current_site;
-  delete globalStorage.current_site_id;
-  delete globalStorage.current_site_name;
-  saveGlobalStorage();
-  console.log('[Main] ✅ 已清除 globalStorage 数据');
-
-  // 2. 清除 Cookies（token, access_token, site_id 等）
-  try {
-    const ses = browserView.webContents.session;
-    const cookies = await ses.cookies.get({});
-    console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
-
-    // 需要清除的 cookie 名称列表
-    const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
-
-    let deletedCount = 0;
-    for (const cookie of cookies) {
-      if (cookiesToClear.includes(cookie.name)) {
-        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
-        try {
-          await ses.cookies.remove(cookieUrl, cookie.name);
-          deletedCount++;
-          console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
-        } catch (err) {
-          console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
-        }
-      }
-    }
-
-    // 也清除 localhost 的 cookies
-    await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
-
-    await ses.flushStorageData();
-    console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
-  } catch (err) {
-    console.error('[Main] ❌ 清除 cookies 失败:', err);
+  if (!savedToken || !savedExpires || savedExpires <= now) {
+    return false;
   }
 
-  loadLocalPage(browserView.webContents, 'login.html');
+  await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'token', value: savedToken, path: '/', expirationDate: savedExpires, secure: false, sameSite: 'lax' });
+  await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'access_token', value: savedToken, path: '/', expirationDate: savedExpires, secure: false, sameSite: 'lax' });
+  await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'token', value: savedToken, domain: config.getCookieDomain(), path: '/', expirationDate: savedExpires, secure: true });
+  await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'access_token', value: savedToken, domain: config.getCookieDomain(), path: '/', expirationDate: savedExpires, secure: true });
+
+  if (globalStorage.login_gcc) {
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'gcc', value: globalStorage.login_gcc, path: '/', expirationDate: savedExpires, secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'gcc', value: globalStorage.login_gcc, domain: config.getCookieDomain(), path: '/', expirationDate: savedExpires, secure: true });
+  }
+
+  const siteInfo = globalStorage.siteInfo;
+  const userInfo = globalStorage.user_info;
+  if (siteInfo && siteInfo.id) {
+    const siteIdStr = String(siteInfo.id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'china_site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+  }
+
+  if (userInfo && userInfo.company && userInfo.company.unique_id) {
+    const uniqueId = String(userInfo.company.unique_id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'company_unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+  }
+
+  await targetSession.flushStorageData();
+  return true;
+}
+
+async function tryRestoreLoginWithToken(targetUrl) {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
+
+  try {
+    const restored = await restoreLoginSessionCookies(browserView.webContents.session);
+    if (!restored) return false;
+
+    const fallbackUrl = targetUrl || globalStorage.last_page_url || config.getAigcUrl();
+    console.log('[Auth Restore] ✅ 已恢复登录状态:', fallbackUrl);
+    if (fallbackUrl) {
+      browserView.webContents.loadURL(fallbackUrl).catch(err => {
+        console.error('[Auth Restore] ❌ 恢复导航失败:', err);
+      });
+    }
+    return true;
+  } catch (err) {
+    console.error('[Auth Restore] ❌ Token 恢复失败:', err);
+    return false;
+  }
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
@@ -2804,7 +2822,7 @@ function createWindow() {
     console.error('[BrowserView] 失败 URL:', validatedURL);
 
     if (errorCode !== -3) {
-      setTimeout(() => finishInitialBrowserViewLoading('did-fail-load'), 0);
+      setTimeout(() => finishStartupLoadGuard('did-fail-load'), 0);
     }
     if (errorCode === -3) return; // 忽略导航中止
     if (startupLoadGuard.active && retryStartupLoad(`did-fail-load ${errorCode}: ${errorDescription}`)) {
@@ -3072,7 +3090,7 @@ function createWindow() {
   });
 
   // 脚本注入函数（提取为公共函数，可复用）
-  const injectScriptForUrl = async (webContents, url, retryCount = 0) => {
+  injectScriptForUrl = async (webContents, url, retryCount = 0) => {
     // 检查 webContents 是否已销毁
     if (!webContents || webContents.isDestroyed()) {
       return;
@@ -3932,10 +3950,6 @@ let isHeaderHidden = false;
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
-  if (browserLoadingState.visible) {
-    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
-    return;
-  }
 
   const { width, height } = mainWindow.getContentBounds();
   // 公共头部高度 50px（登录页时隐藏）
@@ -4120,7 +4134,11 @@ function createTray() {
   const contextMenu = Menu.buildFromTemplate([
     {
       label: '显示窗口',
-      click: () => win.show()
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+        }
+      }
     },
     {
       label: '退出',
@@ -5012,23 +5030,21 @@ ipcMain.handle('get-browser-loading-state', async () => {
   return { ...browserLoadingState };
 });
 
-// 显示全局加载遮罩（隐藏 BrowserView）
+// 显示全局加载遮罩（保留 BrowserView 尺寸，只覆盖遮罩）
 ipcMain.handle('show-global-loading', async () => {
   if (browserView && mainWindow) {
-    // 将 BrowserView 移出可视区域
-    browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
-    console.log('[Loading] 显示全局加载遮罩，隐藏 BrowserView');
+    setBrowserLoadingState({ visible: true, text: browserLoadingState.text || '正在加载页面...' });
+    console.log('[Loading] 显示全局加载遮罩，保留 BrowserView 渲染');
     return { success: true };
   }
   return { success: false };
 });
 
-// 隐藏全局加载遮罩（恢复 BrowserView）
+// 隐藏全局加载遮罩
 ipcMain.handle('hide-global-loading', async () => {
   if (browserView && mainWindow) {
-    // 恢复 BrowserView 位置
-    updateBrowserViewBounds(isScriptPanelOpen);
-    console.log('[Loading] 隐藏全局加载遮罩，恢复 BrowserView');
+    setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
+    console.log('[Loading] 隐藏全局加载遮罩');
     return { success: true };
   }
   return { success: false };

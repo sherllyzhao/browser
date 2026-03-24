@@ -12,3 +12,4 @@ dist/
 .omc
 docs/debug
 build-scripts
+.magi

@@ -19,6 +19,7 @@ let browserLoadingState = {
   visible: false,
   text: '正在加载页面...'
 };
+let currentSiteId = 1;
 
 function applyBrowserLoadingState(state = {}) {
   browserLoadingState = {
@@ -968,8 +969,8 @@ async function loadUserInfo() {
     if (userInfo) {
       // 更新公司名称（仅非 GEO 系统，GEO 系统显示站点名称）
       if (!isGeoSystem) {
-        var companyNameEl = document.getElementById('currentSiteName');
-        var currentSiteEl = document.getElementById('currentSite');
+        const companyNameEl = document.getElementById('currentSiteName');
+        const currentSiteEl = document.getElementById('currentSite');
         if (companyNameEl && userInfo.companyName) {
           console.log(2)
           companyNameEl.textContent = userInfo.companyName;
@@ -983,7 +984,7 @@ async function loadUserInfo() {
 
       // GEO 系统需要显示站点名称（覆盖前面设置的公司名称）
       if (isGeoSystem) {
-        var companyNameEl = document.getElementById('currentSiteName');
+        const companyNameEl = document.getElementById('currentSiteName');
         if (companyNameEl) {
           const siteName = await window.electronAPI.getGlobalData('current_site_name');
           if (siteName) {
@@ -995,7 +996,7 @@ async function loadUserInfo() {
       }
 
       // 更新用户显示名（手机号优先，其次昵称/账号）
-      var userPhoneEl = document.getElementById('userPhone');
+      const userPhoneEl = document.getElementById('userPhone');
       if (userPhoneEl) {
         const displayName = getUserDisplayName(userInfo);
         userPhoneEl.textContent = displayName || '已登录';
@@ -1003,10 +1004,10 @@ async function loadUserInfo() {
       }
 
       // 更新用户头像
-      var userAvatarEl = document.getElementById('userAvatar');
+      const userAvatarEl = document.getElementById('userAvatar');
       const avatarUrl = getUserAvatarUrl(userInfo);
       if (userAvatarEl && avatarUrl) {
-        var avatarImg = userAvatarEl.querySelector('img');
+        const avatarImg = userAvatarEl.querySelector('img');
         if (avatarImg) {
           avatarImg.src = avatarUrl;
         }
@@ -1014,7 +1015,7 @@ async function loadUserInfo() {
     } else {
       // 没有用户信息，隐藏公司名称区域（不显示"未登录"）
       if (!isGeoSystem) {
-        var companyNameEl = document.getElementById('currentSiteName');
+        const companyNameEl = document.getElementById('currentSiteName');
         if (companyNameEl) {
           console.log(4)
           companyNameEl.textContent = '';
@@ -1022,14 +1023,14 @@ async function loadUserInfo() {
           companyNameEl.style.visibility = 'hidden';
         }
       }
-      var userPhoneEl = document.getElementById('userPhone');
+      const userPhoneEl = document.getElementById('userPhone');
       if (userPhoneEl) {
         const token = String(await window.electronAPI.getGlobalData('login_token') || '');
         const text = token ? '已登录' : '';
         userPhoneEl.textContent = text;
         userPhoneEl.setAttribute('title', text);
       }
-      var companyNameEl = document.getElementById('currentSiteName');
+      const companyNameEl = document.getElementById('currentSiteName');
       if (companyNameEl){
         console.log(5)
         companyNameEl.textContent = await window.electronAPI.getGlobalData('current_site_name');

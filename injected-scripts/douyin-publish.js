@@ -1,8 +1,8 @@
 var introFilled = false; // 标记 intro 是否已填写
 var fillFormRunning = false; // 标记 fillFormData 是否正在执行
 var publishRunning = false; // 标记发布是否正在执行，防止重复点击
-var aiFallbackRunning = false; // 标记 AI 兜底流程，防止重复触发
-var FORCE_SIMULATE_DOUYIN_FAIL = true; // 联调用：强制主链路失效，验证 AI 兜底接管
+var aiFallbackRunning = false; // 标记 AI 主链路是否正在执行，防止重复触发
+var FORCE_SIMULATE_DOUYIN_FAIL = true; // 抖音已切到纯 AI 主链路：默认直接交给 AI 发布
 
 // 防重复标志：确保数据只处理一次
 var isProcessing = false;
@@ -21,7 +21,7 @@ var hasProcessed = false;
   // ===========================
   // 防止脚本重复注入
   // ===========================
-  if (window.__DOUYIN_SCRIPT_LOADED__) {
+  if (window.__DOUYIN_PUBLISH_SCRIPT_LOADED__) {
     console.log('[抖音发布] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
   }
@@ -35,7 +35,7 @@ var hasProcessed = false;
     }
   }
 
-  window.__DOUYIN_SCRIPT_LOADED__ = true;
+  window.__DOUYIN_PUBLISH_SCRIPT_LOADED__ = true;
 
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
@@ -161,55 +161,7 @@ var hasProcessed = false;
             return;
           }
 
-          // 标记为正在处理
-          isProcessing = true;
-          console.log('[抖音发布] 🔄 已标记为正在处理');
-
-          // 更新全局变量
-          console.log('[抖音发布] 🔍 检查 message.data:', !!message.data);
-          if (message.data) {
-            console.log("🚀 ~  ~ messageData: ", messageData);
-
-            window.__AUTH_DATA__ = {
-              ...window.__AUTH_DATA__,
-              message: messageData,
-              receivedAt: Date.now()
-            };
-            console.log('[抖音发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-
-            // 💾 保存数据到 localStorage（用于授权跳转后恢复）
-            /* try {
-              localStorage.setItem('DOUYIN_PUBLISH_DATA', message.data);
-              console.log('[抖音发布] 💾 数据已保存到 localStorage');
-            } catch (e) {
-              console.error('[抖音发布] ❌ 保存数据失败:', e);
-            }
-
-            // 🔖 保存当前发布页URL（用于授权跳转后返回）
-            try {
-              localStorage.setItem('DOUYIN_PUBLISH_URL', window.location.href);
-              console.log('[抖音发布] 🔖 已保存发布页URL:', window.location.href);
-            } catch (e) {
-              console.error('[抖音发布] ❌ 保存发布页URL失败:', e);
-            } */
-
-            console.log("🚀 ~  ~ messageData: ", messageData);
-            await uploadVideo(messageData);
-            try {
-              await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-            } catch (e) {
-              console.log('[抖音发布] ❌ 填写表单数据失败:', e);
-            }
-
-            console.log('[抖音发布] 📤 准备发送数据到接口...');
-            console.log('[抖音发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-            // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
-            // 窗口会在 publishApi 完成后自动关闭
-          }
-
-          // 重置处理标志（无论成功或失败）
-          isProcessing = false;
-          console.log('[抖音发布] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+          await processPublishData(messageData, 'message');
         }
       });
 
@@ -265,36 +217,57 @@ var hasProcessed = false;
         // 使用 hasProcessed 标记防止重复处理
         console.log('[抖音发布] 📝 保留 publish_data_window_' + windowId + ' 数据，待发布完成后清理');
 
-        // 标记为正在处理
-        isProcessing = true;
-
-        // 更新全局变量
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: publishData,
-          source: 'cookieRestore',
-          windowId: windowId,
-          receivedAt: Date.now()
-        };
-
-        console.log("🚀 ~  ~ publishData: ", publishData);
-        await uploadVideo(publishData);
-        try {
-          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
-        } catch (e) {
-          console.log('[抖音发布] ❌ 填写表单数据失败:', e);
-        }
-
-        console.log('[抖音发布] 📤 准备发送数据到接口...');
-        console.log('[抖音发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-        isProcessing = false;
+        await processPublishData(publishData, 'cookieRestore', { windowId });
       }
     } catch (error) {
       console.error('[抖音发布] ❌ 从全局存储读取数据失败:', error);
     }
   })();
 })();
+
+async function processPublishData(dataObj, source = 'unknown', extraMeta = {}) {
+  // 标记为正在处理
+  isProcessing = true;
+  console.log('[抖音发布] 🔄 已标记为正在处理, source=', source);
+
+  try {
+    window.__AUTH_DATA__ = {
+      ...window.__AUTH_DATA__,
+      message: dataObj,
+      source,
+      ...extraMeta,
+      receivedAt: Date.now()
+    };
+    console.log('[抖音发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
+
+    const shouldSimulateFailure = await shouldSimulatePrimaryFlowFailure();
+    if (shouldSimulateFailure) {
+      console.warn('[抖音发布] 🤖 当前为纯 AI 发布模式：跳过抖音专用上传/填表');
+      updateAiFallbackBanner('当前模式：纯 AI 发布\n行为：上传/标题/简介/封面/发布均由 AI 接管');
+
+      const aiResult = await runAiFallback(
+        dataObj,
+        '抖音已切换为纯 AI 发布模式'
+      );
+
+      if (!aiResult || !aiResult.success) {
+        const publishId = dataObj?.video?.dyPlatform?.id;
+        if (publishId) {
+          await sendStatisticsError(
+            publishId,
+            `纯 AI 发布失败: ${aiResult?.error || 'unknown error'}`,
+            '抖音发布'
+          );
+        }
+        await closeWindowWithMessage('AI 接管失败，刷新数据', 1000);
+      }
+      return;
+    }
+  } finally {
+    isProcessing = false;
+    console.log('[抖音发布] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+  }
+}
 
 // ===========================
 // 7. 发布视频到抖音

@@ -405,6 +405,32 @@ let isPublishing = false;
 
 // 待发送的消息队列（按 windowId 存储，等窗口加载完成后发送）
 const pendingMessages = new Map();
+const deliveredWindowMessages = new Map();
+
+function schedulePendingMessageDelivery(windowId, reason = 'unknown', delayMs = 1000) {
+  if (!pendingMessages.has(windowId)) {
+    return;
+  }
+
+  const prevTimer = deliveredWindowMessages.get(windowId);
+  if (prevTimer) {
+    clearTimeout(prevTimer);
+  }
+
+  const timer = setTimeout(() => {
+    const messageData = pendingMessages.get(windowId);
+    if (!messageData) {
+      deliveredWindowMessages.delete(windowId);
+      return;
+    }
+
+    ipcRenderer.send('home-to-content', messageData);
+    console.log(`[BrowserAPI] 📤 发送待处理消息(${reason}), windowId: ${windowId}`);
+    deliveredWindowMessages.delete(windowId);
+  }, delayMs);
+
+  deliveredWindowMessages.set(windowId, timer);
+}
 
 // 监听窗口加载完成事件（在这里发送消息，替代 setTimeout 延时）
 ipcRenderer.on('window-loaded', (event, data) => {
@@ -419,11 +445,8 @@ ipcRenderer.on('window-loaded', (event, data) => {
     // 保留后：登录完成 → 跳回发布页 → window-loaded 再次触发 → 重发消息
     // 发布脚本自带防重复处理（isProcessing/hasProcessed），不会重复执行
 
-    // 发送消息到目标窗口
-    setTimeout(() => {
-      ipcRenderer.send('home-to-content', messageData);
-      console.log(`[BrowserAPI] 📤 窗口加载完成，已发送消息, windowId: ${windowId}, url: ${url}`);
-    }, 6000)
+    // 页面 load 完成后稍等一会再发，给注入脚本注册监听器的时间。
+    schedulePendingMessageDelivery(windowId, `window-loaded:${url}`, 1500);
   }
   // 没有待发送消息时不再输出日志，减少干扰
 });
@@ -635,6 +658,10 @@ contextBridge.exposeInMainWorld('browserAPI', {
             data: publishData
           });
           console.log(`[BrowserAPI] 📋 已存储待发送消息, windowId: ${windowId}, 等待窗口加载完成...`);
+
+          // 兜底：如果窗口已经很快加载完成，window-loaded 事件可能早于 pendingMessages.set。
+          // 这里补发一次，避免消息永久卡住不下发。
+          schedulePendingMessageDelivery(windowId, 'post-open-fallback', 1200);
 
           // 每个窗口之间稍微延迟，避免同时创建太多
           if (index < dataArray.length - 1) {

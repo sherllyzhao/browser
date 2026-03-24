@@ -402,9 +402,25 @@
     const mediaKind = detectMediaKind(publishData, action);
     console.log(`${LOG_PREFIX} 📤 准备执行上传: ${action.description || action.selector} | mediaKind=${mediaKind}`);
 
+    // 检测封面是否已存在：若是封面上传且页面已有封面图，则跳过（避免重复上传）
+    const actionHint = [action.description, action.field, action.selector].filter(Boolean).join(' ').toLowerCase();
+    const isCoverUpload = /封面|cover|thumbnail|thumb/.test(actionHint);
+    if (isCoverUpload) {
+      const coverImgSelectors = ['[class*="cover"] img', '[class*="thumbnail"] img', '[class*="poster"] img', '.cover-upload img'];
+      for (const sel of coverImgSelectors) {
+        const img = document.querySelector(sel);
+        if (img && img.src && !img.src.startsWith('data:image/svg') && img.naturalWidth > 0) {
+          console.log(`${LOG_PREFIX} ⏭️ 封面已存在，跳过封面上传 (${sel})`);
+          return { success: true, skipped: true, reason: '封面已存在' };
+        }
+      }
+    }
+
+    // 不再依赖 AI 返回的 selector 做早退检查，
+    // uploadVideo/uploadImage 内部有自己的 waitForElement('input[type="file"]') 逻辑，更健壮
     const targetInput = document.querySelector(action.selector);
     if (!targetInput) {
-      return { success: false, error: `上传元素未找到: ${action.selector}` };
+      console.warn(`${LOG_PREFIX} ⚠️ AI 提供的上传 selector 未匹配: ${action.selector}，将由 uploadVideo/uploadImage 内部查找`);
     }
 
     if (mediaKind === 'image') {
@@ -426,6 +442,78 @@
       selector: action.selector,
       field: action.field,
     };
+  }
+
+  /**
+   * 上传后等待表单字段出现（两阶段逻辑的桥梁）
+   * 上传完视频后，平台（如抖音）才会显示标题、简介等表单字段
+   * @param {number} timeoutMs - 最长等待时间，默认 120s
+   * @param {number} pollInterval - 轮询间隔，默认 3s
+   * @returns {Promise<{appeared: boolean, elapsed: number}>}
+   */
+  async function waitForFormAfterUpload(timeoutMs = 120000, pollInterval = 3000) {
+    const formSelectors = [
+      'input[placeholder*="标题"]',
+      'input[placeholder*="title"]',
+      'textarea[placeholder*="简介"]',
+      'textarea[placeholder*="描述"]',
+      'textarea[placeholder*="内容"]',
+      '[contenteditable="true"]',
+      'input[placeholder*="输入"]',
+      // 抖音特有
+      'input[placeholder*="填写作品标题"]',
+      '.editor-kit-container',
+    ];
+
+    const startTime = Date.now();
+    console.log(`${LOG_PREFIX} ⏳ 等待上传完成 & 表单字段出现（最长 ${timeoutMs / 1000}s）...`);
+
+    while (Date.now() - startTime < timeoutMs) {
+      // 检查是否有可见的表单字段出现
+      for (const selector of formSelectors) {
+        const el = document.querySelector(selector);
+        if (el) {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          if (style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0) {
+            const elapsed = Date.now() - startTime;
+            console.log(`${LOG_PREFIX} ✅ 表单字段已出现（${selector}），耗时 ${(elapsed / 1000).toFixed(1)}s，等待页面稳定...`);
+            // 等待页面稳定：先等 5s，再轮询确认同一元素仍可交互，防止过早填写
+            await sleep(5000);
+            // 再次确认元素仍然可见且可交互（框架可能还在 hydrate）
+            let stableCount = 0;
+            for (let i = 0; i < 4; i++) {
+              const elNow = document.querySelector(selector);
+              const styleNow = elNow ? window.getComputedStyle(elNow) : null;
+              const rectNow = elNow ? elNow.getBoundingClientRect() : null;
+              if (elNow && styleNow && styleNow.display !== 'none' && styleNow.visibility !== 'hidden' && rectNow.width > 0 && rectNow.height > 0 && !elNow.disabled) {
+                stableCount++;
+              } else {
+                stableCount = 0; // 元素消失了，重置
+              }
+              if (stableCount >= 2) break; // 连续 2 次确认稳定
+              await sleep(2000);
+            }
+            console.log(`${LOG_PREFIX} ✅ 页面稳定确认完成（stableCount=${stableCount}），开始填写`);
+            // 最后再等 3s，让框架事件绑定完成
+            await sleep(3000);
+            return { appeared: true, elapsed };
+          }
+        }
+      }
+
+      // 检查上传进度提示（如果还在上传中就继续等）
+      const progressEl = document.querySelector('.upload-progress, [class*="progress"], [class*="uploading"]');
+      if (progressEl) {
+        console.log(`${LOG_PREFIX} ⏳ 上传仍在进行中...`);
+      }
+
+      await sleep(pollInterval);
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.warn(`${LOG_PREFIX} ⚠️ 等待表单超时（${(elapsed / 1000).toFixed(1)}s），尝试继续...`);
+    return { appeared: false, elapsed };
   }
 
   function isElementActionable(el) {
@@ -810,6 +898,10 @@
   }
 
   async function fillInputElement(el, value) {
+    if ((el.tagName || '').toLowerCase() === 'input' && String(el.type || '').toLowerCase() === 'file') {
+      throw new Error('文件选择器不能按普通输入框填写，应改走上传动作');
+    }
+
     const nextValue = value == null ? '' : String(value);
     el.focus();
     await sleep(80);
@@ -836,19 +928,24 @@
     }
   }
 
+  function isTextLikeInput(el) {
+    if (!el) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea') return true;
+    if (el.getAttribute && el.getAttribute('contenteditable') === 'true') return true;
+    if (tag !== 'input') return false;
+
+    const type = String(el.type || 'text').toLowerCase();
+    return !['file', 'hidden', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'range', 'color'].includes(type);
+  }
+
   async function fillRichTextElement(el, value) {
     const nextValue = value == null ? '' : String(value);
     el.focus();
     await sleep(80);
     el.innerHTML = '';
     el.textContent = '';
-
-    if (document.execCommand) {
-      document.execCommand('selectAll', false);
-      document.execCommand('insertText', false, nextValue);
-    } else {
-      el.textContent = nextValue;
-    }
+    el.textContent = nextValue;
 
     el.dispatchEvent(new InputEvent('input', {
       bubbles: true,
@@ -865,6 +962,17 @@
     }
   }
 
+  function clearUserSelection() {
+    try {
+      const selection = window.getSelection && window.getSelection();
+      if (selection && typeof selection.removeAllRanges === 'function' && selection.rangeCount > 0) {
+        selection.removeAllRanges();
+      }
+    } catch (error) {
+      // ignore
+    }
+  }
+
   async function performActionClick(el, description = '元素') {
     if (!el) {
       return { success: false, message: `${description}不存在` };
@@ -876,6 +984,8 @@
     } catch (e) {
       // ignore
     }
+
+    clearUserSelection();
 
     try {
       if (typeof el.click === 'function') {
@@ -1514,6 +1624,109 @@
       .slice(0, 6);
   }
 
+  function getAiRecommendedCoverCandidates() {
+    const containerSelectors = [
+      '[class*="recommendCover"]',
+      '[class*="recommend-cover"]',
+      '[class*="coverRecommend"]',
+      '[class*="cover-recommend"]',
+    ];
+    const candidateSelectors = [
+      'img',
+      'canvas',
+      'video',
+      'button',
+      '[role="button"]',
+      'li',
+      'div',
+      'span',
+    ];
+    const seen = new Set();
+    const candidates = [];
+
+    function pushCandidate(el, reason = '') {
+      if (!el || seen.has(el) || !isVisible(el)) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 48 || rect.height < 48) return;
+      if (rect.width > 260 || rect.height > 220) return;
+
+      const meta = collectElementMeta(el);
+      const text = normalizeText([
+        meta.text,
+        meta.label,
+        meta.placeholder,
+        meta.ariaLabel,
+        meta.nearbyText,
+        meta.className,
+      ].join(' '));
+      const tagName = (el.tagName || '').toLowerCase();
+      const childPreviewCount = el.querySelectorAll?.('img, canvas, video').length || 0;
+      const hasPreview = childPreviewCount > 0 || /img|canvas|video/.test(tagName);
+      const isLeafPreview = /img|canvas|video/.test(tagName) || childPreviewCount === 1;
+      const clickable = typeof el.closest === 'function'
+        ? (el.closest('button,[role="button"],[tabindex],li') || el)
+        : el;
+      const clickableRect = clickable?.getBoundingClientRect?.() || rect;
+      const clickableText = normalizeText([
+        clickable?.textContent || '',
+        clickable?.getAttribute?.('aria-label') || '',
+        typeof clickable?.className === 'string' ? clickable.className : '',
+      ].join(' '));
+
+      if (!hasPreview && !/封面|cover|推荐|ai/.test(text)) return;
+      if (/取消|关闭|上传|重新上传|音乐|声明|标签|位置|话题/.test(text)) return;
+      if (/生成中/.test(text) && !isLeafPreview) return;
+
+      let score = 0;
+      if (/ai智能推荐封面|智能推荐封面|推荐封面/.test(text)) score += 40;
+      if (/推荐|recommend|ai/.test(text)) score += 18;
+      if (/4:3|横封面|横版/.test(text)) score += 22;
+      if (/9:16|竖封面|竖版/.test(text)) score -= 8;
+      if (hasPreview) score += 12;
+      if (isLeafPreview) score += 28;
+      if (clickable !== el) score += 10;
+      if (clickableRect.width >= 56 && clickableRect.width <= 180 && clickableRect.height >= 56 && clickableRect.height <= 180) score += 18;
+      if (childPreviewCount >= 2) score -= 24;
+      if (/生成中/.test(text)) score -= 18;
+      if (/推荐封面|ai/.test(clickableText)) score += 6;
+      if (rect.width >= 72 && rect.height >= 72) score += 8;
+      if (reason) score += 4;
+
+      seen.add(clickable);
+      candidates.push({ candidate: clickable, score, reason });
+    }
+
+    function collectFromContainer(container, reason = 'ai-recommend-container') {
+      if (!container) return;
+      candidateSelectors.forEach((selector) => {
+        try {
+          container.querySelectorAll(selector).forEach((el) => pushCandidate(el, reason));
+        } catch (error) {
+          // ignore selector errors
+        }
+      });
+    }
+
+    containerSelectors.forEach((selector) => {
+      try {
+        document.querySelectorAll(selector).forEach((container) => collectFromContainer(container, selector));
+      } catch (error) {
+        // ignore selector errors
+      }
+    });
+
+    const allNodes = Array.from(document.querySelectorAll('section, div, li, span'));
+    allNodes.forEach((node) => {
+      if (!isVisible(node)) return;
+      const text = normalizeText(node.textContent || '');
+      if (/ai智能推荐封面|智能推荐封面|推荐封面/.test(text)) {
+        collectFromContainer(node, 'ai-recommend-text-block');
+      }
+    });
+
+    return candidates.sort((a, b) => b.score - a.score).slice(0, 8);
+  }
+
   async function waitForCoverApplied(timeoutMs = 12000) {
     const startTime = Date.now();
     let lastText = '';
@@ -1540,7 +1753,12 @@
       console.log(`${LOG_PREFIX} 🧹 选封面前已关闭 ${preOverlayResult.closedCount} 个干扰弹层`);
     }
 
-    const candidates = getRankedCoverCandidates();
+    const aiCandidates = getAiRecommendedCoverCandidates();
+    const genericCandidates = getRankedCoverCandidates();
+    const candidates = [...aiCandidates, ...genericCandidates]
+      .sort((a, b) => b.score - a.score)
+      .filter((item, index, list) => list.findIndex((other) => other.candidate === item.candidate) === index)
+      .slice(0, 8);
     console.log(`${LOG_PREFIX} 📋 封面候选摘要:`, candidates.map((item, index) => ({
       index: index + 1,
       score: item.score,
@@ -1567,9 +1785,13 @@
       }
 
       await sleep(1000);
+      const douyinConfirmResult = await handleDouyinCoverConfirmDialog();
+      if (douyinConfirmResult.success) {
+        console.log(`${LOG_PREFIX} ✅ 抖音封面确认弹窗已处理`);
+      }
       const confirmResult = await handlePossibleConfirmDialog({
         preferredTexts: ['确定', '确认', '应用此封面', '设为封面', '完成'],
-        dialogKeywords: ['封面', '应用此封面', '确认应用'],
+        dialogKeywords: ['封面', '应用此封面', '确认应用', '是否确认应用此封面'],
         allowLooseMatch: true,
         includeAcknowledge: false,
         required: false,
@@ -1595,6 +1817,43 @@
       success: false,
       message: lastError || '封面设置后仍未检测到通过状态',
     };
+  }
+
+  async function handleDouyinCoverConfirmDialog() {
+    const dialogCandidates = Array.from(document.querySelectorAll('.semi-modal-content, .semi-modal, [role="dialog"]'));
+    for (const dialog of dialogCandidates) {
+      if (!isVisible(dialog)) continue;
+      const dialogText = normalizeText(dialog.textContent || '');
+      if (!/是否确认应用此封面|应用此封面|确认应用/.test(dialogText)) continue;
+
+      const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span, div'))
+        .filter(btn => isVisible(btn))
+        .map((btn) => {
+          const text = normalizeText(btn.textContent || '');
+          let score = 0;
+          if (text === '确定' || text === '确认') score += 120;
+          if (/应用此封面|确认应用此封面|设为封面/.test(text)) score += 90;
+          if (/取消|关闭|返回/.test(text)) score -= 100;
+          if (/primary|confirm|sure|ok/.test(String(btn.className || ''))) score += 20;
+          return { btn, text, score };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const target = buttons.find(item => item.score > 0)?.btn;
+      if (!target) {
+        return { success: false, message: '抖音封面确认弹窗未找到确定按钮' };
+      }
+
+      console.log(`${LOG_PREFIX} 🪟 命中抖音封面确认弹窗，优先点击确定`, {
+        dialog: dialogText.slice(0, 80),
+        button: summarizeElement(target),
+      });
+      const clickResult = await performActionClick(target, '抖音封面确认弹窗确定按钮');
+      await sleep(800);
+      return clickResult;
+    }
+
+    return { success: false, message: '当前未检测到抖音封面确认弹窗' };
   }
 
   async function handlePossibleConfirmDialog(options = {}) {
@@ -1631,10 +1890,14 @@
           .map((btn) => {
             const text = normalizeText(btn.textContent || '');
             const className = String(btn.className || '');
+            const ariaLabel = normalizeText(btn.getAttribute?.('aria-label') || '');
             let score = 0;
             if (buttonTexts.some(keyword => text.includes(normalizeText(keyword)))) score += 20;
+            if (buttonTexts.some(keyword => ariaLabel.includes(normalizeText(keyword)))) score += 16;
             if (/primary|confirm|sure|ok/.test(className)) score += 12;
             if (/取消|关闭|返回|稍后|跳过|我知道了|知道了/.test(text) && !includeAcknowledge) score -= 30;
+            if (/取消|关闭|返回|稍后|跳过/.test(ariaLabel) && !includeAcknowledge) score -= 30;
+            if (text === '确定' || text === '确认') score += 28;
             if (/应用此封面|确认应用此封面|设为封面|确定/.test(text)) score += 18;
             if (/是否确认应用此封面|封面/.test(dialogText)) score += 8;
             if (/继续发布|确认发布|立即发布/.test(text)) score += 12;
@@ -1896,6 +2159,12 @@
           const result = await tryCandidates(
             action,
             async (el) => {
+              if ((el.tagName || '').toLowerCase() === 'input' && String(el.type || '').toLowerCase() === 'file') {
+                return await handleUploadAction({
+                  ...action,
+                  action: 'upload',
+                }, publishData);
+              }
               await fillInputElement(el, action.value);
               return { success: true, element: el };
             },
@@ -2216,6 +2485,158 @@
     return { results, publishButton, uploadResults };
   }
 
+  function isDouyinUploadPage() {
+    return /creator\.douyin\.com/.test(window.location.href) && /\/content\/upload/.test(window.location.href);
+  }
+
+  function findBestDouyinTitleElement() {
+    const direct = Array.from(document.querySelectorAll('input'))
+      .find((el) => isVisible(el) && isTextLikeInput(el) && /填写作品标题|输入标题|作品标题/.test(normalizeText(el.placeholder || el.getAttribute('aria-label') || '')));
+    if (direct) {
+      return direct;
+    }
+
+    const candidates = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]')).filter(isTextLikeInput);
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const el of candidates) {
+      if (!isVisible(el)) continue;
+      const meta = collectElementMeta(el);
+      const text = normalizeText([
+        meta.text,
+        meta.label,
+        meta.placeholder,
+        meta.ariaLabel,
+        meta.nearbyText,
+        meta.className,
+      ].join(' '));
+      let score = 0;
+      const isInput = el.tagName === 'INPUT';
+      const isTextarea = el.tagName === 'TEXTAREA';
+      const isRich = el.getAttribute('contenteditable') === 'true';
+      const placeholder = normalizeText(meta.placeholder || '');
+      const currentText = normalizeText(String(el.value || el.textContent || el.innerText || ''));
+
+      if (/标题|作品标题/.test(text)) score += 80;
+      if (/填写作品标题|输入标题/.test(text)) score += 40;
+      if (/填写作品标题|输入标题|作品标题/.test(placeholder)) score += 90;
+      if (isInput) score += 40;
+      if (isTextarea || isRich) score -= 45;
+      if (/简介|描述|正文|话题/.test(text)) score -= 60;
+      if (/添加作品简介|添加简介/.test(placeholder)) score -= 80;
+      if (currentText && currentText.length > 30) score -= 20;
+      if (meta.width >= 200) score += 8;
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 40 ? best : null;
+  }
+
+  function findBestDouyinIntroElement() {
+    const direct = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'))
+      .find((el) => {
+        if (!isVisible(el) || !isTextLikeInput(el)) return false;
+        const placeholder = normalizeText(el.placeholder || el.getAttribute('aria-label') || '');
+        const text = normalizeText(el.textContent || '');
+        return /添加作品简介|添加简介|作品描述/.test(placeholder) || /添加作品简介|添加简介/.test(text);
+      });
+    if (direct) {
+      return direct;
+    }
+
+    const candidates = Array.from(document.querySelectorAll('textarea, [contenteditable="true"], input')).filter(isTextLikeInput);
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const el of candidates) {
+      if (!isVisible(el)) continue;
+      const meta = collectElementMeta(el);
+      const text = normalizeText([
+        meta.text,
+        meta.label,
+        meta.placeholder,
+        meta.ariaLabel,
+        meta.nearbyText,
+        meta.className,
+      ].join(' '));
+      let score = 0;
+      const isInput = el.tagName === 'INPUT';
+      const isTextarea = el.tagName === 'TEXTAREA';
+      const isRich = el.getAttribute('contenteditable') === 'true';
+      const placeholder = normalizeText(meta.placeholder || '');
+      const currentText = normalizeText(String(el.value || el.textContent || el.innerText || ''));
+
+      if (/简介|描述|作品简介/.test(text)) score += 80;
+      if (/添加作品简介|添加简介|作品描述/.test(text)) score += 40;
+      if (/添加作品简介|添加简介|作品描述/.test(placeholder)) score += 90;
+      if (isTextarea || isRich) score += 35;
+      if (isInput) score -= 45;
+      if (/标题|作品标题/.test(text) || /填写作品标题|输入标题/.test(placeholder)) score -= 90;
+      if (/1000/.test(text)) score += 18;
+      if (currentText.length > 0 && currentText.length < 8) score += 6;
+      if (meta.height >= 60) score += 8;
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= 40 ? best : null;
+  }
+
+  async function ensureDouyinTitleAndIntro(publishData = {}) {
+    if (!isDouyinUploadPage()) {
+      return;
+    }
+
+    const titleValue = String(
+      publishData?.video?.video?.sendlog?.title
+      || publishData?.video?.formData?.title
+      || publishData?.video?.video?.title
+      || publishData?.title
+      || ''
+    ).trim();
+    const introValue = String(
+      publishData?.video?.video?.sendlog?.intro
+      || publishData?.video?.video?.intro
+      || publishData?.intro
+      || publishData?.content
+      || ''
+    ).trim();
+
+    const titleEl = titleValue ? findBestDouyinTitleElement() : null;
+    const introEl = introValue ? findBestDouyinIntroElement() : null;
+
+    if (!titleEl && !introEl) {
+      console.log(`${LOG_PREFIX} ℹ️ 抖音标题/简介输入区尚未出现，跳过本轮兜底填写`);
+      return;
+    }
+
+    if (titleEl) {
+      const currentTitle = String(titleEl.value || titleEl.textContent || '').trim();
+      if (!currentTitle) {
+        console.log(`${LOG_PREFIX} 🛠️ 触发抖音标题兜底填写`, summarizeElement(titleEl));
+        await fillInputElement(titleEl, titleValue);
+      }
+    }
+
+    if (introEl) {
+      const currentIntro = String(introEl.value || introEl.textContent || introEl.innerText || '').trim();
+      if (!currentIntro || currentIntro === titleValue) {
+        console.log(`${LOG_PREFIX} 🛠️ 触发抖音简介兜底填写`, summarizeElement(introEl));
+        if (introEl.tagName === 'TEXTAREA' || introEl.tagName === 'INPUT') {
+          await fillInputElement(introEl, introValue);
+        } else {
+          await fillRichTextElement(introEl, introValue);
+        }
+      }
+    }
+  }
+
   // ===========================
   // 3. 主流程
   // ===========================
@@ -2276,9 +2697,9 @@
       });
     }
 
-    // Step 3: 执行填写操作
-    console.log(`${LOG_PREFIX} ✍️ 步骤3: 执行表单填写...`);
-    const execResult = await executeActions(filteredPlan.filteredActions, publishData);
+    // Step 3: 执行操作（第一阶段 — 可能包含上传）
+    console.log(`${LOG_PREFIX} ✍️ 步骤3: 执行操作（第一阶段）...`);
+    let execResult = await executeActions(filteredPlan.filteredActions, publishData);
 
     if (execResult.uploadResults.length > 0) {
       console.log(`${LOG_PREFIX} ✅ 已完成 ${execResult.uploadResults.length} 个上传动作`);
@@ -2286,6 +2707,69 @@
         console.log(`${LOG_PREFIX}   - ${upload.mediaKind}: ${upload.selector}`);
       });
     }
+
+    // ========== 两阶段逻辑：上传后重新分析 ==========
+    // 如果第一阶段有上传操作且没有找到发布按钮，说明页面可能是"先上传再填表单"的模式（如抖音）
+    // 需要等待表单出现后，重新提取 DOM 并让 AI 再次分析
+    const hasUpload = execResult.uploadResults.length > 0;
+    const noPublishButton = !execResult.publishButton;
+    const fewNonUploadActions = filteredPlan.filteredActions.filter(a => a.action !== 'upload' && a.action !== 'publish').length <= 1;
+
+    if (hasUpload && (noPublishButton || fewNonUploadActions)) {
+      console.log(`${LOG_PREFIX} 🔄 检测到"上传优先"页面模式，启动第二阶段...`);
+
+      // Step 3.5: 等待表单字段出现
+      const waitResult = await waitForFormAfterUpload(120000, 3000);
+      if (!waitResult.appeared) {
+        console.warn(`${LOG_PREFIX} ⚠️ 等待表单超时，但仍尝试继续分析...`);
+      }
+
+      // Step 3.6: 重新提取 DOM
+      console.log(`${LOG_PREFIX} 📊 步骤3.6: 重新提取页面结构（第二阶段）...`);
+      let domData2 = extractPageStructure('normal');
+      console.log(`${LOG_PREFIX} 第二阶段提取到 ${domData2.elementCount}/${domData2.rawElementCount} 个可交互元素`);
+
+      if (domData2.elementCount > 0) {
+        // Step 3.7: 重新 AI 分析
+        console.log(`${LOG_PREFIX} 🤖 步骤3.7: AI 重新分析页面结构（第二阶段）...`);
+        let analyzeResult2 = await window.browserAPI.aiAnalyzePage(domData2, publishData);
+
+        if (!analyzeResult2.success && isContextWindowLimitError(analyzeResult2.error)) {
+          console.warn(`${LOG_PREFIX} ⚠️ 第二阶段上下文超限，切换 compact 模式...`);
+          domData2 = extractPageStructure('compact');
+          analyzeResult2 = await window.browserAPI.aiAnalyzePage(domData2, publishData);
+        }
+
+        if (analyzeResult2.success && analyzeResult2.result.isForm) {
+          const aiResult2 = analyzeResult2.result;
+          console.log(`${LOG_PREFIX} ✅ 第二阶段 AI 识别: ${aiResult2.pageName}, 共 ${aiResult2.actions.length} 个操作`);
+
+          // 过滤掉 upload 类型（已经上传过了），只执行 fill / click / publish 等
+          const phase2Actions = aiResult2.actions.filter(a => a.action !== 'upload');
+          const filteredPlan2 = filterActionsByPublishData(phase2Actions, publishData);
+
+          if (filteredPlan2.skippedActions.length > 0) {
+            console.log(`${LOG_PREFIX} ⏭️ 第二阶段跳过 ${filteredPlan2.skippedActions.length} 个动作`);
+          }
+
+          // Step 3.8: 执行第二阶段操作（填写表单）
+          console.log(`${LOG_PREFIX} ✍️ 步骤3.8: 执行表单填写（第二阶段）...`);
+          const execResult2 = await executeActions(filteredPlan2.filteredActions, publishData);
+
+          // 合并两阶段结果
+          execResult = {
+            results: [...execResult.results, ...execResult2.results],
+            publishButton: execResult2.publishButton || execResult.publishButton,
+            uploadResults: execResult.uploadResults,
+          };
+        } else {
+          console.warn(`${LOG_PREFIX} ⚠️ 第二阶段 AI 分析失败或非表单页，跳过:`, analyzeResult2.error || '非表单页');
+        }
+      }
+    }
+
+    // 抖音专用兜底：确保标题和简介已填写
+    await ensureDouyinTitleAndIntro(publishData);
 
     // Step 4: 处理发布按钮
     if (execResult.publishButton && autoPublish) {
@@ -2340,6 +2824,32 @@
     } else if (execResult.publishButton) {
       console.log(`${LOG_PREFIX} ⏸️ 发布按钮已找到但未自动点击（autoPublish=false）`);
       console.log(`${LOG_PREFIX} 发布按钮选择器: ${execResult.publishButton.selector}`);
+    } else if (autoPublish) {
+      const message = 'AI 未找到可点击的发布按钮，当前仍停留在发布页';
+      console.warn(`${LOG_PREFIX} ⚠️ ${message}`);
+      notifyManualIntervention(message, {
+        stage: 'missing_publish_button',
+      });
+      return {
+        success: false,
+        manualRequired: true,
+        error: message,
+        actions: execResult.results,
+      };
+    }
+
+    if (autoPublish && isLikelyPublishPage()) {
+      const message = 'AI 执行后仍停留在发布页，未确认进入提交/成功状态';
+      console.warn(`${LOG_PREFIX} ⚠️ ${message}`);
+      notifyManualIntervention(message, {
+        stage: 'still_on_publish_page',
+      });
+      return {
+        success: false,
+        manualRequired: true,
+        error: message,
+        actions: execResult.results,
+      };
     }
 
     return {
@@ -2397,7 +2907,7 @@
     return;
   }
 
-  if (window.__DOUYIN_SCRIPT_LOADED__) {
+  if (window.__DOUYIN_PUBLISH_SCRIPT_LOADED__) {
     console.log(`${LOG_PREFIX} ⏸️ 检测到抖音专用脚本已接管，仅保留 AI API 供兜底调用`);
     return;
   }
