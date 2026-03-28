@@ -16,6 +16,13 @@ class ScriptManager {
     this.init();
   }
 
+  resolveRemoteEnabled(rawEnabled) {
+    if (this.isDevMode) {
+      return false;
+    }
+    return true;
+  }
+
   // 初始化脚本目录和清单文件
   init() {
     try {
@@ -148,8 +155,15 @@ class ScriptManager {
     try {
       // 加载远程配置设置
       if (config.remoteConfig) {
-        this.remoteConfig = config.remoteConfig;
-        console.log(`[ScriptManager] Remote config loaded from ${source}:`, this.remoteConfig.enabled ? 'ENABLED' : 'DISABLED');
+        this.remoteConfig = {
+          ...config.remoteConfig,
+          enabled: this.resolveRemoteEnabled(config.remoteConfig.enabled)
+        };
+        console.log(
+          `[ScriptManager] Remote config loaded from ${source}:`,
+          this.remoteConfig.enabled ? 'ENABLED' : 'DISABLED',
+          `(raw: ${config.remoteConfig.enabled}, isDevMode: ${this.isDevMode})`
+        );
       }
 
       if (config.scripts && typeof config.scripts === 'object') {
@@ -211,6 +225,36 @@ class ScriptManager {
     // 使用 MD5 哈希确保文件名唯一且安全
     const hash = crypto.createHash('md5').update(url).digest('hex');
     return `${hash}.js`;
+  }
+
+  buildSourceBanner(url, details = {}) {
+    const {
+      mode = 'unknown',
+      files = [],
+      baseUrl = '',
+      loadedCount = 0,
+      failedCount = 0,
+      fallbackFiles = []
+    } = details;
+
+    return `;(() => {
+  try {
+    const sourceInfo = ${JSON.stringify({
+      mode,
+      url,
+      files,
+      baseUrl,
+      loadedCount,
+      failedCount,
+      fallbackFiles
+    })};
+    sourceInfo.injectedAt = new Date().toISOString();
+    window.__INJECTED_SCRIPT_SOURCE__ = sourceInfo;
+    console.log('[Injected Script Source]', sourceInfo);
+  } catch (e) {
+    console.warn('[Injected Script Source] 日志输出失败:', e);
+  }
+})();`;
   }
 
   // 保存清单文件
@@ -297,7 +341,7 @@ class ScriptManager {
 
       if (this.remoteConfig && this.remoteConfig.enabled) {
         console.log(`[ScriptManager] 🌐 使用远程加载模式（主进程 fetch）`);
-        return this.fetchRemoteScripts(filenames);
+        return this.fetchRemoteScripts(url, filenames);
       }
 
       // 本地加载模式：按顺序读取所有脚本文件，并连接内容
@@ -320,7 +364,11 @@ class ScriptManager {
       }
 
       // 将所有脚本内容连接起来，用分隔符分开
-      return scriptContents.join('\n\n');
+      const sourceBanner = this.buildSourceBanner(url, {
+        mode: 'local',
+        files: filenames
+      });
+      return `${sourceBanner}\n\n${scriptContents.join('\n\n')}`;
     } catch (err) {
       console.error('Failed to read script:', err);
       return '';
@@ -369,7 +417,7 @@ class ScriptManager {
   }
 
   // 🔑 从远程服务器按顺序获取多个脚本并拼接为文本
-  async fetchRemoteScripts(filenames) {
+  async fetchRemoteScripts(url, filenames) {
     // 🔑 使用集中配置的远程脚本 baseUrl
     const baseUrl = domains.remoteScriptsBase;
 
@@ -382,6 +430,7 @@ class ScriptManager {
     const scriptContents = [];
     let loadedCount = 0;
     let failedCount = 0;
+    const fallbackFiles = [];
 
     for (const filename of filenames) {
       const scriptUrl = baseUrl + filename + '?v=' + Date.now();
@@ -400,6 +449,7 @@ class ScriptManager {
           if (fs.existsSync(localPath)) {
             const localContent = await fs.readFile(localPath, 'utf-8');
             scriptContents.push(`// ===== ${filename} (local fallback) =====\n${localContent}`);
+            fallbackFiles.push(filename);
             console.log(`[ScriptManager] 🔄 回退到本地: ${filename} (${localContent.length} chars)`);
           } else {
             console.warn(`[ScriptManager] ⚠️ 本地文件也不存在: ${filename}`);
@@ -409,7 +459,15 @@ class ScriptManager {
     }
 
     console.log(`[ScriptManager] 📊 远程加载完成: 成功 ${loadedCount}, 失败 ${failedCount}`);
-    return scriptContents.join('\n\n');
+    const sourceBanner = this.buildSourceBanner(url, {
+      mode: fallbackFiles.length > 0 ? 'remote-with-local-fallback' : 'remote',
+      files: filenames,
+      baseUrl,
+      loadedCount,
+      failedCount,
+      fallbackFiles
+    });
+    return `${sourceBanner}\n\n${scriptContents.join('\n\n')}`;
   }
 
   // URL 模式匹配（支持通配符和查询参数）

@@ -31,6 +31,7 @@
     if (typeof showOperationBanner === 'function') {
         showOperationBanner('正在自动授权中，请勿操作此页面...');
     }
+    console.log('加了恢复数据的')
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 腾讯号授权脚本已注入');
@@ -355,6 +356,50 @@
     console.log('  - sendMessage(msg) : 发送自定义消息');
     console.log('  - getAuthData()    : 获取授权数据');
     console.log('═══════════════════════════════════════');
+
+    // ===========================
+    // 7. 检查是否有发布数据需要恢复（登录跳转后返回首页的情况）
+    // ===========================
+    setTimeout(async () => {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                console.log('[腾讯号授权] ℹ️ 无法获取窗口 ID，跳过发布数据检查');
+                return;
+            }
+
+            const globalPublishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+            console.log('[腾讯号授权] 🔍 检查发布数据:', {
+                globalData: globalPublishData ? '有' : '无',
+                windowId
+            });
+
+            if (!globalPublishData) {
+                console.log('[腾讯号授权] ℹ️ 没有发布数据，这是正常的授权流程');
+                return;
+            }
+
+            const isAuthWindow = await window.browserAPI.getGlobalData(`auth_mode_window_${windowId}`);
+            if (isAuthWindow) {
+                console.log('[腾讯号授权] ⚠️ 授权窗口中检测到残留的发布数据，清除它');
+                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
+                console.log('[腾讯号授权] 🗑️ 已清除残留的 publish_data_window_' + windowId);
+                console.log('[腾讯号授权] ℹ️ 继续正常授权流程');
+                return;
+            }
+
+            console.log('[腾讯号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
+            console.log('[腾讯号授权] 🔄 准备自动跳转到发布页...');
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            const publishUrl = 'https://om.qq.com/main/creation/article';
+            console.log('[腾讯号授权] 🔗 跳转到发布页:', publishUrl);
+            window.location.href = publishUrl;
+        } catch (error) {
+            console.error('[腾讯号授权] ❌ 检查发布数据失败:', error);
+        }
+    }, 2000);
 
 })();
 

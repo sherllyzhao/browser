@@ -170,16 +170,57 @@
             };
 
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
-            console.log('[视频号授权] 📦 正在获取完整会话数据...');
+            // 视频号登录链路会跨 weixin.qq.com / channels.weixin.qq.com，单域名会漏掉扫码后的关键会话
+            console.log('[视频号授权] 📦 正在获取多域名完整会话数据...');
             try {
-              const sessionResult = await window.browserAPI.getFullSessionData('weixin.qq.com');
-              if (sessionResult.success) {
+              const sessionDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com'];
+              const sessionResults = await Promise.all(
+                sessionDomains.map(domain => window.browserAPI.getFullSessionData(domain).catch(err => {
+                  console.warn(`[视频号授权] ⚠️ 获取 ${domain} 会话数据失败:`, err);
+                  return { success: false, domain };
+                }))
+              );
+
+              const mergedData = {
+                domains: sessionDomains,
+                timestamp: Date.now(),
+                cookies: [],
+                localStorage: {},
+                sessionStorage: {},
+                indexedDB: {}
+              };
+
+              let totalSize = 0;
+              sessionResults.forEach((result, index) => {
+                const domain = sessionDomains[index];
+                if (result.success && result.data) {
+                  console.log(`[视频号授权] ✅ ${domain} 会话数据获取成功，大小: ${Math.round((result.size || 0) / 1024)} KB`);
+                  totalSize += result.size || 0;
+
+                  if (Array.isArray(result.data.cookies)) {
+                    mergedData.cookies.push(...result.data.cookies);
+                  }
+                  if (result.data.localStorage && Object.keys(result.data.localStorage).length > 0) {
+                    mergedData.localStorage[domain] = result.data.localStorage;
+                  }
+                  if (result.data.sessionStorage && Object.keys(result.data.sessionStorage).length > 0) {
+                    mergedData.sessionStorage[domain] = result.data.sessionStorage;
+                  }
+                  if (result.data.indexedDB && Object.keys(result.data.indexedDB).length > 0) {
+                    mergedData.indexedDB[domain] = result.data.indexedDB;
+                  }
+                } else {
+                  console.warn(`[视频号授权] ⚠️ ${domain} 会话数据获取失败`);
+                }
+              });
+
+              if (mergedData.cookies.length > 0) {
                 const dataObj = JSON.parse(scanData.data);
-                dataObj.cookies = JSON.stringify(sessionResult.data);
+                dataObj.cookies = JSON.stringify(mergedData);
                 scanData.data = JSON.stringify(dataObj);
-                console.log(`[视频号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                console.log(`[视频号授权] ✅ 多域名会话数据合并完成，共 ${mergedData.cookies.length} 个 cookies，总大小: ${Math.round(totalSize / 1024)} KB`);
               } else {
-                console.warn('[视频号授权] ⚠️ 获取会话数据失败:', sessionResult.error);
+                console.warn('[视频号授权] ⚠️ 所有域名均无有效会话数据');
               }
             } catch (sessionError) {
               console.error('[视频号授权] ⚠️ 获取会话数据异常:', sessionError);
@@ -206,15 +247,25 @@
 
               // 🔑 迁移登录 Cookies 到持久化 session
               // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
-              // 这样发布时才能用新授权的账号
+              // 视频号会跨多个 weixin 子域名，必须一起迁移
               try {
-                console.log('[视频号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                const migrateResult = await window.browserAPI.migrateCookiesToPersistent('weixin.qq.com');
-                if (migrateResult.success) {
-                  console.log(`[视频号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
-                } else {
-                  console.error('[视频号授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                const migrateDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com'];
+                let totalMigrated = 0;
+                console.log('[视频号授权] 🔄 开始迁移多域名 Cookies 到持久化 session...', migrateDomains);
+                for (const domain of migrateDomains) {
+                  try {
+                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                    if (migrateResult.success) {
+                      totalMigrated += migrateResult.migratedCount;
+                      console.log(`[视频号授权] ✅ ${domain} Cookies 迁移成功，迁移 ${migrateResult.migratedCount} 个`);
+                    } else {
+                      console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                    }
+                  } catch (e) {
+                    console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移异常:`, e);
+                  }
                 }
+                console.log(`[视频号授权] ✅ 多域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
               } catch (migrateError) {
                 console.error('[视频号授权] ⚠️ Cookies 迁移异常:', migrateError);
               }
