@@ -30,6 +30,9 @@
       "injected-scripts/**"
     ],
     "win": {
+      "icon": "icon.ico",
+      "signAndEditExecutable": true,
+      "verifyUpdateCodeSignature": false,
       "target": [
         {
           "target": "nsis",
@@ -43,8 +46,11 @@
             "ia32"
           ]
         }
-      ],
-      "icon": "icon.ico"
+      ]
+    },
+    "portable": {
+      "artifactName": "资海云运营助手-便携版-${version}.exe",
+      "requestExecutionLevel": "user"
     },
     "nsis": {
       "oneClick": false,

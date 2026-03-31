@@ -76,7 +76,7 @@
       },
       "domain": "channels.weixin.qq.com",
       "cookies": {
-        "domain": "weixin.qq.com"
+        "domain": "channels.weixin.qq.com"
       }
     },
     "tengxvnhao": {
