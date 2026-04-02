@@ -4,9 +4,16 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 // 必须在最开始执行，在页面脚本之前
 (function injectAntiDetection() {
   try {
+    console.log('[AntiDetection] 🚀 开始注入反自动化检测脚本...');
+    console.log('[AntiDetection] 📍 当前 URL:', window.location.href);
+    console.log('[AntiDetection] 📍 当前时间:', new Date().toISOString());
+
     const antiDetectionScript = `
       (function() {
         'use strict';
+
+        console.log('[AntiDetection-Page] 🎯 脚本开始执行');
+        console.log('[AntiDetection-Page] 📍 URL:', window.location.href);
 
         // 1. 隐藏 webdriver 属性
         Object.defineProperty(navigator, 'webdriver', {
@@ -59,73 +66,26 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
           configurable: true
         });
 
-        console.log('[AntiDetection] ✅ 反自动化检测已启用');
+        console.log('[AntiDetection-Page] ✅ 反自动化检测已启用');
       })();
     `;
 
     webFrame.executeJavaScript(antiDetectionScript);
+    console.log('[AntiDetection] ✅ 脚本已通过 webFrame.executeJavaScript 注入');
   } catch (e) {
-    console.error('[AntiDetection] 注入失败:', e);
+    console.error('[AntiDetection] ❌ 注入失败:', e);
   }
 })();
 
-// 🔑 搜狐号 toPath 处理 - 在页面脚本执行之前注入
-// 这必须在最开始执行，因为搜狐号的页面代码会在加载时读取 toPath
+// 搜狐号发布页保护已经迁移到主进程窗口上下文守卫
+// 这里保留占位日志，避免 preload 再次劫持 localStorage / history / location
 (function injectSohuToPathFix() {
   try {
-    // 检查当前 URL 是否是搜狐号
-    // 注意：preload 脚本执行时 window.location 可能还不可用，所以我们无条件注入
-    // 脚本内部会检查域名
-    const sohuToPathScript = `
-      (function() {
-        'use strict';
-        // 只在搜狐号发布页执行，不在首页或其他页面执行
-        // 原因：首页设置 toPath 会导致授权流程出问题
-        // - 授权窗口访问首页 → toPath 被设置为发布页 → 搜狐尝试跳转到发布页 → 需要短信验证 → 循环
-        // 只对发布页进行处理，确保发布窗口能正常工作
-        const url = window.location.href;
-        if (!url.includes('mp.sohu.com') || !url.includes('contentManagement/news/addarticle')) {
-          return;
-        }
-
-        console.log('[搜狐号-preload] 🛡️ 在发布页设置 toPath');
-
-        try {
-          const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
-          const currentToPath = localStorage.getItem('toPath');
-          console.log('[搜狐号-preload] 当前 toPath:', currentToPath);
-
-          // 🔑 关键修复：无论当前 toPath 是什么值，都强制设置为发布页路径
-          // 这样可以确保第一次打开发布窗口时直接进入发布页
-          if (currentToPath !== PUBLISH_PAGE_PATH) {
-            console.log('[搜狐号-preload] ⚠️ toPath 不是发布页路径，强制设置');
-            localStorage.setItem('toPath', PUBLISH_PAGE_PATH);
-            console.log('[搜狐号-preload] ✅ 已设置 toPath 为发布页路径:', PUBLISH_PAGE_PATH);
-          } else {
-            console.log('[搜狐号-preload] ✅ toPath 已经是发布页路径，无需修改');
-          }
-
-          // 🔑 劫持 localStorage.getItem，确保读取 toPath 时始终返回发布页路径
-          const originalGetItem = localStorage.getItem.bind(localStorage);
-          localStorage.getItem = function(key) {
-            if (key === 'toPath') {
-              console.log('[搜狐号-preload] 🔄 拦截读取 toPath，返回发布页路径');
-              return PUBLISH_PAGE_PATH;
-            }
-            return originalGetItem(key);
-          };
-          console.log('[搜狐号-preload] ✅ 已劫持 localStorage.getItem');
-        } catch (e) {
-          console.error('[搜狐号-preload] ❌ 处理 toPath 失败:', e);
-        }
-      })();
-    `;
-
-    // 使用 webFrame 在主世界中执行脚本（在页面脚本之前）
-    webFrame.executeJavaScript(sohuToPathScript);
-    console.log('[content-preload] ✅ 已注入搜狐号 toPath 修复脚本');
+    if (window.location?.host?.includes('mp.sohu.com')) {
+      console.log('[content-preload] ℹ️ 搜狐号 preload 跳转劫持已禁用，改由主进程窗口守卫处理');
+    }
   } catch (e) {
-    console.error('[content-preload] ❌ 注入搜狐号 toPath 修复脚本失败:', e);
+    console.error('[content-preload] ❌ 记录搜狐号 preload 状态失败:', e);
   }
 })();
 
@@ -607,6 +567,29 @@ contextBridge.exposeInMainWorld('browserAPI', {
             },
           };
           openOptions.publishData = basePublishData;
+          try {
+            const publishUrl = new URL(url);
+            openOptions.windowContext = {
+              purpose: 'publish',
+              platform,
+              contentType: publishTarget.contentType,
+              expectedPageUrl: url,
+              safeOrigin: publishUrl.origin,
+              bootstrapUrl: `${publishUrl.origin}/`,
+              guardResourceUrls: true
+            };
+          } catch (e) {
+            console.warn('[BrowserAPI] ⚠️ 构建窗口上下文失败，降级使用目标 URL:', e);
+            openOptions.windowContext = {
+              purpose: 'publish',
+              platform,
+              contentType: publishTarget.contentType,
+              expectedPageUrl: url,
+              safeOrigin: '',
+              bootstrapUrl: url,
+              guardResourceUrls: true
+            };
+          }
 
           // 打开新窗口，获取窗口 ID
           console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(openOptions, null, 2));
@@ -725,6 +708,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 获取当前窗口 ID（用于新窗口识别自己，读取对应的发布数据）
   getWindowId: () => ipcRenderer.invoke('get-window-id').then(r => r.success ? r.windowId : null),
+  getWindowContext: () => ipcRenderer.invoke('get-window-context').then(r => r.success ? r.context : null),
 
   // 获取主窗口（BrowserView/首页）的 URL 信息（用于动态获取 API 域名）
   getMainUrl: () => ipcRenderer.invoke('get-main-url'),

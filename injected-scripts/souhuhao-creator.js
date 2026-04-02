@@ -188,13 +188,6 @@
                                 if (sessionResult.success) {
                                     console.log("🚀 ~  ~ sessionResult.data: ", sessionResult.data);
 
-                                    // 🔑 设置 localStorage 中的 toPath 为发布页路径，确保发布窗口直接打开发布页
-                                    if (!sessionResult.data.localStorage) {
-                                        sessionResult.data.localStorage = {};
-                                    }
-                                    sessionResult.data.localStorage.toPath = PLATFORM_CONFIG.publishPagePath;
-                                    console.log('[搜狐号授权] ✅ 已设置 toPath 为发布页路径:', PLATFORM_CONFIG.publishPagePath);
-
                                     cookiesData = JSON.stringify(sessionResult.data);
                                     console.log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                                 } else {
