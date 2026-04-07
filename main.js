@@ -44,6 +44,29 @@ function buildStandardUserAgent() {
 const STANDARD_USER_AGENT = buildStandardUserAgent();
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
+function installBrokenPipeGuard(stream, streamName) {
+  if (!stream || typeof stream.on !== 'function') return;
+
+  stream.on('error', (err) => {
+    if (err && err.code === 'EPIPE') {
+      return;
+    }
+    try {
+      const detail = err && err.stack ? err.stack : (err && err.message ? err.message : String(err));
+      fs.appendFileSync(
+        path.join(__dirname, 'main-process-stream-error.log'),
+        `[${new Date().toISOString()}] ${streamName}: ${detail}\n`,
+        'utf8'
+      );
+    } catch (_) {
+      // 避免日志防护本身再次引发异常
+    }
+  });
+}
+
+installBrokenPipeGuard(process.stdout, 'stdout');
+installBrokenPipeGuard(process.stderr, 'stderr');
+
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   if (!host) return false;
@@ -81,6 +104,21 @@ const STATIC_RESOURCE_EXTENSIONS = new Set([
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
   '.json', '.txt', '.xml', '.pdf', '.mp4', '.webm'
 ]);
+const GENERIC_TEXTUAL_MIME_TYPES = new Set([
+  'text/plain',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'text/octet-stream',
+  'application/unknown'
+]);
+const JAVASCRIPT_MIME_TYPES = new Set([
+  'application/javascript',
+  'text/javascript',
+  'application/x-javascript'
+]);
+const CSS_MIME_TYPES = new Set([
+  'text/css'
+]);
 
 function getUrlInfo(rawUrl = '') {
   try {
@@ -117,20 +155,56 @@ function isStaticResourceUrl(rawUrl = '') {
   return STATIC_RESOURCE_EXTENSIONS.has(ext);
 }
 
-function shouldApplyContentTypePatch(details = {}) {
+function normalizeContentTypeHeaderValue(rawValue) {
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  return String(value || '').split(';')[0].trim().toLowerCase();
+}
+
+function resolvePatchedContentType(details = {}) {
   const resourceType = String(details.resourceType || '').toLowerCase();
-  if (resourceType !== 'script' && resourceType !== 'stylesheet') {
-    return { shouldPatch: false, mimeType: '' };
+  const ext = getUrlPathExtension(details.url || '');
+  const isScriptLike = resourceType === 'script' || ext === '.js' || ext === '.mjs' || ext === '.cjs';
+  const isStylesheetLike = resourceType === 'stylesheet' || ext === '.css';
+
+  if (isStylesheetLike) {
+    return 'text/css; charset=utf-8';
+  }
+  if (isScriptLike) {
+    return 'application/javascript; charset=utf-8';
+  }
+  return '';
+}
+
+function shouldOverrideContentType(rawContentType = '', patchedContentType = '') {
+  if (!patchedContentType) return false;
+
+  const currentMimeType = normalizeContentTypeHeaderValue(rawContentType);
+  if (!currentMimeType) return true;
+
+  const patchedMimeType = normalizeContentTypeHeaderValue(patchedContentType);
+  if (currentMimeType === patchedMimeType) return false;
+
+  if (patchedMimeType === 'text/css') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !CSS_MIME_TYPES.has(currentMimeType);
   }
 
-  const ext = getUrlPathExtension(details.url || '');
-  if (resourceType === 'stylesheet' && ext === '.css') {
-    return { shouldPatch: true, mimeType: 'text/css; charset=utf-8' };
+  if (patchedMimeType === 'application/javascript') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !JAVASCRIPT_MIME_TYPES.has(currentMimeType);
   }
-  if (resourceType === 'script' && (ext === '.js' || ext === '.mjs' || ext === '.cjs')) {
-    return { shouldPatch: true, mimeType: 'application/javascript; charset=utf-8' };
+
+  return false;
+}
+
+function shouldApplyContentTypePatch(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  const mimeType = resolvePatchedContentType(details);
+  if (!mimeType) {
+    return { shouldPatch: false, mimeType: '' };
   }
-  return { shouldPatch: false, mimeType: '' };
+  if (resourceType === 'mainframe' || resourceType === 'subframe') {
+    return { shouldPatch: false, mimeType: '' };
+  }
+  return { shouldPatch: true, mimeType };
 }
 
 function normalizeContextPurpose(options = {}) {
@@ -367,6 +441,7 @@ function beginShutdown(source = 'unknown') {
 
 let isHandlingExpiredToken = false; // 防止过期处理重复触发
 let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
+let loginRestorePromise = null; // 防止 tryRestoreLoginWithToken 并发重入
 let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
@@ -1007,6 +1082,162 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
   }, delayMs);
 }
 
+function getDefaultProjectHomeUrl() {
+  return globalStorage.last_project === 'geo' ? config.getGeoUrl() : config.getAigcUrl();
+}
+
+function resolvePostRestoreUrl(preferredUrl) {
+  const targetUrl = String(preferredUrl || '').trim();
+  const isHttpUrl = targetUrl.startsWith('http://') || targetUrl.startsWith('https://');
+  const isLoginLike = targetUrl.includes('login.html') || targetUrl.includes('#/login') || targetUrl.includes('/login');
+
+  if (isHttpUrl && !isLoginLike) {
+    return targetUrl;
+  }
+
+  return getDefaultProjectHomeUrl();
+}
+
+async function restoreLoginCookiesToSession(targetSession, savedToken, savedExpires) {
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'access_token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'access_token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+
+  if (globalStorage.login_gcc) {
+    await targetSession.cookies.set({
+      url: 'http://localhost:5173/',
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      path: '/',
+      expirationDate: savedExpires,
+      secure: false,
+      sameSite: 'lax'
+    });
+    await targetSession.cookies.set({
+      url: config.getCookieUrl(),
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      domain: config.getCookieDomain(),
+      path: '/',
+      expirationDate: savedExpires,
+      secure: true
+    });
+  }
+
+  const siteInfo = globalStorage.siteInfo;
+  if (siteInfo && siteInfo.id) {
+    const siteIdStr = String(siteInfo.id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'china_site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+  }
+
+  const userInfo = globalStorage.user_info;
+  if (userInfo && userInfo.company && userInfo.company.unique_id) {
+    const uniqueId = String(userInfo.company.unique_id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'company_unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+  }
+}
+
+async function tryRestoreLoginWithToken(preferredUrl) {
+  if (loginRestorePromise) {
+    console.log('[Auth Restore] ⏳ 登录恢复已在进行中，复用当前任务');
+    return loginRestorePromise;
+  }
+
+  loginRestorePromise = (async () => {
+    const savedToken = globalStorage.login_token;
+    const savedExpires = Number(globalStorage.login_expires || 0);
+    const now = Math.floor(Date.now() / 1000);
+
+    if (!savedToken || !savedExpires || savedExpires <= now) {
+      console.log('[Auth Restore] ℹ️ 未找到有效 token，跳过自动恢复');
+      return false;
+    }
+
+    const targetSession = browserView?.webContents && !browserView.webContents.isDestroyed()
+      ? browserView.webContents.session
+      : persistentSession;
+
+    if (!targetSession) {
+      console.warn('[Auth Restore] ⚠️ Session 不可用，无法恢复登录状态');
+      return false;
+    }
+
+    const resumeUrl = resolvePostRestoreUrl(preferredUrl);
+    console.log('[Auth Restore] 开始使用本地 token 恢复登录状态:', resumeUrl);
+
+    try {
+      await restoreLoginCookiesToSession(targetSession, savedToken, savedExpires);
+      await targetSession.flushStorageData();
+
+      if (browserView?.webContents && !browserView.webContents.isDestroyed()) {
+        await browserView.webContents.loadURL(resumeUrl);
+      }
+
+      console.log('[Auth Restore] ✅ 登录状态恢复成功');
+      return true;
+    } catch (error) {
+      console.error('[Auth Restore] ❌ 登录状态恢复失败:', error);
+      return false;
+    }
+  })();
+
+  try {
+    return await loginRestorePromise;
+  } finally {
+    loginRestorePromise = null;
+  }
+}
+
 async function navigateToLoginInternal(reason) {
   if (!browserView || browserView.webContents.isDestroyed()) return;
   console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
@@ -1067,16 +1298,16 @@ async function navigateToLoginInternal(reason) {
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
-// 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
-// ⚠️ 注意：不影响富文本编辑器，只处理静态资源
+// 仅在响应头缺失或明显错误时修正，避免把真实 HTML/文档页误判成代码资源
+// ⚠️ 注意：不影响富文本编辑器，只处理脚本/样式静态资源
 function addContentTypeFix(targetSession, label) {
   targetSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = details.responseHeaders || {};
     const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
     const patchPlan = shouldApplyContentTypePatch(details);
 
-    // 只修复脚本/样式资源，避免把富文本 iframe 或文档页误判成代码资源
-    if (!ct && patchPlan.shouldPatch) {
+    // 只修复脚本/样式资源，且仅在 Content-Type 缺失或明显错误时修正
+    if (patchPlan.shouldPatch && shouldOverrideContentType(ct, patchPlan.mimeType)) {
       responseHeaders['Content-Type'] = [patchPlan.mimeType];
     }
 
