@@ -44,6 +44,29 @@ function buildStandardUserAgent() {
 const STANDARD_USER_AGENT = buildStandardUserAgent();
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
+function installBrokenPipeGuard(stream, streamName) {
+  if (!stream || typeof stream.on !== 'function') return;
+
+  stream.on('error', (err) => {
+    if (err && err.code === 'EPIPE') {
+      return;
+    }
+    try {
+      const detail = err && err.stack ? err.stack : (err && err.message ? err.message : String(err));
+      fs.appendFileSync(
+        path.join(__dirname, 'main-process-stream-error.log'),
+        `[${new Date().toISOString()}] ${streamName}: ${detail}\n`,
+        'utf8'
+      );
+    } catch (_) {
+      // 避免日志防护本身再次引发异常
+    }
+  });
+}
+
+installBrokenPipeGuard(process.stdout, 'stdout');
+installBrokenPipeGuard(process.stderr, 'stderr');
+
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   if (!host) return false;
@@ -417,6 +440,7 @@ function beginShutdown(source = 'unknown') {
 }
 let isHandlingExpiredToken = false; // 防止过期处理重复触发
 let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
+let loginRestorePromise = null; // 防止 tryRestoreLoginWithToken 并发重入
 let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
@@ -966,6 +990,162 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
       finishRefreshLoadGuard('check-failed');
     }
   }, delayMs);
+}
+
+function getDefaultProjectHomeUrl() {
+  return globalStorage.last_project === 'geo' ? config.getGeoUrl() : config.getAigcUrl();
+}
+
+function resolvePostRestoreUrl(preferredUrl) {
+  const targetUrl = String(preferredUrl || '').trim();
+  const isHttpUrl = targetUrl.startsWith('http://') || targetUrl.startsWith('https://');
+  const isLoginLike = targetUrl.includes('login.html') || targetUrl.includes('#/login') || targetUrl.includes('/login');
+
+  if (isHttpUrl && !isLoginLike) {
+    return targetUrl;
+  }
+
+  return getDefaultProjectHomeUrl();
+}
+
+async function restoreLoginCookiesToSession(targetSession, savedToken, savedExpires) {
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'access_token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'access_token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+
+  if (globalStorage.login_gcc) {
+    await targetSession.cookies.set({
+      url: 'http://localhost:5173/',
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      path: '/',
+      expirationDate: savedExpires,
+      secure: false,
+      sameSite: 'lax'
+    });
+    await targetSession.cookies.set({
+      url: config.getCookieUrl(),
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      domain: config.getCookieDomain(),
+      path: '/',
+      expirationDate: savedExpires,
+      secure: true
+    });
+  }
+
+  const siteInfo = globalStorage.siteInfo;
+  if (siteInfo && siteInfo.id) {
+    const siteIdStr = String(siteInfo.id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'china_site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+  }
+
+  const userInfo = globalStorage.user_info;
+  if (userInfo && userInfo.company && userInfo.company.unique_id) {
+    const uniqueId = String(userInfo.company.unique_id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'company_unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+  }
+}
+
+async function tryRestoreLoginWithToken(preferredUrl) {
+  if (loginRestorePromise) {
+    console.log('[Auth Restore] ⏳ 登录恢复已在进行中，复用当前任务');
+    return loginRestorePromise;
+  }
+
+  loginRestorePromise = (async () => {
+    const savedToken = globalStorage.login_token;
+    const savedExpires = Number(globalStorage.login_expires || 0);
+    const now = Math.floor(Date.now() / 1000);
+
+    if (!savedToken || !savedExpires || savedExpires <= now) {
+      console.log('[Auth Restore] ℹ️ 未找到有效 token，跳过自动恢复');
+      return false;
+    }
+
+    const targetSession = browserView?.webContents && !browserView.webContents.isDestroyed()
+      ? browserView.webContents.session
+      : persistentSession;
+
+    if (!targetSession) {
+      console.warn('[Auth Restore] ⚠️ Session 不可用，无法恢复登录状态');
+      return false;
+    }
+
+    const resumeUrl = resolvePostRestoreUrl(preferredUrl);
+    console.log('[Auth Restore] 开始使用本地 token 恢复登录状态:', resumeUrl);
+
+    try {
+      await restoreLoginCookiesToSession(targetSession, savedToken, savedExpires);
+      await targetSession.flushStorageData();
+
+      if (browserView?.webContents && !browserView.webContents.isDestroyed()) {
+        await browserView.webContents.loadURL(resumeUrl);
+      }
+
+      console.log('[Auth Restore] ✅ 登录状态恢复成功');
+      return true;
+    } catch (error) {
+      console.error('[Auth Restore] ❌ 登录状态恢复失败:', error);
+      return false;
+    }
+  })();
+
+  try {
+    return await loginRestorePromise;
+  } finally {
+    loginRestorePromise = null;
+  }
 }
 
 async function navigateToLoginInternal(reason) {
