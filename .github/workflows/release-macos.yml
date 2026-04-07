@@ -1,0 +1,138 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.branch_scope.outputs.should_run }}
+      reason: ${{ steps.branch_scope.outputs.reason }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check ios branch scope
+        id: branch_scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          git fetch origin ios --depth=1
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$REF_NAME" == "ios" ]]; then
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=workflow_dispatch from ios branch" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "reason=workflow_dispatch must be run from ios branch" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          if [[ "$REF_TYPE" == "tag" ]] && git branch -r --contains "$TARGET_SHA" | grep -q "origin/ios"; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=tag commit is contained in ios branch" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=tag commit is not contained in ios branch" >> "$GITHUB_OUTPUT"
+          fi
+
+  release-macos:
+    needs: guard
+    if: needs.guard.outputs.should_run == 'true'
+    runs-on: macos-15
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare macOS icon
+        shell: bash
+        run: |
+          python3 -c "
+          import struct
+          with open('icon.ico', 'rb') as f:
+              ico = f.read()
+          count = struct.unpack('<H', ico[4:6])[0]
+          best_off = best_sz = best_w = 0
+          for i in range(count):
+              e = ico[6+i*16:6+i*16+16]
+              w = e[0] or 256
+              sz = struct.unpack('<I', e[8:12])[0]
+              off = struct.unpack('<I', e[12:16])[0]
+              if w > best_w:
+                  best_w, best_off, best_sz = w, off, sz
+          with open('icon_extracted.png', 'wb') as f:
+              f.write(ico[best_off:best_off+best_sz])
+          print(f'Extracted {best_w}x{best_w} PNG from ICO')
+          "
+          sips -z 1024 1024 icon_extracted.png --out icon.png
+          sips -g pixelWidth -g pixelHeight icon.png
+
+      - name: Clean up DMG mounts
+        shell: bash
+        run: |
+          hdiutil info | grep "ZhCloud-Browser" | awk '{print $1}' | xargs -I{} hdiutil detach {} -force 2>/dev/null || true
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build macOS artifacts
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run build:mac:prod
+
+      - name: Upload macOS artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          retention-days: 30
+
+      - name: Publish macOS Release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npm run release:mac:prod
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  skip-macos:
+    needs: guard
+    if: needs.guard.outputs.should_run != 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Explain skip reason
+        run: echo "${{ needs.guard.outputs.reason }}"

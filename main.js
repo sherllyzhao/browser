@@ -1,4 +1,5 @@
 const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -24,6 +25,11 @@ let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
 let blankScreenConsecutive = 0;
+let autoUpdaterInitialized = false;
+let activeUpdateCheckContext = null;
+let updateDialogInProgress = false;
+let updateDownloadInProgress = false;
+let pendingDownloadedUpdateInfo = null;
 const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
 const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
 const FORCE_BARE_TOUTIAO = true;
@@ -2014,163 +2020,304 @@ function isDevHost(host) {
   return DEV_HOSTS.some(devHost => h === devHost || h.endsWith('.' + devHost));
 }
 
-/**
- * 获取版本检查 API 地址（根据主窗口域名动态判断）
- * @returns {string} API URL
- */
-function getVersionCheckUrl() {
-  // 尝试从 browserView 获取当前 URL
-  if (browserView && browserView.webContents) {
-    try {
-      const currentUrl = browserView.webContents.getURL();
-      if (currentUrl) {
-        const urlObj = new URL(currentUrl);
-        if (isDevHost(urlObj.host)) {
-          console.log('[Update] 检测到开发环境:', urlObj.host);
-          if (useLocalDevServer) {
-            console.log('[Update] 使用本地版本文件: http://localhost:5173/browserVersion.json');
-            return 'http://localhost:5173/browserVersion.json';
-          }
-          return config.domains.versionCheckUrl;
-        } else {
-          console.log('[Update] 检测到生产环境:', urlObj.host);
-          return config.domains.versionCheckUrl;
-        }
-      }
-    } catch (e) {
-      console.warn('[Update] 解析 URL 失败:', e);
-    }
+function isGithubAutoUpdateAvailable() {
+  return isProduction && !isPortable && ['win32', 'darwin'].includes(process.platform);
+}
+
+function getAutoUpdateUnavailableReason() {
+  if (!isProduction) {
+    return '开发环境不启用 GitHub 自动更新。';
+  }
+  if (isPortable) {
+    return '便携版不支持自动更新，请使用安装版。';
+  }
+  return `当前平台 ${process.platform} 未启用 GitHub 自动更新。`;
+}
+
+function getUpdateVersion(updateInfo) {
+  return updateInfo?.version || updateInfo?.tag || '未知版本';
+}
+
+function normalizeReleaseNotes(releaseNotes) {
+  if (!releaseNotes) return '';
+  if (typeof releaseNotes === 'string') {
+    return releaseNotes.trim();
+  }
+  if (Array.isArray(releaseNotes)) {
+    return releaseNotes
+      .map(item => {
+        if (!item) return '';
+        if (typeof item === 'string') return item.trim();
+        if (item.note) return String(item.note).trim();
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function resolveActiveUpdateCheck(result) {
+  if (!activeUpdateCheckContext) return;
+  const { resolve } = activeUpdateCheckContext;
+  activeUpdateCheckContext = null;
+  resolve(result);
+}
+
+async function showUpdateMessageBox(options) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    console.log('[Update] 主窗口不可用，无法显示对话框');
+    return { response: 0 };
+  }
+  return await dialog.showMessageBox(mainWindow, options);
+}
+
+async function showAutoUpdateUnavailableDialog(reason) {
+  await showUpdateMessageBox({
+    type: 'info',
+    buttons: ['确定'],
+    title: '检查更新',
+    message: '当前环境不支持自动更新',
+    detail: reason
+  });
+}
+
+async function showNoUpdateDialog() {
+  await showUpdateMessageBox({
+    type: 'info',
+    buttons: ['确定'],
+    title: '检查更新',
+    message: '当前已经是最新版本',
+    detail: `当前版本: v${APP_VERSION}`
+  });
+}
+
+async function showUpdateErrorDialog(errorMessage) {
+  await showUpdateMessageBox({
+    type: 'error',
+    buttons: ['确定'],
+    title: '检查更新失败',
+    message: '无法从 GitHub Releases 获取更新信息',
+    detail: errorMessage || '未知错误'
+  });
+}
+
+async function promptForUpdateDownload(updateInfo, source = 'manual') {
+  if (updateDialogInProgress) {
+    return;
   }
 
-  // 回退逻辑：根据打包状态判断
-  return config.getVersionCheckUrlByEnv(isProduction);
+  updateDialogInProgress = true;
+  try {
+    const newVersion = getUpdateVersion(updateInfo);
+    const releaseNotes = normalizeReleaseNotes(updateInfo?.releaseNotes);
+    const detailLines = [
+      `当前版本: v${APP_VERSION}`,
+      `新版本: v${newVersion}`,
+      '',
+      '更新将通过 GitHub Releases 下载并安装。'
+    ];
+
+    if (releaseNotes) {
+      detailLines.push('', '更新说明:', releaseNotes);
+    }
+
+    if (source === 'startup') {
+      detailLines.push('', '这是启动后的自动检测结果。');
+    }
+
+    const result = await showUpdateMessageBox({
+      type: 'info',
+      buttons: ['稍后更新', '立即下载'],
+      defaultId: 1,
+      cancelId: 0,
+      title: '发现新版本',
+      message: `发现新版本 v${newVersion}`,
+      detail: detailLines.join('\n')
+    });
+
+    if (result.response === 1) {
+      if (updateDownloadInProgress) {
+        console.log('[Update] 下载已在进行中，忽略重复请求');
+        return;
+      }
+
+      updateDownloadInProgress = true;
+      console.log('[Update] 开始从 GitHub Releases 下载更新:', newVersion);
+      await autoUpdater.downloadUpdate();
+    } else {
+      console.log('[Update] 用户选择稍后更新');
+    }
+  } catch (error) {
+    updateDownloadInProgress = false;
+    console.error('[Update] 下载更新失败:', error);
+  } finally {
+    updateDialogInProgress = false;
+    if (pendingDownloadedUpdateInfo) {
+      const downloadedInfo = pendingDownloadedUpdateInfo;
+      pendingDownloadedUpdateInfo = null;
+      await promptToInstallDownloadedUpdate(downloadedInfo);
+    }
+  }
+}
+
+async function promptToInstallDownloadedUpdate(updateInfo) {
+  if (updateDialogInProgress) {
+    pendingDownloadedUpdateInfo = updateInfo;
+    return;
+  }
+
+  updateDialogInProgress = true;
+  try {
+    const newVersion = getUpdateVersion(updateInfo);
+    const result = await showUpdateMessageBox({
+      type: 'info',
+      buttons: ['稍后安装', '立即安装'],
+      defaultId: 1,
+      cancelId: 0,
+      title: '更新已下载',
+      message: `新版本 v${newVersion} 已下载完成`,
+      detail: '更新包已从 GitHub Releases 下载完成。\n点击“立即安装”后，应用会退出并安装新版本。'
+    });
+
+    if (result.response === 1) {
+      console.log('[Update] 用户选择立即安装更新');
+      setImmediate(() => {
+        autoUpdater.quitAndInstall(false, true);
+      });
+    } else {
+      console.log('[Update] 用户选择稍后安装，退出应用时会自动安装');
+    }
+  } finally {
+    updateDialogInProgress = false;
+  }
+}
+
+function initializeAutoUpdater() {
+  if (autoUpdaterInitialized || !isGithubAutoUpdateAvailable()) {
+    if (!isGithubAutoUpdateAvailable()) {
+      console.log('[Update] 当前环境不启用 GitHub 自动更新:', getAutoUpdateUnavailableReason());
+    }
+    return;
+  }
+
+  autoUpdaterInitialized = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[Update] 开始从 GitHub Releases 检查更新');
+  });
+
+  autoUpdater.on('update-available', (updateInfo) => {
+    const version = getUpdateVersion(updateInfo);
+    const source = activeUpdateCheckContext?.source || 'background';
+    console.log('[Update] 发现新版本:', version, 'source=', source);
+    resolveActiveUpdateCheck({
+      hasUpdate: true,
+      version,
+      source,
+      provider: 'github'
+    });
+    void promptForUpdateDownload(updateInfo, source);
+  });
+
+  autoUpdater.on('update-not-available', (updateInfo) => {
+    const source = activeUpdateCheckContext?.source || 'background';
+    const isManual = Boolean(activeUpdateCheckContext?.manual);
+    console.log('[Update] 当前已是最新版本 source=', source, 'version=', getUpdateVersion(updateInfo));
+    resolveActiveUpdateCheck({
+      hasUpdate: false,
+      source,
+      provider: 'github'
+    });
+    if (isManual) {
+      void showNoUpdateDialog();
+    }
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Number(progress?.percent || 0).toFixed(2);
+    console.log(`[Update] 下载进度: ${percent}%`);
+  });
+
+  autoUpdater.on('update-downloaded', (updateInfo) => {
+    updateDownloadInProgress = false;
+    console.log('[Update] 更新下载完成:', getUpdateVersion(updateInfo));
+    pendingDownloadedUpdateInfo = updateInfo;
+    if (!updateDialogInProgress) {
+      const downloadedInfo = pendingDownloadedUpdateInfo;
+      pendingDownloadedUpdateInfo = null;
+      void promptToInstallDownloadedUpdate(downloadedInfo);
+    }
+  });
+
+  autoUpdater.on('error', (error) => {
+    const message = error?.message || String(error);
+    const shouldShowDialog = Boolean(activeUpdateCheckContext?.manual) || updateDownloadInProgress;
+    updateDownloadInProgress = false;
+    console.error('[Update] GitHub 自动更新失败:', message);
+    resolveActiveUpdateCheck({
+      hasUpdate: false,
+      error: message,
+      provider: 'github'
+    });
+    if (shouldShowDialog) {
+      void showUpdateErrorDialog(message);
+    }
+  });
 }
 
 /**
  * 检查更新
- * @returns {Promise<{hasUpdate: boolean, version?: string, url?: string, error?: string}>}
+ * @param {{manual?: boolean, source?: string}} options
+ * @returns {Promise<{hasUpdate: boolean, version?: string, source?: string, provider?: string, skipped?: boolean, error?: string}>}
  */
-async function checkForUpdate() {
-  return new Promise((resolve) => {
-    const versionUrl = getVersionCheckUrl();
-    const isLocal = versionUrl.startsWith('http://localhost');
-    const method = isLocal ? 'GET' : 'POST';
-    console.log('[Update] 检查更新:', versionUrl, '方法:', method);
+async function checkForUpdate(options = {}) {
+  const manual = Boolean(options.manual);
+  const source = options.source || (manual ? 'manual' : 'startup');
 
-    const urlObj = new URL(versionUrl);
-    const httpModule = urlObj.protocol === 'https:' ? https : http;
-
-    const requestOptions = {
-      method: method,
-      timeout: 10000,
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
-    };
-
-    // POST 请求需要设置 Content-Type
-    if (!isLocal) {
-      requestOptions.headers['Content-Type'] = 'application/json';
+  if (!isGithubAutoUpdateAvailable()) {
+    const reason = getAutoUpdateUnavailableReason();
+    console.log('[Update] 跳过 GitHub 自动更新检查:', reason);
+    if (manual) {
+      await showAutoUpdateUnavailableDialog(reason);
     }
-
-    const req = httpModule.request(versionUrl, requestOptions, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const result = JSON.parse(data);
-          console.log('[Update] 服务器响应:', result);
-
-          if (result.code === 200 && result.data) {
-            const remoteVersion = result.data.version;
-            const downloadUrl = result.data.url;
-
-            console.log(`[Update] 当前版本: ${APP_VERSION}, 服务器版本: ${remoteVersion}`);
-
-            if (compareVersions(remoteVersion, APP_VERSION) > 0) {
-              console.log('[Update] 发现新版本!');
-              resolve({
-                hasUpdate: true,
-                version: remoteVersion,
-                url: downloadUrl
-              });
-            } else {
-              console.log('[Update] 已是最新版本');
-              resolve({ hasUpdate: false });
-            }
-          } else {
-            console.log('[Update] 响应格式错误:', result);
-            resolve({ hasUpdate: false, error: '响应格式错误' });
-          }
-        } catch (err) {
-          console.error('[Update] 解析响应失败:', err.message);
-          resolve({ hasUpdate: false, error: err.message });
-        }
-      });
-      res.on('error', (err) => {
-        console.error('[Update] 响应流错误:', err.message);
-        resolve({ hasUpdate: false, error: err.message });
-      });
-    });
-
-    req.on('error', (err) => {
-      console.error('[Update] 请求失败:', err.message);
-      resolve({ hasUpdate: false, error: err.message });
-    });
-
-    req.on('timeout', () => {
-      console.error('[Update] 请求超时');
-      req.destroy();
-      resolve({ hasUpdate: false, error: '请求超时' });
-    });
-
-    // http.request() 需要手动调用 end()（http.get() 会自动调用）
-    req.end();
-  });
-}
-
-/**
- * 显示更新对话框
- * @param {string} newVersion 新版本号
- * @param {string} downloadUrl 下载地址
- */
-async function showUpdateDialog(newVersion, downloadUrl) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    console.log('[Update] 主窗口不可用，无法显示更新对话框');
-    return;
+    return {
+      hasUpdate: false,
+      skipped: true,
+      error: reason,
+      source,
+      provider: 'github'
+    };
   }
 
-  console.log('[Update] 显示更新对话框, 新版本:', newVersion);
+  initializeAutoUpdater();
 
-  const result = await dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    buttons: ['稍后更新', '立即下载'],
-    defaultId: 1,
-    cancelId: 0,
-    title: '发现新版本',
-    message: `发现新版本 v${newVersion}`,
-    detail: `当前版本: v${APP_VERSION}\n新版本: v${newVersion}\n\n点击"立即下载"将在浏览器中打开下载链接。\n下载完成后请手动安装新版本。`
+  if (activeUpdateCheckContext?.promise) {
+    console.log('[Update] 已有检查任务在执行，复用现有 Promise');
+    return activeUpdateCheckContext.promise;
+  }
+
+  const promise = new Promise((resolve) => {
+    activeUpdateCheckContext = { manual, source, resolve, promise: null };
+    autoUpdater.checkForUpdates().catch((error) => {
+      const message = error?.message || String(error);
+      console.error('[Update] 发起 GitHub 更新检查失败:', message);
+      resolveActiveUpdateCheck({
+        hasUpdate: false,
+        error: message,
+        source,
+        provider: 'github'
+      });
+      if (manual) {
+        void showUpdateErrorDialog(message);
+      }
+    });
   });
 
-  if (result.response === 1) {
-    // 用户选择立即下载
-    console.log('[Update] 用户选择下载, URL:', downloadUrl);
-
-    // 使用系统默认浏览器打开下载链接
-    shell.openExternal(downloadUrl);
-
-    // 提示用户
-    await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['确定'],
-      title: '下载已开始',
-      message: '下载链接已在浏览器中打开',
-      detail: '下载完成后，请关闭当前程序并运行新版本安装包进行更新。'
-    });
-  } else {
-    console.log('[Update] 用户选择稍后更新');
-  }
+  activeUpdateCheckContext.promise = promise;
+  return await promise;
 }
 
 /**
@@ -2180,11 +2327,7 @@ function scheduleUpdateCheck() {
   // 延迟 5 秒后检查更新，避免影响启动速度
   setTimeout(async () => {
     console.log('[Update] 开始检查更新...');
-    const updateInfo = await checkForUpdate();
-
-    if (updateInfo.hasUpdate && updateInfo.version && updateInfo.url) {
-      await showUpdateDialog(updateInfo.version, updateInfo.url);
-    }
+    await checkForUpdate({ manual: false, source: 'startup' });
   }, 5000);
 }
 
@@ -4113,6 +4256,7 @@ app.whenReady().then(async () => {
 
   createWindow();
   createTray();
+  initializeAutoUpdater();
 
   // 启动后检查更新（延迟执行，避免影响启动速度）
   scheduleUpdateCheck();
@@ -4476,14 +4620,7 @@ ipcMain.handle('get-app-version', () => {
 
 // 手动检查更新（可由前端触发）
 ipcMain.handle('check-for-update', async () => {
-  const updateInfo = await checkForUpdate();
-
-  if (updateInfo.hasUpdate && updateInfo.version && updateInfo.url) {
-    // 显示更新对话框
-    await showUpdateDialog(updateInfo.version, updateInfo.url);
-  }
-
-  return updateInfo;
+  return await checkForUpdate({ manual: true, source: 'manual' });
 });
 
 // 获取新窗口模式状态

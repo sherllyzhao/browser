@@ -5,13 +5,24 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build:dev": "node build-scripts/set-env.js dev && electron-builder --win",
-    "build:prod": "node build-scripts/set-env.js prod && electron-builder --win",
-    "build:dev:portable": "node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
-    "build:prod:portable": "node build-scripts/set-env.js prod && electron-builder --win portable --ia32",
-    "build": "npm run build:prod",
+    "build:win:dev": "node build-scripts/set-env.js dev && electron-builder --win",
+    "build:win:prod": "node build-scripts/set-env.js prod && electron-builder --win",
+    "build:win:dev:portable": "node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
+    "build:win:prod:portable": "node build-scripts/set-env.js prod && electron-builder --win portable --ia32",
+    "release:win:dev": "node build-scripts/set-env.js dev && electron-builder --win --publish always",
+    "release:win:prod": "node build-scripts/set-env.js prod && electron-builder --win --publish always",
+    "build:mac:dev": "node build-scripts/set-env.js dev && electron-builder --mac --publish never",
+    "build:mac:prod": "node build-scripts/set-env.js prod && electron-builder --mac --publish never",
+    "release:mac:dev": "node build-scripts/set-env.js dev && electron-builder --mac --publish always",
+    "release:mac:prod": "node build-scripts/set-env.js prod && electron-builder --mac --publish always",
+    "build:dev": "npm run build:win:dev",
+    "build:prod": "npm run build:win:prod",
+    "build:dev:portable": "npm run build:win:dev:portable",
+    "build:prod:portable": "npm run build:win:prod:portable",
+    "build:mac": "npm run build:mac:prod",
+    "build": "npm run build:win:prod",
     "build:dir": "electron-builder --win --dir",
-    "build:portable": "npm run build:prod:portable"
+    "build:portable": "npm run build:win:prod:portable"
   },
   "build": {
     "appId": "com.zhcloud.browser",
@@ -26,8 +37,17 @@
     "asarUnpack": [
       "injected-scripts/**"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sherllyzhao",
+        "repo": "browser",
+        "releaseType": "release"
+      }
+    ],
     "win": {
       "icon": "icon.ico",
+      "artifactName": "资海云运营助手-安装版-${version}-${arch}.${ext}",
       "signAndEditExecutable": true,
       "verifyUpdateCodeSignature": false,
       "target": [
@@ -57,6 +77,43 @@
       "shortcutName": "资海云运营助手",
       "deleteAppDataOnUninstall": true,
       "include": "installer.nsh"
+    },
+    "mac": {
+      "artifactName": "资海云运营助手-mac-${version}-${arch}.${ext}",
+      "icon": "icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "ZhCloud-Browser ${version}",
+      "backgroundColor": "#ffffff",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   },
   "keywords": [],
@@ -68,6 +125,7 @@
     "electron-builder": "^24.6.4"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "fs-extra": "^11.2.0"
   }
 }
