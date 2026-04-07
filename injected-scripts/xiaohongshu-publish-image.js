@@ -103,7 +103,14 @@ if (location.search.includes("published=true")) {
 
         async function handleImageUploadAbort(dataObj, error) {
             const publishId = dataObj?.video?.dyPlatform?.id;
-            const imageUrl = dataObj?.image?.image?.url || "";
+            const imageUrl = dataObj?.sourceUrl
+                || dataObj?.video?.video?.url
+                || dataObj?.video?.video?.cover
+                || dataObj?.element?.image
+                || dataObj?.element?.image_url
+                || dataObj?.element?.imageUrl
+                || dataObj?.element?.url
+                || "";
             const errorMessage = error?.code === "UNSUPPORTED_GIF_IMAGE"
                 ? "检测到原图为 GIF 格式，小红书不支持 GIF 及其转化图片，请更换 PNG/JPG/WebP 静态图"
                 : (error?.message || "图片上传失败");

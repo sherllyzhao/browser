@@ -951,7 +951,13 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 上传图片到input元素
     window.uploadImage = async function (dataObj, shadowRoot = undefined) {
-        const pathImage = dataObj?.video?.video?.url;
+        const pathImage = dataObj?.sourceUrl
+            || dataObj?.video?.video?.url
+            || dataObj?.video?.video?.cover
+            || dataObj?.element?.image
+            || dataObj?.element?.image_url
+            || dataObj?.element?.imageUrl
+            || dataObj?.element?.url;
         console.log("🚀 ~ uploadImage ~ pathImage: ", pathImage);
         if (!pathImage) {
             //alert('No image URL found');
@@ -1031,7 +1037,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         const extension = resolveImageExtension(pathImage, contentType);
 
         // 构建文件名，确保有扩展名
-        let fileName = dataObj?.image?.formData?.title || "image";
+        let fileName = dataObj?.video?.formData?.title || dataObj?.image?.formData?.title || "image";
         if (!fileName.toLowerCase().endsWith(extension.toLowerCase())) {
             fileName = fileName + extension;
         }
