@@ -6401,10 +6401,19 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
+      const closedWindowContext = windowContextMap.get(windowId) || null;
       const index = childWindows.indexOf(newWindow);
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
+      }
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        browserView.webContents.send('managed-window-closed', {
+          windowId,
+          timestamp: Date.now(),
+          context: closedWindowContext
+        });
+        console.log('[Window Manager] 已通知首页子窗口关闭:', windowId);
       }
       windowContextMap.delete(windowId);
       toutiaoBarePublishState.delete(windowId);

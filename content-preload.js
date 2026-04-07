@@ -126,6 +126,9 @@ const PLATFORM_CONFIG_ALIASES = {
 };
 
 const LOCAL_PLATFORM_CONFIG_FALLBACK = {
+  publish: {
+    maxConcurrentWindows: 5
+  },
   platforms: {
     souhuhao: {
       publishPageUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
@@ -363,6 +366,233 @@ let isPublishing = false;
 
 // 待发送的消息队列（按 windowId 存储，等窗口加载完成后发送）
 const pendingMessages = new Map();
+const DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS = 5;
+const publishWindowScheduler = {
+  pendingJobs: [],
+  activeJobs: new Map(),
+  isLaunching: false,
+  batchId: 0,
+  maxConcurrentWindows: DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS
+};
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getSchedulerSnapshot() {
+  return {
+    activeCount: publishWindowScheduler.activeJobs.size,
+    pendingCount: publishWindowScheduler.pendingJobs.length,
+    batchId: publishWindowScheduler.batchId,
+    maxConcurrentWindows: publishWindowScheduler.maxConcurrentWindows
+  };
+}
+
+function resolveMaxConcurrentPublishWindows(platformConfig) {
+  const value = Number(platformConfig?.publish?.maxConcurrentWindows);
+  if (Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  return DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS;
+}
+
+function buildPublishWindowJob(element, index, total, platformMap, platformFullNameMap, urlMap) {
+  const platform = platformMap[element.account_info.media.id];
+  const platformFullName = platformFullNameMap[platform];
+  const publishTarget = detectPublishContentType(element);
+  const platformUrls = urlMap[platform] || {};
+  const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
+  console.log(`🚀 [${index + 1}/${total}] platform: ${platform}, contentType: ${publishTarget.contentType}, ext: ${publishTarget.extension || 'unknown'}, url: ${url}`);
+
+  if (!url) {
+    console.error(`❌ [${index + 1}] 未找到发布地址: platform=${platform}, contentType=${publishTarget.contentType}`);
+    return null;
+  }
+
+  const openOptions = {};
+  const ENABLE_MULTI_ACCOUNT = true;
+  let cookiesData = null;
+  let cookiesArray = [];
+  if (element.cookies) {
+    try {
+      cookiesData = typeof element.cookies === 'string' ? JSON.parse(element.cookies) : element.cookies;
+      if (Array.isArray(cookiesData)) {
+        cookiesArray = cookiesData;
+      } else if (cookiesData.cookies && Array.isArray(cookiesData.cookies)) {
+        cookiesArray = cookiesData.cookies;
+      }
+      console.log('🚀 ~ element.cookies 解析成功, cookies 数量:', cookiesArray.length);
+    } catch (e) {
+      console.error('🚀 ~ element.cookies 解析失败:', e);
+    }
+  }
+
+  if (ENABLE_MULTI_ACCOUNT && element.cookies) {
+    const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    if (platformFullName) {
+      openOptions.platform = platformFullName;
+      openOptions.accountId = uniqueSessionId;
+      console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
+    }
+    openOptions.sessionData = element.cookies;
+    console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
+  } else if (element.cookies) {
+    console.log('[BrowserAPI] 📋 检测到 cookies 数据，但多账号模式已禁用，使用共享 session');
+  } else {
+    console.log('[BrowserAPI] 📋 普通模式（无 cookies 数据），使用共享 session（persist:browserview）');
+  }
+
+  const basePublishData = {
+    element,
+    platform,
+    createdAt: Date.now(),
+    contentType: publishTarget.contentType,
+    detectedFileExtension: publishTarget.extension,
+    sourceUrl: publishTarget.sourceUrl,
+    video: {
+      formData: element.formData || { title: element.title, send_set: 1 },
+      video: {
+        cover: element.url || element.image,
+        title: element.title,
+        intro: element.intro,
+        content: element.content,
+        url: element.url,
+        sendlog: element.sendlog || {
+          title: element.title,
+          intro: element.intro
+        }
+      },
+      dyPlatform: element.dyPlatform || { id: element.id }
+    }
+  };
+  openOptions.publishData = basePublishData;
+
+  try {
+    const publishUrl = new URL(url);
+    openOptions.windowContext = {
+      purpose: 'publish',
+      platform,
+      contentType: publishTarget.contentType,
+      expectedPageUrl: url,
+      safeOrigin: publishUrl.origin,
+      bootstrapUrl: `${publishUrl.origin}/`,
+      guardResourceUrls: true
+    };
+  } catch (e) {
+    console.warn('[BrowserAPI] ⚠️ 构建窗口上下文失败，降级使用目标 URL:', e);
+    openOptions.windowContext = {
+      purpose: 'publish',
+      platform,
+      contentType: publishTarget.contentType,
+      expectedPageUrl: url,
+      safeOrigin: '',
+      bootstrapUrl: url,
+      guardResourceUrls: true
+    };
+  }
+
+  return {
+    index,
+    total,
+    platform,
+    platformFullName,
+    url,
+    openOptions,
+    basePublishData
+  };
+}
+
+function schedulePublishWindowLaunch() {
+  setTimeout(() => {
+    launchQueuedPublishWindows().catch(err => {
+      console.error('[BrowserAPI] ❌ 发布窗口调度失败:', err);
+    });
+  }, 0);
+}
+
+async function launchQueuedPublishWindows() {
+  if (publishWindowScheduler.isLaunching) {
+    return;
+  }
+
+  publishWindowScheduler.isLaunching = true;
+  try {
+    while (
+      publishWindowScheduler.activeJobs.size < publishWindowScheduler.maxConcurrentWindows &&
+      publishWindowScheduler.pendingJobs.length > 0
+    ) {
+      const job = publishWindowScheduler.pendingJobs.shift();
+      console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(job.openOptions, null, 2));
+      const result = await ipcRenderer.invoke('open-new-window', job.url, job.openOptions);
+      if (!result.success) {
+        console.error(`❌ [${job.index + 1}] 打开窗口失败: ${result.error}`);
+        continue;
+      }
+
+      const windowId = result.windowId;
+      publishWindowScheduler.activeJobs.set(windowId, {
+        ...job,
+        windowId
+      });
+      console.log(`✅ [${job.index + 1}] 窗口创建成功, windowId: ${windowId}`);
+
+      const publishData = {
+        ...job.basePublishData,
+        windowId
+      };
+      await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
+      console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
+
+      pendingMessages.set(windowId, {
+        type: 'publish-data',
+        platform: job.platform,
+        windowId,
+        data: publishData
+      });
+      console.log(`[BrowserAPI] 📋 已存储待发送消息, windowId: ${windowId}, 等待窗口加载完成...`);
+      console.log('[BrowserAPI] 📊 当前发布窗口调度状态:', getSchedulerSnapshot());
+
+      if (
+        publishWindowScheduler.activeJobs.size < publishWindowScheduler.maxConcurrentWindows &&
+        publishWindowScheduler.pendingJobs.length > 0
+      ) {
+        await delay(500);
+      }
+    }
+  } finally {
+    publishWindowScheduler.isLaunching = false;
+  }
+
+  if (
+    publishWindowScheduler.activeJobs.size < publishWindowScheduler.maxConcurrentWindows &&
+    publishWindowScheduler.pendingJobs.length > 0
+  ) {
+    schedulePublishWindowLaunch();
+    return;
+  }
+
+  if (publishWindowScheduler.pendingJobs.length === 0) {
+    console.log('[BrowserAPI] ✅ 发布窗口待启动队列已清空，当前活跃窗口数:', publishWindowScheduler.activeJobs.size);
+  }
+}
+
+ipcRenderer.on('managed-window-closed', (event, data = {}) => {
+  console.log('[BrowserAPI] 收到 managed-window-closed 事件:', data);
+  const { windowId } = data;
+  if (!publishWindowScheduler.activeJobs.has(windowId)) {
+    pendingMessages.delete(windowId);
+    return;
+  }
+
+  publishWindowScheduler.activeJobs.delete(windowId);
+  pendingMessages.delete(windowId);
+  console.log(`[BrowserAPI] 🧹 发布窗口已关闭，释放并发槽位: windowId=${windowId}`);
+  console.log('[BrowserAPI] 📊 当前发布窗口调度状态:', getSchedulerSnapshot());
+
+  if (publishWindowScheduler.pendingJobs.length > 0) {
+    schedulePublishWindowLaunch();
+  }
+});
 
 // 监听窗口加载完成事件（在这里发送消息，替代 setTimeout 延时）
 ipcRenderer.on('window-loaded', (event, data) => {
@@ -471,151 +701,34 @@ contextBridge.exposeInMainWorld('browserAPI', {
       (async () => {
         const platformConfig = await getRuntimePlatformConfig();
         const urlMap = buildPlatformPublishUrlMap(platformConfig);
+        publishWindowScheduler.maxConcurrentWindows = resolveMaxConcurrentPublishWindows(platformConfig);
+        const jobs = [];
 
         for (let index = 0; index < dataArray.length; index++) {
           const element = dataArray[index];
-          const platform = platformMap[element.account_info.media.id];
-          const platformFullName = platformFullNameMap[platform];
-          const publishTarget = detectPublishContentType(element);
-          const platformUrls = urlMap[platform] || {};
-          const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
-          console.log(`🚀 [${index + 1}/${dataArray.length}] platform: ${platform}, contentType: ${publishTarget.contentType}, ext: ${publishTarget.extension || 'unknown'}, url: ${url}`);
-
-          if (!url) {
-            console.error(`❌ [${index + 1}] 未找到发布地址: platform=${platform}, contentType=${publishTarget.contentType}`);
-            continue;
-          }
-
-          // 构建 openNewWindow 的 options
-          // 如果有 cookies 数据，传入 sessionData 让浏览器自动清空并恢复
-          const openOptions = {};
-
-          // 🔑 多账号模式开关
-          // true: 每个窗口使用独立 session，从父页面传入的 cookies 恢复登录状态
-          // false: 所有窗口使用共享 session（persist:browserview）
-          const ENABLE_MULTI_ACCOUNT = true;
-
-          // 解析 element.cookies（格式: {domain, timestamp, cookies: [...]} 或 JSON 字符串）
-          let cookiesData = null;
-          let cookiesArray = [];
-          if (element.cookies) {
-            try {
-              cookiesData = typeof element.cookies === 'string' ? JSON.parse(element.cookies) : element.cookies;
-              // cookiesData 可能是 {domain, cookies: [...]} 或直接是数组
-              if (Array.isArray(cookiesData)) {
-                cookiesArray = cookiesData;
-              } else if (cookiesData.cookies && Array.isArray(cookiesData.cookies)) {
-                cookiesArray = cookiesData.cookies;
-              }
-              console.log("🚀 ~ element.cookies 解析成功, cookies 数量:", cookiesArray.length);
-            } catch (e) {
-              console.error("🚀 ~ element.cookies 解析失败:", e);
-            }
-          }
-
-          // 🔑 关键判断：只要 element.cookies 存在（即使内部 cookies 数组为空），就使用多账号模式
-          // 这样每个账号窗口使用独立 session，避免登录状态互相干扰
-          if (ENABLE_MULTI_ACCOUNT && element.cookies) {
-            // 多账号模式：为每个窗口创建唯一的 session ID
-            const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-            if (platformFullName) {
-              openOptions.platform = platformFullName;
-              openOptions.accountId = uniqueSessionId;
-              console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
-            }
-            openOptions.sessionData = element.cookies;  // 传原始数据，main.js 会解析
-            console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
-          } else {
-            // 普通模式：使用共享 session，保持现有登录状态
-            if (element.cookies) {
-              console.log(`[BrowserAPI] 📋 检测到 cookies 数据，但多账号模式已禁用，使用共享 session`);
-            } else {
-              console.log(`[BrowserAPI] 📋 普通模式（无 cookies 数据），使用共享 session（persist:browserview）`);
-            }
-          }
-
-          const basePublishData = {
+          const job = buildPublishWindowJob(
             element,
-            platform,
-            createdAt: Date.now(),
-            contentType: publishTarget.contentType,
-            detectedFileExtension: publishTarget.extension,
-            sourceUrl: publishTarget.sourceUrl,
-            video: {
-              formData: element.formData || { title: element.title, send_set: 1 },
-              video: {
-                cover: element.url || element.image,
-                title: element.title,
-                intro: element.intro,
-                content: element.content,
-                url: element.url,
-                sendlog: element.sendlog || {
-                  title: element.title,
-                  intro: element.intro,
-                }
-              },
-              dyPlatform: element.dyPlatform || { id: element.id }
-            },
-          };
-          openOptions.publishData = basePublishData;
-          try {
-            const publishUrl = new URL(url);
-            openOptions.windowContext = {
-              purpose: 'publish',
-              platform,
-              contentType: publishTarget.contentType,
-              expectedPageUrl: url,
-              safeOrigin: publishUrl.origin,
-              bootstrapUrl: `${publishUrl.origin}/`,
-              guardResourceUrls: true
-            };
-          } catch (e) {
-            console.warn('[BrowserAPI] ⚠️ 构建窗口上下文失败，降级使用目标 URL:', e);
-            openOptions.windowContext = {
-              purpose: 'publish',
-              platform,
-              contentType: publishTarget.contentType,
-              expectedPageUrl: url,
-              safeOrigin: '',
-              bootstrapUrl: url,
-              guardResourceUrls: true
-            };
-          }
-
-          // 打开新窗口，获取窗口 ID
-          console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(openOptions, null, 2));
-          const result = await ipcRenderer.invoke('open-new-window', url, openOptions);
-          if (!result.success) {
-            console.error(`❌ [${index + 1}] 打开窗口失败: ${result.error}`);
-            continue; // 继续下一个，不要 return
-          }
-
-          const windowId = result.windowId;
-          console.log(`✅ [${index + 1}] 窗口创建成功, windowId: ${windowId}`);
-
-          // 用窗口 ID 作为 key 存储数据，避免多窗口冲突
-          const publishData = {
-            ...basePublishData,
-            windowId,
-          };
-          await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
-          console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
-
-          // 存储待发送的消息，等窗口加载完成事件触发后发送（替代 setTimeout 延时）
-          pendingMessages.set(windowId, {
-            type: 'publish-data',
-            platform: platform,
-            windowId: windowId,
-            data: publishData
-          });
-          console.log(`[BrowserAPI] 📋 已存储待发送消息, windowId: ${windowId}, 等待窗口加载完成...`);
-
-          // 每个窗口之间稍微延迟，避免同时创建太多
-          if (index < dataArray.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
+            index,
+            dataArray.length,
+            platformMap,
+            platformFullNameMap,
+            urlMap
+          );
+          if (job) {
+            jobs.push(job);
           }
         }
-        console.log(`[BrowserAPI] ✅ 所有 ${dataArray.length} 个窗口已创建完成`);
+
+        if (jobs.length === 0) {
+          console.warn('[BrowserAPI] ⚠️ 没有可创建的发布窗口任务');
+          return;
+        }
+
+        publishWindowScheduler.batchId += 1;
+        publishWindowScheduler.pendingJobs.push(...jobs);
+        console.log(`[BrowserAPI] ✅ 已加入 ${jobs.length} 个发布窗口任务，最多并发 ${publishWindowScheduler.maxConcurrentWindows} 个`);
+        console.log('[BrowserAPI] 📊 当前发布窗口调度状态:', getSchedulerSnapshot());
+        await launchQueuedPublishWindows();
       })();
 
       // publish-data 类型的消息已经在循环中处理，不需要再次发送
