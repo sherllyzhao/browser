@@ -17,10 +17,7 @@ class ScriptManager {
   }
 
   resolveRemoteEnabled(rawEnabled) {
-    if (this.isDevMode) {
-      return false;
-    }
-    return true;
+    return !this.isDevMode;
   }
 
   // 初始化脚本目录和清单文件
