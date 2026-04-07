@@ -99,6 +99,7 @@
     let publishData = null;
     let publishSuccessData = null;
 
+    
     try {
         publishData = await window.browserAPI?.getGlobalData?.(publishDataKey);
         publishSuccessData = await window.browserAPI?.getGlobalData?.(publishSuccessKey);

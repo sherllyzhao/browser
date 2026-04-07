@@ -81,6 +81,21 @@ const STATIC_RESOURCE_EXTENSIONS = new Set([
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
   '.json', '.txt', '.xml', '.pdf', '.mp4', '.webm'
 ]);
+const GENERIC_TEXTUAL_MIME_TYPES = new Set([
+  'text/plain',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'text/octet-stream',
+  'application/unknown'
+]);
+const JAVASCRIPT_MIME_TYPES = new Set([
+  'application/javascript',
+  'text/javascript',
+  'application/x-javascript'
+]);
+const CSS_MIME_TYPES = new Set([
+  'text/css'
+]);
 
 function getUrlInfo(rawUrl = '') {
   try {
@@ -117,20 +132,56 @@ function isStaticResourceUrl(rawUrl = '') {
   return STATIC_RESOURCE_EXTENSIONS.has(ext);
 }
 
-function shouldApplyContentTypePatch(details = {}) {
+function normalizeContentTypeHeaderValue(rawValue) {
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  return String(value || '').split(';')[0].trim().toLowerCase();
+}
+
+function resolvePatchedContentType(details = {}) {
   const resourceType = String(details.resourceType || '').toLowerCase();
-  if (resourceType !== 'script' && resourceType !== 'stylesheet') {
-    return { shouldPatch: false, mimeType: '' };
+  const ext = getUrlPathExtension(details.url || '');
+  const isScriptLike = resourceType === 'script' || ext === '.js' || ext === '.mjs' || ext === '.cjs';
+  const isStylesheetLike = resourceType === 'stylesheet' || ext === '.css';
+
+  if (isStylesheetLike) {
+    return 'text/css; charset=utf-8';
+  }
+  if (isScriptLike) {
+    return 'application/javascript; charset=utf-8';
+  }
+  return '';
+}
+
+function shouldOverrideContentType(rawContentType = '', patchedContentType = '') {
+  if (!patchedContentType) return false;
+
+  const currentMimeType = normalizeContentTypeHeaderValue(rawContentType);
+  if (!currentMimeType) return true;
+
+  const patchedMimeType = normalizeContentTypeHeaderValue(patchedContentType);
+  if (currentMimeType === patchedMimeType) return false;
+
+  if (patchedMimeType === 'text/css') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !CSS_MIME_TYPES.has(currentMimeType);
   }
 
-  const ext = getUrlPathExtension(details.url || '');
-  if (resourceType === 'stylesheet' && ext === '.css') {
-    return { shouldPatch: true, mimeType: 'text/css; charset=utf-8' };
+  if (patchedMimeType === 'application/javascript') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !JAVASCRIPT_MIME_TYPES.has(currentMimeType);
   }
-  if (resourceType === 'script' && (ext === '.js' || ext === '.mjs' || ext === '.cjs')) {
-    return { shouldPatch: true, mimeType: 'application/javascript; charset=utf-8' };
+
+  return false;
+}
+
+function shouldApplyContentTypePatch(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  const mimeType = resolvePatchedContentType(details);
+  if (!mimeType) {
+    return { shouldPatch: false, mimeType: '' };
   }
-  return { shouldPatch: false, mimeType: '' };
+  if (resourceType === 'mainframe' || resourceType === 'subframe') {
+    return { shouldPatch: false, mimeType: '' };
+  }
+  return { shouldPatch: true, mimeType };
 }
 
 function normalizeContextPurpose(options = {}) {
@@ -977,16 +1028,16 @@ async function navigateToLoginInternal(reason) {
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
-// 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
-// ⚠️ 注意：不影响富文本编辑器，只处理静态资源
+// 仅在响应头缺失或明显错误时修正，避免把真实 HTML/文档页误判成代码资源
+// ⚠️ 注意：不影响富文本编辑器，只处理脚本/样式静态资源
 function addContentTypeFix(targetSession, label) {
   targetSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = details.responseHeaders || {};
     const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
     const patchPlan = shouldApplyContentTypePatch(details);
 
-    // 只修复脚本/样式资源，避免把富文本 iframe 或文档页误判成代码资源
-    if (!ct && patchPlan.shouldPatch) {
+    // 只修复脚本/样式资源，且仅在 Content-Type 缺失或明显错误时修正
+    if (patchPlan.shouldPatch && shouldOverrideContentType(ct, patchPlan.mimeType)) {
       responseHeaders['Content-Type'] = [patchPlan.mimeType];
     }
 
