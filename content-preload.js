@@ -1,5 +1,50 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🎭 视频号登录页预隐藏 - 在页面渲染前隐藏，防止用户看到扫码界面闪烁
+// 必须在最开始执行，比反自动化检测更早
+(function preHideShipinhaoLogin() {
+  try {
+    const currentUrl = window.location.href;
+    // 仅对视频号登录页生效
+    if (currentUrl.includes('channels.weixin.qq.com/login.html')) {
+      console.log('[Shipinhao PreHide] 检测到视频号登录页，注入预隐藏样式');
+
+      // 使用 webFrame.insertCSS 在页面渲染前注入样式（比 DOM 操作更早）
+      webFrame.insertCSS(`
+        html {
+          visibility: hidden !important;
+          background: #fff !important;
+        }
+        /* 刷新后恢复显示（通过检测 sessionStorage 标记） */
+        html[data-shipinhao-refreshed] {
+          visibility: visible !important;
+        }
+      `);
+
+      // 在 DOM 准备好后检查是否已刷新过
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+          const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
+          if (refreshed) {
+            document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
+            console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
+          } else {
+            console.log('[Shipinhao PreHide] 首次加载，保持隐藏状态');
+          }
+        });
+      } else {
+        const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
+        if (refreshed) {
+          document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
+          console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Shipinhao PreHide] 预隐藏失败:', err);
+  }
+})();
+
 // 🛡️ 反自动化检测 - 隐藏 Electron/Webdriver 特征
 // 必须在最开始执行，在页面脚本之前
 (function injectAntiDetection() {
