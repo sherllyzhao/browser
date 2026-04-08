@@ -20,12 +20,28 @@
       "output": "dist"
     },
     "files": [
-      "**/*",
-      "!dist/**"
+      "main.js",
+      "preload.js",
+      "content-preload.js",
+      "renderer.js",
+      "script-manager.js",
+      "domain-config.js",
+      "index.html",
+      "login.html",
+      "not-auth.html",
+      "not-available.html",
+      "not-purchase.html",
+      "icon.ico",
+      "icon.png",
+      "logo1.png",
+      "package.json",
+      "injected-scripts/**",
+      "assets/**"
     ],
     "asarUnpack": [
       "injected-scripts/**"
     ],
+    "afterPack": "./build-scripts/afterPack.js",
     "win": {
       "icon": "icon.ico",
       "signAndEditExecutable": true,
