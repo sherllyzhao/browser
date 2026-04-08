@@ -39,12 +39,15 @@ let hasProcessed = false;
   // 🔑 视频号白屏检测和自动恢复（使用公共函数）
   // ===========================
   if (typeof window.checkBlankPageAndReload === 'function') {
+    // 优化参数：延迟 5 秒检测（给慢网络更多时间），最多重试 5 次
     window.checkBlankPageAndReload('视频号发布', [
       'wujie-app',
       '.post-short-title-wrap',
       '.input-editor',
-      '.form-btns'
-    ], 3000, 3);
+      '.form-btns',
+      '.weui-desktop-btn',  // 发布按钮
+      '.post-time-wrap'     // 发布时间设置区域
+    ], 5000, 5);
   }
 
   // 显示操作提示横幅
