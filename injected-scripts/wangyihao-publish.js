@@ -27,6 +27,17 @@
 
     window.__WYH_SCRIPT_LOADED__ = true;
 
+    // ===========================
+    // 🔑 网易号白屏检测和自动恢复（使用公共函数）
+    // ===========================
+    if (typeof window.checkBlankPageAndReload === 'function') {
+        window.checkBlankPageAndReload('网易号发布', [
+            '.editor-container',
+            '.publish-btn',
+            '.title-input'
+        ], 3000, 3);
+    }
+
     // 显示操作提示横幅
     if (typeof showOperationBanner === 'function') {
         showOperationBanner('正在自动发布中，请勿操作此页面...');

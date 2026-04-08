@@ -341,18 +341,31 @@
       if (savedPublishData || globalPublishData) {
         console.log('[视频号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
 
-        // 等待页面完全加载
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // 🔑 增加等待时间，确保登录状态完全生效（从 1 秒增加到 3 秒）
+        console.log('[视频号授权] ⏳ 等待 3 秒，确保登录状态完全生效...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
         // 🔑 优先使用保存的发布页 URL 直接跳转（更可靠，保留 URL 参数）
         if (savedPublishUrl && savedPublishUrl.includes('/platform/post/create')) {
           console.log('[视频号授权] 🔄 使用保存的发布页 URL 直接跳转:', savedPublishUrl);
+
+          // 🔑 跳转前先隐藏页面，显示 loading 动画，避免用户看到白屏
+          if (typeof window.hidePageAndShowMask === 'function') {
+            window.hidePageAndShowMask();
+          }
+
           window.location.href = savedPublishUrl;
           return;
         }
 
         // 🔑 备选方案：跳转到默认发布页
         console.log('[视频号授权] 🔄 没有保存的发布页 URL，跳转到默认发布页...');
+
+        // 跳转前先隐藏页面，显示 loading 动画
+        if (typeof window.hidePageAndShowMask === 'function') {
+          window.hidePageAndShowMask();
+        }
+
         window.location.href = 'https://channels.weixin.qq.com/platform/post/create';
       } else {
         console.log('[视频号授权] ℹ️ 没有发布数据，这是正常的授权流程');

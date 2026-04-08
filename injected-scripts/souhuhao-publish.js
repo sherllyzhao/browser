@@ -37,6 +37,17 @@
 
     window.__SH_SCRIPT_LOADED__ = true;
 
+    // ===========================
+    // 🔑 搜狐号白屏检测和自动恢复（使用公共函数）
+    // ===========================
+    if (typeof window.checkBlankPageAndReload === 'function') {
+        window.checkBlankPageAndReload('搜狐号发布', [
+            '.ne-editor',
+            '.publish-btn',
+            '.title-input'
+        ], 3000, 3);
+    }
+
     // 显示操作提示横幅
     if (typeof showOperationBanner === 'function') {
         showOperationBanner('正在自动发布中，请勿操作此页面...');

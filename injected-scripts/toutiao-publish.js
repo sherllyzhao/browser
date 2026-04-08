@@ -16,6 +16,17 @@
   // 头条发布页是富文本编辑器，跳过异常渲染检测，避免误报
   window.__TOUTIAO_PUBLISH_SCRIPT_LOADED__ = true;
 
+  // ===========================
+  // 🔑 头条白屏检测和自动恢复（使用公共函数）
+  // ===========================
+  if (typeof window.checkBlankPageAndReload === 'function') {
+    window.checkBlankPageAndReload('头条发布', [
+      '.byte-editor',
+      '.ProseMirror',
+      '.publish-button'
+    ], 3000, 3);
+  }
+
   if (typeof showOperationBanner === 'function') {
     showOperationBanner('正在自动发布中，请勿操作此页面...');
   }

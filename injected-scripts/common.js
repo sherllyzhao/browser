@@ -376,6 +376,81 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return true;
     };
 
+    /**
+     * 白屏检测和自动恢复（针对扫码登录后跳转的情况）
+     * @param {string} platform - 平台名称（如 '视频号'、'小红书'）
+     * @param {Array<string>} keySelectors - 关键元素选择器数组（用于判断页面是否正常加载）
+     * @param {number} checkDelay - 检测延迟时间（毫秒），默认 3000ms
+     * @param {number} maxRetries - 最大重试次数，默认 3 次
+     */
+    window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
+        // 获取重试次数（避免无限刷新）
+        const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
+        let retryCount = parseInt(sessionStorage.getItem(retryKey) || '0');
+
+        if (retryCount >= maxRetries) {
+            console.log(`[${platform}] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
+            sessionStorage.removeItem(retryKey);
+            return;
+        }
+
+        // 延迟检测页面是否正常加载
+        setTimeout(() => {
+            try {
+                // 检测 1: body 是否为空或几乎为空
+                const bodyText = (document.body?.innerText || '').trim();
+                const bodyHtml = (document.body?.innerHTML || '').trim();
+
+                // 检测 2: 是否有关键元素
+                let hasKeyElement = false;
+                if (keySelectors.length > 0) {
+                    for (const selector of keySelectors) {
+                        if (document.querySelector(selector)) {
+                            hasKeyElement = true;
+                            break;
+                        }
+                    }
+                } else {
+                    // 如果没有指定关键选择器，默认认为有元素（只检测 body 内容）
+                    hasKeyElement = true;
+                }
+
+                // 检测 3: 是否是白屏（body 内容很少且没有关键元素）
+                const isBlankPage = bodyText.length < 50 && bodyHtml.length < 200 && !hasKeyElement;
+
+                if (isBlankPage) {
+                    console.log(`[${platform}] ❌ 检测到白屏，准备刷新页面...`);
+                    console.log(`[${platform}] 页面状态:`, {
+                        bodyTextLength: bodyText.length,
+                        bodyHtmlLength: bodyHtml.length,
+                        hasKeyElement,
+                        retryCount,
+                        keySelectors
+                    });
+
+                    // 增加重试计数
+                    sessionStorage.setItem(retryKey, String(retryCount + 1));
+
+                    // 隐藏页面并显示 loading
+                    if (typeof window.hidePageAndShowMask === 'function') {
+                        window.hidePageAndShowMask();
+                    }
+
+                    // 延迟 1 秒后刷新
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    // 页面正常，清除重试计数
+                    sessionStorage.removeItem(retryKey);
+                    console.log(`[${platform}] ✅ 页面加载正常`);
+                }
+            } catch (e) {
+                console.error(`[${platform}] ❌ 白屏检测失败:`, e);
+            }
+        }, checkDelay);
+    };
+
     // 等待元素出现的通用函数
     // 支持特殊语法：
     //   - class^=prefix  匹配 class 中以 prefix 开头的元素（用于 CSS Modules 等随机后缀类名）
@@ -2287,7 +2362,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -2366,7 +2441,7 @@ if (typeof checkWindowIdMatch === "undefined") window.checkWindowIdMatch && (che
 if (typeof restoreSessionAndReload === "undefined") window.restoreSessionAndReload && (restoreSessionAndReload = window.restoreSessionAndReload);
 if (typeof loadPublishDataFromGlobalStorage === "undefined") window.loadPublishDataFromGlobalStorage && (loadPublishDataFromGlobalStorage = window.loadPublishDataFromGlobalStorage);
 if (typeof getCurrentWindowId === "undefined") window.getCurrentWindowId && (getCurrentWindowId = window.getCurrentWindowId);
-if (typeof extractAfterHash === "undefined") window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
+if (typeof checkBlankPageAndReload === "undefined") window.checkBlankPageAndReload && (checkBlankPageAndReload = window.checkBlankPageAndReload);
 if (typeof removeHashTags === "undefined") window.removeHashTags && (removeHashTags = window.removeHashTags);
 if (typeof getCurrentSystem === "undefined") window.getCurrentSystem && (getCurrentSystem = window.getCurrentSystem);
 if (typeof showOperationBanner === "undefined") window.showOperationBanner && (showOperationBanner = window.showOperationBanner);

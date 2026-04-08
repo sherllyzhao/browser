@@ -35,6 +35,17 @@ let hasProcessed = false;
 
   window.__DOUYIN_SCRIPT_LOADED__ = true;
 
+  // ===========================
+  // 🔑 抖音白屏检测和自动恢复（使用公共函数）
+  // ===========================
+  if (typeof window.checkBlankPageAndReload === 'function') {
+    window.checkBlankPageAndReload('抖音发布', [
+      '.editor-kit-root-container',
+      '.semi-input',
+      '.button-dhlUZE'
+    ], 3000, 3);
+  }
+
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
     showOperationBanner('正在自动发布中，请勿操作此页面...');
