@@ -23,6 +23,7 @@
     "https://creator.xiaohongshu.com/publish/publish?target=video": ["common.js", "xiaohongshu-publish.js"],
     "https://creator.xiaohongshu.com/publish/publish?target=image": ["common.js", "xiaohongshu-publish-image.js"],
     "https://creator.xiaohongshu.com/publish/publish?published=true": ["common.js", "publish-success.js"],
+    "https://creator.xiaohongshu.com/publish/publish": ["common.js", "xiaohongshu-publish.js"],
     "https://creator.xiaohongshu.com/publish/success*": ["common.js", "publish-success.js"],
     "https://channels.weixin.qq.com/platform/post/create*": ["common.js", "shipinhao-publish.js"],
     "https://channels.weixin.qq.com/platform/post/list*": ["common.js", "publish-success.js"],

@@ -14,6 +14,37 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.__COMMON_JS_LOADED__ = true;
 
     // ===========================
+    // 🔑 安全的 getGlobalData 包装函数（带超时保护）
+    // ===========================
+    /**
+     * 安全地获取全局数据，带超时保护，避免 IPC 调用卡住阻塞脚本执行
+     * @param {string} key - 数据键名
+     * @param {number} timeout - 超时时间（毫秒），默认 3000ms
+     * @returns {Promise<any>} 返回数据或 null（超时/失败时）
+     */
+    window.safeGetGlobalData = async function (key, timeout = 3000) {
+        if (!window.browserAPI?.getGlobalData) {
+            console.warn(`[safeGetGlobalData] ⚠️ browserAPI.getGlobalData 不可用`);
+            return null;
+        }
+
+        try {
+            const result = await Promise.race([
+                window.browserAPI.getGlobalData(key),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout))
+            ]);
+            return result;
+        } catch (e) {
+            if (e.message === 'timeout') {
+                console.warn(`[safeGetGlobalData] ⚠️ 获取 ${key} 超时 (${timeout}ms)`);
+            } else {
+                console.warn(`[safeGetGlobalData] ⚠️ 获取 ${key} 失败:`, e.message);
+            }
+            return null;
+        }
+    };
+
+    // ===========================
     // 🔑 统一配置常量（低风险优化：提取硬编码延迟）
     // ===========================
     window.PUBLISH_CONFIG = {

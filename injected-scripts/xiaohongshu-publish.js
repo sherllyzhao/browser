@@ -75,7 +75,7 @@ if (location.search.includes("published=true")) {
         // ===========================
 
         const urlParams = new URLSearchParams(window.location.search);
-        const companyId = await window.browserAPI.getGlobalData("company_id");
+        const companyId = await safeGetGlobalData("company_id");
         const transferId = urlParams.get("transfer_id");
 
         console.log("[小红书发布] URL 参数:", {
