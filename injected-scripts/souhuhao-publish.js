@@ -472,7 +472,7 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor", 10000);
+                                const editorIframeEle = await waitForElement("#editor", 20000); // 🔑 增加到 20 秒
                                 const editorEle = editorIframeEle.querySelector('.ql-editor ')
                                 let htmlContent = dataObj.video.video.content;
 
@@ -636,9 +636,9 @@
                                                 const maxRetries = 3;
 
                                                 // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                                const waitForImageOrError = async (timeout = 10000) => {
+                                                const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
                                                     const startTime = Date.now();
-                                                    const checkInterval = 300; // 每300ms检查一次
+                                                    const checkInterval = 500; // 🔑 增加到 500ms
 
                                                     while (Date.now() - startTime < timeout) {
                                                         // 1. 先检查是否有错误信息（优先级更高）

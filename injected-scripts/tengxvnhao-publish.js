@@ -396,7 +396,7 @@
                         try {
                             await retryOperation(
                                 async () => {
-                                    const editorIframeEle = await waitForElement("class^=editor_container", 10000);
+                                    const editorIframeEle = await waitForElement("class^=editor_container", 20000); // 🔑 增加到 20 秒
                                     const editorEle = editorIframeEle.querySelector(".ExEditor-basic");
 
                                     editorEle.focus();
@@ -465,7 +465,7 @@
 
                                     // 让编辑器获得焦点
                                     editorEle.focus();
-                                    await delay(200);
+                                    await delay(500); // 🔑 增加到 500ms
 
                                     // 用键盘事件全选+删除（保持编辑器状态同步）
                                     editorEle.dispatchEvent(new KeyboardEvent('keydown', {
@@ -474,13 +474,13 @@
                                         ctrlKey: true,
                                         bubbles: true
                                     }));
-                                    await delay(100);
+                                    await delay(200); // 🔑 增加到 200ms
                                     editorEle.dispatchEvent(new KeyboardEvent('keydown', {
                                         key: 'Backspace',
                                         code: 'Backspace',
                                         bubbles: true
                                     }));
-                                    await delay(200);
+                                    await delay(500); // 🔑 增加到 500ms
 
                                     // 通过粘贴事件插入内容（让编辑器自己处理）
                                     const pasteEvent = new ClipboardEvent("paste", {
@@ -496,7 +496,7 @@
                                     editorEle.dispatchEvent(pasteEvent);
 
                                     // 等待编辑器处理粘贴事件
-                                    await new Promise(resolve => setTimeout(resolve, 800));
+                                    await new Promise(resolve => setTimeout(resolve, 1500)); // 🔑 增加到 1.5 秒
 
                                     console.log("[腾讯号发布] ✅ 内容填写完成");
                                 },
@@ -538,7 +538,7 @@
                                 setTimeout(async () => {
                                     // 等待封面选择区域出现
                                     await waitForElement("class^=articleCoverWrap-");
-                                    await delay(500); // 等待渲染完成
+                                    await delay(1000); // 🔑 增加到 1 秒
 
                                     // 查找并点击"选择封面"按钮
                                     const coverBtn = document.querySelector("[class*=addCoverBtn-]");
@@ -605,9 +605,9 @@
                                                 const maxRetries = 3;
 
                                                 // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                                const waitForImageOrError = async (timeout = 10000) => {
+                                                const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
                                                     const startTime = Date.now();
-                                                    const checkInterval = 300; // 每300ms检查一次
+                                                    const checkInterval = 500; // 🔑 增加到 500ms
 
                                                     while (Date.now() - startTime < timeout) {
                                                         // 1. 先检查是否有错误信息（优先级更高）
@@ -622,10 +622,10 @@
                                                         if (imageEle) {
                                                             const imgEle = imageEle.querySelector("img");
                                                             if (imgEle && imgEle.getAttribute("src")) {
-                                                                // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
+                                                                // 🔑 检测到图片元素后，再等待 1 秒确认是否有错误（增加到 1 秒）
                                                                 // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                                                console.log("[腾讯号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...");
-                                                                await delay(500);
+                                                                console.log("[腾讯号发布] 🔍 检测到图片元素，等待 1 秒确认是否有错误...");
+                                                                await delay(1000);
                                                                 const confirmError = getLatestError();
                                                                 if (confirmError) {
                                                                     console.log("[腾讯号发布] ⚠️ 确认期间检测到错误:", confirmError);
@@ -651,7 +651,7 @@
                                                     return { type: "timeout" };
                                                 };
 
-                                                const result = await waitForImageOrError(10000);
+                                                const result = await waitForImageOrError(30000); // 🔑 增加到 30 秒
                                                 const myWindowId = await window.browserAPI.getWindowId();
 
                                                 // 🔴 检测到错误信息，直接上报失败
@@ -669,7 +669,7 @@
                                                 if (result.type === "success") {
                                                     console.log("[腾讯号发布] ✅ 图片上传成功");
 
-                                                    await delay(2000); // 等待渲染完成
+                                                    await delay(3000); // 🔑 增加到 3 秒
 
                                                     const submitCoverBtn = document.querySelector(".omui-dialog-footer .omui-button--primary");
                                                     console.log("🚀 ~ tryUploadImage ~ submitCoverBtn: ", submitCoverBtn);
@@ -684,7 +684,7 @@
                                                         submitCoverBtn.dispatchEvent(clickEvent);
                                                         console.log("[腾讯号发布] ✅ 已点击确定（模拟鼠标事件）");
                                                         // 等待编辑器关闭和图片保存
-                                                        await delay(2000);
+                                                        await delay(3000); // 🔑 增加到 3 秒
                                                     } else {
                                                         console.error("[腾讯号发布] ❌ 找不到提交图片按钮，上报失败");
                                                         stopErrorListener();

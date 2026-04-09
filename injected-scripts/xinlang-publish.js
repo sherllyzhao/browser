@@ -860,7 +860,7 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorEle = await waitForElement(".wb-editor", 10000);
+                                const editorEle = await waitForElement(".wb-editor", 20000); // 🔑 增加到 20 秒
 
                                 // 🔴 检查编辑器是否已有内容（防止从验证页返回时重复填写）
                                 // 注意：必须检查 textContent 而不是 innerHTML，因为编辑器可能包含空白 HTML 标签
@@ -1257,9 +1257,9 @@
                             const tryUploadImage = async () => {
 
                                 // 🔴 自定义等待逻辑：同时检查弹窗状态、封面图和错误信息
-                                const waitForImageOrError = async (timeout = 15000) => {
+                                const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
                                     const startTime = Date.now();
-                                    const checkInterval = 300; // 每300ms检查一次
+                                    const checkInterval = 500; // 🔑 增加到 500ms
 
                                     while (Date.now() - startTime < timeout) {
                                         // 1. 先检查是否有错误信息（优先级最高）

@@ -1091,8 +1091,59 @@ async function fillFormData(dataObj) {
       }
     }
 
-    // 等待表单填写完成
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // 等待表单填写完成（初始等待增加到8秒）
+    console.log('[视频号发布] ⏳ 等待表单验证（8秒）...');
+    await new Promise(resolve => setTimeout(resolve, 8000));
+
+    // 🔑 轮询检测发布按钮是否可用（最多等待60秒）
+    console.log('[视频号发布] 🔍 开始轮询检测发布按钮状态...');
+    let buttonReady = false;
+    let retryCount = 0;
+    const maxRetries = 30; // 30次 * 2秒 = 60秒
+
+    while (!buttonReady && retryCount < maxRetries) {
+      try {
+        const publishBtn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 2000);
+
+        if (publishBtn && !publishBtn.classList.contains("weui-desktop-btn_disabled")) {
+          buttonReady = true;
+          console.log(`[视频号发布] ✅ 发布按钮已可用（第${retryCount + 1}次检测）`);
+          break;
+        }
+
+        retryCount++;
+        console.log(`[视频号发布] ⏳ 按钮仍不可用，继续等待... (${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+      } catch (error) {
+        retryCount++;
+        console.log(`[视频号发布] ⚠️ 检测按钮失败，继续重试... (${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    // 如果超时仍未可用，记录详细错误信息
+    if (!buttonReady) {
+      console.error('[视频号发布] ❌ 等待超时（60秒），按钮仍不可用');
+
+      // 收集详细错误信息
+      const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 1000).catch(() => null);
+      const introInput = await waitForShadowElement("wujie-app", ".input-editor", 1000).catch(() => null);
+      const errors = Array.from(document.querySelectorAll('.error-title, .error-tip, [class*="error"]'))
+        .map(e => e.textContent.trim())
+        .filter(t => t);
+
+      const errorInfo = {
+        title: titleInput?.value || '未获取到',
+        titleLength: titleInput?.value?.length || 0,
+        intro: (introInput?.textContent || '未获取到').substring(0, 100),
+        introLength: introInput?.textContent?.length || 0,
+        platformErrors: errors.length > 0 ? errors : '无错误提示'
+      };
+
+      console.error('[视频号发布] 详细信息:', errorInfo);
+      throw new Error(`发布按钮等待超时: ${JSON.stringify(errorInfo)}`);
+    }
 
     // 发布
     await publishApi(dataObj);

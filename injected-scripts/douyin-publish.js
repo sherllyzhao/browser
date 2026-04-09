@@ -395,7 +395,7 @@ async function publishApi(dataObj) {
       coverRetryCount++;
       let checkElement = null;
       try {
-        checkElement = await waitForElement('.cover-check [class*="title-"]', 5000);
+        checkElement = await waitForElement('.cover-check [class*="title-"]', 10000); // 🔑 增加到 10 秒
       } catch (e) {
         console.log('[封面检测] ⚠️ 未找到检测元素，继续等待...');
         await delay(coverCheckInterval);
@@ -422,7 +422,7 @@ async function publishApi(dataObj) {
 
         for (const selector of selectors) {
           try {
-            coverInput = await waitForElement(selector, 3000);
+            coverInput = await waitForElement(selector, 10000); // 🔑 增加到 10 秒
             if (coverInput) {
               console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
               break;
@@ -617,7 +617,7 @@ async function fillFormData(dataObj) {
     // alert(JSON.stringify(titleAndIntro));
     await retryOperation(async () => {
       // 填写标题
-      const titleInput = await waitForElement('.editor-kit-root-container .semi-input', 5000);
+      const titleInput = await waitForElement('.editor-kit-root-container .semi-input', 10000); // 🔑 增加到 10 秒
 
       // 先触发focus事件
       if (typeof titleInput.focus === 'function') {
@@ -691,7 +691,7 @@ async function fillFormData(dataObj) {
       } else {
         await retryOperation(async () => {
           // alert('Intro not filled yet, starting to fill, introFilled=' + introFilled);
-          const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
+          const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 10000); // 🔑 增加到 10 秒
           const targetIntro = titleAndIntro.intro || '';
 
           // Debug: Show original intro
@@ -808,7 +808,7 @@ async function fillFormData(dataObj) {
             if (topicList.length > 0 && !window[topicFilledKey]) {
               window[topicFilledKey] = true; // 标记话题已处理
 
-              const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 5000);
+              const introInput = await waitForElement('.editor-kit-root-container .editor-kit-container.editor', 10000); // 🔑 增加到 10 秒
               for (let topicListElement of topicList) {
                 console.log('🏷️ 开始处理话题:', topicListElement);
 
@@ -957,7 +957,7 @@ async function fillFormData(dataObj) {
 
         for (const selector of selectors) {
           try {
-            coverInput = await waitForElement(selector, 3000);
+            coverInput = await waitForElement(selector, 10000); // 🔑 增加到 10 秒
             if (coverInput) {
               console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
               break;

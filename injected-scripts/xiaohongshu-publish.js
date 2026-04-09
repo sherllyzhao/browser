@@ -586,7 +586,7 @@ if (location.search.includes("published=true")) {
             for (const selector of titleSelectors) {
                 try {
                     // alert(`Trying selector: ${selector}`);
-                    titleInput = await waitForElement(selector, 2000);
+                    titleInput = await waitForElement(selector, 5000); // 🔑 增加到 5 秒
                     if (titleInput) {
                         // alert(`✅ Found title input with selector: ${selector}`);
                         break;
@@ -638,7 +638,7 @@ if (location.search.includes("published=true")) {
                     for (const selector of introSelectors) {
                         try {
                             // alert(`Trying selector: ${selector}`);
-                            introInput = await waitForElement(selector, 2000);
+                            introInput = await waitForElement(selector, 5000); // 🔑 增加到 5 秒
                             if (introInput) {
                                 // alert(`✅ Found intro input with selector: ${selector}`);
                                 break;
@@ -690,7 +690,7 @@ if (location.search.includes("published=true")) {
 
                             // 单独处理话题
                             if (topicList.length > 0) {
-                                const introInput = await waitForElement(".tiptap-container .ProseMirror", 5000);
+                                const introInput = await waitForElement(".tiptap-container .ProseMirror", 10000); // 🔑 增加到 10 秒
                                 for (let topicListElement of topicList) {
                                     // 聚焦编辑器
                                     introInput.focus();

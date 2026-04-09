@@ -481,14 +481,14 @@
           setTimeout(async () => {
             try {
               await retryOperation(async () => {
-                const hasIframeEle = await waitForElement("iframe", 10000); // 🔑 增加等待时间
+                const hasIframeEle = await waitForElement("iframe", 20000); // 🔑 增加等待时间到 20 秒
                 if (!hasIframeEle) {
                   throw new Error('iframe 未找到');
                 }
                 const editorIframeEle = document.querySelector("iframe");
 
-                // 🔑 等待 iframe 完全加载
-                await new Promise(resolve => setTimeout(resolve, 500));
+                // 🔑 等待 iframe 完全加载（增加到 1 秒）
+                await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const iframeWin = editorIframeEle.contentWindow;
                 if (!iframeWin) {
@@ -500,8 +500,8 @@
                   throw new Error('iframe 文档未完全加载，状态: ' + (iframeDoc?.readyState || 'null'));
                 }
 
-                // 🔑 额外等待编辑器初始化
-                await new Promise(resolve => setTimeout(resolve, 300));
+                // 🔑 额外等待编辑器初始化（增加到 1 秒）
+                await new Promise(resolve => setTimeout(resolve, 1000));
 
                 const editorEle = iframeDoc.querySelector(".news-editor-pc");
                 if (!editorEle) {
@@ -670,9 +670,9 @@
                           const maxRetries = 3;
 
                           // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                          const waitForImageOrError = async (timeout = 10000) => {
+                          const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加超时到 30 秒
                             const startTime = Date.now();
-                            const checkInterval = 300; // 每300ms检查一次
+                            const checkInterval = 500; // 🔑 增加检查间隔到 500ms
 
                             while (Date.now() - startTime < timeout) {
                               // 1. 先检查是否有错误信息（优先级更高）
@@ -687,10 +687,10 @@
                               if (imageEle) {
                                 const imgEle = imageEle.querySelector('img');
                                 if(imgEle && imgEle.getAttribute('src')){
-                                  // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
+                                  // 🔑 检测到图片元素后，再等待 1 秒确认是否有错误（增加到 1 秒）
                                   // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                  console.log('[百家号发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...');
-                                  await delay(500);
+                                  console.log('[百家号发布] 🔍 检测到图片元素，等待 1 秒确认是否有错误...');
+                                  await delay(1000);
                                   const confirmError = getLatestError();
                                   if (confirmError) {
                                     console.log('[百家号发布] ⚠️ 确认期间检测到错误:', confirmError);
@@ -716,7 +716,7 @@
                             return { type: 'timeout' };
                           };
 
-                          const result = await waitForImageOrError(10000);
+                          const result = await waitForImageOrError(30000); // 🔑 增加超时到 30 秒
                           const myWindowId = await window.browserAPI.getWindowId();
 
                           // 🔴 检测到错误信息，直接上报失败
@@ -734,7 +734,7 @@
                           if (result.type === 'success') {
                             console.log('[百家号发布] ✅ 图片上传成功');
 
-                            await delay(2000); // 等待渲染完成
+                            await delay(3000); // 🔑 增加等待时间到 3 秒
                             const submitCoverBtns = document.querySelectorAll('.cheetah-btn-primary');
                             console.log("🚀 ~ tryUploadImage ~ submitCoverBtns: ", submitCoverBtns);
                             let submitCoverBtn = null;
@@ -1141,8 +1141,8 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
         console.log('[百家号发布] ✅ 找到触发器，点击打开下拉列表');
         selectTrigger.dispatchEvent(new Event('mousedown', { bubbles: true }));
 
-        // 等待下拉出现 - 增加等待时间到 1000ms
-        await new Promise(r => setTimeout(r, 1000));
+        // 等待下拉出现 - 增加等待时间到 2000ms
+        await new Promise(r => setTimeout(r, 2000));
 
         // 2. 查找虚拟列表容器（可能有多个位置）
         const startTime = Date.now();
@@ -1175,7 +1175,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
               // 滚动到最顶部
               virtualList[targetIndex].scrollTo(0, 0);
-              await new Promise(r => setTimeout(r, 300));
+              await new Promise(r => setTimeout(r, 500)); // 🔑 增加等待时间到 500ms
 
                 options = allOptions.filter(el => el.offsetParent !== null);
 
@@ -1236,7 +1236,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
             // 向下滚动
             virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 300)); // 🔑 增加等待时间到 300ms
         }
 
         if (!foundOption) {
@@ -1247,14 +1247,14 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
         // 4. 滚动到视图并点击
         foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 500)); // 🔑 增加等待时间到 500ms
 
         console.log('[百家号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
         console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
         foundOption.querySelector('.cheetah-select-item-option-content').dispatchEvent(new Event('click', { bubbles: true }));
 
         // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 800)); // 🔑 增加等待时间到 800ms
 
         console.log('[百家号发布] ✅ 选项选择完成');
         return true;
