@@ -25,6 +25,14 @@ let hasProcessed = false;
   }
 
   // ===========================
+  // 🔑 立即显示 loading，防止白屏
+  // ===========================
+  if (typeof window.hidePageAndShowMask === 'function') {
+    window.hidePageAndShowMask();
+    console.log('[视频号发布] 📍 已显示 loading 界面，防止白屏');
+  }
+
+  // ===========================
   // 页面状态检查 - 防止异常渲染
   // ===========================
   if (typeof window.checkPageStateAndReload === 'function') {
@@ -387,6 +395,13 @@ let hasProcessed = false;
 
   // 页面加载完成后向父窗口发送消息
   console.log('[视频号发布] 页面加载完成，发送 页面加载完成 消息');
+
+  // 🔑 隐藏 loading 界面，显示页面内容
+  if (typeof window.showPageAndHideMask === 'function') {
+    window.showPageAndHideMask();
+    console.log('[视频号发布] ✅ 已隐藏 loading 界面，显示页面内容');
+  }
+
   sendMessageToParent('页面加载完成');
 
   console.log('═══════════════════════════════════════');

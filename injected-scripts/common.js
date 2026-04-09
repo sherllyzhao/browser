@@ -344,6 +344,21 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
     };
 
+    // 显示页面内容并隐藏加载遮罩
+    window.showPageAndHideMask = function () {
+        // 显示 body 内容
+        if (document.body) {
+            document.body.style.visibility = "visible";
+            document.body.style.opacity = "1";
+        }
+
+        // 移除加载遮罩
+        const mask = document.getElementById("__page_loading_mask__");
+        if (mask) {
+            mask.remove();
+        }
+    };
+
     // 页面状态检查并自动刷新（检测到异常时先隐藏页面）
     // 🔑 只在主窗口检测，子窗口（发布页）跳过检测，避免第三方平台页面误报
     window.checkPageStateAndReload = function (scriptName = "脚本", reloadDelay = 2000) {
