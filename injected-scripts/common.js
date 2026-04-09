@@ -384,13 +384,13 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
      * @param {number} maxRetries - 最大重试次数，默认 3 次
      */
     window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
-        // 获取重试次数（避免无限刷新）
+        // 🔑 使用 localStorage 而不是 sessionStorage（登录跳转会清空 sessionStorage）
         const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
-        let retryCount = parseInt(sessionStorage.getItem(retryKey) || '0');
+        let retryCount = parseInt(localStorage.getItem(retryKey) || '0');
 
         if (retryCount >= maxRetries) {
             console.log(`[${platform}] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
-            sessionStorage.removeItem(retryKey);
+            localStorage.removeItem(retryKey);
             return;
         }
 
@@ -401,13 +401,23 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 const bodyText = (document.body?.innerText || '').trim();
                 const bodyHtml = (document.body?.innerHTML || '').trim();
 
-                // 检测 2: 是否有关键元素
+                // 检测 2: 是否有关键元素（支持 Shadow DOM）
                 let hasKeyElement = false;
                 if (keySelectors.length > 0) {
                     for (const selector of keySelectors) {
+                        // 先在普通 DOM 中查找
                         if (document.querySelector(selector)) {
                             hasKeyElement = true;
                             break;
+                        }
+
+                        // 🔑 如果是 wujie-app，检查 shadowRoot
+                        if (selector === 'wujie-app') {
+                            const wujieApp = document.querySelector('wujie-app');
+                            if (wujieApp && wujieApp.shadowRoot) {
+                                hasKeyElement = true;
+                                break;
+                            }
                         }
                     }
                 } else {
@@ -425,11 +435,12 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                         bodyHtmlLength: bodyHtml.length,
                         hasKeyElement,
                         retryCount,
-                        keySelectors
+                        keySelectors,
+                        url: window.location.href
                     });
 
                     // 增加重试计数
-                    sessionStorage.setItem(retryKey, String(retryCount + 1));
+                    localStorage.setItem(retryKey, String(retryCount + 1));
 
                     // 隐藏页面并显示 loading
                     if (typeof window.hidePageAndShowMask === 'function') {
@@ -442,7 +453,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     }, 1000);
                 } else {
                     // 页面正常，清除重试计数
-                    sessionStorage.removeItem(retryKey);
+                    localStorage.removeItem(retryKey);
                     console.log(`[${platform}] ✅ 页面加载正常`);
                 }
             } catch (e) {
