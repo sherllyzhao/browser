@@ -166,6 +166,8 @@ const config = {
 const PLATFORM_CONFIG_ALIASES = {
   tengxunhao: 'tengxvnhao',
   tengxvnhao: 'tengxunhao',
+  sohuhao: 'souhuhao',
+  souhuhao: 'sohuhao',
   xinlang: 'xinlang',
   zhihu: 'zhihu'
 };
