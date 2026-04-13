@@ -30,8 +30,8 @@ const DOMAINS = {
     aigcPath:          '/aigc_browser/',                   // AIGC 前端路径
 
     // GEO 系统（建站通）
-    geoPage:           'https://jzt_dev_1.china9.cn',     // GEO 前端页面
-    geoPath:           '/jzt_all/#/geo/index',            // GEO 前端路径
+    geoPage:           'https://dev.china9.cn',            // GEO 前端页面
+    geoPath:           '/aigc_browser/#/geo/dashboard',    // GEO 前端路径
 
     // API 接口
     apiDomain:         'https://apidev.china9.cn',        // API 接口域名
@@ -62,8 +62,8 @@ const DOMAINS = {
     aigcPath:          '/aigc_browser/',                   // AIGC 前端路径
 
     // GEO 系统（建站通）
-    geoPage:           'https://zhjzt.china9.cn',         // GEO 前端页面
-    geoPath:           '/jzt_all/#/geo/index',            // GEO 前端路径
+    geoPage:           'https://www.china9.cn',            // GEO 前端页面
+    geoPath:           '/aigc_browser/#/geo/dashboard',    // GEO 前端路径
 
     // API 接口
     apiDomain:         'https://api.china9.cn',           // API 接口域名

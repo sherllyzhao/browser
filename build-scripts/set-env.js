@@ -25,7 +25,7 @@ const envConfig = {
   },
   prod: {
     aigcPage: 'https://www.china9.cn',
-    geoPage: 'https://zhjzt.china9.cn',
+    geoPage: 'https://www.china9.cn',
     apiDomain: 'https://api.china9.cn',
   }
 };
