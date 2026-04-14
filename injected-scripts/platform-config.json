@@ -1,4 +1,7 @@
 {
+  "publish": {
+    "maxConcurrentWindows": 6
+  },
   "platforms": {
     "souhuhao": {
       "name": "搜狐号",

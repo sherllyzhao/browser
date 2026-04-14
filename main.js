@@ -19,6 +19,11 @@ const isProduction = app.isPackaged; // 是否生产环境
 const useLocalDevServer = process.env.USE_LOCAL_DEV_SERVER === '1';
 let tray = null; // 托盘图标对象
 let openInNewWindow = false; // 新窗口模式状态
+let heartbeatInterval = null;
+let autoSaveInterval = null;
+let destroyedWindowCleanupInterval = null;
+const windowContextMap = new Map();
+let shutdownStarted = false;
 
 // 跨平台图标路径
 function getAppIconPath() {
@@ -40,6 +45,28 @@ function buildStandardUserAgent() {
 const STANDARD_USER_AGENT = buildStandardUserAgent();
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
+function installBrokenPipeGuard(stream, streamName) {
+  if (!stream || typeof stream.on !== 'function') return;
+
+  stream.on('error', (err) => {
+    if (err && err.code === 'EPIPE') {
+      return;
+    }
+    try {
+      const detail = err && err.stack ? err.stack : (err && err.message ? err.message : String(err));
+      fs.appendFileSync(
+        path.join(__dirname, 'main-process-stream-error.log'),
+        `[${new Date().toISOString()}] ${streamName}: ${detail}\n`,
+        'utf8'
+      );
+    } catch (_) {
+      // 避免日志防护本身再次引发异常
+    }
+  });
+}
+
+installBrokenPipeGuard(process.stdout, 'stdout');
+installBrokenPipeGuard(process.stderr, 'stderr');
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   if (!host) return false;
@@ -71,8 +98,349 @@ function removeHeaderCaseInsensitive(headers, key) {
   }
 }
 
+const STATIC_RESOURCE_EXTENSIONS = new Set([
+  '.js', '.mjs', '.cjs', '.css', '.map', '.ico',
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+  '.woff', '.woff2', '.ttf', '.otf', '.eot',
+  '.json', '.txt', '.xml', '.pdf', '.mp4', '.webm'
+]);
+const GENERIC_TEXTUAL_MIME_TYPES = new Set([
+  'text/plain',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'text/octet-stream',
+  'application/unknown'
+]);
+const JAVASCRIPT_MIME_TYPES = new Set([
+  'application/javascript',
+  'text/javascript',
+  'application/x-javascript'
+]);
+const CSS_MIME_TYPES = new Set([
+  'text/css'
+]);
+
+function getUrlInfo(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return {
+      href: parsed.href,
+      origin: parsed.origin,
+      pathname: parsed.pathname || '/',
+      search: parsed.search || ''
+    };
+  } catch (_) {
+    const sanitized = String(rawUrl || '').split(/[?#]/)[0];
+    return {
+      href: String(rawUrl || ''),
+      origin: '',
+      pathname: sanitized || '/',
+      search: ''
+    };
+  }
+}
+
+function getUrlPathExtension(rawUrl = '') {
+  const { pathname } = getUrlInfo(rawUrl);
+  return path.posix.extname(String(pathname || '').toLowerCase());
+}
+
+function isStaticResourceUrl(rawUrl = '') {
+  const { pathname } = getUrlInfo(rawUrl);
+  const normalizedPath = String(pathname || '').toLowerCase();
+  if (!normalizedPath || normalizedPath === '/' || normalizedPath === '/index.html') {
+    return false;
+  }
+  const ext = getUrlPathExtension(rawUrl);
+  return STATIC_RESOURCE_EXTENSIONS.has(ext);
+}
+
+function normalizeContentTypeHeaderValue(rawValue) {
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  return String(value || '').split(';')[0].trim().toLowerCase();
+}
+
+function resolvePatchedContentType(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  const ext = getUrlPathExtension(details.url || '');
+  const isScriptLike = resourceType === 'script' || ext === '.js' || ext === '.mjs' || ext === '.cjs';
+  const isStylesheetLike = resourceType === 'stylesheet' || ext === '.css';
+
+  if (isStylesheetLike) {
+    return 'text/css; charset=utf-8';
+  }
+  if (isScriptLike) {
+    return 'application/javascript; charset=utf-8';
+  }
+  return '';
+}
+
+function shouldOverrideContentType(rawContentType = '', patchedContentType = '') {
+  if (!patchedContentType) return false;
+
+  const currentMimeType = normalizeContentTypeHeaderValue(rawContentType);
+  if (!currentMimeType) return true;
+
+  const patchedMimeType = normalizeContentTypeHeaderValue(patchedContentType);
+  if (currentMimeType === patchedMimeType) return false;
+
+  if (patchedMimeType === 'text/css') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !CSS_MIME_TYPES.has(currentMimeType);
+  }
+
+  if (patchedMimeType === 'application/javascript') {
+    return GENERIC_TEXTUAL_MIME_TYPES.has(currentMimeType) && !JAVASCRIPT_MIME_TYPES.has(currentMimeType);
+  }
+
+  return false;
+}
+
+function shouldApplyContentTypePatch(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  const mimeType = resolvePatchedContentType(details);
+  if (!mimeType) {
+    return { shouldPatch: false, mimeType: '' };
+  }
+  if (resourceType === 'mainframe' || resourceType === 'subframe') {
+    return { shouldPatch: false, mimeType: '' };
+  }
+  return { shouldPatch: true, mimeType };
+}
+
+function normalizeContextPurpose(options = {}) {
+  if (options.windowContext && typeof options.windowContext.purpose === 'string') {
+    return options.windowContext.purpose;
+  }
+  if (options.publishData) return 'publish';
+  if (options.useTemporarySession) return 'auth';
+  return 'child';
+}
+
+function buildWindowContext(targetUrl, options = {}) {
+  const baseInfo = getUrlInfo(targetUrl);
+  const provided = options.windowContext && typeof options.windowContext === 'object'
+    ? options.windowContext
+    : {};
+
+  return {
+    purpose: normalizeContextPurpose(options),
+    platform: provided.platform || options.platform || options.publishData?.platform || '',
+    contentType: provided.contentType || options.publishData?.contentType || '',
+    expectedPageUrl: provided.expectedPageUrl || targetUrl,
+    safeOrigin: provided.safeOrigin || baseInfo.origin || '',
+    bootstrapUrl: provided.bootstrapUrl || (baseInfo.origin ? `${baseInfo.origin}/` : ''),
+    guardResourceUrls: provided.guardResourceUrls !== false && !!options.publishData,
+    bootstrapInProgress: false,
+    guardRedirectInFlight: false,
+    guardRedirectCount: 0,
+    createdAt: Date.now()
+  };
+}
+
+function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
+  if (!currentUrl || !expectedUrl) return false;
+  if (currentUrl === expectedUrl) return true;
+
+  try {
+    const current = new URL(currentUrl);
+    const expected = new URL(expectedUrl);
+    if (current.origin !== expected.origin || current.pathname !== expected.pathname) {
+      return false;
+    }
+    if (!expected.search) {
+      return true;
+    }
+    const expectedParams = new URLSearchParams(expected.search);
+    const currentParams = new URLSearchParams(current.search);
+    for (const [key, value] of expectedParams.entries()) {
+      if (currentParams.get(key) !== value) {
+        return false;
+      }
+    }
+    return true;
+  } catch (_) {
+    return currentUrl.startsWith(expectedUrl);
+  }
+}
+
+function sanitizeDebugPrefix(prefixRaw = 'debug') {
+  return String(prefixRaw || 'debug').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'debug';
+}
+
+function writeDebugDumpFile(prefix, payload) {
+  try {
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `${sanitizeDebugPrefix(prefix)}-${timestamp}.json`;
+    const filePath = path.join(dumpDir, fileName);
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return filePath;
+  } catch (error) {
+    console.error('[Debug Dump] ❌ 写入失败:', error.message);
+    return '';
+  }
+}
+
+async function captureWindowDebugDump(targetWindow, reason, currentURL) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return '';
+  }
+
+  const windowId = targetWindow.id;
+  const context = windowContextMap.get(windowId) || null;
+  let pageSnapshot = null;
+
+  try {
+    pageSnapshot = await targetWindow.webContents.executeJavaScript(`
+      (() => ({
+        href: location.href,
+        title: document.title || '',
+        readyState: document.readyState,
+        bodyText: (document.body?.innerText || '').slice(0, 2000),
+        bodyHtml: (document.body?.innerHTML || '').slice(0, 2000)
+      }))()
+    `, true);
+  } catch (error) {
+    pageSnapshot = { captureError: error.message };
+  }
+
+  return writeDebugDumpFile('publish-window-anomaly', {
+    reason,
+    currentURL,
+    capturedAt: new Date().toISOString(),
+    windowId,
+    context,
+    pageSnapshot
+  });
+}
+
+async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unknown') {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { redirected: false };
+  }
+
+  const context = windowContextMap.get(targetWindow.id);
+  if (!context || !context.guardResourceUrls || context.bootstrapInProgress || !currentURL || currentURL === 'about:blank') {
+    return { redirected: false };
+  }
+  if (matchesExpectedPage(currentURL, context.expectedPageUrl)) {
+    return { redirected: false };
+  }
+  if (!isStaticResourceUrl(currentURL)) {
+    return { redirected: false };
+  }
+  if (context.guardRedirectInFlight) {
+    return { redirected: true, deduped: true };
+  }
+
+  context.guardRedirectInFlight = true;
+  context.guardRedirectCount = (context.guardRedirectCount || 0) + 1;
+  console.warn(`[Publish Window Guard] ⚠️ 检测到资源页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}`);
+  const dumpPath = await captureWindowDebugDump(targetWindow, reason, currentURL);
+  if (dumpPath) {
+    console.warn(`[Publish Window Guard] 调试快照已写入: ${dumpPath}`);
+  }
+
+  try {
+    await targetWindow.webContents.loadURL(context.expectedPageUrl);
+  } catch (error) {
+    console.error('[Publish Window Guard] ❌ 回跳发布页失败:', error.message);
+  } finally {
+    setTimeout(() => {
+      const latest = windowContextMap.get(targetWindow.id);
+      if (latest) {
+        latest.guardRedirectInFlight = false;
+      }
+    }, 1500);
+  }
+
+  return { redirected: true };
+}
+
+function summarizeGlobalStorageValue(key, value) {
+  if (key === 'publish_data') {
+    const length = typeof value === 'string' ? value.length : JSON.stringify(value || '').length;
+    return `[publish_data length=${length}]`;
+  }
+
+  if (/^publish_data_window_\d+$/.test(key)) {
+    const obj = value && typeof value === 'object' ? value : null;
+    const title = obj?.element?.title || obj?.video?.video?.title || '';
+    const platform = obj?.platform || '';
+    const windowId = obj?.windowId || '';
+    return { key, platform, windowId, title };
+  }
+
+  if (typeof value === 'string') {
+    if (value.length <= 240) return value;
+    return `${value.slice(0, 120)}... [length=${value.length}]`;
+  }
+
+  if (value && typeof value === 'object') {
+    const preview = {};
+    for (const keyName of Object.keys(value).slice(0, 8)) {
+      const item = value[keyName];
+      preview[keyName] = typeof item === 'string' && item.length > 80
+        ? `${item.slice(0, 40)}... [length=${item.length}]`
+        : item;
+    }
+    return preview;
+  }
+
+  return value;
+}
+
+function beginShutdown(source = 'unknown') {
+  if (shutdownStarted) {
+    return;
+  }
+  shutdownStarted = true;
+  console.log(`[Shutdown] 开始退出清理，来源: ${source}`);
+
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+  if (autoSaveInterval) {
+    clearInterval(autoSaveInterval);
+    autoSaveInterval = null;
+  }
+  if (destroyedWindowCleanupInterval) {
+    clearInterval(destroyedWindowCleanupInterval);
+    destroyedWindowCleanupInterval = null;
+  }
+  if (tray) {
+    try {
+      tray.destroy();
+    } catch (error) {
+      console.warn('[Shutdown] 销毁托盘失败:', error.message);
+    }
+    tray = null;
+  }
+
+  for (const child of childWindows.slice()) {
+    if (child && !child.isDestroyed()) {
+      try {
+        child.close();
+      } catch (error) {
+        console.warn('[Shutdown] 关闭子窗口失败:', error.message);
+      }
+    }
+  }
+
+  try {
+    app.releaseSingleInstanceLock();
+    console.log('[Shutdown] ✅ 已提前释放单实例锁');
+  } catch (error) {
+    console.warn('[Shutdown] 释放单实例锁失败:', error.message);
+  }
+}
 let isHandlingExpiredToken = false; // 防止过期处理重复触发
 let isNavigatingToLogin = false; // 防止 navigateToLoginInternal 重入
+let loginRestorePromise = null; // 防止 tryRestoreLoginWithToken 并发重入
 let isShowingSessionExpiredDialog = false;
 let isShowingPageErrorDialog = false;
 let lastPageErrorDialogAt = 0;
@@ -718,6 +1086,162 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
   }, delayMs);
 }
 
+function getDefaultProjectHomeUrl() {
+  return globalStorage.last_project === 'geo' ? config.getGeoUrl() : config.getAigcUrl();
+}
+
+function resolvePostRestoreUrl(preferredUrl) {
+  const targetUrl = String(preferredUrl || '').trim();
+  const isHttpUrl = targetUrl.startsWith('http://') || targetUrl.startsWith('https://');
+  const isLoginLike = targetUrl.includes('login.html') || targetUrl.includes('#/login') || targetUrl.includes('/login');
+
+  if (isHttpUrl && !isLoginLike) {
+    return targetUrl;
+  }
+
+  return getDefaultProjectHomeUrl();
+}
+
+async function restoreLoginCookiesToSession(targetSession, savedToken, savedExpires) {
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+  await targetSession.cookies.set({
+    url: 'http://localhost:5173/',
+    name: 'access_token',
+    value: savedToken,
+    path: '/',
+    expirationDate: savedExpires,
+    secure: false,
+    sameSite: 'lax'
+  });
+
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+  await targetSession.cookies.set({
+    url: config.getCookieUrl(),
+    name: 'access_token',
+    value: savedToken,
+    domain: config.getCookieDomain(),
+    path: '/',
+    expirationDate: savedExpires,
+    secure: true
+  });
+
+  if (globalStorage.login_gcc) {
+    await targetSession.cookies.set({
+      url: 'http://localhost:5173/',
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      path: '/',
+      expirationDate: savedExpires,
+      secure: false,
+      sameSite: 'lax'
+    });
+    await targetSession.cookies.set({
+      url: config.getCookieUrl(),
+      name: 'gcc',
+      value: globalStorage.login_gcc,
+      domain: config.getCookieDomain(),
+      path: '/',
+      expirationDate: savedExpires,
+      secure: true
+    });
+  }
+
+  const siteInfo = globalStorage.siteInfo;
+  if (siteInfo && siteInfo.id) {
+    const siteIdStr = String(siteInfo.id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'china_site_id', value: siteIdStr, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'china_site_id', value: siteIdStr, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ site_id/china_site_id Cookie 已恢复:', siteIdStr);
+  }
+
+  const userInfo = globalStorage.user_info;
+  if (userInfo && userInfo.company && userInfo.company.unique_id) {
+    const uniqueId = String(userInfo.company.unique_id);
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'company_unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'company_unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    await targetSession.cookies.set({ url: 'http://localhost:5173/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: 'http://localhost:8080/', name: 'unique_id', value: uniqueId, path: '/', secure: false, sameSite: 'lax' });
+    await targetSession.cookies.set({ url: config.getCookieUrl(), name: 'unique_id', value: uniqueId, domain: config.getCookieDomain(), path: '/', secure: true });
+
+    console.log('[Auth Restore] ✅ company_unique_id/unique_id Cookie 已恢复:', uniqueId);
+  }
+}
+
+async function tryRestoreLoginWithToken(preferredUrl) {
+  if (loginRestorePromise) {
+    console.log('[Auth Restore] ⏳ 登录恢复已在进行中，复用当前任务');
+    return loginRestorePromise;
+  }
+
+  loginRestorePromise = (async () => {
+    const savedToken = globalStorage.login_token;
+    const savedExpires = Number(globalStorage.login_expires || 0);
+    const now = Math.floor(Date.now() / 1000);
+
+    if (!savedToken || !savedExpires || savedExpires <= now) {
+      console.log('[Auth Restore] ℹ️ 未找到有效 token，跳过自动恢复');
+      return false;
+    }
+
+    const targetSession = browserView?.webContents && !browserView.webContents.isDestroyed()
+      ? browserView.webContents.session
+      : persistentSession;
+
+    if (!targetSession) {
+      console.warn('[Auth Restore] ⚠️ Session 不可用，无法恢复登录状态');
+      return false;
+    }
+
+    const resumeUrl = resolvePostRestoreUrl(preferredUrl);
+    console.log('[Auth Restore] 开始使用本地 token 恢复登录状态:', resumeUrl);
+
+    try {
+      await restoreLoginCookiesToSession(targetSession, savedToken, savedExpires);
+      await targetSession.flushStorageData();
+
+      if (browserView?.webContents && !browserView.webContents.isDestroyed()) {
+        await browserView.webContents.loadURL(resumeUrl);
+      }
+
+      console.log('[Auth Restore] ✅ 登录状态恢复成功');
+      return true;
+    } catch (error) {
+      console.error('[Auth Restore] ❌ 登录状态恢复失败:', error);
+      return false;
+    }
+  })();
+
+  try {
+    return await loginRestorePromise;
+  } finally {
+    loginRestorePromise = null;
+  }
+}
+
 async function navigateToLoginInternal(reason) {
   if (!browserView || browserView.webContents.isDestroyed()) return;
   console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
@@ -778,20 +1302,17 @@ async function navigateToLoginInternal(reason) {
 }
 
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
-// 只在 Content-Type 完全缺失时补上，不覆盖服务器已设置的值（Vite 会把 .css/.vue 编译成 JS 模块）
+// 仅在响应头缺失或明显错误时修正，避免把真实 HTML/文档页误判成代码资源
+// ⚠️ 注意：不影响富文本编辑器，只处理脚本/样式静态资源
 function addContentTypeFix(targetSession, label) {
   targetSession.webRequest.onHeadersReceived((details, callback) => {
-    const url = details.url.toLowerCase();
     const responseHeaders = details.responseHeaders || {};
     const ct = responseHeaders['content-type'] || responseHeaders['Content-Type'];
+    const patchPlan = shouldApplyContentTypePatch(details);
 
-    // 只在服务器没返回 Content-Type 时才补上
-    if (!ct) {
-      if (url.endsWith('.css')) {
-        responseHeaders['Content-Type'] = ['text/css; charset=utf-8'];
-      } else if (url.endsWith('.js')) {
-        responseHeaders['Content-Type'] = ['application/javascript; charset=utf-8'];
-      }
+    // 只修复脚本/样式资源，且仅在 Content-Type 缺失或明显错误时修正
+    if (patchPlan.shouldPatch && shouldOverrideContentType(ct, patchPlan.mimeType)) {
+      responseHeaders['Content-Type'] = [patchPlan.mimeType];
     }
 
     // 修复跨站 Set-Cookie 被屏蔽的问题：
@@ -2702,6 +3223,7 @@ function createWindow() {
     if (!isQuitting) {
       e.preventDefault();
       isQuitting = true;
+      beginShutdown('main-window-close');
 
       console.log('========================================');
       console.log('[Window Close] 窗口关闭，正在保存 Session 数据...');
@@ -2986,7 +3508,7 @@ function createWindow() {
   // ========== 定期心跳，保持页面活跃 ==========
   // 防止 Chromium 长时间不操作时对页面进行后台节流
   const HEARTBEAT_INTERVAL = 30 * 1000; // 每 30 秒发送一次心跳
-  const heartbeatInterval = setInterval(async () => {
+  heartbeatInterval = setInterval(async () => {
     if (!browserView || browserView.webContents.isDestroyed()) return;
     if (browserView.webContents.isLoading()) return;
     const currentUrl = browserView.webContents.getURL();
@@ -3012,7 +3534,10 @@ function createWindow() {
   }, HEARTBEAT_INTERVAL);
 
   mainWindow.on('closed', () => {
-    clearInterval(heartbeatInterval);
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
     clearStartupLoadGuardTimer();
   });
 
@@ -4783,12 +5308,13 @@ app.whenReady().then(async () => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
       isQuitting = false; // 重置标志
+      shutdownStarted = false;
       createWindow();
     }
   });
 
   // 定期保存 session 数据（每 30 秒）
-  const saveInterval = setInterval(async () => {
+  autoSaveInterval = setInterval(async () => {
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const ses = browserView.webContents.session;
@@ -4805,7 +5331,7 @@ app.whenReady().then(async () => {
   }, 30000);
 
   // 优化：定期清理已销毁的窗口引用（每 60 秒）
-  setInterval(() => {
+  destroyedWindowCleanupInterval = setInterval(() => {
     cleanupDestroyedWindows();
     // 强制垃圾回收（如果可用）
     if (global.gc) {
@@ -4816,11 +5342,17 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', function () {
+  beginShutdown('window-all-closed');
   // 注销所有全局快捷键
   globalShortcut.unregisterAll();
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+  beginShutdown('before-quit');
 });
 
 // IPC 处理程序
@@ -6263,20 +6795,26 @@ async function openManagedChildWindow(url, options = {}) {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
+    const windowContext = buildWindowContext(url, options);
+    windowContextMap.set(newWindow.id, windowContext);
+    console.log('[Window Manager] 窗口上下文:', windowContext);
     const publishDataKey = `publish_data_window_${newWindow.id}`;
-    if (isBareToutiao) {
+    if (options.publishData && typeof options.publishData === 'object') {
       if (globalStorage[publishDataKey]) {
         delete globalStorage[publishDataKey];
-        console.log(`[Window Manager] 🧹 清理头条窗口旧发布数据: ${publishDataKey}`);
+        console.log(`[Window Manager] 🧹 清理旧发布数据: ${publishDataKey}`);
       }
-      if (options.publishData && typeof options.publishData === 'object') {
-        globalStorage[publishDataKey] = {
-          ...options.publishData,
-          windowId: newWindow.id,
-          createdAt: options.publishData.createdAt || Date.now()
-        };
-        console.log(`[Window Manager] ✅ 已预写入头条发布数据: ${publishDataKey}`);
-      }
+      globalStorage[publishDataKey] = {
+        ...options.publishData,
+        windowId: newWindow.id,
+        createdAt: options.publishData.createdAt || Date.now()
+      };
+      console.log(`[Window Manager] ✅ 已预写入发布数据: ${publishDataKey}`);
+    } else if (isBareToutiao && globalStorage[publishDataKey]) {
+      delete globalStorage[publishDataKey];
+      console.log(`[Window Manager] 🧹 清理头条窗口旧发布数据: ${publishDataKey}`);
+    }
+    if (options.publishData || isBareToutiao) {
       saveGlobalStorage();
     }
 
@@ -6359,11 +6897,21 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
+      const closedWindowContext = windowContextMap.get(windowId) || null;
       const index = childWindows.indexOf(newWindow);
       if (index > -1) {
         childWindows.splice(index, 1);
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
+      if (browserView && !browserView.webContents.isDestroyed()) {
+        browserView.webContents.send('managed-window-closed', {
+          windowId,
+          timestamp: Date.now(),
+          context: closedWindowContext
+        });
+        console.log('[Window Manager] 已通知首页子窗口关闭:', windowId);
+      }
+      windowContextMap.delete(windowId);
       toutiaoBarePublishState.delete(windowId);
       if (isBareToutiao && globalStorage[publishDataKey]) {
         delete globalStorage[publishDataKey];
@@ -6449,6 +6997,15 @@ async function openManagedChildWindow(url, options = {}) {
     newWindow.webContents.on('dom-ready', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log('[New Window API] 跳过 bootstrap 页面注入:', currentURL);
+        return;
+      }
+      const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'dom-ready');
+      if (recovered.redirected) {
+        return;
+      }
       if (shouldSkipScriptInjection(currentURL)) {
         console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
         return;
@@ -6472,6 +7029,15 @@ async function openManagedChildWindow(url, options = {}) {
     newWindow.webContents.on('did-finish-load', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log('[New Window API] bootstrap 页面加载完成，跳过通知和注入:', currentURL);
+        return;
+      }
+      const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'did-finish-load');
+      if (recovered.redirected) {
+        return;
+      }
 
       // 通知首页：新窗口页面加载完成
       if (browserView && !browserView.webContents.isDestroyed()) {
@@ -6493,9 +7059,28 @@ async function openManagedChildWindow(url, options = {}) {
       }
     });
 
+    newWindow.webContents.on('did-navigate', async (event, navUrl) => {
+      console.log('[New Window API] Navigation:', navUrl);
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log('[New Window API] bootstrap 导航完成，跳过导航守卫:', navUrl);
+        return;
+      }
+      await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate');
+    });
+
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log('[New Window API] bootstrap SPA 导航，跳过脚本注入:', navUrl);
+        return;
+      }
+      const recovered = await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate-in-page');
+      if (recovered.redirected) {
+        return;
+      }
       if (shouldSkipScriptInjection(navUrl)) {
         console.log('[New Window API] Skip script injection for Toutiao:', navUrl);
         await maybeRunBareToutiaoPublish(newWindow);
@@ -6543,45 +7128,45 @@ async function openManagedChildWindow(url, options = {}) {
     if (localStorageData && Object.keys(localStorageData).length > 0) {
       console.log('[Window Manager] 🔄 预设 localStorage，先加载 about:blank...');
 
-      // 获取目标域名（用于设置 localStorage）
-      const targetUrl = new URL(url);
-      const targetOrigin = targetUrl.origin;
-
-      // 先加载一个同域的空白页（about:blank 不能设置 localStorage，需要用目标域）
-      // 使用一个简单的 data URL 或者目标域的任意页面
-      await newWindow.loadURL(`${targetOrigin}/favicon.ico`).catch(() => {
-        // favicon 可能不存在，忽略错误
-      });
-
-      // 等待页面加载
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // 设置 localStorage
-      const localStorageScript = `
-        (function() {
-          const data = ${JSON.stringify(localStorageData)};
-          console.log('[预设 localStorage] 开始设置...', Object.keys(data));
-          for (const key in data) {
-            try {
-              localStorage.setItem(key, data[key]);
-              console.log('[预设 localStorage] 已设置:', key, '=', data[key]);
-            } catch (e) {
-              console.error('[预设 localStorage] 设置失败:', key, e);
-            }
-          }
-          console.log('[预设 localStorage] 完成');
-        })();
-      `;
-
-      try {
-        await newWindow.webContents.executeJavaScript(localStorageScript);
-        console.log('[Window Manager] ✅ localStorage 预设完成');
-      } catch (err) {
-        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+      if (windowContext) {
+        windowContext.bootstrapInProgress = true;
       }
 
-      // 等待一下确保 localStorage 写入
-      await new Promise(resolve => setTimeout(resolve, 100));
+      try {
+        const bootstrapUrl = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
+        console.log('[Window Manager] 🔄 加载 bootstrap 文档页:', bootstrapUrl);
+        await newWindow.loadURL(bootstrapUrl);
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // 设置 localStorage
+        const localStorageScript = `
+          (function() {
+            const data = ${JSON.stringify(localStorageData)};
+            console.log('[预设 localStorage] 开始设置...', Object.keys(data));
+            for (const key in data) {
+              try {
+                localStorage.setItem(key, data[key]);
+                console.log('[预设 localStorage] 已设置:', key);
+              } catch (e) {
+                console.error('[预设 localStorage] 设置失败:', key, e);
+              }
+            }
+            console.log('[预设 localStorage] 完成');
+          })();
+        `;
+
+        await newWindow.webContents.executeJavaScript(localStorageScript);
+        console.log('[Window Manager] ✅ localStorage 预设完成');
+
+        // 等待一下确保 localStorage 写入
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (err) {
+        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+      } finally {
+        if (windowContext) {
+          windowContext.bootstrapInProgress = false;
+        }
+      }
     }
 
     // 加载目标 URL
@@ -6688,6 +7273,25 @@ ipcMain.handle('get-window-id', async (event) => {
       return { success: true, windowId: 'main', isMainView: true };
     }
     return { success: false, error: 'Cannot determine window' };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-window-context', async (event) => {
+  try {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow) {
+      if (browserView && event.sender === browserView.webContents) {
+        return { success: true, context: { purpose: 'main' } };
+      }
+      return { success: false, error: 'Cannot determine window' };
+    }
+
+    return {
+      success: true,
+      context: windowContextMap.get(senderWindow.id) || null
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -7083,7 +7687,7 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
 
 // 存储数据
 ipcMain.handle('global-storage-set', async (event, key, value) => {
-  console.log('[Global Storage] 存储数据:', key, '=', value);
+  console.log('[Global Storage] 存储数据:', key, '=', summarizeGlobalStorageValue(key, value));
   globalStorage[key] = value;
   saveGlobalStorage(); // 持久化保存
   return { success: true };
@@ -7092,7 +7696,7 @@ ipcMain.handle('global-storage-set', async (event, key, value) => {
 // 获取数据
 ipcMain.handle('global-storage-get', async (event, key) => {
   const value = globalStorage[key];
-  console.log('[Global Storage] 获取数据:', key, '=', value);
+  console.log('[Global Storage] 获取数据:', key, '=', summarizeGlobalStorageValue(key, value));
   return { success: true, value };
 });
 
@@ -7106,7 +7710,7 @@ ipcMain.handle('global-storage-remove', async (event, key) => {
 
 // 获取所有数据
 ipcMain.handle('global-storage-get-all', async () => {
-  console.log('[Global Storage] 获取所有数据:', globalStorage);
+  console.log('[Global Storage] 获取所有数据 keys:', Object.keys(globalStorage));
   return { success: true, data: { ...globalStorage } };
 });
 

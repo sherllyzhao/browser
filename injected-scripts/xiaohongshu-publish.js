@@ -41,6 +41,18 @@ if (location.search.includes("published=true")) {
 
         window.__XHS_SCRIPT_LOADED__ = true;
 
+        // ===========================
+        // 🔑 小红书白屏检测和自动恢复（使用公共函数）
+        // ===========================
+        if (typeof window.checkBlankPageAndReload === "function") {
+            window.checkBlankPageAndReload("小红书发布", [
+                ".publish-container",
+                ".c-input",
+                ".submit",
+                ".dnd-upload"
+            ], 3000, 3);
+        }
+
         // 显示操作提示横幅
         if (typeof showOperationBanner === "function") {
             showOperationBanner("正在自动发布中，请勿操作此页面...");
@@ -75,7 +87,7 @@ if (location.search.includes("published=true")) {
         // ===========================
 
         const urlParams = new URLSearchParams(window.location.search);
-        const companyId = await window.browserAPI.getGlobalData("company_id");
+        const companyId = await safeGetGlobalData("company_id");
         const transferId = urlParams.get("transfer_id");
 
         console.log("[小红书发布] URL 参数:", {
@@ -574,7 +586,7 @@ if (location.search.includes("published=true")) {
             for (const selector of titleSelectors) {
                 try {
                     // alert(`Trying selector: ${selector}`);
-                    titleInput = await waitForElement(selector, 2000);
+                    titleInput = await waitForElement(selector, 5000); // 🔑 增加到 5 秒
                     if (titleInput) {
                         // alert(`✅ Found title input with selector: ${selector}`);
                         break;
@@ -626,7 +638,7 @@ if (location.search.includes("published=true")) {
                     for (const selector of introSelectors) {
                         try {
                             // alert(`Trying selector: ${selector}`);
-                            introInput = await waitForElement(selector, 2000);
+                            introInput = await waitForElement(selector, 5000); // 🔑 增加到 5 秒
                             if (introInput) {
                                 // alert(`✅ Found intro input with selector: ${selector}`);
                                 break;
@@ -678,7 +690,7 @@ if (location.search.includes("published=true")) {
 
                             // 单独处理话题
                             if (topicList.length > 0) {
-                                const introInput = await waitForElement(".tiptap-container .ProseMirror", 5000);
+                                const introInput = await waitForElement(".tiptap-container .ProseMirror", 10000); // 🔑 增加到 10 秒
                                 for (let topicListElement of topicList) {
                                     // 聚焦编辑器
                                     introInput.focus();

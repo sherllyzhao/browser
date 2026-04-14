@@ -14,6 +14,37 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.__COMMON_JS_LOADED__ = true;
 
     // ===========================
+    // 🔑 安全的 getGlobalData 包装函数（带超时保护）
+    // ===========================
+    /**
+     * 安全地获取全局数据，带超时保护，避免 IPC 调用卡住阻塞脚本执行
+     * @param {string} key - 数据键名
+     * @param {number} timeout - 超时时间（毫秒），默认 3000ms
+     * @returns {Promise<any>} 返回数据或 null（超时/失败时）
+     */
+    window.safeGetGlobalData = async function (key, timeout = 3000) {
+        if (!window.browserAPI?.getGlobalData) {
+            console.warn(`[safeGetGlobalData] ⚠️ browserAPI.getGlobalData 不可用`);
+            return null;
+        }
+
+        try {
+            const result = await Promise.race([
+                window.browserAPI.getGlobalData(key),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout))
+            ]);
+            return result;
+        } catch (e) {
+            if (e.message === 'timeout') {
+                console.warn(`[safeGetGlobalData] ⚠️ 获取 ${key} 超时 (${timeout}ms)`);
+            } else {
+                console.warn(`[safeGetGlobalData] ⚠️ 获取 ${key} 失败:`, e.message);
+            }
+            return null;
+        }
+    };
+
+    // ===========================
     // 🔑 统一配置常量（低风险优化：提取硬编码延迟）
     // ===========================
     window.PUBLISH_CONFIG = {
@@ -313,6 +344,21 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
     };
 
+    // 显示页面内容并隐藏加载遮罩
+    window.showPageAndHideMask = function () {
+        // 显示 body 内容
+        if (document.body) {
+            document.body.style.visibility = "visible";
+            document.body.style.opacity = "1";
+        }
+
+        // 移除加载遮罩
+        const mask = document.getElementById("__page_loading_mask__");
+        if (mask) {
+            mask.remove();
+        }
+    };
+
     // 页面状态检查并自动刷新（检测到异常时先隐藏页面）
     // 🔑 只在主窗口检测，子窗口（发布页）跳过检测，避免第三方平台页面误报
     window.checkPageStateAndReload = function (scriptName = "脚本", reloadDelay = 2000) {
@@ -343,6 +389,92 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             return false;
         }
         return true;
+    };
+
+    /**
+     * 白屏检测和自动恢复（针对扫码登录后跳转的情况）
+     * @param {string} platform - 平台名称（如 '视频号'、'小红书'）
+     * @param {Array<string>} keySelectors - 关键元素选择器数组（用于判断页面是否正常加载）
+     * @param {number} checkDelay - 检测延迟时间（毫秒），默认 3000ms
+     * @param {number} maxRetries - 最大重试次数，默认 3 次
+     */
+    window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
+        // 🔑 使用 localStorage 而不是 sessionStorage（登录跳转会清空 sessionStorage）
+        const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
+        let retryCount = parseInt(localStorage.getItem(retryKey) || '0');
+
+        if (retryCount >= maxRetries) {
+            console.log(`[${platform}] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
+            localStorage.removeItem(retryKey);
+            return;
+        }
+
+        // 延迟检测页面是否正常加载
+        setTimeout(() => {
+            try {
+                // 检测 1: body 是否为空或几乎为空
+                const bodyText = (document.body?.innerText || '').trim();
+                const bodyHtml = (document.body?.innerHTML || '').trim();
+
+                // 检测 2: 是否有关键元素（支持 Shadow DOM）
+                let hasKeyElement = false;
+                if (keySelectors.length > 0) {
+                    for (const selector of keySelectors) {
+                        // 先在普通 DOM 中查找
+                        if (document.querySelector(selector)) {
+                            hasKeyElement = true;
+                            break;
+                        }
+
+                        // 🔑 如果是 wujie-app，检查 shadowRoot
+                        if (selector === 'wujie-app') {
+                            const wujieApp = document.querySelector('wujie-app');
+                            if (wujieApp && wujieApp.shadowRoot) {
+                                hasKeyElement = true;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // 如果没有指定关键选择器，默认认为有元素（只检测 body 内容）
+                    hasKeyElement = true;
+                }
+
+                // 检测 3: 是否是白屏（body 内容很少且没有关键元素）
+                const isBlankPage = bodyText.length < 50 && bodyHtml.length < 200 && !hasKeyElement;
+
+                if (isBlankPage) {
+                    console.log(`[${platform}] ❌ 检测到白屏，准备刷新页面...`);
+                    console.log(`[${platform}] 页面状态:`, {
+                        bodyTextLength: bodyText.length,
+                        bodyHtmlLength: bodyHtml.length,
+                        hasKeyElement,
+                        retryCount,
+                        keySelectors,
+                        url: window.location.href
+                    });
+
+                    // 增加重试计数
+                    localStorage.setItem(retryKey, String(retryCount + 1));
+
+                    // 隐藏页面并显示 loading
+                    if (typeof window.hidePageAndShowMask === 'function') {
+                        window.hidePageAndShowMask();
+                    }
+
+                    // 延迟 1 秒后刷新
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    // 页面正常，清除重试计数
+                    localStorage.removeItem(retryKey);
+                    console.log(`[${platform}] ✅ 页面加载正常`);
+                }
+            } catch (e) {
+                console.error(`[${platform}] ❌ 白屏检测失败:`, e);
+            }
+        }, checkDelay);
     };
 
     // 等待元素出现的通用函数
@@ -2256,7 +2388,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -2335,7 +2467,7 @@ if (typeof checkWindowIdMatch === "undefined") window.checkWindowIdMatch && (che
 if (typeof restoreSessionAndReload === "undefined") window.restoreSessionAndReload && (restoreSessionAndReload = window.restoreSessionAndReload);
 if (typeof loadPublishDataFromGlobalStorage === "undefined") window.loadPublishDataFromGlobalStorage && (loadPublishDataFromGlobalStorage = window.loadPublishDataFromGlobalStorage);
 if (typeof getCurrentWindowId === "undefined") window.getCurrentWindowId && (getCurrentWindowId = window.getCurrentWindowId);
-if (typeof extractAfterHash === "undefined") window.extractAfterHash && (extractAfterHash = window.extractAfterHash);
+if (typeof checkBlankPageAndReload === "undefined") window.checkBlankPageAndReload && (checkBlankPageAndReload = window.checkBlankPageAndReload);
 if (typeof removeHashTags === "undefined") window.removeHashTags && (removeHashTags = window.removeHashTags);
 if (typeof getCurrentSystem === "undefined") window.getCurrentSystem && (getCurrentSystem = window.getCurrentSystem);
 if (typeof showOperationBanner === "undefined") window.showOperationBanner && (showOperationBanner = window.showOperationBanner);

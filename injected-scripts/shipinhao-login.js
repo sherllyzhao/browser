@@ -19,7 +19,7 @@
       // 标记已刷新，防止重复刷新
       sessionStorage.setItem(REFRESH_FLAG_KEY, 'true');
 
-      // 延迟执行清空和刷新操作
+      // 立即执行清空和刷新操作
       setTimeout(async () => {
         console.log('[Shipinhao Login] 正在清空缓存...');
 
@@ -181,12 +181,11 @@
           }
         }
 
-        await delay(5000);
         // 5. 强制刷新页面（清除缓存）
         console.log('[Shipinhao Login] 正在强制刷新页面...');
         // 使用 location.reload(true) 强制从服务器重新加载，忽略缓存
         window.location.reload(true);
-      }, 1000);
+      }, 100);
 
       return true; // 表示正在清空和刷新
     }

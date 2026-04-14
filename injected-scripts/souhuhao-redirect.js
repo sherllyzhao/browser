@@ -15,11 +15,6 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
     cookiesDomain: 'mp.sohu.com'
 };
 
-// 🔑 注意：不再在同步 IIFE 中无条件设置 toPath
-// 原因：授权窗口也会加载这个脚本，如果无条件设置 toPath 为发布页，
-// 登录成功后会尝试跳转到发布页 → 需要短信验证 → 又跳回验证页 → 循环
-// toPath 的设置移到异步部分，先判断窗口类型再决定
-
 (async function () {
     'use strict';
 
@@ -80,44 +75,21 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
         console.error('[搜狐号重定向] ❌ 检测发布成功标志失败:', e);
     }
 
-    // 🔑 通过检查父页面传来的数据判断窗口类型
+    // 🔑 通过主进程窗口上下文判断窗口类型，避免依赖 toPath/localStorage 竞态
     try {
-        const windowId = await window.browserAPI.getWindowId();
-        console.log('[搜狐号重定向] 当前窗口 ID:', windowId);
+        const windowContext = await window.browserAPI.getWindowContext();
+        console.log('[搜狐号重定向] 窗口上下文:', windowContext);
 
-        // 如果是主窗口（BrowserView），不需要重定向
-        if (windowId === 'main') {
-            console.log('[搜狐号重定向] 这是主窗口，不需要重定向');
+        if (!windowContext || windowContext.purpose !== 'publish') {
+            console.log('[搜狐号重定向] 当前不是发布窗口，保持在 firstPage');
             return;
         }
 
-        // 检查是否有授权数据（auth_data）
-        const authData = await window.browserAPI.getGlobalData(`auth_data_window_${windowId}`);
-        console.log('[搜狐号重定向] 授权数据:', authData ? '存在' : '不存在');
-
-        if (authData) {
-            // 有授权数据，说明是授权窗口，不设置 toPath，让正常流程进行
-            const authType = authData.auth_type || (typeof authData === 'string' ? JSON.parse(authData).auth_type : null);
-            console.log('[搜狐号重定向] ✅ 检测到授权窗口（auth_type:', authType, '），保持在 firstPage，不设置 toPath');
+        const publishUrl = windowContext.expectedPageUrl || PLATFORM_CONFIG.publishPageUrl;
+        if (window.location.href !== publishUrl) {
+            console.log('[搜狐号重定向] 🔄 检测到发布窗口落在首页，直接跳转回发布页:', publishUrl);
+            window.location.replace(publishUrl);
             return;
-        }
-
-        // 检查是否有发布数据（publish_data）
-        const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
-        console.log('[搜狐号重定向] 发布数据:', publishData ? '存在' : '不存在');
-
-        if (publishData) {
-            // 有发布数据，说明是发布窗口
-            // 🔑 只在确认是发布窗口后才设置 toPath
-            console.log('[搜狐号重定向] 🔄 检测到发布窗口，设置 toPath 并重定向到发布页...');
-            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
-
-            // 立即跳转到发布页
-            const publishUrl = PLATFORM_CONFIG.publishPageUrl;
-            console.log('[搜狐号重定向] 🚀 跳转到:', publishUrl);
-            window.location.href = publishUrl;
-        } else {
-            console.log('[搜狐号重定向] 没有授权或发布数据，保持在 firstPage');
         }
     } catch (error) {
         console.error('[搜狐号重定向] ❌ 检测窗口类型失败:', error);

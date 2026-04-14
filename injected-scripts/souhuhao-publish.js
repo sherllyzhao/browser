@@ -5,180 +5,6 @@
  * 依赖: common.js (会在此脚本之前注入)
  */
 
-// 🔑 最优先：在脚本最顶部劫持 localStorage 和 window.location，防止 toPath 导致页面跳转
-// 这必须在任何其他代码执行之前进行
-(function() {
-    'use strict';
-
-    // 🔑 在 IIFE 内部定义平台配置，避免与授权脚本的 PLATFORM_CONFIG 冲突
-    const PUBLISH_PAGE_PATH = '/contentManagement/news/addarticle';
-    const PUBLISH_SUCCESS_KEY = 'sohu_publish_success_data';
-
-    console.log('[搜狐号发布] 🛡️ 在脚本最顶部劫持 localStorage 和 window.location，阻止页面跳转');
-    try {
-        const originalSetItem = localStorage.setItem.bind(localStorage);
-        const originalGetItem = localStorage.getItem.bind(localStorage);
-        const originalRemoveItem = localStorage.removeItem.bind(localStorage);
-
-        // 🔑 首先清除 toPath，然后设置为发布页路径
-        console.log('[搜狐号发布] 🧹 清除旧的 toPath');
-        originalRemoveItem('toPath');
-
-        // 立即设置为发布页路径
-        console.log('[搜狐号发布] ✅ 设置 toPath 为发布页路径');
-        originalSetItem('toPath', PUBLISH_PAGE_PATH);
-        console.log('[搜狐号发布] ✅ 已设置 localStorage.toPath =', PUBLISH_PAGE_PATH);
-
-        // 🔑 检查发布成功标志的辅助函数（使用 originalGetItem 避免劫持问题）
-        function hasPublishSuccessFlag() {
-            // 优先检查全局变量（更可靠）
-            if (window.__sohuPublishSuccessFlag) {
-                console.log('[搜狐号发布] ✅ 检测到全局变量标志');
-                return true;
-            }
-            // 其次检查 localStorage
-            try {
-                const data = originalGetItem(PUBLISH_SUCCESS_KEY);
-                if (data) {
-                    console.log('[搜狐号发布] ✅ 检测到 localStorage 标志');
-                    return true;
-                }
-            } catch (e) {
-                console.error('[搜狐号发布] ❌ 读取 localStorage 标志失败:', e);
-            }
-            return false;
-        }
-
-        // 🔑 劫持 window.location.href，防止跳转到首页
-        // 注意：window.location.href 在现代浏览器中不可配置，尝试劫持可能失败
-        if (!window.__sohuLocationHrefHijacked) {
-            window.__sohuLocationHrefHijacked = true;
-            try {
-                let originalLocationHref = window.location.href;
-                Object.defineProperty(window.location, 'href', {
-                    configurable: true,
-                    get: function() {
-                        return originalLocationHref;
-                    },
-                    set: function(value) {
-                        console.log('[搜狐号发布] 🚫 检测到页面跳转:', value);
-                        // 如果要跳转到首页，检查是否是发布成功后的跳转
-                        if (value.includes('firstPage') || value.includes('first/page')) {
-                            // 🔑 使用辅助函数检查发布成功标志
-                            if (hasPublishSuccessFlag()) {
-                                console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许跳转到首页');
-                                originalLocationHref = value;
-                                window.location.assign(value);
-                                return;
-                            }
-                            console.log('[搜狐号发布] 🚫 阻止跳转到首页（无发布成功标志）');
-                            return; // 阻止跳转
-                        }
-                        // 其他跳转允许
-                        originalLocationHref = value;
-                        window.location.assign(value); // 使用 assign 代替直接赋值，避免递归
-                    }
-                });
-                console.log('[搜狐号发布] ✅ 成功劫持 window.location.href');
-            } catch (e) {
-                console.log('[搜狐号发布] ⚠️ 无法劫持 window.location.href（浏览器限制），使用其他方式拦截');
-            }
-        }
-
-        // 🔑 劫持 history.pushState 和 history.replaceState，防止通过 history API 跳转
-        const originalPushState = window.history.pushState.bind(window.history);
-        const originalReplaceState = window.history.replaceState.bind(window.history);
-
-        window.history.pushState = function(state, title, url) {
-            console.log('[搜狐号发布] 🚫 检测到 history.pushState:', url);
-            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
-                // 🔑 使用辅助函数检查发布成功标志
-                if (hasPublishSuccessFlag()) {
-                    console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许 pushState 到首页');
-                    return originalPushState(state, title, url);
-                }
-                console.log('[搜狐号发布] 🚫 阻止通过 history.pushState 跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalPushState(state, title, url);
-        };
-
-        window.history.replaceState = function(state, title, url) {
-            console.log('[搜狐号发布] 🚫 检测到 history.replaceState:', url);
-            if (url && (url.includes('firstPage') || url.includes('first/page'))) {
-                // 🔑 使用辅助函数检查发布成功标志
-                if (hasPublishSuccessFlag()) {
-                    console.log('[搜狐号发布] ✅ 检测到发布成功标志，允许 replaceState 到首页');
-                    return originalReplaceState(state, title, url);
-                }
-                console.log('[搜狐号发布] 🚫 阻止通过 history.replaceState 跳转到首页');
-                return; // 阻止跳转
-            }
-            return originalReplaceState(state, title, url);
-        };
-
-        // 劫持 setItem，阻止设置 toPath
-        localStorage.setItem = function(key, value) {
-            if (key === 'toPath') {
-                console.log('[搜狐号发布] 🚫 阻止修改 toPath:', value, '-> 保持为', PUBLISH_PAGE_PATH);
-                return; // 直接返回，不执行设置
-            }
-            return originalSetItem(key, value);
-        };
-
-        // 劫持 getItem，toPath 永远返回发布页路径
-        localStorage.getItem = function(key) {
-            if (key === 'toPath') {
-                console.log('[搜狐号发布] 🔄 拦截读取 toPath，返回发布页路径');
-                return PUBLISH_PAGE_PATH; // 返回发布页路径
-            }
-            return originalGetItem(key);
-        };
-
-        // 劫持 removeItem，阻止删除 toPath
-        localStorage.removeItem = function(key) {
-            if (key === 'toPath') {
-                console.log('[搜狐号发布] 🚫 阻止删除 toPath');
-                return; // 直接返回，不执行删除
-            }
-            return originalRemoveItem(key);
-        };
-
-        // 🔑 定期检查 toPath 是否被修改，如果被修改就重新设置
-        // 这样可以防止搜狐号的代码修改 toPath 导致页面跳转
-        let checkCount = 0;
-        const checkInterval = setInterval(() => {
-            checkCount++;
-            const currentToPath = originalGetItem('toPath');
-            if (currentToPath !== PUBLISH_PAGE_PATH) {
-                console.log('[搜狐号发布] ⚠️ 检测到 toPath 被修改，当前值:', currentToPath, '重新设置为', PUBLISH_PAGE_PATH);
-                // 打印调用栈，看看是谁修改了 toPath
-                console.log('[搜狐号发布] 📍 调用栈:', new Error().stack);
-                originalSetItem('toPath', PUBLISH_PAGE_PATH);
-            }
-            // 只检查 60 次（约 6 秒），之后停止检查
-            if (checkCount >= 60) {
-                clearInterval(checkInterval);
-                console.log('[搜狐号发布] ✅ toPath 检查完成');
-            }
-        }, 100);
-
-        // 🔑 也劫持 Object.defineProperty，防止通过属性访问器设置 toPath
-        const originalDefineProperty = Object.defineProperty;
-        Object.defineProperty = function(obj, prop, descriptor) {
-            if (obj === localStorage && prop === 'toPath') {
-                console.log('[搜狐号发布] 🚫 阻止通过 defineProperty 设置 toPath');
-                return obj; // 直接返回，不执行定义
-            }
-            return originalDefineProperty.call(this, obj, prop, descriptor);
-        };
-
-        console.log('[搜狐号发布] ✅ localStorage 和 window.location 劫持完成，toPath 已被控制');
-    } catch (e) {
-        console.error('[搜狐号发布] ❌ 劫持失败:', e);
-    }
-})();
-
 (async function () {
     'use strict';
 
@@ -210,6 +36,17 @@
     }
 
     window.__SH_SCRIPT_LOADED__ = true;
+
+    // ===========================
+    // 🔑 搜狐号白屏检测和自动恢复（使用公共函数）
+    // ===========================
+    if (typeof window.checkBlankPageAndReload === 'function') {
+        window.checkBlankPageAndReload('搜狐号发布', [
+            '.ne-editor',
+            '.publish-btn',
+            '.title-input'
+        ], 3000, 3);
+    }
 
     // 显示操作提示横幅
     if (typeof showOperationBanner === 'function') {
@@ -635,7 +472,7 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor", 10000);
+                                const editorIframeEle = await waitForElement("#editor", 20000); // 🔑 增加到 20 秒
                                 const editorEle = editorIframeEle.querySelector('.ql-editor ')
                                 let htmlContent = dataObj.video.video.content;
 
@@ -799,9 +636,9 @@
                                                 const maxRetries = 3;
 
                                                 // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                                const waitForImageOrError = async (timeout = 10000) => {
+                                                const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
                                                     const startTime = Date.now();
-                                                    const checkInterval = 300; // 每300ms检查一次
+                                                    const checkInterval = 500; // 🔑 增加到 500ms
 
                                                     while (Date.now() - startTime < timeout) {
                                                         // 1. 先检查是否有错误信息（优先级更高）

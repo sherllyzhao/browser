@@ -34,6 +34,7 @@
     // ===========================
     const urlParams = new URLSearchParams(window.location.search);
     const sudaref = urlParams.get('sudaref');
+    const nestedTargetUrlRaw = urlParams.get('url') || '';
     const currentUrl = new URL(window.location.href);
     const isWeiboHost = /(^|\.)weibo\.com$/i.test(currentUrl.hostname);
     const isWeiboLandingPage = isWeiboHost
@@ -42,7 +43,27 @@
             || currentUrl.pathname === ''
             || currentUrl.pathname === '/u/page/fav'
         );
-    const fromXinlangPublish = !!(sudaref && sudaref.includes('card.weibo.com'));
+    const isWeiboLoginPage = isWeiboHost
+        && (
+            currentUrl.pathname === '/newlogin'
+            || currentUrl.pathname.startsWith('/login')
+        );
+
+    let nestedSudaref = '';
+    try {
+        if (nestedTargetUrlRaw) {
+            const decoded = decodeURIComponent(nestedTargetUrlRaw);
+            const nestedUrl = new URL(decoded);
+            nestedSudaref = new URLSearchParams(nestedUrl.search).get('sudaref') || '';
+        }
+    } catch (e) {
+        console.warn('[新浪重定向] ⚠️ 解析嵌套 url 参数失败:', e.message);
+    }
+
+    const fromXinlangPublish = (
+        (sudaref && sudaref.includes('card.weibo.com'))
+        || (nestedSudaref && nestedSudaref.includes('card.weibo.com'))
+    );
 
     if (!isWeiboHost) {
         console.log('[新浪重定向] ℹ️ 当前页面不是 weibo.com 域名，不处理');
@@ -78,6 +99,7 @@
     let publishData = null;
     let publishSuccessData = null;
 
+    
     try {
         publishData = await window.browserAPI?.getGlobalData?.(publishDataKey);
         publishSuccessData = await window.browserAPI?.getGlobalData?.(publishSuccessKey);
@@ -88,7 +110,7 @@
     }
 
     const hasPublishContext = !!(publishData || publishSuccessData);
-    const shouldHandleRedirect = fromXinlangPublish || hasPublishContext || isWeiboLandingPage;
+    const shouldHandleRedirect = fromXinlangPublish || hasPublishContext || isWeiboLandingPage || isWeiboLoginPage;
 
     if (!shouldHandleRedirect) {
         console.log('[新浪重定向] ℹ️ 既不是新浪发布回跳，也不是微博首页兜底场景，不处理');
@@ -102,6 +124,8 @@
 
     console.log('[新浪重定向] 🍪 登录态检查:', {
         fromXinlangPublish,
+        isWeiboLoginPage,
+        nestedSudaref,
         isWeiboLandingPage,
         hasPublishContext,
         hasWeiboLoginCookie,

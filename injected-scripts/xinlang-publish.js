@@ -29,6 +29,17 @@
 
     window.__XL_SCRIPT_LOADED__ = true;
 
+    // ===========================
+    // 🔑 新浪白屏检测和自动恢复（使用公共函数）
+    // ===========================
+    if (typeof window.checkBlankPageAndReload === "function") {
+        window.checkBlankPageAndReload("新浪发布", [
+            ".editor-container",
+            ".publish-button",
+            ".title-input"
+        ], 3000, 3);
+    }
+
     // 显示操作提示横幅
     if (typeof showOperationBanner === "function") {
         showOperationBanner("正在自动发布中，请勿操作此页面...");
@@ -849,7 +860,7 @@
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorEle = await waitForElement(".wb-editor", 10000);
+                                const editorEle = await waitForElement(".wb-editor", 20000); // 🔑 增加到 20 秒
 
                                 // 🔴 检查编辑器是否已有内容（防止从验证页返回时重复填写）
                                 // 注意：必须检查 textContent 而不是 innerHTML，因为编辑器可能包含空白 HTML 标签
@@ -1246,9 +1257,9 @@
                             const tryUploadImage = async () => {
 
                                 // 🔴 自定义等待逻辑：同时检查弹窗状态、封面图和错误信息
-                                const waitForImageOrError = async (timeout = 15000) => {
+                                const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
                                     const startTime = Date.now();
-                                    const checkInterval = 300; // 每300ms检查一次
+                                    const checkInterval = 500; // 🔑 增加到 500ms
 
                                     while (Date.now() - startTime < timeout) {
                                         // 1. 先检查是否有错误信息（优先级最高）
@@ -1429,10 +1440,32 @@
                                             }
                                             console.log("[新浪发布] ✅ 发布弹窗已出现");
 
-                                            // 🔴 检测弹窗类型：是发布确认弹窗还是发布成功提示
-                                            const isPublishModal = publishDialogEle.classList.contains('publish-modal') ||
+                                            // 🔴 检测弹窗类型：通过多种特征判断
+                                            // 方法1：检查 .publish-modal 类名
+                                            const hasPublishModalClass = publishDialogEle.classList.contains('publish-modal') ||
                                                 publishDialogEle.querySelector('.publish-modal');
-                                            console.log("[新浪发布] 🔍 是否是发布确认弹窗 (.publish-modal):", !!isPublishModal);
+
+                                            // 方法2：检查是否有定时发布按钮（更可靠的特征）
+                                            const itemsCenters = publishDialogEle.querySelectorAll('.items-center');
+                                            const hasTimedReleaseBtn = publishDialogEle.querySelector('.svg-icon') ||
+                                                (itemsCenters.length > 0 && itemsCenters[itemsCenters.length - 1]?.querySelector('button svg'));
+
+                                            // 方法3：检查是否有"发布"文本的按钮
+                                            const allButtons = publishDialogEle.querySelectorAll('button');
+                                            let hasPublishBtn = false;
+                                            for (const btn of allButtons) {
+                                                const text = btn.textContent.trim();
+                                                if (text === '发布' || text === '定时发布') {
+                                                    hasPublishBtn = true;
+                                                    break;
+                                                }
+                                            }
+
+                                            // 如果以上任一特征存在，说明是发布确认弹窗
+                                            const isPublishModal = hasPublishModalClass || hasTimedReleaseBtn || hasPublishBtn;
+
+                                            console.log("[新浪发布] 🔍 弹窗类型检测: .publish-modal=", !!hasPublishModalClass, ", 定时按钮=", !!hasTimedReleaseBtn, ", 发布按钮=", hasPublishBtn);
+                                            console.log("[新浪发布] 🔍 是否是发布确认弹窗:", !!isPublishModal);
 
                                             // 如果不是发布确认弹窗，说明已经发布成功了
                                             if (!isPublishModal) {
@@ -1475,20 +1508,25 @@
                                             }
 
                                             // 如果是发布确认弹窗，继续查找发布按钮
+                                            console.log("[新浪发布] 🔍 开始查找发布按钮操作区...");
                                             let publishBtnArea = publishDialogEle.querySelector('.n-mention + div .items-center:nth-of-type(2)');
 
                                             // 备用选择器1：查找所有 items-center 并选择最后一个
                                             if (!publishBtnArea) {
-                                                const itemsCenters = publishDialogEle.querySelectorAll('.items-center');
-                                                if (itemsCenters.length > 0) {
-                                                    publishBtnArea = itemsCenters[itemsCenters.length - 1];
+                                                const allItemsCenters = publishDialogEle.querySelectorAll('.items-center');
+                                                console.log("[新浪发布] 🔍 找到 items-center 数量:", allItemsCenters.length);
+                                                if (allItemsCenters.length > 0) {
+                                                    publishBtnArea = allItemsCenters[allItemsCenters.length - 1];
                                                     console.log("[新浪发布] 🔍 使用备用选择器1：最后一个 .items-center");
                                                 }
+                                            } else {
+                                                console.log("[新浪发布] 🔍 使用原选择器找到发布按钮操作区");
                                             }
 
                                             // 备用选择器2：查找所有按钮
                                             if (!publishBtnArea) {
                                                 const allBtns = publishDialogEle.querySelectorAll('button');
+                                                console.log("[新浪发布] 🔍 找到按钮数量:", allBtns.length);
                                                 if (allBtns.length > 0) {
                                                     publishBtnArea = publishDialogEle;
                                                     console.log("[新浪发布] 🔍 使用备用选择器2：对话框本身");
@@ -1496,7 +1534,15 @@
                                             }
 
                                             if (!publishBtnArea) {
-                                                console.log('[新浪发布]：找不到发布按钮操作区');
+                                                console.log('[新浪发布] ❌ 找不到发布按钮操作区，弹窗结构可能变化');
+                                                // 打印弹窗内容帮助诊断
+                                                console.log('[新浪发布] 🔍 弹窗内容:', publishDialogEle.textContent?.substring(0, 200));
+                                                // 尝试直接查找发布按钮
+                                                const directPublishBtn = publishDialogEle.querySelector('button');
+                                                if (directPublishBtn) {
+                                                    console.log('[新浪发布] 🔧 尝试直接点击第一个按钮:', directPublishBtn.textContent?.substring(0, 50));
+                                                    directPublishBtn.click();
+                                                }
                                             }
                                             // publishTime 已在上面声明过（用于保存到 globalData）
                                             if (+publishTime === 2) {
