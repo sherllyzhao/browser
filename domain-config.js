@@ -97,6 +97,8 @@ const domains = {
 };
 let runtimeAigcPage = domains.aigcPage;
 let runtimeAigcPath = domains.aigcPath;
+let runtimeGeoPage = domains.geoPage;
+let runtimeGeoPath = domains.geoPath;
 
 // 未打包环境默认：开发页走 localhost:5173；接口域名仍按 dev/prod 走
 // 可通过 START_ENV=prod 切换生产域名；可通过 USE_REMOTE_AIGC_PAGE=1 关闭 localhost 页面
@@ -113,11 +115,15 @@ try {
     });
     runtimeAigcPage = domains.aigcPage;
     runtimeAigcPath = domains.aigcPath;
+    runtimeGeoPage = domains.geoPage;
+    runtimeGeoPath = domains.geoPath;
 
     // 开发环境页面入口默认走 localhost，便于本地联调
     if (startEnv === 'dev' && !useRemoteAigcPage) {
       runtimeAigcPage = 'http://localhost:5173';
       runtimeAigcPath = '/';
+      runtimeGeoPage = 'http://localhost:5173';
+      runtimeGeoPath = '/#/geo/dashboard';
     }
   }
 } catch (e) {
@@ -156,7 +162,7 @@ function getAigcUrl() {
  * @returns {string}
  */
 function getGeoUrl() {
-  return domains.geoPage + domains.geoPath;
+  return runtimeGeoPage + runtimeGeoPath;
 }
 
 /**
