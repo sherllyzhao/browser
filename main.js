@@ -4308,6 +4308,13 @@ function createWindow() {
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
       toutiaoBarePublishState.delete(windowId);
+      // 清理发布数据，避免残留数据影响后续授权窗口
+      const pdKey = `publish_data_window_${windowId}`;
+      if (globalStorage[pdKey]) {
+        delete globalStorage[pdKey];
+        saveGlobalStorage();
+        console.log(`[Window Manager] 🧹 已清理发布数据: ${pdKey}`);
+      }
     });
 
     // 开发环境自动打开 DevTools
@@ -6597,10 +6604,11 @@ async function openManagedChildWindow(url, options = {}) {
       }
       windowContextMap.delete(windowId);
       toutiaoBarePublishState.delete(windowId);
-      if (isBareToutiao && globalStorage[publishDataKey]) {
+      // 清理发布数据，避免残留数据影响后续授权窗口
+      if (globalStorage[publishDataKey]) {
         delete globalStorage[publishDataKey];
         saveGlobalStorage();
-        console.log(`[Window Manager] 🧹 已清理头条发布数据: ${publishDataKey}`);
+        console.log(`[Window Manager] 🧹 已清理发布数据: ${publishDataKey}`);
       }
       // 清理窗口账号映射
       if (windowAccountMap.has(windowId)) {
