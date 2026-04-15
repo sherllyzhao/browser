@@ -1023,7 +1023,7 @@
                                             if (publishId) {
                                                 await sendStatisticsError(publishId, result.message, "知乎发布");
                                             }
-                                            // await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                            await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                             return; // 不再继续
                                         }
 
@@ -1059,7 +1059,7 @@
                                                     if (publishIdForError) {
                                                         await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "知乎发布");
                                                     }
-                                                    // await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                     return;
                                                 }
 
@@ -1091,8 +1091,8 @@
                                                     bubbles: true,
                                                     cancelable: true,
                                                 });
-                                                //publishBtn.dispatchEvent(clickEvent);
-                                                return;
+                                                publishBtn.dispatchEvent(clickEvent);
+                                                //return;
                                                 console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
 
                                                 // 🔴 等待 2 秒后检查是否有错误消息
@@ -1105,7 +1105,7 @@
                                                     if (publishId) {
                                                         await sendStatisticsError(publishId, publishErrorMsg, "知乎发布");
                                                     }
-                                                    //// await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                     return;
                                                 } else {
                                                     console.log("[知乎发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）");
@@ -1118,7 +1118,7 @@
                                                 if (publishId) {
                                                     await sendStatisticsError(publishId, "发布按钮不可用", "知乎发布");
                                                 }
-                                                // await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                             }
                                         } else {
                                             // 图片上传失败（timeout），检查是否有错误信息
@@ -1143,7 +1143,7 @@
                                                 } else {
                                                     console.error(`[知乎发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
                                                 }
-                                                // await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                 return; // 不再继续
                                             }
 
@@ -1170,7 +1170,7 @@
                                                     if (publishId) {
                                                         await sendStatisticsError(publishId, "图片上传失败，无法找到上传输入框", "知乎发布");
                                                     }
-                                                    // await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
+                                                    await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
                                                 }
                                             } else {
                                                 // 超过最大重试次数
@@ -1180,7 +1180,7 @@
                                                 if (publishId) {
                                                     await sendStatisticsError(publishId, "图片上传失败，重试次数已用尽", "知乎发布");
                                                 }
-                                                // await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
+                                                await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
                                             }
                                         }
                                     };
@@ -1199,7 +1199,7 @@
                         if (publishId) {
                             await sendStatisticsError(publishId, error.message || "封面下载失败", "知乎发布");
                         }
-                        // await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
+                        await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
                     }
                 })();
 
@@ -1217,7 +1217,7 @@
             // 同步错误时重置标记
             fillFormRunning = false;
             // 填写表单失败也要关闭窗口，不阻塞下一个任务
-            // await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
+            await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
         }
         // 注意：不在 finally 中重置 fillFormRunning
         // 因为 setTimeout 是异步的，finally 会立即执行
