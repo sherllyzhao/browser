@@ -95,6 +95,472 @@
         return key;
     };
 
+    const ZHIHU_BODY_IMAGE_UPLOAD_URL = "https://zhuanlan.zhihu.com/api/uploaded_images";
+
+    function nodeHasMeaningfulContent(node) {
+        if (!node) {
+            return false;
+        }
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            return !!node.textContent.trim();
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return false;
+        }
+
+        const meaningfulTags = new Set(["IMG", "VIDEO", "IFRAME", "CANVAS", "SVG", "HR", "BR"]);
+        if (meaningfulTags.has(node.tagName)) {
+            return true;
+        }
+
+        return Array.from(node.childNodes).some(child => nodeHasMeaningfulContent(child));
+    }
+
+    function trimLeadingEmptyNodes(container) {
+        if (!container) {
+            return false;
+        }
+
+        while (container.firstChild) {
+            const child = container.firstChild;
+
+            if (child.nodeType === Node.TEXT_NODE) {
+                const trimmedText = child.textContent.trim();
+                if (!trimmedText) {
+                    container.removeChild(child);
+                    continue;
+                }
+
+                child.textContent = trimmedText;
+                return true;
+            }
+
+            if (child.nodeType !== Node.ELEMENT_NODE) {
+                container.removeChild(child);
+                continue;
+            }
+
+            if (!nodeHasMeaningfulContent(child)) {
+                container.removeChild(child);
+                continue;
+            }
+
+            const meaningfulTags = new Set(["IMG", "VIDEO", "IFRAME", "CANVAS", "SVG", "HR", "BR"]);
+            if (!meaningfulTags.has(child.tagName)) {
+                trimLeadingEmptyNodes(child);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    function normalizeZhihuHtmlContent(htmlContent) {
+        const tempCleaner = document.createElement("div");
+        tempCleaner.innerHTML = htmlContent || "";
+        trimLeadingEmptyNodes(tempCleaner);
+        return tempCleaner.innerHTML.trim();
+    }
+
+    function extractPlainTextFromHtml(htmlContent) {
+        const textWrapper = document.createElement("div");
+        textWrapper.innerHTML = htmlContent || "";
+        return textWrapper.textContent || "";
+    }
+
+    async function pasteHtmlIntoEditor(editorEle, htmlContent, plainText = "") {
+        if (!editorEle || !htmlContent) {
+            return;
+        }
+
+        editorEle.focus();
+        await delay(200);
+
+        const clipboardData = new DataTransfer();
+        clipboardData.setData("text/html", htmlContent);
+        clipboardData.setData("text/plain", plainText || extractPlainTextFromHtml(htmlContent));
+
+        const pasteEvent = new ClipboardEvent("paste", {
+            clipboardData,
+            bubbles: true,
+            cancelable: true
+        });
+
+        editorEle.dispatchEvent(pasteEvent);
+        await delay(800);
+    }
+
+    async function tryUploadImageByUrlToZhihu(img) {
+        const originalSrc = img?.getAttribute("src") || img?.src || "";
+        if (!originalSrc || originalSrc.startsWith("data:")) {
+            return { skipped: true };
+        }
+
+        if (originalSrc.includes("zhihu.com")) {
+            console.log("[知乎发布] ⏭️ 跳过已有图片:", originalSrc.substring(0, 80));
+            return { skipped: true };
+        }
+
+        const formData = new FormData();
+        formData.append("url", originalSrc);
+        formData.append("source", "article");
+
+        const response = await fetch(ZHIHU_BODY_IMAGE_UPLOAD_URL, {
+            method: "POST",
+            body: formData,
+            credentials: "include"
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log("[知乎发布] 📥 URL 代传结果:", result);
+
+        if (!result?.src) {
+            throw new Error("响应中缺少 src");
+        }
+
+        img.src = result.src;
+        console.log("[知乎发布] ✅ URL 代传成功:", result.src);
+        return { success: true, src: result.src };
+    }
+
+    async function replaceImagesWithZhihuUrls(tempDiv) {
+        const images = Array.from(tempDiv.querySelectorAll("img"));
+        let externalImageCount = 0;
+
+        console.log("[知乎发布] 🖼️ 发现", images.length, "张图片需要处理");
+
+        for (const img of images) {
+            const originalSrc = img?.getAttribute("src") || img?.src || "";
+            if (!originalSrc || originalSrc.startsWith("data:") || originalSrc.includes("zhihu.com")) {
+                if (originalSrc.includes("zhihu.com")) {
+                    console.log("[知乎发布] ⏭️ 跳过已有图片:", originalSrc.substring(0, 80));
+                }
+                continue;
+            }
+
+            externalImageCount += 1;
+
+            try {
+                await tryUploadImageByUrlToZhihu(img);
+            } catch (error) {
+                console.warn("[知乎发布] ⚠️ URL 代传失败，准备回退编辑器原生上传:", {
+                    src: originalSrc,
+                    message: error?.message || error
+                });
+                return {
+                    success: false,
+                    failedSrc: originalSrc,
+                    failedReason: error?.message || String(error),
+                    externalImageCount
+                };
+            }
+        }
+
+        return {
+            success: true,
+            externalImageCount
+        };
+    }
+
+    function splitNodeByImages(node) {
+        if (!node) {
+            return [];
+        }
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            const normalizedText = String(node.textContent || "").replace(/\u00a0/g, " ");
+            return normalizedText.trim() ? [{ type: "nodes", nodes: [node.cloneNode(true)] }] : [];
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return [];
+        }
+
+        if (node.tagName === "IMG") {
+            const src = node.getAttribute("src") || node.src || "";
+            return src ? [{ type: "image", src, alt: node.getAttribute("alt") || "" }] : [];
+        }
+
+        if (!node.querySelector("img")) {
+            return [{ type: "nodes", nodes: [node.cloneNode(true)] }];
+        }
+
+        const segments = [];
+        let currentWrapper = node.cloneNode(false);
+        let hasCurrentChildren = false;
+
+        const flushCurrentWrapper = () => {
+            if (!hasCurrentChildren) {
+                currentWrapper = node.cloneNode(false);
+                return;
+            }
+            segments.push({ type: "nodes", nodes: [currentWrapper] });
+            currentWrapper = node.cloneNode(false);
+            hasCurrentChildren = false;
+        };
+
+        for (const child of Array.from(node.childNodes)) {
+            const childSegments = splitNodeByImages(child);
+            for (const segment of childSegments) {
+                if (segment.type === "image") {
+                    flushCurrentWrapper();
+                    segments.push(segment);
+                    continue;
+                }
+
+                segment.nodes.forEach(segNode => {
+                    currentWrapper.appendChild(segNode);
+                    hasCurrentChildren = true;
+                });
+            }
+        }
+
+        flushCurrentWrapper();
+        return segments;
+    }
+
+    function buildContentSegmentsFromHtml(htmlContent) {
+        const tempContainer = document.createElement("div");
+        tempContainer.innerHTML = normalizeZhihuHtmlContent(htmlContent);
+
+        const segments = [];
+        let htmlNodesBuffer = [];
+
+        const flushHtmlBuffer = () => {
+            if (!htmlNodesBuffer.length) {
+                return;
+            }
+
+            const htmlWrapper = document.createElement("div");
+            htmlNodesBuffer.forEach(node => {
+                htmlWrapper.appendChild(node.cloneNode(true));
+            });
+
+            const html = htmlWrapper.innerHTML.trim();
+            if (html) {
+                segments.push({
+                    type: "html",
+                    html,
+                    plainText: htmlWrapper.textContent || ""
+                });
+            }
+
+            htmlNodesBuffer = [];
+        };
+
+        for (const child of Array.from(tempContainer.childNodes)) {
+            const childSegments = splitNodeByImages(child);
+            for (const segment of childSegments) {
+                if (segment.type === "image") {
+                    flushHtmlBuffer();
+                    segments.push(segment);
+                    continue;
+                }
+
+                htmlNodesBuffer.push(...segment.nodes);
+            }
+        }
+
+        flushHtmlBuffer();
+        return segments;
+    }
+
+    function resolveImageExtension(pathImage, contentType) {
+        const normalizedType = String(contentType || "").toLowerCase();
+        const contentTypeMap = {
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+            "image/svg+xml": ".svg",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg"
+        };
+
+        if (contentTypeMap[normalizedType]) {
+            return contentTypeMap[normalizedType];
+        }
+
+        if (pathImage && pathImage.includes(".")) {
+            const urlExt = pathImage.split(".").pop().split("?")[0].toLowerCase();
+            if (/^[a-z0-9]{1,5}$/.test(urlExt)) {
+                return `.${urlExt}`;
+            }
+        }
+
+        return ".jpg";
+    }
+
+    async function createFileFromImageUrl(imageUrl, baseName, index) {
+        if (typeof downloadFile !== "function") {
+            throw new Error("downloadFile 未定义，无法回退编辑器原生上传");
+        }
+
+        const { blob, contentType } = await downloadFile(imageUrl, "image/jpeg");
+        const extension = resolveImageExtension(imageUrl, contentType);
+        const safeBaseName = String(baseName || "zhihu-image")
+            .replace(/[\\/:*?"<>|]+/g, " ")
+            .trim() || "zhihu-image";
+        const fileName = `${safeBaseName}-image-${index}${extension}`;
+
+        return new File([blob], fileName, { type: contentType || "image/jpeg" });
+    }
+
+    function getZhihuBodyImageInputs(editorRoot) {
+        const postEditor = editorRoot?.closest(".PostEditor");
+        const editorContainer = editorRoot?.closest(".WriteIndex-editorContainer, .WriteIndexMain, .WriteIndex");
+        return Array.from(document.querySelectorAll("input[type='file']")).filter(input => {
+            if (!input || input.disabled || input.closest(".UploadPicture-wrapper")) {
+                return false;
+            }
+
+            const accept = String(input.getAttribute("accept") || "").toLowerCase();
+            const isImageAccept = !accept || accept.includes("image");
+            const isInEditor = !!(
+                (postEditor && (postEditor.contains(input) || input.closest(".PostEditor")))
+                || (editorContainer && (editorContainer.contains(input) || input.closest(".WriteIndex-editorContainer, .WriteIndexMain, .WriteIndex")))
+            );
+            return isImageAccept && isInEditor;
+        });
+    }
+
+    async function ensureZhihuBodyImageInput(editorRoot) {
+        const findInput = () => getZhihuBodyImageInputs(editorRoot)[0] || null;
+        let uploadInput = findInput();
+        if (uploadInput) {
+            return uploadInput;
+        }
+
+        const imageButtons = Array.from(document.querySelectorAll("button, [role='button']")).filter(element => {
+            if (!element || element.closest(".UploadPicture-wrapper")) {
+                return false;
+            }
+
+            const postEditor = editorRoot?.closest(".PostEditor");
+            const editorContainer = editorRoot?.closest(".WriteIndex-editorContainer, .WriteIndexMain, .WriteIndex");
+            if (postEditor && !postEditor.contains(element) && !(editorContainer && editorContainer.contains(element))) {
+                return false;
+            }
+
+            const text = [
+                element.textContent,
+                element.getAttribute("title"),
+                element.getAttribute("aria-label")
+            ].filter(Boolean).join(" ");
+
+            return /图片|插图|image/i.test(text);
+        });
+
+        if (imageButtons.length > 0) {
+            try {
+                imageButtons[0].click();
+                await delay(500);
+            } catch (error) {
+                console.warn("[知乎发布] ⚠️ 触发正文图片按钮失败:", error?.message || error);
+            }
+        }
+
+        uploadInput = await retryOperation(async () => {
+            const input = findInput();
+            if (!input) {
+                throw new Error("未找到正文图片上传 input");
+            }
+            return input;
+        }, 5, 500);
+
+        return uploadInput;
+    }
+
+    function getArticleImageElements(editorRoot) {
+        const postEditor = editorRoot?.closest(".PostEditor");
+        if (!postEditor) {
+            return [];
+        }
+
+        return Array.from(postEditor.querySelectorAll(".public-DraftEditor-content img"))
+            .filter(img => !img.closest(".UploadPicture-wrapper"));
+    }
+
+    async function waitForArticleImageUpload(editorRoot, beforeCount, timeout = 30000) {
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < timeout) {
+            const latestError = getLatestError();
+            if (latestError) {
+                throw new Error(latestError);
+            }
+
+            const images = getArticleImageElements(editorRoot);
+            if (images.length > beforeCount) {
+                const lastImage = images[images.length - 1];
+                const src = lastImage?.getAttribute("src") || "";
+                if (src && !src.startsWith("blob:") && !src.startsWith("data:")) {
+                    await delay(500);
+                    return lastImage;
+                }
+            }
+
+            await delay(500);
+        }
+
+        throw new Error("正文图片上传超时");
+    }
+
+    async function uploadImageThroughZhihuEditor(imageUrl, editorRoot, baseName, index, total) {
+        if (typeof uploadFileToInput !== "function") {
+            throw new Error("uploadFileToInput 未定义，无法回退编辑器原生上传");
+        }
+
+        const file = await createFileFromImageUrl(imageUrl, baseName, index);
+        const beforeCount = getArticleImageElements(editorRoot).length;
+        const uploadInput = await ensureZhihuBodyImageInput(editorRoot);
+
+        if (!uploadInput) {
+            throw new Error("未找到正文图片上传 input");
+        }
+
+        editorRoot.focus();
+        await delay(200);
+
+        const uploadTriggered = await uploadFileToInput(uploadInput, file);
+        if (!uploadTriggered) {
+            throw new Error("正文图片上传触发失败");
+        }
+
+        console.log(`[知乎发布] 🖼️ 正在通过编辑器原生上传正文图片 ${index}/${total}:`, imageUrl);
+        await waitForArticleImageUpload(editorRoot, beforeCount, 30000);
+        await delay(800);
+    }
+
+    async function insertContentWithZhihuEditorFallback(editorEle, htmlContent, baseName) {
+        const segments = buildContentSegmentsFromHtml(htmlContent);
+        const totalImages = segments.filter(segment => segment.type === "image").length;
+        let uploadedImages = 0;
+
+        console.log("[知乎发布] 🔄 回退到编辑器原生上传，内容分段数:", segments.length, "图片数:", totalImages);
+
+        for (const segment of segments) {
+            if (segment.type === "html") {
+                await pasteHtmlIntoEditor(editorEle, segment.html, segment.plainText);
+                continue;
+            }
+
+            if (!segment.src) {
+                console.warn("[知乎发布] ⚠️ 跳过空图片地址的内容段");
+                continue;
+            }
+
+            uploadedImages += 1;
+            await uploadImageThroughZhihuEditor(segment.src, editorEle, baseName, uploadedImages, totalImages);
+        }
+    }
+
     console.log("═══════════════════════════════════════");
     console.log("✅ 知乎发布脚本已注入");
     console.log("📍 当前 URL:", window.location.href);
@@ -385,7 +851,7 @@
                         try {
                             await retryOperation(async () => {
                                 const editorIframeEle = await waitForElement(".PostEditor", 20000); // 🔑 增加到 20 秒
-                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
+                                const editorEle = editorIframeEle.querySelector(".public-DraftEditor-content > div");
                                 let htmlContent = dataObj.video.video.content;
 
                                 // 🔑 如果没有文字内容（只有图片没有文字），跳过内容填写
@@ -396,100 +862,12 @@
                                     return;
                                 }
 
-                                // 解析 HTML 中的图片，通过知乎 dumpproxy 接口上传
-                                const tempDiv = document.createElement('div');
-                                tempDiv.innerHTML = htmlContent;
-                                const images = tempDiv.querySelectorAll('img');
-
-                                console.log('[知乎发布] 🖼️ 发现', images.length, '张图片需要处理');
-
-                                for (const img of images) {
-                                    const originalSrc = img.src;
-                                    if (!originalSrc) {
-                                        continue; // 跳过空 src 或 base64 图片
-                                    }
-
-                                    // 如果已经是知乎的图片，跳过
-                                    if (originalSrc.includes('zhihu.com')) {
-                                        console.log('[知乎发布] ⏭️ 跳过已有图片:', originalSrc.substring(0, 50));
-                                        continue;
-                                    }
-
-                                    try {
-                                        // 使用 FormData 表单提交（与浏览器正常上传一致）
-                                        const formData = new FormData();
-                                        formData.append('url', originalSrc);
-                                        formData.append('source', 'article');
-
-                                        const response = await fetch('https://zhuanlan.zhihu.com/api/uploaded_images', {
-                                            method: 'POST',
-                                            body: formData,
-                                            credentials: 'include' // 带上 cookies
-                                        });
-
-                                        const result = await response.json();
-                                        console.log('[知乎发布] 📥 上传结果:', result);
-
-                                        if (result) {
-                                            // 替换为知乎服务器的图片地址
-                                            img.src = result.src;
-                                            console.log('[知乎发布] ✅ 图片替换成功:', result.src);
-                                        } else {
-                                            console.log('[知乎发布] ⚠️ 图片上传失败，保留原地址');
-                                        }
-                                    } catch (e) {
-                                        console.error('[知乎发布] ❌ 图片上传异常:', e.message);
-                                    }
+                                const normalizedOriginalHtml = normalizeZhihuHtmlContent(htmlContent);
+                                if (!normalizedOriginalHtml) {
+                                    console.log("[知乎发布] ℹ️ 清理空白后无正文内容，跳过内容填写");
+                                    return;
                                 }
-
-                                // 获取转换后的 HTML
-                                htmlContent = tempDiv.innerHTML;
-
-                                // 🔴 清理开头的空白 - 直接删除文字内容之前的所有HTML
-                                const tempCleaner = document.createElement('div');
-                                tempCleaner.innerHTML = htmlContent;
-
-                                // 递归删除所有开头的空节点，直到找到第一个有非空文本的节点
-                                function removeLeadingEmptyNodes(node) {
-                                    while (node.firstChild) {
-                                        const child = node.firstChild;
-                                        if (child.nodeType === 3) { // 文本节点
-                                            const trimmedText = child.textContent.trim();
-                                            if (trimmedText) {
-                                                // 有内容，保留但删除前面的空白
-                                                child.textContent = trimmedText + '\u200B'; // 用零宽字符保留格式
-                                                return true; // 找到了内容，停止
-                                            } else {
-                                                node.removeChild(child);
-                                            }
-                                        } else if (child.nodeType === 1) { // 元素节点
-                                            // 先检查这个节点是否有非空文本
-                                            if (child.textContent.trim()) {
-                                                // 有内容，递归处理这个节点
-                                                if (removeLeadingEmptyNodes(child)) {
-                                                    return true; // 找到了内容，停止
-                                                }
-                                                // 如果递归后仍然是空的，删除它
-                                                if (!child.textContent.trim()) {
-                                                    node.removeChild(child);
-                                                } else {
-                                                    return true; // 有内容，停止
-                                                }
-                                            } else {
-                                                // 完全空节点，删除
-                                                node.removeChild(child);
-                                            }
-                                        } else {
-                                            // 注释、文档等其他节点，直接删除
-                                            node.removeChild(child);
-                                        }
-                                    }
-                                    return false;
-                                }
-
-                                removeLeadingEmptyNodes(tempCleaner);
-                                htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
-                                console.log('[知乎发布] 🧹 已清理开头所有空白内容');
+                                console.log("[知乎发布] 🧹 已清理开头空白内容");
 
                                 // 🔑 检查 editorEle 是否存在
                                 if (!editorEle) {
@@ -498,36 +876,26 @@
                                 }
                                 console.log('[知乎发布] ✅ 编辑器元素已找到:', editorEle.tagName, editorEle.className);
 
-                                // 🔑 Draft.js 兼容方案：只使用粘贴事件，不做任何 DOM 操作
-                                // Draft.js 会自己处理粘贴内容，不会破坏内部状态
+                                const tempDiv = document.createElement("div");
+                                tempDiv.innerHTML = normalizedOriginalHtml;
+                                const replaceResult = await replaceImagesWithZhihuUrls(tempDiv);
 
-                                // 让编辑器获得焦点
-                                editorEle.focus();
-                                await new Promise(resolve => setTimeout(resolve, 300));
-
-                                // 🔑 关键：不要清空编辑器！让 Draft.js 自己处理
-                                // 只通过粘贴事件插入内容（追加到现有内容后面）
-                                // 如果编辑器有默认占位内容，粘贴后会自动替换
-
-                                console.log('[知乎发布] 📋 准备通过粘贴事件插入内容...');
-
-                                // 创建粘贴事件
-                                const clipboardData = new DataTransfer();
-                                clipboardData.setData('text/html', htmlContent);
-                                clipboardData.setData('text/plain', tempDiv.textContent);
-
-                                const pasteEvent = new ClipboardEvent('paste', {
-                                    clipboardData: clipboardData,
-                                    bubbles: true,
-                                    cancelable: true
-                                });
-
-                                // 触发粘贴事件
-                                editorEle.dispatchEvent(pasteEvent);
-                                console.log('[知乎发布] ✅ 已触发粘贴事件');
-
-                                // 等待 Draft.js 处理粘贴内容
-                                await new Promise(resolve => setTimeout(resolve, 1000));
+                                if (replaceResult.success) {
+                                    const normalizedConvertedHtml = normalizeZhihuHtmlContent(tempDiv.innerHTML);
+                                    console.log("[知乎发布] 📋 正文图片 URL 代传成功，准备整体粘贴内容...");
+                                    await pasteHtmlIntoEditor(
+                                        editorEle,
+                                        normalizedConvertedHtml,
+                                        extractPlainTextFromHtml(normalizedConvertedHtml)
+                                    );
+                                } else {
+                                    console.log("[知乎发布] 🔄 正文图片 URL 代传失败，切换为编辑器原生上传模式:", replaceResult);
+                                    await insertContentWithZhihuEditorFallback(
+                                        editorEle,
+                                        normalizedOriginalHtml,
+                                        dataObj?.video?.formData?.title || dataObj?.video?.video?.title || "zhihu"
+                                    );
+                                }
 
                                 console.log('[知乎发布] ✅ 内容填写完成');
                             }, 3, 1000);
@@ -724,6 +1092,7 @@
                                                     cancelable: true,
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
+                                                //return;
                                                 console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
 
                                                 // 🔴 等待 2 秒后检查是否有错误消息
