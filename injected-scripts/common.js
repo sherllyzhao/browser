@@ -319,7 +319,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     // 隐藏页面内容并显示加载遮罩（纯CSS loading动画）
-    window.hidePageAndShowMask = function () {
+    // ⚠️ 为避免永久白屏（如平台返回错误页、脚本因等待元素超时抛错），
+    // 默认 15s 兔兑底自动解除遮罩。调用方可传 safetyTimeoutMs 覆盖（0 表示禁用）
+    window.hidePageAndShowMask = function (safetyTimeoutMs) {
         const __ts__ = Date.now();
         console.log(`[hidePageAndShowMask] 🎭 调用开始 @${new Date().toLocaleTimeString()}, body 存在: ${!!document.body}`);
         // 隐藏 body 内容
@@ -350,10 +352,61 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         } else {
             console.log(`[hidePageAndShowMask] 🎭 遮罩层已存在，跳过添加`);
         }
+
+        // 🐰 兔兑底定时器：防止主体脚本抛错/超时导致 showPageAndHideMask 永不被调用
+        // 背景：ab58f2d 引入开头遮罩，若脚本 60s 等按钮可用超时抛错，show 永远不执行 → 永久白屏
+        // 兜底：默认 15s 后强制 show，同时把页面可见文字打到日志（便于排查平台的实际错误提示）
+        try {
+            if (window.__MASK_SAFETY_TIMER__) {
+                clearTimeout(window.__MASK_SAFETY_TIMER__);
+                window.__MASK_SAFETY_TIMER__ = null;
+            }
+            const timeoutMs = (typeof safetyTimeoutMs === 'number' && safetyTimeoutMs >= 0)
+                ? safetyTimeoutMs
+                : 15000;
+            if (timeoutMs > 0) {
+                window.__MASK_SAFETY_TIMER__ = setTimeout(() => {
+                    try {
+                        const mask = document.getElementById('__page_loading_mask__');
+                        if (!mask) {
+                            console.log(`[MaskSafetyTimer] ⏰ 兜底触发但遮罩已不存在，忽略`);
+                            return;
+                        }
+                        console.warn(`[MaskSafetyTimer] ⏰ ${timeoutMs}ms 兜底触发：遮罩未被主动解除，强制 show`);
+                        // 打印页面可见文字前 500 字，帮助排查平台错误页
+                        try {
+                            const bodyText = (document.body?.innerText || '').trim();
+                            if (bodyText) {
+                                console.warn(`[MaskSafetyTimer] 📢 当前页面可见文字（前 500 字）:\n${bodyText.slice(0, 500)}`);
+                            } else {
+                                console.warn(`[MaskSafetyTimer] 📢 页面 innerText 为空`);
+                            }
+                        } catch (_) {}
+                        if (typeof window.showPageAndHideMask === 'function') {
+                            window.showPageAndHideMask();
+                        }
+                    } catch (err) {
+                        console.error(`[MaskSafetyTimer] ❌ 兜底异常:`, err);
+                    }
+                }, timeoutMs);
+                console.log(`[hidePageAndShowMask] 🐰 兔兑底定时器已注册 (${timeoutMs}ms 后自动 show)`);
+            }
+        } catch (timerErr) {
+            console.error(`[hidePageAndShowMask] ❌ 注册兔兑底定时器失败:`, timerErr);
+        }
     };
 
     // 显示页面内容并隐藏加载遮罩
     window.showPageAndHideMask = function () {
+        // 🐰 清除兔兑底定时器，避免误触
+        try {
+            if (window.__MASK_SAFETY_TIMER__) {
+                clearTimeout(window.__MASK_SAFETY_TIMER__);
+                window.__MASK_SAFETY_TIMER__ = null;
+                console.log(`[showPageAndHideMask] 🐰 已清除兔兑底定时器`);
+            }
+        } catch (_) {}
+
         // 显示 body 内容
         if (document.body) {
             document.body.style.visibility = "visible";
@@ -364,6 +417,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         const mask = document.getElementById("__page_loading_mask__");
         if (mask) {
             mask.remove();
+            console.log(`[showPageAndHideMask] ✅ 遮罩已移除`);
+        } else {
+            console.log(`[showPageAndHideMask] ℹ️ 遮罩不存在，跳过移除`);
         }
     };
 
