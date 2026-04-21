@@ -320,10 +320,15 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 隐藏页面内容并显示加载遮罩（纯CSS loading动画）
     window.hidePageAndShowMask = function () {
+        const __ts__ = Date.now();
+        console.log(`[hidePageAndShowMask] 🎭 调用开始 @${new Date().toLocaleTimeString()}, body 存在: ${!!document.body}`);
         // 隐藏 body 内容
         if (document.body) {
             document.body.style.visibility = "hidden";
             document.body.style.opacity = "0";
+            console.log(`[hidePageAndShowMask] 🎭 body 已隐藏 (visibility=hidden, opacity=0)`);
+        } else {
+            console.warn(`[hidePageAndShowMask] ⚠️ body 不存在，仅添加遮罩`);
         }
 
         // 添加白色遮罩层 + loading动画
@@ -341,6 +346,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     `;
             mask.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;";
             document.documentElement.appendChild(mask);
+            console.log(`[hidePageAndShowMask] 🎭 遮罩层已添加，耗时 ${Date.now() - __ts__}ms`);
+        } else {
+            console.log(`[hidePageAndShowMask] 🎭 遮罩层已存在，跳过添加`);
         }
     };
 
@@ -399,53 +407,95 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
      * @param {number} maxRetries - 最大重试次数，默认 3 次
      */
     window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
+        const __startTs__ = Date.now();
         // 🔑 使用 localStorage 而不是 sessionStorage（登录跳转会清空 sessionStorage）
         const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
         let retryCount = parseInt(localStorage.getItem(retryKey) || '0');
 
+        console.log(`[${platform}][白屏检测] 🛡 启动 | checkDelay=${checkDelay}ms | maxRetries=${maxRetries} | 当前重试次数=${retryCount}`);
+        console.log(`[${platform}][白屏检测] 📋 keySelectors:`, keySelectors);
+
         if (retryCount >= maxRetries) {
-            console.log(`[${platform}] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
+            console.log(`[${platform}][白屏检测] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
             localStorage.removeItem(retryKey);
             return;
         }
 
         // 延迟检测页面是否正常加载
         setTimeout(() => {
+            const __checkTs__ = Date.now();
+            console.log(`[${platform}][白屏检测] ⏰ 定时检测触发 @${new Date().toLocaleTimeString()}, 距启动 ${__checkTs__ - __startTs__}ms`);
             try {
                 // 检测 1: body 是否为空或几乎为空
                 const bodyText = (document.body?.innerText || '').trim();
                 const bodyHtml = (document.body?.innerHTML || '').trim();
 
+                console.log(`[${platform}][白屏检测] 📊 页面快照:`, {
+                    url: window.location.href,
+                    readyState: document.readyState,
+                    bodyExists: !!document.body,
+                    bodyTextLength: bodyText.length,
+                    bodyHtmlLength: bodyHtml.length,
+                    bodyTextPreview: bodyText.slice(0, 100)
+                });
+
                 // 检测 2: 是否有关键元素（支持 Shadow DOM）
                 let hasKeyElement = false;
+                let hitSelector = null;
+                const selectorResults = {};
                 if (keySelectors.length > 0) {
                     for (const selector of keySelectors) {
                         // 先在普通 DOM 中查找
-                        if (document.querySelector(selector)) {
-                            hasKeyElement = true;
-                            break;
+                        const directHit = document.querySelector(selector);
+                        if (directHit) {
+                            selectorResults[selector] = 'direct-match';
+                            if (!hasKeyElement) {
+                                hasKeyElement = true;
+                                hitSelector = selector;
+                            }
+                            continue;
                         }
 
-                        // 🔑 如果是 wujie-app，检查 shadowRoot
+                        // 🔑 如果是 wujie-app，检查 shadowRoot 是否真正有内容
+                        // 原问题：wujie-app 元素存在 + shadowRoot 存在就认为正常，但微前端子应用加载中/失败时
+                        // shadowRoot 存在但内部为空（或仅有 loading 骨架），导致"白屏但检测不触发 reload"
+                        // 修复：同时要求 shadowRoot.innerHTML 长度 > 300 或内部有可见元素
                         if (selector === 'wujie-app') {
                             const wujieApp = document.querySelector('wujie-app');
                             if (wujieApp && wujieApp.shadowRoot) {
-                                hasKeyElement = true;
-                                break;
+                                const shadowHtml = wujieApp.shadowRoot.innerHTML || '';
+                                // 内部是否有实际渲染的子节点（body/div/form 等常见容器）
+                                const hasRealContent = !!(
+                                    wujieApp.shadowRoot.querySelector('body') ||
+                                    wujieApp.shadowRoot.querySelector('div') ||
+                                    wujieApp.shadowRoot.querySelector('form')
+                                );
+                                const innerMeaningful = shadowHtml.length > 300 && hasRealContent;
+                                selectorResults[selector] = `shadow-root (innerHTML=${shadowHtml.length}, hasRealContent=${hasRealContent}, meaningful=${innerMeaningful})`;
+                                if (innerMeaningful && !hasKeyElement) {
+                                    hasKeyElement = true;
+                                    hitSelector = selector;
+                                }
+                                continue;
                             }
                         }
+                        selectorResults[selector] = 'miss';
                     }
                 } else {
                     // 如果没有指定关键选择器，默认认为有元素（只检测 body 内容）
                     hasKeyElement = true;
                 }
 
+                console.log(`[${platform}][白屏检测] 🔎 选择器命中明细:`, selectorResults);
+                console.log(`[${platform}][白屏检测] 🎯 命中结果: hasKeyElement=${hasKeyElement}, 命中=${hitSelector || '无'}`);
+
                 // 检测 3: 是否是白屏（body 内容很少且没有关键元素）
                 const isBlankPage = bodyText.length < 50 && bodyHtml.length < 200 && !hasKeyElement;
+                console.log(`[${platform}][白屏检测] 🧮 判定: isBlankPage=${isBlankPage} (bodyText<50=${bodyText.length < 50}, bodyHtml<200=${bodyHtml.length < 200}, !hasKeyElement=${!hasKeyElement})`);
 
                 if (isBlankPage) {
-                    console.log(`[${platform}] ❌ 检测到白屏，准备刷新页面...`);
-                    console.log(`[${platform}] 页面状态:`, {
+                    console.log(`[${platform}][白屏检测] ❌ 检测到白屏，准备刷新页面...`);
+                    console.log(`[${platform}][白屏检测] 📊 白屏详情:`, {
                         bodyTextLength: bodyText.length,
                         bodyHtmlLength: bodyHtml.length,
                         hasKeyElement,
@@ -456,6 +506,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // 增加重试计数
                     localStorage.setItem(retryKey, String(retryCount + 1));
+                    console.log(`[${platform}][白屏检测] 🔢 重试计数更新: ${retryCount} → ${retryCount + 1}`);
 
                     // 隐藏页面并显示 loading
                     if (typeof window.hidePageAndShowMask === 'function') {
@@ -464,15 +515,17 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // 延迟 1 秒后刷新
                     setTimeout(() => {
+                        console.log(`[${platform}][白屏检测] 🔁 执行 window.location.reload()`);
                         window.location.reload();
                     }, 1000);
                 } else {
                     // 页面正常，清除重试计数
                     localStorage.removeItem(retryKey);
-                    console.log(`[${platform}] ✅ 页面加载正常`);
+                    console.log(`[${platform}][白屏检测] ✅ 页面加载正常 (命中: ${hitSelector || 'N/A'}, 耗时 ${Date.now() - __checkTs__}ms)`);
                 }
             } catch (e) {
-                console.error(`[${platform}] ❌ 白屏检测失败:`, e);
+                console.error(`[${platform}][白屏检测] ❌ 白屏检测异常:`, e);
+                console.error(`[${platform}][白屏检测] 🧾 堆栈:`, e.stack);
             }
         }, checkDelay);
     };

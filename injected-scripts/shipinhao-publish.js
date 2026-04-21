@@ -16,38 +16,90 @@ let hasProcessed = false;
 (async function () {
   'use strict';
 
+  // ⏱ 脚本启动时间戳（用于后续耗时分析）
+  const __SCRIPT_START_TIME__ = Date.now();
+  const __LOG_PREFIX__ = '[视频号发布]';
+
+  // ===========================
+  // 入口日志：脚本开始执行
+  // ===========================
+  console.log('═══════════════════════════════════════');
+  console.log(`${__LOG_PREFIX__} 🚀 脚本开始执行`);
+  console.log(`${__LOG_PREFIX__} 📍 URL: ${window.location.href}`);
+  console.log(`${__LOG_PREFIX__} 📄 document.readyState: ${document.readyState}`);
+  console.log(`${__LOG_PREFIX__} 🕐 时间: ${new Date().toLocaleString()}`);
+  console.log(`${__LOG_PREFIX__} 🌐 UA: ${navigator.userAgent.slice(0, 80)}...`);
+  console.log(`${__LOG_PREFIX__} 🖼 body 存在: ${!!document.body}`);
+  if (document.body) {
+    console.log(`${__LOG_PREFIX__} 📊 body.innerHTML 长度: ${document.body.innerHTML.length}`);
+    console.log(`${__LOG_PREFIX__} 📊 body.innerText 长度: ${(document.body.innerText || '').length}`);
+  }
+  console.log('═══════════════════════════════════════');
+
   // ===========================
   // 防止脚本重复注入
   // ===========================
   if (window.__SHIPINHAO_SCRIPT_LOADED__) {
-    console.log('[视频号发布] ⚠️ 脚本已经加载过，跳过重复注入');
+    console.log(`${__LOG_PREFIX__} ⚠️ 脚本已经加载过，跳过重复注入 (首次加载: ${window.__SHIPINHAO_SCRIPT_LOAD_TIME__ || '未知'})`);
     return;
   }
+
+  // ===========================
+  // 关键依赖检查
+  // ===========================
+  console.log(`${__LOG_PREFIX__} 🔍 依赖检查:`);
+  console.log(`${__LOG_PREFIX__}   - window.browserAPI: ${!!window.browserAPI ? '✅' : '❌'}`);
+  console.log(`${__LOG_PREFIX__}   - window.hidePageAndShowMask: ${typeof window.hidePageAndShowMask === 'function' ? '✅' : '❌'}`);
+  console.log(`${__LOG_PREFIX__}   - window.checkPageStateAndReload: ${typeof window.checkPageStateAndReload === 'function' ? '✅' : '❌'}`);
+  console.log(`${__LOG_PREFIX__}   - window.checkBlankPageAndReload: ${typeof window.checkBlankPageAndReload === 'function' ? '✅' : '❌'}`);
+  console.log(`${__LOG_PREFIX__}   - window.waitForElement: ${typeof window.waitForElement === 'function' ? '✅' : '❌'}`);
+  console.log(`${__LOG_PREFIX__}   - window.retryOperation: ${typeof window.retryOperation === 'function' ? '✅' : '❌'}`);
 
   // ===========================
   // 🔑 立即显示 loading，防止白屏
   // ===========================
   if (typeof window.hidePageAndShowMask === 'function') {
-    window.hidePageAndShowMask();
-    console.log('[视频号发布] 📍 已显示 loading 界面，防止白屏');
+    try {
+      window.hidePageAndShowMask();
+      console.log(`${__LOG_PREFIX__} 📍 [step 1/4] hidePageAndShowMask 已调用，显示 loading 防白屏`);
+    } catch (e) {
+      console.error(`${__LOG_PREFIX__} ❌ [step 1/4] hidePageAndShowMask 调用失败:`, e);
+    }
+  } else {
+    console.warn(`${__LOG_PREFIX__} ⚠️ [step 1/4] hidePageAndShowMask 不可用，跳过 loading 显示`);
   }
 
   // ===========================
   // 页面状态检查 - 防止异常渲染
   // ===========================
   if (typeof window.checkPageStateAndReload === 'function') {
-    if (!window.checkPageStateAndReload('视频号发布')) {
+    const stateResult = window.checkPageStateAndReload('视频号发布');
+    console.log(`${__LOG_PREFIX__} 🔍 [step 2/4] checkPageStateAndReload 结果: ${stateResult ? '✅ 通过' : '❌ 不通过，终止脚本'}`);
+    if (!stateResult) {
       return;
     }
+  } else {
+    console.warn(`${__LOG_PREFIX__} ⚠️ [step 2/4] checkPageStateAndReload 不可用，跳过页面状态检查`);
   }
 
   window.__SHIPINHAO_SCRIPT_LOADED__ = true;
+  window.__SHIPINHAO_SCRIPT_LOAD_TIME__ = new Date().toLocaleString();
 
   // ===========================
   // 🔑 视频号白屏检测和自动恢复（使用公共函数）
   // ===========================
   if (typeof window.checkBlankPageAndReload === 'function') {
-    // 优化参数：延迟 5 秒检测（给慢网络更多时间），最多重试 5 次
+    console.log(`${__LOG_PREFIX__} 🛡 [step 3/4] 启动白屏检测`);
+    // 快速快照 wujie-app 当前状态
+    const currentWujie = document.querySelector('wujie-app');
+    console.log(`${__LOG_PREFIX__}   - 当前 wujie-app 存在: ${!!currentWujie}`);
+    if (currentWujie) {
+      console.log(`${__LOG_PREFIX__}   - 当前 wujie-app.shadowRoot: ${!!currentWujie.shadowRoot}`);
+      if (currentWujie.shadowRoot) {
+        console.log(`${__LOG_PREFIX__}   - 当前 shadowRoot.innerHTML 长度: ${currentWujie.shadowRoot.innerHTML.length}`);
+      }
+    }
+    // 首检：延迟 8s（给 wujie 微前端 + 网络预留更多时间，原 5s 对慢网络不够），最多 5 次重试
     window.checkBlankPageAndReload('视频号发布', [
       'wujie-app',
       '.post-short-title-wrap',
@@ -55,25 +107,59 @@ let hasProcessed = false;
       '.form-btns',
       '.weui-desktop-btn',  // 发布按钮
       '.post-time-wrap'     // 发布时间设置区域
-    ], 5000, 5);
+    ], 8000, 5);
+
+    // 二检：18s 后再复查一次，仅检测发布页真实 UI 元素
+    // 场景：首检时 wujie-app 已有容器让首检通过，但 18s 后子应用仍未加载出真实表单 UI
+    // 此时进入「视觉白屏但检测认为正常」的陷阱，需要二检兜底
+    setTimeout(() => {
+      try {
+        if (typeof window.checkBlankPageAndReload !== 'function') return;
+        const realSelectors = [
+          '.post-short-title-wrap',
+          '.input-editor',
+          '.form-btns',
+          '.weui-desktop-btn',
+          '.post-time-wrap'
+        ];
+        const hit = realSelectors.find(s => document.querySelector(s));
+        console.log(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 发布 UI 真实元素命中: ${hit || '无'}`);
+        if (!hit) {
+          console.warn(`${__LOG_PREFIX__} 🛡 [二检] 未发现发布 UI 真实元素，触发白屏兜底检测...`);
+          // 传 realSelectors，不再信任 wujie-app 作为依据；checkDelay=0 立即检查
+          window.checkBlankPageAndReload('视频号发布二检', realSelectors, 0, 5);
+        }
+      } catch (e) {
+        console.error(`${__LOG_PREFIX__} 🛡 [二检] 执行异常:`, e);
+      }
+    }, 18000);
+  } else {
+    console.warn(`${__LOG_PREFIX__} ⚠️ [step 3/4] checkBlankPageAndReload 不可用，跳过白屏检测`);
   }
 
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
-    showOperationBanner('正在自动发布中，请勿操作此页面...');
+    try {
+      showOperationBanner('正在自动发布中，请勿操作此页面...');
+      console.log(`${__LOG_PREFIX__} 📢 [step 4/4] showOperationBanner 已调用`);
+    } catch (e) {
+      console.error(`${__LOG_PREFIX__} ❌ [step 4/4] showOperationBanner 调用失败:`, e);
+    }
+  } else {
+    console.warn(`${__LOG_PREFIX__} ⚠️ [step 4/4] showOperationBanner 不可用，跳过横幅显示`);
   }
 
   console.log('═══════════════════════════════════════');
-  console.log('✅ 视频号发布脚本已注入');
-  console.log('📍 当前 URL:', window.location.href);
-  console.log('🕐 注入时间:', new Date().toLocaleString());
+  console.log(`${__LOG_PREFIX__} ✅ 视频号发布脚本初始化完成`);
+  console.log(`${__LOG_PREFIX__} 📍 当前 URL: ${window.location.href}`);
+  console.log(`${__LOG_PREFIX__} ⏱ 初始化耗时: ${Date.now() - __SCRIPT_START_TIME__}ms`);
   console.log('═══════════════════════════════════════');
 
   // 检查 common.js 是否已加载
   if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
-    console.error('[视频号发布] ❌ common.js 未加载！脚本可能无法正常工作');
+    console.error(`${__LOG_PREFIX__} ❌ common.js 未加载！脚本可能无法正常工作`);
   } else {
-    console.log('[视频号发布] ✅ common.js 已加载，工具函数可用');
+    console.log(`${__LOG_PREFIX__} ✅ common.js 已加载，工具函数可用`);
   }
 
   // ===========================

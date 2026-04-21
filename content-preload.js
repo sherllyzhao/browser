@@ -1,5 +1,76 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 📊 页面生命周期日志 - 在 preload 中监听页面各个阶段的事件，便于排查白屏/加载异常
+// 仅对第三方发布/授权页面生效，不影响首页和本地页
+(function attachPageLifecycleLogger() {
+  try {
+    const currentUrl = window.location.href;
+    const isLocalPage = currentUrl.startsWith('file://')
+      || currentUrl.includes('localhost:5173')
+      || currentUrl.startsWith('about:')
+      || currentUrl.startsWith('data:');
+    if (isLocalPage) {
+      return;
+    }
+
+    const __LC_START__ = Date.now();
+    const __LC_TS__ = () => `T+${Date.now() - __LC_START__}ms`;
+    const __LC_TAG__ = '[PageLifecycle]';
+
+    console.log('═══════════════════════════════════════');
+    console.log(`${__LC_TAG__} 🚀 preload 加载 @${new Date().toLocaleTimeString()}`);
+    console.log(`${__LC_TAG__} 📍 URL: ${currentUrl}`);
+    console.log(`${__LC_TAG__} 📄 初始 document.readyState: ${document.readyState}`);
+    console.log(`${__LC_TAG__} 📐 viewport: ${window.innerWidth}x${window.innerHeight}`);
+    console.log('═══════════════════════════════════════');
+
+    // 监听 readystatechange
+    document.addEventListener('readystatechange', () => {
+      console.log(`${__LC_TAG__}[${__LC_TS__()}] 📄 readyState → ${document.readyState}`);
+      if (document.body) {
+        console.log(`${__LC_TAG__}[${__LC_TS__()}] 📊 body.innerHTML 长度: ${document.body.innerHTML.length}`);
+      }
+    }, true);
+
+    // DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log(`${__LC_TAG__}[${__LC_TS__()}] 🏗 DOMContentLoaded (body 存在=${!!document.body}, innerHTML 长度=${document.body ? document.body.innerHTML.length : 0})`);
+    }, true);
+
+    // window load
+    window.addEventListener('load', () => {
+      console.log(`${__LC_TAG__}[${__LC_TS__()}] ✅ window.load 完成`);
+      try {
+        const wujieApp = document.querySelector('wujie-app');
+        if (wujieApp) {
+          const shadowLen = wujieApp.shadowRoot ? wujieApp.shadowRoot.innerHTML.length : -1;
+          console.log(`${__LC_TAG__}[${__LC_TS__()}] 🧩 wujie-app 已存在, shadowRoot innerHTML 长度=${shadowLen}`);
+        }
+      } catch (e) {
+        console.warn(`${__LC_TAG__} wujie-app 检查异常: ${e.message}`);
+      }
+    }, true);
+
+    // beforeunload / pagehide（用于观察 reload 循环）
+    window.addEventListener('beforeunload', () => {
+      console.log(`${__LC_TAG__}[${__LC_TS__()}] 👋 beforeunload URL=${window.location.href}`);
+    });
+    window.addEventListener('pagehide', (e) => {
+      console.log(`${__LC_TAG__}[${__LC_TS__()}] 👋 pagehide persisted=${e.persisted}`);
+    });
+
+    // 捕获全局错误（便于排查白屏原因）
+    window.addEventListener('error', (evt) => {
+      console.error(`${__LC_TAG__}[${__LC_TS__()}] ❌ window.error: ${evt.message} @${evt.filename}:${evt.lineno}:${evt.colno}`);
+    }, true);
+    window.addEventListener('unhandledrejection', (evt) => {
+      console.error(`${__LC_TAG__}[${__LC_TS__()}] ❌ unhandledrejection:`, evt.reason && (evt.reason.message || evt.reason));
+    });
+  } catch (err) {
+    console.error('[PageLifecycle] 注册页面生命周期日志失败:', err);
+  }
+})();
+
 // 🎭 视频号登录页预隐藏 - 在页面渲染前隐藏，防止用户看到扫码界面闪烁
 // 必须在最开始执行，比反自动化检测更早
 (function preHideShipinhaoLogin() {

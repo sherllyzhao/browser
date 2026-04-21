@@ -6189,6 +6189,10 @@ async function openManagedChildWindow(url, options = {}) {
     return { success: false, error: 'No URL provided' };
   }
 
+  // ⏱ 全链路阶段性耗时基准时间
+  const __WM_T0__ = Date.now();
+  const __wmTs = () => `T+${Date.now() - __WM_T0__}ms`;
+
   try {
     const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
 
@@ -6199,6 +6203,7 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 调试日志：打印完整的 options
     console.log('[Window Manager] ========== 收到 open-new-window 请求 ==========');
+    console.log(`[Window Manager][${__wmTs()}] 🕐 入口时间: ${new Date().toLocaleString()}`);
     console.log('[Window Manager] URL:', url);
     console.log('[Window Manager] options:', JSON.stringify(options, null, 2));
     console.log('[Window Manager] options.platform:', options.platform);
@@ -6244,7 +6249,19 @@ async function openManagedChildWindow(url, options = {}) {
               console.error(`[Window Manager] 删除 cookie 失败 (${cookie.name}):`, err.message);
             }
           }
-          console.log(`[Window Manager] ✅ 清空完成，删除了 ${deletedCount} 个 cookies`);
+          console.log(`[Window Manager][${__wmTs()}] ✅ cookies 清空完成，删除了 ${deletedCount} 个`);
+
+          // 1.5 🔑 彻底清理其他 storage（避免上次发布/上个账号残留）
+          // 原只清 cookies，但 localStorage/sessionStorage/indexedDB/serviceWorker 可能还有旧状态
+          // 这些残留会让 wujie 微前端读到陈旧数据导致加载异常
+          try {
+            await windowSession.clearStorageData({
+              storages: ['appcache', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
+            });
+            console.log(`[Window Manager][${__wmTs()}] ✅ 其他 storage 已彻底清理 (localstorage/indexdb/serviceworkers/cachestorage 等)`);
+          } catch (clearErr) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ storage 清理异常: ${clearErr.message}`);
+          }
 
           // 2. 恢复新的会话数据
           // 支持多种数据格式：
@@ -6369,9 +6386,11 @@ async function openManagedChildWindow(url, options = {}) {
           }
 
           if (cookiesArray.length > 0) {
-            console.log(`[Window Manager] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
+            console.log(`[Window Manager][${__wmTs()}] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
 
             let restoredCount = 0;
+            const keyCookieNames = ['sessionid', 'sessionid_ss', 'pass_ticket', 'wxuin', 'web_session', 'BDUSS', 'STOKEN', 'uuid_v2'];
+            const foundKeyCookies = [];
             for (let cookieItem of cookiesArray) {
               try {
                 // 如果是字符串，需要先解析（格式3）
@@ -6415,26 +6434,98 @@ async function openManagedChildWindow(url, options = {}) {
 
                 await windowSession.cookies.set(cookieDetails);
                 restoredCount++;
+                if (keyCookieNames.includes(cookie.name)) {
+                  foundKeyCookies.push(`${cookie.name}(${cookie.domain})`);
+                }
               } catch (cookieErr) {
                 console.error(`[Window Manager] Cookie 恢复失败:`, cookieErr.message);
               }
             }
-            console.log(`[Window Manager] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+            console.log(`[Window Manager][${__wmTs()}] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+            console.log(`[Window Manager][${__wmTs()}] 🗝 关键登录 cookie 命中:`, foundKeyCookies.length > 0 ? foundKeyCookies : '⚠️ 无（可能影响登录状态）');
+
+            // 🔑 恢复后主动校验：重新读取实际写入的 cookies，判断是否与期望一致
+            // 场景：部分机器磁盘/权限异常导致 set 表面成功但实际未持久化
+            try {
+                const verifyCookies = await windowSession.cookies.get({});
+                console.log(`[Window Manager][${__wmTs()}] 🔎 校验：实际读回 cookies 数量=${verifyCookies.length}，期望≈${restoredCount}`);
+
+                const verifyKeyNames = new Set();
+                for (const c of verifyCookies) {
+                    if (keyCookieNames.includes(c.name)) {
+                        verifyKeyNames.add(`${c.name}(${c.domain})`);
+                    }
+                }
+                const verifyList = Array.from(verifyKeyNames);
+                console.log(`[Window Manager][${__wmTs()}] 🔎 校验：关键 cookie 实际存在:`, verifyList.length > 0 ? verifyList : '⚠️ 无');
+
+                // 阈值：实际数小于期望数的 50%，或者恢复过程中发现关键 cookie 但读回后丢失，触发重试一次
+                const shouldRetry = (verifyCookies.length < Math.max(1, Math.floor(restoredCount * 0.5)))
+                    || (foundKeyCookies.length > 0 && verifyList.length === 0);
+
+                if (shouldRetry) {
+                    console.warn(`[Window Manager][${__wmTs()}] ⚠️ cookies 写入不完整，尝试重写一次...`);
+                    let retryWrite = 0;
+                    for (let cookieItem of cookiesArray) {
+                        try {
+                            let cookie = cookieItem;
+                            if (typeof cookieItem === 'string') {
+                                try { cookie = JSON.parse(cookieItem); } catch (_) { continue; }
+                            }
+                            if (!cookie.name || !cookie.domain) continue;
+                            const protocol = cookie.secure ? 'https' : 'http';
+                            const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+                            const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
+                            const cookieDetails = {
+                                url: cookieUrl,
+                                name: cookie.name,
+                                value: cookie.value || '',
+                                domain: cookie.domain,
+                                path: cookie.path || '/',
+                                secure: cookie.secure || false,
+                                httpOnly: cookie.httpOnly || false,
+                                sameSite: cookie.sameSite || 'no_restriction',
+                                expirationDate: cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60)
+                            };
+                            await windowSession.cookies.set(cookieDetails);
+                            retryWrite++;
+                        } catch (_) {}
+                    }
+                    console.log(`[Window Manager][${__wmTs()}] 🔁 重写完成: ${retryWrite} 个`);
+                }
+            } catch (verifyErr) {
+                console.error(`[Window Manager][${__wmTs()}] ❌ cookies 校验失败:`, verifyErr.message);
+            }
           }
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
-          console.log('[Window Manager] ⏳ 正在刷新 Session 数据到磁盘...');
-          await windowSession.flushStorageData();
-          console.log('[Window Manager] ✅ Session 数据已刷新到磁盘');
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 第一次 flushStorageData...`);
+          try {
+            await windowSession.flushStorageData();
+            console.log(`[Window Manager][${__wmTs()}] ✅ 第一次 flush 完成`);
+          } catch (flushErr1) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ 第一次 flush 异常: ${flushErr1.message}`);
+          }
 
-          // 🔑 延迟 500ms，确保数据完全写入后再创建窗口
-          console.log('[Window Manager] ⏳ 等待 500ms 确保数据持久化...');
-          await new Promise(resolve => setTimeout(resolve, 500));
-          console.log('[Window Manager] ✅ 等待完成，准备创建窗口');
+          // 🔑 延迟 1000ms（原 500ms 对慢盘/老机不够），确保数据完全写入后再创建窗口
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 等待 1000ms 确保数据持久化...`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-          console.log('[Window Manager] ========== 会话数据处理完成 ==========');
+          // 🔑 二次兜底 flush：慢磁盘首次 flush 可能只写到内核 buffer，再 flush 一次确保真正落盘
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 第二次 flushStorageData 兜底...`);
+          try {
+            await windowSession.flushStorageData();
+            console.log(`[Window Manager][${__wmTs()}] ✅ 第二次 flush 完成`);
+          } catch (flushErr2) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ 第二次 flush 异常: ${flushErr2.message}`);
+          }
+
+          console.log(`[Window Manager][${__wmTs()}] ✅ 等待完成，准备创建窗口`);
+
+          console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
         } catch (err) {
-          console.error('[Window Manager] ❌ 会话数据处理失败:', err);
+          console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
+          console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
           // 不影响窗口创建，继续执行
         }
       }
@@ -6805,33 +6896,64 @@ async function openManagedChildWindow(url, options = {}) {
             sessionData = JSON.parse(sessionData);
           }
         } catch (e) {
-          // 忽略解析错误
+          console.warn(`[Window Manager][${__wmTs()}] ⚠️ localStorage 预扫描阶段的 sessionData 解析失败（忽略）: ${e.message}`);
         }
       }
 
       // 检查是否有 localStorage 数据
       if (sessionData && typeof sessionData === 'object' && sessionData.localStorage) {
         localStorageData = sessionData.localStorage;
-        console.log('[Window Manager] 🔑 检测到 localStorage 数据:', Object.keys(localStorageData));
+        console.log(`[Window Manager][${__wmTs()}] 🔑 检测到 localStorage 数据 (key 数=${Object.keys(localStorageData).length}):`, Object.keys(localStorageData));
+      } else {
+        console.log(`[Window Manager][${__wmTs()}] ℹ️ sessionData 中无 localStorage 数据，跳过预设`);
       }
     }
 
     // 如果有 localStorage 数据需要预设，先加载 about:blank
     if (localStorageData && Object.keys(localStorageData).length > 0) {
-      console.log('[Window Manager] 🔄 预设 localStorage，先加载 about:blank...');
+      console.log(`[Window Manager][${__wmTs()}] 🔄 预设 localStorage，先加载 bootstrap...`);
 
       if (windowContext) {
         windowContext.bootstrapInProgress = true;
       }
 
       try {
-        const bootstrapUrl = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
-        console.log('[Window Manager] 🔄 加载 bootstrap 文档页:', bootstrapUrl);
-        await newWindow.loadURL(bootstrapUrl);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const primaryBootstrap = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
+        const originInfo = getUrlInfo(url).origin || '';
+        // 多级 fallback 候选：主 bootstrap → favicon.ico → robots.txt
+        const bootstrapCandidates = [primaryBootstrap];
+        if (originInfo) {
+          bootstrapCandidates.push(`${originInfo}/favicon.ico`);
+          bootstrapCandidates.push(`${originInfo}/robots.txt`);
+        }
+        console.log(`[Window Manager][${__wmTs()}] 🔄 bootstrap 候选列表:`, bootstrapCandidates);
 
-        // 设置 localStorage
-        const localStorageScript = `
+        let bootstrapLoaded = false;
+        let lastBootstrapErr = null;
+        for (const candidateUrl of bootstrapCandidates) {
+          const bootstrapStartTs = Date.now();
+          try {
+            console.log(`[Window Manager][${__wmTs()}] 🔄 尝试加载 bootstrap: ${candidateUrl}`);
+            await newWindow.loadURL(candidateUrl);
+            console.log(`[Window Manager][${__wmTs()}] ✅ bootstrap 加载成功: ${candidateUrl} (${Date.now() - bootstrapStartTs}ms)`);
+            bootstrapLoaded = true;
+            break;
+          } catch (loadErr) {
+            lastBootstrapErr = loadErr;
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ bootstrap 失败 (${candidateUrl}): ${loadErr.message}，尝试下一个候选`);
+          }
+        }
+
+        if (!bootstrapLoaded) {
+          console.error(`[Window Manager][${__wmTs()}] ❌ 所有 bootstrap 候选均失败，跳过 localStorage 预设`);
+          if (lastBootstrapErr) {
+            console.error(`[Window Manager][${__wmTs()}] 🧾 最后一次错误:`, lastBootstrapErr.stack || lastBootstrapErr.message);
+          }
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // 设置 localStorage
+          const localStorageScript = `
           (function() {
             const data = ${JSON.stringify(localStorageData)};
             console.log('[预设 localStorage] 开始设置...', Object.keys(data));
@@ -6847,13 +6969,15 @@ async function openManagedChildWindow(url, options = {}) {
           })();
         `;
 
-        await newWindow.webContents.executeJavaScript(localStorageScript);
-        console.log('[Window Manager] ✅ localStorage 预设完成');
+          await newWindow.webContents.executeJavaScript(localStorageScript);
+          console.log(`[Window Manager][${__wmTs()}] ✅ localStorage 预设完成`);
 
-        // 等待一下确保 localStorage 写入
-        await new Promise(resolve => setTimeout(resolve, 100));
+          // 等待一下确保 localStorage 写入
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       } catch (err) {
-        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+        console.error(`[Window Manager][${__wmTs()}] ❌ localStorage 预设失败: ${err.message}`);
+        console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
       } finally {
         if (windowContext) {
           windowContext.bootstrapInProgress = false;
@@ -6862,9 +6986,13 @@ async function openManagedChildWindow(url, options = {}) {
     }
 
     // 加载目标 URL
+    console.log(`[Window Manager][${__wmTs()}] 🚀 loadURL 目标页: ${url}`);
     newWindow.loadURL(url);
+    console.log(`[Window Manager][${__wmTs()}] ✅ loadURL 已发出，windowId=${newWindow.id}`);
     return { success: true, windowId: newWindow.id };
   } catch (err) {
+    console.error(`[Window Manager][${__wmTs()}] ❌ openManagedChildWindow 顶层异常:`, err);
+    console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
     return { success: false, error: err.message };
   }
 }
