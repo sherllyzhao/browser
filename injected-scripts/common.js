@@ -2325,6 +2325,11 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             logPrefix: "[知乎发布]",
             selectors: [{ containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }],
         },
+    //    新浪
+        xinlang: {
+            logPrefix: "[新浪发布]",
+            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content > div", recursiveSelector: ".n-alert" }],
+        }
     };
 
     // 判断当前系统类型

@@ -80,8 +80,8 @@
 
     // 初始化错误监听器
     const initErrorListener = () => {
-        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.tengxun) {
-            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.tengxun);
+        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.xinlang) {
+            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.xinlang);
             console.log("[新浪发布] ✅ 使用公共错误监听器配置");
         } else {
             // 回退方案：使用本地配置
@@ -742,6 +742,7 @@
 
             setTimeout(async () => {
                 // 标题（带重试和验证）
+                try {
                 await retryOperation(async () => {
                     const titleEles = await waitForElements(".n-input__textarea-el", 5000);
                     if (titleEles.length > 0) {
@@ -779,8 +780,20 @@
 
                                     // 🔑 验证是否成功设置
                                     const verifyValue = (titleEle.value || '').trim();
+
+                                    // 🔴 检查平台是否弹出了错误提示（如"标题字数已达到最大限制"）
+                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    const titleErrorMsg = getLatestError();
+                                    if (titleErrorMsg) {
+                                        throw Error(`[新浪发布]：标题设置失败 - ${titleErrorMsg}`);
+                                    }
+
+                                    // 🔴 检查标题是否被平台截断（字数超限时平台会自动截断）
                                     if (verifyValue !== expectedValue) {
-                                        console.log(`标题设置失败: 期望"${expectedValue}", 实际"${verifyValue}"`);
+                                        if (verifyValue.length < expectedValue.length) {
+                                            throw Error(`[新浪发布]：标题字数超限，平台已截断（期望${expectedValue.length}字，实际${verifyValue.length}字）："${expectedValue}"`);
+                                        }
+                                        throw Error(`[新浪发布]：标题设置失败，期望"${expectedValue}"，实际"${verifyValue}"`);
                                     }
 
                                     console.log('[新浪发布] ✅ 标题设置成功:', verifyValue);
@@ -854,6 +867,16 @@
                         }
                     }
                 }, 5, 1000);
+                } catch (titleError) {
+                    console.error("[新浪发布] ❌ 标题设置失败:", titleError.message);
+                    stopErrorListener();
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, titleError.message || "标题设置失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("标题设置失败，刷新数据", 1000);
+                    return;
+                }
 
                 try {
                     // 内容（带重试）
