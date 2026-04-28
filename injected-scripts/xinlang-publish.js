@@ -687,6 +687,336 @@
     // 9. 发布视频到新浪（移到 IIFE 内部以访问变量）
     // ===========================
 
+    function getXinlangEditorText(editorEle) {
+        if (!editorEle) {
+            return '';
+        }
+        return (editorEle.innerText || editorEle.textContent || '')
+            .replace(/\u200B/g, '')
+            .replace(/\r/g, '')
+            .trim();
+    }
+
+    function triggerXinlangEditorEvents(editorEle, plainText, inputType = 'insertFromPaste') {
+        if (!editorEle) {
+            return;
+        }
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                inputType,
+                data: plainText || null
+            }));
+        } catch (e) {
+        }
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('input', {
+                bubbles: true,
+                cancelable: true,
+                inputType,
+                data: plainText || null
+            }));
+        } catch (e) {
+            editorEle.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
+        }
+
+        editorEle.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    function clearXinlangEditor(editorEle) {
+        if (!editorEle) {
+            return;
+        }
+
+        if (typeof editorEle.focus === 'function') {
+            editorEle.focus();
+        }
+
+        const selection = window.getSelection?.();
+        if (selection && typeof document.createRange === 'function') {
+            const range = document.createRange();
+            range.selectNodeContents(editorEle);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            try {
+                document.execCommand('delete', false);
+            } catch (e) {
+                editorEle.innerHTML = '';
+            }
+            selection.removeAllRanges();
+        } else {
+            editorEle.innerHTML = '';
+        }
+
+        if (getXinlangEditorText(editorEle)) {
+            editorEle.innerHTML = '';
+        }
+    }
+
+    function prepareXinlangEditorContent(rawHtml) {
+        const htmlContent = rawHtml || '';
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlContent;
+
+        const tempCleaner = document.createElement('div');
+        tempCleaner.innerHTML = htmlContent;
+
+        function removeLeadingEmptyNodes(node) {
+            while (node.firstChild) {
+                const child = node.firstChild;
+                if (child.nodeType === 3) {
+                    const trimmedText = child.textContent.trim();
+                    if (trimmedText) {
+                        child.textContent = trimmedText + '\u200B';
+                        return true;
+                    }
+                    node.removeChild(child);
+                } else if (child.nodeType === 1) {
+                    if (child.textContent.trim()) {
+                        if (removeLeadingEmptyNodes(child)) {
+                            return true;
+                        }
+                        if (!child.textContent.trim()) {
+                            node.removeChild(child);
+                        } else {
+                            return true;
+                        }
+                    } else {
+                        node.removeChild(child);
+                    }
+                } else {
+                    node.removeChild(child);
+                }
+            }
+            return false;
+        }
+
+        removeLeadingEmptyNodes(tempCleaner);
+
+        function getListItemPrefix(node) {
+            const parentTag = node.parentElement?.tagName;
+            if (parentTag === 'OL') {
+                const siblings = Array.from(node.parentElement.children).filter(child => child.tagName === 'LI');
+                const index = siblings.indexOf(node);
+                return `${index >= 0 ? index + 1 : 1}. `;
+            }
+            if (parentTag === 'UL') {
+                return '- ';
+            }
+            return '';
+        }
+
+        function extractStructuredText(root) {
+            if (!root) {
+                return '';
+            }
+
+            const walk = node => {
+                if (!node) {
+                    return '';
+                }
+
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent || '';
+                }
+
+                if (node.nodeType !== Node.ELEMENT_NODE) {
+                    return '';
+                }
+
+                if (node.tagName === 'BR') {
+                    return '\n';
+                }
+
+                if (node.tagName === 'PRE') {
+                    return `${node.textContent || ''}\n`;
+                }
+
+                let result = '';
+                for (const child of node.childNodes) {
+                    result += walk(child);
+                }
+
+                if (node.tagName === 'LI') {
+                    const line = result.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+                    return line ? `${getListItemPrefix(node)}${line}\n` : '';
+                }
+
+                if (node.tagName === 'BLOCKQUOTE') {
+                    const quoteLines = result
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(Boolean)
+                        .map(line => `> ${line}`)
+                        .join('\n');
+                    return quoteLines ? `${quoteLines}\n` : '';
+                }
+
+                if (['P', 'DIV', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'SECTION', 'ARTICLE'].includes(node.tagName)) {
+                    result += '\n';
+                }
+
+                return result;
+            };
+
+            return walk(root)
+                .replace(/\u200B/g, '')
+                .replace(/\r/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .split('\n')
+                .map(line => line.replace(/[ \t]+$/g, ''))
+                .join('\n')
+                .trim();
+        }
+
+        function collectRichFormattingFeatures(root) {
+            if (!root) {
+                return {
+                    links: 0,
+                    images: 0,
+                    lists: 0,
+                    quotes: 0,
+                    headings: 0,
+                    emphasis: 0
+                };
+            }
+
+            return {
+                links: root.querySelectorAll('a').length,
+                images: root.querySelectorAll('img').length,
+                lists: root.querySelectorAll('ul, ol, li').length,
+                quotes: root.querySelectorAll('blockquote').length,
+                headings: root.querySelectorAll('h1, h2, h3, h4, h5, h6').length,
+                emphasis: root.querySelectorAll('strong, b, em, i, u, s, code').length
+            };
+        }
+
+        return {
+            html: tempCleaner.innerHTML.replace(/\u200B/g, '').trim(),
+            text: extractStructuredText(tempCleaner),
+            features: collectRichFormattingFeatures(tempCleaner)
+        };
+    }
+
+    async function fillXinlangEditorContent(rawHtml) {
+        const editorEle = await waitForElement('.wb-editor', 20000);
+        const currentText = getXinlangEditorText(editorEle);
+        if (currentText) {
+            console.log(`[新浪发布] ⏭️ 编辑器已有内容（${currentText.length}字），跳过内容填写`);
+            return;
+        }
+
+        const prepared = prepareXinlangEditorContent(rawHtml);
+        const htmlContent = prepared.html;
+        const plainText = prepared.text;
+        const richFeatures = prepared.features || {};
+
+        if (!htmlContent && !plainText) {
+            throw new Error('正文内容为空，无法填写');
+        }
+
+        console.log('[新浪发布] 🧹 已清理开头所有空白内容');
+        console.log('[新浪发布] 🎨 正文样式特征:', richFeatures);
+
+        const applyAndVerify = async (name, writer, inputType = 'insertFromPaste') => {
+            clearXinlangEditor(editorEle);
+            await delay(200);
+            await writer();
+            triggerXinlangEditorEvents(editorEle, plainText, inputType);
+            await delay(800);
+
+            const afterText = getXinlangEditorText(editorEle);
+            if (afterText) {
+                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${afterText.length}`);
+                return true;
+            }
+
+            console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空`);
+            return false;
+        };
+
+        const strategies = [
+            {
+                name: '方法1(clipboard paste)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    if (typeof ClipboardEvent !== 'function' || typeof DataTransfer !== 'function') {
+                        throw new Error('ClipboardEvent 或 DataTransfer 不可用');
+                    }
+
+                    const clipboardData = new DataTransfer();
+                    clipboardData.setData('text/html', htmlContent || plainText);
+                    clipboardData.setData('text/plain', plainText);
+                    editorEle.focus();
+                    editorEle.dispatchEvent(new ClipboardEvent('paste', {
+                        clipboardData,
+                        bubbles: true,
+                        cancelable: true
+                    }));
+                }
+            },
+            {
+                name: '方法2(insertHTML)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    editorEle.focus();
+                    const insertOk = document.execCommand('insertHTML', false, htmlContent || plainText);
+                    if (!insertOk) {
+                        throw new Error('execCommand(insertHTML) 返回 false');
+                    }
+                }
+            },
+            {
+                name: '方法3(直接 DOM)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    if (htmlContent) {
+                        editorEle.innerHTML = htmlContent;
+                    } else {
+                        editorEle.textContent = plainText;
+                    }
+                }
+            },
+            {
+                name: '方法4(insertText)',
+                inputType: 'insertText',
+                writer: async () => {
+                    editorEle.focus();
+                    const lines = plainText.split('\n').map(line => line.trim()).filter(Boolean);
+                    const safeLines = lines.length > 0 ? lines : [plainText];
+
+                    for (let i = 0; i < safeLines.length; i++) {
+                        if (i > 0) {
+                            document.execCommand('insertParagraph', false);
+                        }
+                        document.execCommand('insertText', false, safeLines[i]);
+                    }
+                }
+            }
+        ];
+
+        for (const strategy of strategies) {
+            try {
+                const success = await applyAndVerify(strategy.name, strategy.writer, strategy.inputType);
+                if (success) {
+                    try {
+                        editorEle.dispatchEvent(new FocusEvent('blur', {bubbles: true}));
+                    } catch (e) {
+                        editorEle.dispatchEvent(new Event('blur', {bubbles: true}));
+                    }
+                    return;
+                }
+            } catch (e) {
+                console.warn(`[新浪发布] ⚠️ ${strategy.name} 失败:`, e.message);
+            }
+        }
+
+        throw new Error('正文填写失败，编辑器仍为空');
+    }
+
     // 填写表单数据
     async function fillFormData(dataObj) {
         console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
@@ -737,10 +1067,12 @@
             if (!pathImage) {
                 // alert('No cover image found');
                 fillFormRunning = false;
+                window.__XL_fillFormRunning = false;
                 return;
             }
 
             setTimeout(async () => {
+                startErrorListener();
                 // 标题（带重试和验证）
                 try {
                 await retryOperation(async () => {
@@ -879,106 +1211,18 @@
                 }
 
                 try {
-                    // 内容（带重试）
-                    setTimeout(async () => {
-                        try {
-                            await retryOperation(async () => {
-                                const editorEle = await waitForElement(".wb-editor", 20000); // 🔑 增加到 20 秒
-
-                                // 🔴 检查编辑器是否已有内容（防止从验证页返回时重复填写）
-                                // 注意：必须检查 textContent 而不是 innerHTML，因为编辑器可能包含空白 HTML 标签
-                                const editorText = (editorEle.textContent || '').trim();
-                                if (editorText && editorText.length > 0) {
-                                    console.log('[新浪发布] ⏭️ 编辑器已有内容（' + editorText.length + '字），跳过内容填写');
-                                    return;
-                                }
-
-                                let htmlContent = dataObj.video.video.content;
-
-                                // 解析 HTML 中的图片，通过新浪 dumpproxy 接口上传
-                                const tempDiv = document.createElement('div');
-                                tempDiv.innerHTML = htmlContent;
-
-                                // 🔴 清理开头的空白 - 直接删除文字内容之前的所有HTML
-                                const tempCleaner = document.createElement('div');
-                                tempCleaner.innerHTML = htmlContent;
-
-                                // 递归删除所有开头的空节点，直到找到第一个有非空文本的节点
-                                function removeLeadingEmptyNodes(node) {
-                                    while (node.firstChild) {
-                                        const child = node.firstChild;
-                                        if (child.nodeType === 3) { // 文本节点
-                                            const trimmedText = child.textContent.trim();
-                                            if (trimmedText) {
-                                                // 有内容，保留但删除前面的空白
-                                                child.textContent = trimmedText + '\u200B'; // 用零宽字符保留格式
-                                                return true; // 找到了内容，停止
-                                            } else {
-                                                node.removeChild(child);
-                                            }
-                                        } else if (child.nodeType === 1) { // 元素节点
-                                            // 先检查这个节点是否有非空文本
-                                            if (child.textContent.trim()) {
-                                                // 有内容，递归处理这个节点
-                                                if (removeLeadingEmptyNodes(child)) {
-                                                    return true; // 找到了内容，停止
-                                                }
-                                                // 如果递归后仍然是空的，删除它
-                                                if (!child.textContent.trim()) {
-                                                    node.removeChild(child);
-                                                } else {
-                                                    return true; // 有内容，停止
-                                                }
-                                            } else {
-                                                // 完全空节点，删除
-                                                node.removeChild(child);
-                                            }
-                                        } else {
-                                            // 注释、文档等其他节点，直接删除
-                                            node.removeChild(child);
-                                        }
-                                    }
-                                    return false;
-                                }
-
-                                removeLeadingEmptyNodes(tempCleaner);
-                                htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
-                                console.log('[新浪发布] 🧹 已清理开头所有空白内容');
-
-                                // 清空编辑器
-                                editorEle.innerHTML = '';
-
-                                // 让编辑器获得焦点
-                                editorEle.focus();
-
-                                // 通过粘贴事件插入内容（让 Draft.js 自己处理）
-                                const pasteEvent = new ClipboardEvent('paste', {
-                                    clipboardData: new DataTransfer(),
-                                    bubbles: true,
-                                    cancelable: true
-                                });
-
-                                // 设置粘贴的 HTML 和纯文本内容
-                                pasteEvent.clipboardData.setData('text/html', htmlContent);
-                                pasteEvent.clipboardData.setData('text/plain', tempDiv.textContent);
-
-                                editorEle.dispatchEvent(pasteEvent);
-
-                                // 等待编辑器处理粘贴事件
-                                await new Promise(resolve => setTimeout(resolve, 800));
-
-                                console.log('[新浪发布] ✅ 内容填写完成');
-                            }, 3, 1000);
-                        } catch (e) {
-                            console.log('[新浪发布] ❌ 内容填写失败:', e.message);
-                        }
-                    }, 200);
-                } catch (e) {
-                    console.log('[新浪发布] ❌ 内容填写失败:', e.message)
+                    await retryOperation(async () => {
+                        await fillXinlangEditorContent(dataObj?.video?.video?.content || dataObj?.video?.video?.intro || '');
+                    }, 3, 1000);
+                } catch (contentError) {
+                    console.error("[新浪发布] ❌ 内容填写失败:", contentError.message);
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, contentError.message || "内容填写失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("正文填写失败，刷新数据", 1000);
+                    return;
                 }
-
-                // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
-                startErrorListener();
 
                 // 设置封面（使用主进程下载绕过跨域）
                 await (async () => {
@@ -1728,28 +1972,20 @@
                         await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
                     }
                 })();
-
                 fillFormRunning = false;
                 window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');
             }, 10000);
         } catch (error) {
-            // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
             console.error("[新浪发布] fillFormData 错误:", error);
-            // 发送错误上报
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {
                 await sendStatisticsError(publishId, error.message || "填写表单失败", "新浪发布");
             }
-            // 同步错误时重置标记
-            fillFormRunning = false;
-            window.__XL_fillFormRunning = false; // 🔴 释放全局锁
-            // 填写表单失败也要关闭窗口，不阻塞下一个任务
             await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
+            fillFormRunning = false;
+            window.__XL_fillFormRunning = false;
         }
-        // 注意：不在 finally 中重置 fillFormRunning
-        // 因为 setTimeout 是异步的，finally 会立即执行
-        // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
     }
 })(); // IIFE 结束
 
