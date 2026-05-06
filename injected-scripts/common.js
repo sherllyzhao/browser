@@ -1586,9 +1586,138 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
+    function getFirstMeaningfulValue(...values) {
+        for (const value of values) {
+            if (value === undefined || value === null) {
+                continue;
+            }
+            if (typeof value === "string" && value.trim() === "") {
+                continue;
+            }
+            return value;
+        }
+        return null;
+    }
+
+    function pruneEmptyFields(payload = {}) {
+        return Object.fromEntries(
+            Object.entries(payload).filter(([_, value]) => {
+                if (value === undefined || value === null) {
+                    return false;
+                }
+                if (typeof value === "string" && value.trim() === "") {
+                    return false;
+                }
+                return true;
+            })
+        );
+    }
+
+    function normalizeStatisticsPlatformName(platform = "") {
+        if (typeof platform !== "string") {
+            return "";
+        }
+        return platform.replace(/发布$/u, "").trim();
+    }
+
+    window.getCurrentPublishDataForStatistics = async function (logPrefix = "[统计接口]") {
+        try {
+            if (window.browserAPI?.getWindowId && window.browserAPI?.getGlobalData) {
+                const windowId = await window.browserAPI.getWindowId();
+                if (windowId) {
+                    const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+                    if (publishData) {
+                        console.log(`${logPrefix} ✅ 从 publish_data_window_${windowId} 读取到发布数据`);
+                        return publishData;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`${logPrefix} ⚠️ 从窗口级发布数据读取失败:`, e);
+        }
+
+        if (window.__AUTH_DATA__?.message) {
+            console.log(`${logPrefix} ℹ️ 回退使用 window.__AUTH_DATA__.message`);
+            return window.__AUTH_DATA__.message;
+        }
+
+        console.log(`${logPrefix} ℹ️ 未找到可用的发布数据，统计字段将仅上报基础信息`);
+        return null;
+    };
+
+    window.extractStatisticsMeta = async function (platform = "", logPrefix = "[统计接口]") {
+        const publishData = await window.getCurrentPublishDataForStatistics(logPrefix);
+        const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
+        const element = rawData?.element || rawData || {};
+        const accountInfo = element?.account_info || element?.accountInfo || {};
+        const mediaInfo = accountInfo?.media || element?.media || {};
+        const mediaAuth = element?.media_auth || element?.mediaAuth || {};
+
+        const meta = pruneEmptyFields({
+            media_id: getFirstMeaningfulValue(
+                element?.media_id,
+                mediaInfo?.id,
+                accountInfo?.media_id,
+                mediaAuth?.media_id
+            ),
+            account_id: getFirstMeaningfulValue(
+                element?.account_id,
+                accountInfo?.id,
+                element?.media_auth_id,
+                mediaAuth?.id
+            ),
+            nickname: getFirstMeaningfulValue(
+                element?.nickname,
+                accountInfo?.nickname,
+                accountInfo?.title,
+                mediaAuth?.nickname,
+                mediaAuth?.title
+            ),
+            avatar: getFirstMeaningfulValue(
+                element?.avatar,
+                accountInfo?.avatar,
+                mediaAuth?.avatar
+            ),
+            media_logo: getFirstMeaningfulValue(
+                element?.media_logo,
+                mediaInfo?.logo,
+                mediaInfo?.icon,
+                mediaInfo?.avatar,
+                element?.icon
+            ),
+            media_name: getFirstMeaningfulValue(
+                element?.media_name,
+                mediaInfo?.name,
+                mediaInfo?.title,
+                normalizeStatisticsPlatformName(platform)
+            ),
+        });
+
+        console.log(`${logPrefix} 📦 提取到统计附加字段:`, meta);
+        return meta;
+    };
+
+    window.buildStatisticsPayload = async function (publishId, platform = "", extraData = {}) {
+        const logPrefix = `[${platform || "发布"}][统计接口]`;
+        const meta = await window.extractStatisticsMeta(platform, logPrefix);
+        const payload = pruneEmptyFields({
+            id: publishId,
+            ...meta,
+            ...(extraData || {}),
+        });
+
+        console.log(`${logPrefix} 📤 最终上报 payload:`, payload);
+        return payload;
+    };
+
+    window.buildStatisticsRequestData = async function (publishId, platform = "", extraData = {}) {
+        const payload = await window.buildStatisticsPayload(publishId, platform, extraData);
+        return { data: JSON.stringify(payload) };
+    };
+
     // 发送统计接口（发布成功时调用）
     window.sendStatistics = async function (publishId, platform = "") {
-        const scanData = { data: JSON.stringify({ id: publishId }) };
+        const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
             const url = await getStatisticsUrl(false);
@@ -1615,8 +1744,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
 
         // 构建错误数据（包含更多上下文信息）
-        const errorData = {
-            id: publishId,
+        const errorExtraData = {
             status_text: statusText,
             // 🔑 附加诊断信息
             context: {
@@ -1630,7 +1758,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         if (window.PublishLogger) {
             const recentLogs = window.PublishLogger.getRecentLogs(5);
             if (recentLogs.length > 0) {
-                errorData.context.recentActions = recentLogs.map(log => ({
+                errorExtraData.context.recentActions = recentLogs.map(log => ({
                     time: log.timestamp,
                     action: log.action,
                     message: log.message,
@@ -1638,7 +1766,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             }
         }
 
-        const scanData = { data: JSON.stringify(errorData) };
+        const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
         try {
             console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
             const url = await getStatisticsUrl(true);
@@ -2569,6 +2697,8 @@ if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && 
 if (typeof deepShadowSearch === "undefined") window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
 if (typeof sendStatistics === "undefined") window.sendStatistics && (sendStatistics = window.sendStatistics);
 if (typeof sendStatisticsError === "undefined") window.sendStatisticsError && (sendStatisticsError = window.sendStatisticsError);
+if (typeof buildStatisticsPayload === "undefined") window.buildStatisticsPayload && (buildStatisticsPayload = window.buildStatisticsPayload);
+if (typeof buildStatisticsRequestData === "undefined") window.buildStatisticsRequestData && (buildStatisticsRequestData = window.buildStatisticsRequestData);
 if (typeof getApiDomain === "undefined") window.getApiDomain && (getApiDomain = window.getApiDomain);
 if (typeof getStatisticsUrl === "undefined") window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === "undefined") window.clickWithRetry && (clickWithRetry = window.clickWithRetry);

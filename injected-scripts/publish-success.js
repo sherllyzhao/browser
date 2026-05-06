@@ -136,11 +136,10 @@
     // 发送统计接口
     if (publishData && publishData.publishId) {
       try {
-        const mainInfo = await window.browserAPI.getMainUrl();
-
-        // 开发环境（localhost）跳过接口调用
         console.log('[发布成功] 📤 发送成功统计...');
-        const scanData = { data: JSON.stringify({ id: publishData.publishId }) };
+        const scanData = window.buildStatisticsRequestData
+          ? await window.buildStatisticsRequestData(publishData.publishId)
+          : { data: JSON.stringify({ id: publishData.publishId }) };
         let url = await getStatisticsUrl();
         const response = await fetch(url, {
           method: "POST",
