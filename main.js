@@ -4281,8 +4281,10 @@ function createWindow() {
               windowId: windowId,
               platform: accountInfo.platform,
               accountId: accountInfo.accountId,
+              backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
+              cookies: result.cookies || [],
               publishData: publishData,
               timestamp: Date.now()
             });
@@ -6228,8 +6230,15 @@ async function openManagedChildWindow(url, options = {}) {
         }
       }
 
+      const backendAccountId = getPublishBackendAccountId(options.publishData);
+      const cachedSessionData = getLatestSessionCache(options.platform, backendAccountId);
+      const effectiveSessionData = cachedSessionData || options.sessionData;
+      if (cachedSessionData) {
+        console.log(`[Window Manager] ✅ 命中本地最新会话缓存: platform=${options.platform}, backendAccountId=${backendAccountId}`);
+      }
+
       // 如果提供了 sessionData，先清空旧的 cookies，再恢复新的会话数据
-      if (options.sessionData) {
+      if (effectiveSessionData) {
         console.log('[Window Manager] ========== 检测到 sessionData，开始自动清空并恢复会话数据 ==========');
 
         try {
@@ -6269,7 +6278,7 @@ async function openManagedChildWindow(url, options = {}) {
           // - 格式2: [{...}, ...] - 直接的 cookies 数组
           // - 格式3: ["{...}", ...] - JSON 字符串数组（每个字符串是一个 cookie）
           // - 格式4: ["{domain, timestamp, cookies: [...]}"] - 包装的 session 数据（element.cookies 的实际格式）
-          let sessionData = options.sessionData;
+          let sessionData = effectiveSessionData;
 
           // 如果是字符串，先尝试解析（可能需要解析多次，因为可能有双重 JSON 编码）
           if (typeof sessionData === 'string') {
@@ -6659,8 +6668,10 @@ async function openManagedChildWindow(url, options = {}) {
               windowId: windowId,
               platform: accountInfo.platform,
               accountId: accountInfo.accountId,
+              backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
+              cookies: result.cookies || [],
               publishData: publishData,
               timestamp: Date.now()
             });
@@ -7721,6 +7732,331 @@ ipcMain.handle('trigger-download', async (event, url) => {
 // ========== 第三方窗口关闭前保存登录信息的公共函数 ==========
 // 用于在窗口关闭前自动上传最新的登录信息到后台
 
+function getPublishBackendAccountId(publishData) {
+  return publishData?.element?.account_info?.id
+    || publishData?.element?.accountInfo?.id
+    || publishData?.account_info?.id
+    || publishData?.accountInfo?.id
+    || null;
+}
+
+function buildLatestSessionCacheKey(platform, backendAccountId) {
+  if (!platform || !backendAccountId) {
+    return '';
+  }
+  return `latest_session_${platform}_${backendAccountId}`;
+}
+
+function getLatestSessionCache(platform, backendAccountId) {
+  const cacheKey = buildLatestSessionCacheKey(platform, backendAccountId);
+  if (!cacheKey) {
+    return null;
+  }
+  return globalStorage[cacheKey] || null;
+}
+
+function saveLatestSessionCache({ platform, backendAccountId, cookieDomains, cookiesArray, source = 'window-close' }) {
+  const cacheKey = buildLatestSessionCacheKey(platform, backendAccountId);
+  if (!cacheKey || !Array.isArray(cookiesArray) || cookiesArray.length === 0) {
+    return null;
+  }
+
+  const payload = {
+    platform,
+    backendAccountId,
+    domain: cookieDomains[0] || '',
+    cookieDomains: Array.isArray(cookieDomains) ? cookieDomains : [],
+    cookies: cookiesArray,
+    timestamp: Date.now(),
+    source
+  };
+
+  globalStorage[cacheKey] = payload;
+  saveGlobalStorage();
+  console.log(`[Save Session] 💾 已写入本地最新会话缓存: ${cacheKey}, cookies=${cookiesArray.length}`);
+  return payload;
+}
+
+function getApiOriginForSessionSave() {
+  let apiOrigin = config.apiBaseUrl;
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const mainUrl = browserView.webContents.getURL();
+      const urlObj = new URL(mainUrl);
+      if (urlObj.origin && !urlObj.origin.includes('file://')) {
+        apiOrigin = urlObj.origin;
+      }
+    } catch (urlErr) {
+      console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
+    }
+  }
+  return apiOrigin;
+}
+
+async function buildSessionSaveAuthHeaders(apiOrigin) {
+  const headers = {};
+  const token = String(globalStorage.login_token || '');
+  if (token) {
+    headers.token = token;
+    headers.access_token = token;
+  }
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const ses = browserView.webContents.session;
+      const apiUrl = new URL(apiOrigin);
+      const domain = apiUrl.hostname;
+      const allCookies = await ses.cookies.get({});
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      const cookieString = domainCookies.map(cookie => {
+        const value = /[^\x00-\xff]/.test(cookie.value) ? encodeURIComponent(cookie.value) : cookie.value;
+        return `${cookie.name}=${value}`;
+      }).join('; ');
+      if (cookieString) {
+        headers.Cookie = cookieString;
+      }
+      console.log(`[Save Session] 主站认证 cookies: ${domainCookies.length} 个`);
+    } catch (err) {
+      console.warn('[Save Session] 读取主站认证 cookies 失败:', err.message);
+    }
+  }
+
+  headers.Origin = apiOrigin;
+  headers.Referer = `${apiOrigin.replace(/\/$/, '')}/`;
+  return headers;
+}
+
+function evaluateSessionSaveResponse(statusCode, responseJson, responseText) {
+  if (!(statusCode >= 200 && statusCode < 300)) {
+    return {
+      success: false,
+      error: `HTTP ${statusCode}`,
+      detail: responseText
+    };
+  }
+
+  if (responseJson && typeof responseJson === 'object') {
+    if (responseJson.success === false) {
+      return {
+        success: false,
+        error: responseJson.msg || responseJson.message || '后台返回 success=false',
+        detail: responseJson
+      };
+    }
+
+    if (Object.prototype.hasOwnProperty.call(responseJson, 'code')) {
+      const numericCode = Number(responseJson.code);
+      if (Number.isFinite(numericCode) && ![0, 1, 200].includes(numericCode)) {
+        return {
+          success: false,
+          error: responseJson.msg || responseJson.message || `后台返回业务码 ${responseJson.code}`,
+          detail: responseJson
+        };
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+async function collectWindowSessionSaveContext(targetWindow, windowId) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
+    return { success: false, error: '窗口已销毁' };
+  }
+
+  const accountInfo = windowAccountMap.get(windowId);
+  if (!accountInfo) {
+    console.log('[Save Session] ⚠️ 该窗口没有关联账号（非多账号模式），跳过保存');
+    return { success: false, error: '非多账号模式窗口' };
+  }
+
+  console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
+
+  const publishDataKey = `publish_data_window_${windowId}`;
+  const publishData = globalStorage[publishDataKey];
+  const backendAccountId = getPublishBackendAccountId(publishData);
+
+  const saveSessionApi = publishData?.element?.saveSessionApi
+    || publishData?.element?.save_session_api
+    || config.platformApis[accountInfo.platform];
+
+  let cookieDomains = config.platformDomains[accountInfo.platform] || [];
+  const elementCookies = publishData?.element?.cookies;
+  if (elementCookies) {
+    try {
+      const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
+      if (cookiesData.domain) {
+        cookieDomains = [cookiesData.domain];
+        console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
+      }
+    } catch (parseErr) {
+      console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
+    }
+  }
+
+  if (!saveSessionApi) {
+    console.log('[Save Session] ⚠️ 未找到保存接口配置，跳过保存');
+    return { success: false, error: '未找到保存接口配置' };
+  }
+
+  if (cookieDomains.length === 0) {
+    console.log('[Save Session] ⚠️ 未找到 cookie domain 配置，跳过保存');
+    return { success: false, error: '未找到 cookie domain 配置' };
+  }
+
+  if (!backendAccountId) {
+    console.log('[Save Session] ⚠️ 未找到账号 ID（account_info.id），跳过保存');
+    return { success: false, error: '未找到账号 ID' };
+  }
+
+  const windowSession = targetWindow.webContents.session;
+  const allCookies = await windowSession.cookies.get({});
+  const platformCookies = allCookies.filter(cookie => {
+    const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+    return cookieDomains.some(domain => cookieDomain.includes(domain) || domain.includes(cookieDomain));
+  });
+
+  console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
+  if (platformCookies.length === 0) {
+    console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
+    return { success: false, error: '未找到平台相关 cookies' };
+  }
+
+  const cookiesArray = platformCookies.map(cookie => ({
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    expirationDate: cookie.expirationDate
+  }));
+
+  const apiOrigin = getApiOriginForSessionSave();
+  console.log('[Save Session] 后台 API 域名:', apiOrigin);
+  console.log('[Save Session] 保存接口路径:', saveSessionApi);
+  console.log('[Save Session] 账号 ID:', backendAccountId);
+
+  return {
+    success: true,
+    accountInfo,
+    publishData,
+    backendAccountId,
+    saveSessionApi,
+    cookieDomains,
+    cookiesArray,
+    apiOrigin
+  };
+}
+
+async function uploadSessionToBackend({ apiOrigin, saveSessionApi, backendAccountId, cookieDomains, cookiesArray }) {
+  const postData = JSON.stringify({
+    id: backendAccountId,
+    cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
+  });
+
+  const apiUrl = new URL(saveSessionApi, apiOrigin);
+  const protocol = apiUrl.protocol === 'https:' ? https : http;
+  const authHeaders = await buildSessionSaveAuthHeaders(apiOrigin);
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(postData),
+    ...authHeaders
+  };
+
+  return new Promise((resolve) => {
+    const req = protocol.request({
+      hostname: apiUrl.hostname,
+      port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
+      path: `${apiUrl.pathname}${apiUrl.search}`,
+      method: 'POST',
+      headers: requestHeaders,
+      timeout: 10000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        let responseJson = null;
+        try {
+          responseJson = JSON.parse(data);
+        } catch (_) {
+          responseJson = null;
+        }
+
+        const evaluation = evaluateSessionSaveResponse(res.statusCode || 0, responseJson, data);
+        if (!evaluation.success) {
+          console.error('[Save Session] ❌ 后台未接受会话数据:', {
+            statusCode: res.statusCode,
+            error: evaluation.error,
+            response: String(data || '').substring(0, 300)
+          });
+          resolve({
+            success: false,
+            error: evaluation.error,
+            statusCode: res.statusCode,
+            response: responseJson || data
+          });
+          return;
+        }
+
+        console.log('[Save Session] ✅ 会话数据已保存到后台, status:', res.statusCode, '响应:', String(data || '').substring(0, 200));
+        resolve({
+          success: true,
+          statusCode: res.statusCode,
+          response: responseJson || data,
+          cookieCount: cookiesArray.length,
+          cookies: cookiesArray,
+          backendAccountId
+        });
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
+      resolve({ success: false, error: err.message });
+    });
+
+    req.on('timeout', () => {
+      console.error('[Save Session] ❌ 保存请求超时');
+      req.destroy();
+      resolve({ success: false, error: '请求超时' });
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function persistWindowSessionToBackend(targetWindow, windowId, source = 'window-close') {
+  const context = await collectWindowSessionSaveContext(targetWindow, windowId);
+  if (!context.success) {
+    return context;
+  }
+
+  saveLatestSessionCache({
+    platform: context.accountInfo.platform,
+    backendAccountId: context.backendAccountId,
+    cookieDomains: context.cookieDomains,
+    cookiesArray: context.cookiesArray,
+    source
+  });
+
+  const uploadResult = await uploadSessionToBackend(context);
+  return {
+    ...uploadResult,
+    publishData: context.publishData,
+    accountInfo: context.accountInfo,
+    backendAccountId: context.backendAccountId
+  };
+}
+
 /**
  * 保存窗口的登录信息到后台
  * @param {BrowserWindow} targetWindow - 要保存的窗口
@@ -7730,157 +8066,8 @@ ipcMain.handle('trigger-download', async (event, url) => {
 async function saveWindowSessionToBackend(targetWindow, windowId) {
   console.log('[Save Session] ========== 窗口关闭前保存登录信息 ==========');
   console.log('[Save Session] windowId:', windowId);
-
   try {
-    // 检查窗口是否还有效
-    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
-      console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
-      return { success: false, error: '窗口已销毁' };
-    }
-
-    // 检查是否是多账号模式的窗口
-    const accountInfo = windowAccountMap.get(windowId);
-    if (!accountInfo) {
-      console.log('[Save Session] ⚠️ 该窗口没有关联账号（非多账号模式），跳过保存');
-      return { success: false, error: '非多账号模式窗口' };
-    }
-
-    console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
-
-    // 获取发布数据中的账号信息
-    const publishDataKey = `publish_data_window_${windowId}`;
-    const publishData = globalStorage[publishDataKey];
-    const backendAccountId = publishData?.element?.account_info?.id;
-
-    // 优先从 element 获取配置，否则使用配置文件
-    const saveSessionApi = publishData?.element?.saveSessionApi
-      || publishData?.element?.save_session_api
-      || config.platformApis[accountInfo.platform];
-
-    // 从 element.cookies 提取 domain，否则使用配置文件
-    let cookieDomains = config.platformDomains[accountInfo.platform] || [];
-    const elementCookies = publishData?.element?.cookies;
-    if (elementCookies) {
-      try {
-        const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-        if (cookiesData.domain) {
-          cookieDomains = [cookiesData.domain];
-          console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
-        }
-      } catch (parseErr) {
-        console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
-      }
-    }
-
-    if (!saveSessionApi) {
-      console.log('[Save Session] ⚠️ 未找到保存接口配置，跳过保存');
-      return { success: false, error: '未找到保存接口配置' };
-    }
-
-    if (cookieDomains.length === 0) {
-      console.log('[Save Session] ⚠️ 未找到 cookie domain 配置，跳过保存');
-      return { success: false, error: '未找到 cookie domain 配置' };
-    }
-
-    if (!backendAccountId) {
-      console.log('[Save Session] ⚠️ 未找到账号 ID（account_info.id），跳过保存');
-      return { success: false, error: '未找到账号 ID' };
-    }
-
-    // 获取该窗口 session 的最新 cookies
-    const windowSession = targetWindow.webContents.session;
-    const allCookies = await windowSession.cookies.get({});
-
-    // 根据 domains 过滤 cookies
-    const platformCookies = allCookies.filter(cookie => {
-      const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-      return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
-    });
-
-    console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
-
-    if (platformCookies.length === 0) {
-      console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
-      return { success: false, error: '未找到平台相关 cookies' };
-    }
-
-    // 转换为可序列化的格式
-    const cookiesArray = platformCookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      secure: c.secure,
-      httpOnly: c.httpOnly,
-      sameSite: c.sameSite,
-      expirationDate: c.expirationDate
-    }));
-
-    // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.apiBaseUrl;
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      try {
-        const mainUrl = browserView.webContents.getURL();
-        const urlObj = new URL(mainUrl);
-        if (urlObj.origin && !urlObj.origin.includes('file://')) {
-          apiOrigin = urlObj.origin;
-        }
-      } catch (urlErr) {
-        console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
-      }
-    }
-
-    console.log('[Save Session] 后台 API 域名:', apiOrigin);
-    console.log('[Save Session] 保存接口路径:', saveSessionApi);
-    console.log('[Save Session] 账号 ID:', backendAccountId);
-
-    // 调用后台接口保存 cookies（使用 Promise 包装，等待完成）
-    const https = require('https');
-    const http = require('http');
-
-    const postData = JSON.stringify({
-      id: backendAccountId,
-      cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
-    });
-
-    const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
-    const protocol = apiUrl.protocol === 'https:' ? https : http;
-
-    const result = await new Promise((resolve) => {
-      const req = protocol.request({
-        hostname: apiUrl.hostname,
-        port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
-        path: apiUrl.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        },
-        timeout: 10000 // 10秒超时
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          console.log('[Save Session] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
-          resolve({ success: true, cookieCount: cookiesArray.length });
-        });
-      });
-
-      req.on('error', (err) => {
-        console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
-        resolve({ success: false, error: err.message });
-      });
-
-      req.on('timeout', () => {
-        console.error('[Save Session] ❌ 保存请求超时');
-        req.destroy();
-        resolve({ success: false, error: '请求超时' });
-      });
-
-      req.write(postData);
-      req.end();
-    });
-
+    const result = await persistWindowSessionToBackend(targetWindow, windowId, 'window-close');
     console.log('[Save Session] ========== 保存完成 ==========');
     return result;
   } catch (err) {
@@ -8856,7 +9043,6 @@ ipcMain.handle('save-session-to-backend', async (event) => {
   console.log('[Save Session] ========== 手动保存会话数据 ==========');
 
   try {
-    // 获取调用者窗口
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
     if (!senderWindow) {
       return { success: false, error: '无法获取发送者窗口' };
@@ -8864,136 +9050,7 @@ ipcMain.handle('save-session-to-backend', async (event) => {
 
     const windowId = senderWindow.id;
     console.log('[Save Session] 窗口ID:', windowId);
-
-    // 检查是否是多账号模式的窗口
-    const accountInfo = windowAccountMap.get(windowId);
-    if (!accountInfo) {
-      return { success: false, error: '该窗口没有关联账号（非多账号模式）' };
-    }
-
-    console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
-
-    // 获取发布数据中的账号信息
-    const publishDataKey = `publish_data_window_${windowId}`;
-    const publishData = globalStorage[publishDataKey];
-    const backendAccountId = publishData?.element?.account_info?.id;
-
-    // 优先从 element 获取配置，否则使用配置文件
-    const saveSessionApi = publishData?.element?.saveSessionApi
-      || publishData?.element?.save_session_api
-      || config.platformApis[accountInfo.platform];
-
-    // 从 element.cookies 提取 domain，否则使用配置文件
-    let cookieDomains = config.platformDomains[accountInfo.platform] || [];
-    const elementCookies = publishData?.element?.cookies;
-    if (elementCookies) {
-      try {
-        const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-        if (cookiesData.domain) {
-          cookieDomains = [cookiesData.domain];
-          console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
-        }
-      } catch (parseErr) {
-        console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
-      }
-    }
-
-    if (!saveSessionApi) {
-      return { success: false, error: '未找到保存接口配置' };
-    }
-
-    if (cookieDomains.length === 0) {
-      return { success: false, error: '未找到 cookie domain 配置' };
-    }
-
-    if (!backendAccountId) {
-      return { success: false, error: '未找到账号 ID（account_info.id）' };
-    }
-
-    // 获取该窗口 session 的最新 cookies
-    const windowSession = senderWindow.webContents.session;
-    const allCookies = await windowSession.cookies.get({});
-
-    // 根据 domains 过滤 cookies
-    const platformCookies = allCookies.filter(cookie => {
-      const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-      return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
-    });
-
-    console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
-
-    if (platformCookies.length === 0) {
-      return { success: false, error: '未找到平台相关 cookies' };
-    }
-
-    // 转换为可序列化的格式
-    const cookiesArray = platformCookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      secure: c.secure,
-      httpOnly: c.httpOnly,
-      sameSite: c.sameSite,
-      expirationDate: c.expirationDate
-    }));
-
-    // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.apiBaseUrl;
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      try {
-        const mainUrl = browserView.webContents.getURL();
-        const urlObj = new URL(mainUrl);
-        if (urlObj.origin && !urlObj.origin.includes('file://')) {
-          apiOrigin = urlObj.origin;
-        }
-      } catch (urlErr) {
-        console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
-      }
-    }
-
-    console.log('[Save Session] 后台 API 域名:', apiOrigin);
-    console.log('[Save Session] 保存接口路径:', saveSessionApi);
-    console.log('[Save Session] 账号 ID:', backendAccountId);
-
-    // 调用后台接口保存 cookies（使用 Promise 包装）
-    const postData = JSON.stringify({
-      id: backendAccountId,
-      cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
-    });
-
-    const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
-    const protocol = apiUrl.protocol === 'https:' ? https : http;
-
-    const result = await new Promise((resolve, reject) => {
-      const req = protocol.request({
-        hostname: apiUrl.hostname,
-        port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
-        path: apiUrl.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        }
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          console.log('[Save Session] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
-          resolve({ success: true, response: data, cookieCount: cookiesArray.length });
-        });
-      });
-
-      req.on('error', (err) => {
-        console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
-        reject(err);
-      });
-
-      req.write(postData);
-      req.end();
-    });
-
-    return result;
+    return await persistWindowSessionToBackend(senderWindow, windowId, 'manual-save');
   } catch (err) {
     console.error('[Save Session] 保存失败:', err);
     return { success: false, error: err.message };
