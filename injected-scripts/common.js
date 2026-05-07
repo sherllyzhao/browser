@@ -1664,10 +1664,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 element?.account_id,
                 accountInfo?.id,
                 element?.media_auth_id,
-                mediaAuth?.id
+                mediaAuth?.id,
+                element?.platform_uid,
+                element?.platformUid,
+                element?.uid,
+                element?.open_id,
+                element?.openid,
+                accountInfo?.platform_uid,
+                accountInfo?.platformUid,
+                accountInfo?.uid,
+                accountInfo?.open_id,
+                accountInfo?.openid,
+                mediaAuth?.open_id,
+                mediaAuth?.uid,
+                mediaAuth?.origin_id
             ),
             nickname: getFirstMeaningfulValue(
                 element?.nickname,
+                element?.account_name,
                 accountInfo?.nickname,
                 accountInfo?.title,
                 mediaAuth?.nickname,
@@ -1688,8 +1702,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             media_name: getFirstMeaningfulValue(
                 element?.media_name,
                 mediaInfo?.name,
-                mediaInfo?.title,
-                normalizeStatisticsPlatformName(platform)
+                mediaInfo?.title
             ),
         });
 
