@@ -63,7 +63,8 @@
     },
     "portable": {
       "artifactName": "资海云运营助手-便携版-${version}.exe",
-      "requestExecutionLevel": "user"
+      "requestExecutionLevel": "user",
+      "unpackDirName": "zhcloud-ops-assistant-portable"
     },
     "nsis": {
       "oneClick": false,

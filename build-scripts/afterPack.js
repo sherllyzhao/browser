@@ -25,4 +25,29 @@ module.exports = async function(context) {
   });
 
   console.log(`✅ 已删除 ${deletedCount} 个语言包，节省 ${(deletedSize / 1024 / 1024).toFixed(2)} MB`);
+
+  const productFilename = context.packager?.appInfo?.productFilename || 'app';
+  const requiredRuntimeFiles = [
+    `${productFilename}.exe`,
+    'ffmpeg.dll',
+    'libEGL.dll',
+    'libGLESv2.dll',
+    'icudtl.dat',
+    'resources.pak',
+    'snapshot_blob.bin',
+    'v8_context_snapshot.bin'
+  ];
+
+  const missingRuntimeFiles = requiredRuntimeFiles.filter(file => {
+    return !fs.existsSync(path.join(context.appOutDir, file));
+  });
+
+  if (missingRuntimeFiles.length > 0) {
+    throw new Error(
+      `[afterPack] 缺少关键运行时文件: ${missingRuntimeFiles.join(', ')}。` +
+      ' 这会导致安装包或便携版在客户机器上直接启动失败。'
+    );
+  }
+
+  console.log(`[afterPack] ✅ 已验证关键运行时文件: ${requiredRuntimeFiles.join(', ')}`);
 };
