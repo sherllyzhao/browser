@@ -103,7 +103,45 @@
         errorListener.start();
     };
     const stopErrorListener = () => errorListener?.stop();
-    const getLatestError = () => errorListener?.getLatestError() || null;
+
+    // 🔴 全文本扫描"参数错误/点击重试"等关键错误词（错误监听器选择器没覆盖到时的兜底）
+    const PARAM_ERROR_KEYWORDS = ['参数错误', '点击重试', '系统繁忙', '请求失败', '操作失败'];
+    const detectXinlangParamError = () => {
+        try {
+            const root = document.body;
+            if (!root) return null;
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                acceptNode: (node) => {
+                    const parent = node.parentElement;
+                    if (!parent) return NodeFilter.FILTER_REJECT;
+                    // 跳过不可见元素和脚本/样式节点
+                    const tag = parent.tagName;
+                    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    if (parent.offsetParent === null && parent !== document.body) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            });
+            let node;
+            while ((node = walker.nextNode())) {
+                const text = (node.textContent || '').trim();
+                if (!text || text.length > 60) continue; // 过长的文本通常是正文，跳过
+                for (const keyword of PARAM_ERROR_KEYWORDS) {
+                    if (text.includes(keyword)) {
+                        return text;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[新浪发布] detectXinlangParamError 出错:', e.message);
+        }
+        return null;
+    };
+
+    const getLatestError = () => errorListener?.getLatestError() || detectXinlangParamError() || null;
 
     // 获取窗口专属的发布成功数据 key
     const getPublishSuccessKey = () => {
@@ -926,15 +964,24 @@
             await delay(200);
             await writer();
             triggerXinlangEditorEvents(editorEle, plainText, inputType);
-            await delay(800);
+            // 🔴 给富文本编辑器更长时间异步解析多段 HTML（之前 800ms 太短，paste 多段时只能拿到第一段）
+            await delay(1500);
 
             const afterText = getXinlangEditorText(editorEle);
-            if (afterText) {
-                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${afterText.length}`);
+            const expectedLen = (plainText || '').length;
+            const actualLen = afterText.length;
+            // 🔴 严格校验：至少达到目标长度 80%，且不少于 5 字；避免只填了第一段就被判为成功
+            const minLen = expectedLen <= 5 ? expectedLen : Math.max(5, Math.floor(expectedLen * 0.8));
+            if (afterText && actualLen >= minLen) {
+                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}`);
                 return true;
             }
 
-            console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空`);
+            if (afterText) {
+                console.warn(`[新浪发布] ⚠️ ${name} 正文长度不足 (${actualLen}/${expectedLen})，尝试下一种策略`);
+            } else {
+                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空`);
+            }
             return false;
         };
 
@@ -1701,7 +1748,34 @@
 
                                         //    发布弹窗
                                         try {
-                                            const publishDialogEle = await waitForElement('.n-dialog', 300000, 500);
+                                            // 🔴 改造：边等待弹窗边检测错误，避免参数错误时卡 5 分钟
+                                            const waitDialogOrError = async (timeout) => {
+                                                const startTime = Date.now();
+                                                while (Date.now() - startTime < timeout) {
+                                                    const errMsg = getLatestError();
+                                                    if (errMsg) {
+                                                        return { type: 'error', message: errMsg };
+                                                    }
+                                                    const dialog = document.querySelector('.n-dialog');
+                                                    if (dialog && dialog.offsetParent !== null) {
+                                                        return { type: 'dialog', element: dialog };
+                                                    }
+                                                    await delay(500);
+                                                }
+                                                return { type: 'timeout' };
+                                            };
+                                            const dialogResult = await waitDialogOrError(300000);
+                                            if (dialogResult.type === 'error') {
+                                                console.error('[新浪发布] ❌ 等待发布弹窗期间检测到错误:', dialogResult.message);
+                                                stopErrorListener();
+                                                const pid = dataObj.video?.dyPlatform?.id;
+                                                if (pid) {
+                                                    await sendStatisticsError(pid, dialogResult.message, "新浪发布");
+                                                }
+                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                return;
+                                            }
+                                            const publishDialogEle = dialogResult.element;
                                             if (!publishDialogEle) {
                                                 console.log('[新浪发布]：找不到发布弹窗（等待超时）');
                                             }

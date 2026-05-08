@@ -4247,6 +4247,56 @@ function createWindow() {
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
 
+    // 🔐 维护窗口"上次 URL"，用于 did-navigate 检测登录页跳转
+    let lastNavUrl = '';
+    const LOGIN_URL_PATTERNS = ['/login', 'passport.', '/sso/', '/auth/', '/signin', 'security.weibo.com'];
+    const isLoginPageUrl = (u) => {
+      if (!u) return false;
+      const lower = u.toLowerCase();
+      return LOGIN_URL_PATTERNS.some(p => lower.includes(p));
+    };
+
+    // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
+    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      const prevWasLogin = isLoginPageUrl(lastNavUrl);
+      const currIsLogin = isLoginPageUrl(navUrl);
+      lastNavUrl = navUrl;
+
+      if (!prevWasLogin || currIsLogin) return;
+
+      const accountInfo = windowAccountMap.get(windowId);
+      if (!accountInfo) return;
+      if (isSavingSession) {
+        console.log('[did-create-window] 🔐 正在保存中，跳过 did-navigate 触发的保存');
+        return;
+      }
+
+      console.log(`[did-create-window] 🔐 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+      isSavingSession = true;
+      try {
+        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        console.log('[did-create-window] 🔐 重登录后保存结果:', result);
+        if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
+          const publishDataKey = `publish_data_window_${windowId}`;
+          const publishData = globalStorage[publishDataKey];
+          browserView.webContents.send('session-updated', {
+            windowId: windowId,
+            platform: accountInfo.platform,
+            accountId: accountInfo.accountId,
+            backendAccountId: result.backendAccountId,
+            success: result.success,
+            cookieCount: result.cookieCount,
+            publishData: publishData,
+            reason: 'relogin'
+          });
+        }
+      } catch (err) {
+        console.error('[did-create-window] 🔐 重登录后保存失败:', err);
+      } finally {
+        isSavingSession = false;
+      }
+    });
+
     // 🔑 监听窗口关闭前事件，尝试保存登录信息（如果是多账号模式窗口）
     newWindow.on('close', async (e) => {
       console.log('[did-create-window] ========== 窗口关闭前 ==========');
@@ -6633,6 +6683,56 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
+
+    // 🔐 维护窗口"上次 URL"，用于 did-navigate 检测登录页跳转
+    let lastNavUrl = '';
+    const LOGIN_URL_PATTERNS = ['/login', 'passport.', '/sso/', '/auth/', '/signin', 'security.weibo.com'];
+    const isLoginPageUrl = (u) => {
+      if (!u) return false;
+      const lower = u.toLowerCase();
+      return LOGIN_URL_PATTERNS.some(p => lower.includes(p));
+    };
+
+    // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
+    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      const prevWasLogin = isLoginPageUrl(lastNavUrl);
+      const currIsLogin = isLoginPageUrl(navUrl);
+      lastNavUrl = navUrl;
+
+      if (!prevWasLogin || currIsLogin) return;
+
+      const accountInfo = windowAccountMap.get(windowId);
+      if (!accountInfo) return;
+      if (isSavingSession) {
+        console.log('[Window Manager] 🔐 正在保存中，跳过 did-navigate 触发的保存');
+        return;
+      }
+
+      console.log(`[Window Manager] 🔐 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+      isSavingSession = true;
+      try {
+        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        console.log('[Window Manager] 🔐 重登录后保存结果:', result);
+        if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
+          const publishDataKey = `publish_data_window_${windowId}`;
+          const publishData = globalStorage[publishDataKey];
+          browserView.webContents.send('session-updated', {
+            windowId: windowId,
+            platform: accountInfo.platform,
+            accountId: accountInfo.accountId,
+            backendAccountId: result.backendAccountId,
+            success: result.success,
+            cookieCount: result.cookieCount,
+            publishData: publishData,
+            reason: 'relogin'
+          });
+        }
+      } catch (err) {
+        console.error('[Window Manager] 🔐 重登录后保存失败:', err);
+      } finally {
+        isSavingSession = false;
+      }
+    });
 
     // 🔑 监听窗口关闭前事件，保存最新会话数据到后台
     // 使用 e.preventDefault() 阻止立即关闭，等待保存完成后再销毁窗口

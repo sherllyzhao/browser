@@ -2469,7 +2469,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     //    新浪
         xinlang: {
             logPrefix: "[新浪发布]",
-            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content > div", recursiveSelector: ".n-alert" }],
+            // 🔴 修复：".n-alert-body__content > div" 查不到子 div（实际"参数错误"是直接文本节点）
+            // 改为直接读 .n-alert-body__content 的 textContent
+            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content", recursiveSelector: ".n-alert" }],
         }
     };
 
