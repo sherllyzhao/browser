@@ -4265,7 +4265,7 @@ function createWindow() {
       if (!prevWasLogin || currIsLogin) return;
 
       const accountInfo = windowAccountMap.get(windowId);
-      if (!accountInfo) return;
+      if (!accountInfo && !hasWindowSessionSaveCandidate(windowId)) return;
       if (isSavingSession) {
         console.log('[did-create-window] 🔐 正在保存中，跳过 did-navigate 触发的保存');
         return;
@@ -4281,8 +4281,8 @@ function createWindow() {
           const publishData = globalStorage[publishDataKey];
           browserView.webContents.send('session-updated', {
             windowId: windowId,
-            platform: accountInfo.platform,
-            accountId: accountInfo.accountId,
+            platform: result.accountInfo?.platform || accountInfo?.platform,
+            accountId: result.accountInfo?.accountId || accountInfo?.accountId,
             backendAccountId: result.backendAccountId,
             success: result.success,
             cookieCount: result.cookieCount,
@@ -4311,12 +4311,12 @@ function createWindow() {
 
       // 检查是否是多账号模式的窗口（虽然 did-create-window 创建的窗口通常不是）
       const accountInfo = windowAccountMap.get(windowId);
-      if (accountInfo) {
+      if (accountInfo || hasWindowSessionSaveCandidate(windowId)) {
         // 阻止窗口立即关闭，等待保存完成
         e.preventDefault();
         isSavingSession = true;
 
-        console.log('[did-create-window] 发现多账号映射，等待保存会话数据完成后再关闭');
+        console.log('[did-create-window] 发现可保存的发布窗口，等待保存会话数据完成后再关闭');
 
         try {
           // 调用公共函数保存登录信息
@@ -4329,8 +4329,8 @@ function createWindow() {
             const publishData = globalStorage[publishDataKey];
             browserView.webContents.send('session-updated', {
               windowId: windowId,
-              platform: accountInfo.platform,
-              accountId: accountInfo.accountId,
+              platform: result.accountInfo?.platform || accountInfo?.platform,
+              accountId: result.accountInfo?.accountId || accountInfo?.accountId,
               backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
@@ -6702,7 +6702,7 @@ async function openManagedChildWindow(url, options = {}) {
       if (!prevWasLogin || currIsLogin) return;
 
       const accountInfo = windowAccountMap.get(windowId);
-      if (!accountInfo) return;
+      if (!accountInfo && !hasWindowSessionSaveCandidate(windowId)) return;
       if (isSavingSession) {
         console.log('[Window Manager] 🔐 正在保存中，跳过 did-navigate 触发的保存');
         return;
@@ -6718,8 +6718,8 @@ async function openManagedChildWindow(url, options = {}) {
           const publishData = globalStorage[publishDataKey];
           browserView.webContents.send('session-updated', {
             windowId: windowId,
-            platform: accountInfo.platform,
-            accountId: accountInfo.accountId,
+            platform: result.accountInfo?.platform || accountInfo?.platform,
+            accountId: result.accountInfo?.accountId || accountInfo?.accountId,
             backendAccountId: result.backendAccountId,
             success: result.success,
             cookieCount: result.cookieCount,
@@ -6748,12 +6748,12 @@ async function openManagedChildWindow(url, options = {}) {
 
       // 检查是否是多账号模式的窗口，需要保存登录信息
       const accountInfo = windowAccountMap.get(windowId);
-      if (accountInfo) {
+      if (accountInfo || hasWindowSessionSaveCandidate(windowId)) {
         // 阻止窗口立即关闭，等待保存完成
         e.preventDefault();
         isSavingSession = true;
 
-        console.log('[Window Manager] 多账号模式窗口，等待保存会话数据完成后再关闭');
+        console.log('[Window Manager] 检测到可保存的发布窗口，等待保存会话数据完成后再关闭');
 
         try {
           // 调用公共函数保存登录信息
@@ -6766,8 +6766,8 @@ async function openManagedChildWindow(url, options = {}) {
             const publishData = globalStorage[publishDataKey];
             browserView.webContents.send('session-updated', {
               windowId: windowId,
-              platform: accountInfo.platform,
-              accountId: accountInfo.accountId,
+              platform: result.accountInfo?.platform || accountInfo?.platform,
+              accountId: result.accountInfo?.accountId || accountInfo?.accountId,
               backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
@@ -7962,22 +7962,43 @@ function evaluateSessionSaveResponse(statusCode, responseJson, responseText) {
   return { success: true };
 }
 
+function hasWindowSessionSaveCandidate(windowId) {
+  if (windowAccountMap.get(windowId)) {
+    return true;
+  }
+  return !!globalStorage[`publish_data_window_${windowId}`];
+}
+
 async function collectWindowSessionSaveContext(targetWindow, windowId) {
   if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
     console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
     return { success: false, error: '窗口已销毁' };
   }
 
-  const accountInfo = windowAccountMap.get(windowId);
+  const publishDataKey = `publish_data_window_${windowId}`;
+  const publishData = globalStorage[publishDataKey];
+  const windowContext = windowContextMap.get(windowId) || null;
+  const mappedAccountInfo = windowAccountMap.get(windowId) || null;
+  const inferredPlatform = mappedAccountInfo?.platform || publishData?.platform || windowContext?.platform || null;
+  const inferredAccountId = mappedAccountInfo?.accountId
+    || String(getPublishBackendAccountId(publishData) || `shared_${windowId}`);
+  const accountInfo = inferredPlatform ? {
+    platform: inferredPlatform,
+    accountId: inferredAccountId
+  } : null;
+
   if (!accountInfo) {
-    console.log('[Save Session] ⚠️ 该窗口没有关联账号（非多账号模式），跳过保存');
-    return { success: false, error: '非多账号模式窗口' };
+    console.log('[Save Session] ⚠️ 该窗口没有可识别的平台上下文，跳过保存');
+    return { success: false, error: '缺少平台上下文' };
   }
 
   console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
 
-  const publishDataKey = `publish_data_window_${windowId}`;
-  const publishData = globalStorage[publishDataKey];
+  if (!publishData) {
+    console.log('[Save Session] ⚠️ 未找到发布数据，跳过保存');
+    return { success: false, error: '未找到发布数据' };
+  }
+
   const backendAccountId = getPublishBackendAccountId(publishData);
 
   const saveSessionApi = publishData?.element?.saveSessionApi

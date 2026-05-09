@@ -485,13 +485,7 @@
 
                     if (publishId) {
                         try {
-                            const successUrl = await getStatisticsUrl();
-                            const scanData = {data: JSON.stringify({id: publishId})};
-                            await fetch(successUrl, {
-                                method: "POST",
-                                headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify(scanData),
-                            });
+                            await sendStatistics(publishId, "新浪发布");
                             console.log("[新浪发布] ✅ 即时发布统计上报成功");
                         } catch (e) {
                             console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -600,6 +594,17 @@
                     // windowId 匹配后才保存消息数据
                     receivedMessageData = messageData;
                     console.log("[新浪发布] 💾 已保存收到的消息数据到 receivedMessageData");
+
+                    // 🔑 同时保存到 globalData（用于重新发布过程中的跳转/重载后恢复统计上下文）
+                    try {
+                        const windowId = await window.browserAPI.getWindowId();
+                        if (windowId) {
+                            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+                            console.log("[新浪发布] 💾 数据已保存到 globalData, key: publish_data_window_" + windowId);
+                        }
+                    } catch (e) {
+                        console.error("[新浪发布] ❌ 保存数据到 globalData 失败:", e);
+                    }
 
                     console.log("[新浪发布] ✅ 收到发布数据:", messageData);
 
@@ -733,9 +738,9 @@
             if (publishData && !isProcessing && !hasProcessed) {
                 console.log("[新浪发布] ✅ 检测到恢复 cookies 后的数据，开始处理...");
 
-                // 清除已使用的数据，避免重复处理
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log("[新浪发布] 🗑️ 已清除 publish_data_window_" + windowId);
+                // 🔑 不再在这里提前删除，避免重新发布失败上报时丢失统计附加字段
+                // 统一由 closeWindowWithMessage 在窗口关闭前清理
+                console.log("[新浪发布] 📝 保留 publish_data_window_" + windowId + " 数据，待发布结束后清理");
 
                 // 标记为正在处理
                 isProcessing = true;
@@ -1874,13 +1879,7 @@
 
                                                 if (publishIdForSuccess) {
                                                     try {
-                                                        const successUrl = await getStatisticsUrl();
-                                                        const scanData = {data: JSON.stringify({id: publishIdForSuccess})};
-                                                        await fetch(successUrl, {
-                                                            method: "POST",
-                                                            headers: {"Content-Type": "application/json"},
-                                                            body: JSON.stringify(scanData),
-                                                        });
+                                                        await sendStatistics(publishIdForSuccess, "新浪发布");
                                                         console.log("[新浪发布] ✅ 发布统计上报成功");
                                                     } catch (e) {
                                                         console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -2016,13 +2015,7 @@
 
                                                 if (publishIdForInstant) {
                                                     try {
-                                                        const successUrl = await getStatisticsUrl();
-                                                        const scanData = {data: JSON.stringify({id: publishIdForInstant})};
-                                                        await fetch(successUrl, {
-                                                            method: "POST",
-                                                            headers: {"Content-Type": "application/json"},
-                                                            body: JSON.stringify(scanData),
-                                                        });
+                                                        await sendStatistics(publishIdForInstant, "新浪发布");
                                                         console.log("[新浪发布] ✅ 即时发布统计上报成功");
                                                     } catch (e) {
                                                         console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -2307,13 +2300,7 @@ async function selectScheduledTime(sendTime) {
 
             if (publishIdForTimer) {
                 try {
-                    const successUrl = await getStatisticsUrl();
-                    const scanData = {data: JSON.stringify({id: publishIdForTimer})};
-                    await fetch(successUrl, {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify(scanData),
-                    });
+                    await sendStatistics(publishIdForTimer, "新浪发布");
                     console.log("[新浪发布] ✅ 定时发布统计上报成功");
                 } catch (e) {
                     console.error("[新浪发布] ❌ 统计上报失败:", e);

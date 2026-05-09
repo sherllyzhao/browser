@@ -137,15 +137,19 @@
     if (publishData && publishData.publishId) {
       try {
         console.log('[发布成功] 📤 发送成功统计...');
-        const scanData = window.buildStatisticsRequestData
-          ? await window.buildStatisticsRequestData(publishData.publishId)
-          : { data: JSON.stringify({ id: publishData.publishId }) };
-        let url = await getStatisticsUrl();
-        const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(scanData),
-        });
+        if (window.sendStatistics) {
+          await window.sendStatistics(publishData.publishId, '发布成功页');
+        } else {
+          const scanData = window.buildStatisticsRequestData
+            ? await window.buildStatisticsRequestData(publishData.publishId)
+            : { data: JSON.stringify({ id: publishData.publishId }) };
+          let url = await getStatisticsUrl();
+          await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(scanData),
+          });
+        }
         console.log('[发布成功] ✅ 统计接口请求成功');
       } catch (e) {
         console.error('[发布成功] ❌ 统计接口请求失败:', e);

@@ -1728,8 +1728,76 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return { data: JSON.stringify(payload) };
     };
 
+    function getStatisticsReportCacheKey(windowId, resultType = "unknown") {
+        return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
+    }
+
+    window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
+        if (!publishId) {
+            return { acquired: true, key: null, windowId: null };
+        }
+
+        let windowId = null;
+        try {
+            if (window.browserAPI?.getWindowId) {
+                windowId = await window.browserAPI.getWindowId();
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 获取窗口 ID 失败，降级为默认去重 key:", e.message);
+        }
+
+        const key = getStatisticsReportCacheKey(windowId, resultType);
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (cachedRaw) {
+                const cached = JSON.parse(cachedRaw);
+                if (String(cached?.publishId || "") === String(publishId)) {
+                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报，跳过`, cached);
+                    return { acquired: false, key, windowId, cached };
+                }
+            }
+
+            sessionStorage.setItem(key, JSON.stringify({
+                publishId,
+                resultType,
+                platform: platform || "",
+                timestamp: Date.now(),
+            }));
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
+        }
+
+        return { acquired: true, key, windowId };
+    };
+
+    window.releaseStatisticsReportLock = function (key, publishId = "") {
+        if (!key) {
+            return;
+        }
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (!cachedRaw) {
+                return;
+            }
+
+            const cached = JSON.parse(cachedRaw);
+            if (!publishId || String(cached?.publishId || "") === String(publishId)) {
+                sessionStorage.removeItem(key);
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 清理统计去重锁失败:", e.message);
+        }
+    };
+
     // 发送统计接口（发布成功时调用）
     window.sendStatistics = async function (publishId, platform = "") {
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
         const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
@@ -1743,6 +1811,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 成功统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 成功统计接口请求失败:`, e);
             return { success: false, error: e };
         }
@@ -1751,6 +1820,11 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // 发送错误统计接口（发布失败时调用）
     // 🔑 增强版：附带详细的错误上下文日志
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null) {
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
         // 使用 PublishLogger 记录错误
         if (window.PublishLogger && errorObj) {
             window.PublishLogger.error(platform || "发布", "sendStatisticsError", errorObj, { publishId, statusText });
@@ -1792,6 +1866,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 失败统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 失败统计接口请求失败:`, e);
             return { success: false, error: e };
         }
