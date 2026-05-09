@@ -53,6 +53,7 @@
         window.__XL_introFilled = false; // 简介填写标志
         window.__XL_receivedMessageData = null; // 保存收到的父窗口消息
         window.__XL_currentWindowId = null; // 当前窗口 ID
+        window.__XL_WRITE_BTN_CLICKED__ = false; // 防止重复点击"写文章"
     }
 
     // 使用 window 上的变量（兼容多次注入）
@@ -150,6 +151,114 @@
         return key;
     };
 
+    const XINLANG_EDITOR_MASK_SELECTOR = '.n-spin-body.wb-editor-spin';
+    const XINLANG_TITLE_SELECTOR = 'input[placeholder*="标题"], textarea[placeholder*="标题"]';
+    const XINLANG_EDITOR_SELECTOR = '.wb-editor, [contenteditable="true"]';
+    const XINLANG_TOOLBAR_SELECTOR = '[class*="toolbar"], [class*="editor-tool"]';
+
+    function isVisibleElement(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        const opacity = style ? Number(style.opacity) : 1;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || opacity === 0)) {
+            return false;
+        }
+        return element.offsetParent !== null || style?.position === 'fixed';
+    }
+
+    function findXinlangWriteButton() {
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        return allButtons.find((btn) => {
+            const text = (btn.textContent || '').replace(/\s+/g, '');
+            return text.includes('写文章') && !btn.disabled && isVisibleElement(btn);
+        }) || null;
+    }
+
+    function getXinlangEditorState() {
+        const titleInput = document.querySelector(XINLANG_TITLE_SELECTOR);
+        const editor = document.querySelector(XINLANG_EDITOR_SELECTOR);
+        const toolbar = document.querySelector(XINLANG_TOOLBAR_SELECTOR);
+        const hasEditPageBtn = Array.from(document.querySelectorAll('button')).some((btn) => {
+            const text = (btn.textContent || '').trim();
+            return text === '保存草稿' || text === '预览' || text === '下一步';
+        });
+        const mask = Array.from(document.querySelectorAll(XINLANG_EDITOR_MASK_SELECTOR))
+            .find((element) => isVisibleElement(element)) || null;
+
+        return {
+            titleInput,
+            editor,
+            toolbar,
+            hasEditPageBtn,
+            mask,
+            hasEditableElements: !!(titleInput || editor || toolbar || hasEditPageBtn)
+        };
+    }
+
+    async function ensureXinlangEditorReady(options = {}) {
+        const {
+            context = '编辑器准备阶段',
+            timeout = 30000,
+            clickWriteButtonWhenNeeded = false,
+            respectWriteClickGuard = false,
+            markWriteButtonClicked = false,
+            pollInterval = 500
+        } = options;
+
+        const startTime = Date.now();
+        let hasClickedWriteButton = false;
+        let lastStateSummary = '';
+
+        while (Date.now() - startTime < timeout) {
+            const state = getXinlangEditorState();
+            const hasMask = !!state.mask;
+            const stateSummary = `标题=${!!state.titleInput}, 编辑器=${!!state.editor}, 工具栏=${!!state.toolbar}, 编辑按钮=${state.hasEditPageBtn}, 遮罩=${hasMask}`;
+
+            if (stateSummary !== lastStateSummary) {
+                console.log(`[新浪发布] 🔍 ${context}状态: ${stateSummary}`);
+                lastStateSummary = stateSummary;
+            }
+
+            if (state.hasEditableElements && !hasMask) {
+                console.log(`[新浪发布] ✅ ${context}编辑器已就绪`);
+                return state;
+            }
+
+            const shouldClickWriteButton = clickWriteButtonWhenNeeded
+                && !hasClickedWriteButton
+                && (hasMask || !state.hasEditableElements)
+                && (!respectWriteClickGuard || !window.__XL_WRITE_BTN_CLICKED__);
+
+            if (shouldClickWriteButton) {
+                const writeBtn = findXinlangWriteButton();
+                if (writeBtn) {
+                    console.log(`[新浪发布] 🖱️ ${context}检测到${hasMask ? '编辑器遮罩' : '预览态'}，点击"写文章"按钮`);
+                    writeBtn.click();
+                    hasClickedWriteButton = true;
+                    if (markWriteButtonClicked) {
+                        window.__XL_WRITE_BTN_CLICKED__ = true;
+                    }
+                    await delay(800);
+                    continue;
+                }
+
+                console.warn(`[新浪发布] ⚠️ ${context}需要点击"写文章"，但未找到可用按钮`);
+            }
+
+            await delay(pollInterval);
+        }
+
+        const finalState = getXinlangEditorState();
+        throw new Error(
+            `[新浪发布] ${context}等待编辑器就绪超时: `
+            + `标题=${!!finalState.titleInput}, `
+            + `编辑器=${!!finalState.editor}, `
+            + `工具栏=${!!finalState.toolbar}, `
+            + `编辑按钮=${finalState.hasEditPageBtn}, `
+            + `遮罩=${!!finalState.mask}`
+        );
+    }
+
     console.log("═══════════════════════════════════════");
     console.log("✅ 新浪发布脚本已注入");
     console.log("📍 当前 URL:", window.location.href);
@@ -237,29 +346,17 @@
                     } catch (e) {
                     }
 
-                    // 🔴 再次检测页面状态，根据编辑元素判断是否需要点击"写文章"
-                    await delay(1000);
-                    const titleInput = document.querySelector('input[placeholder*="标题"], textarea[placeholder*="标题"]');
-                    const editor = document.querySelector('.wb-editor, [contenteditable="true"]');
-                    const toolbar = document.querySelector('[class*="toolbar"], [class*="editor-tool"]');
-                    const hasEditableElements = titleInput || editor || toolbar;
-
-                    console.log("[新浪发布] 🔍 验证页返回后检测页面状态: 编辑元素=", !!hasEditableElements);
-
-                    if (!hasEditableElements) {
-                        // 没有编辑元素，说明需要点击"写文章"
-                        console.log("[新浪发布] 📝 页面处于预览状态，尝试点击写文章按钮...");
-
-                        const allButtons = document.querySelectorAll('button');
-                        for (const btn of allButtons) {
-                            const text = btn.textContent.trim();
-                            if (text.includes('写文章')) {
-                                console.log("[新浪发布] ✅ 找到写文章按钮，准备点击...");
-                                btn.click();
-                                await delay(2000);
-                                break;
-                            }
-                        }
+                    try {
+                        await delay(1000);
+                        await ensureXinlangEditorReady({
+                            context: '验证页返回后',
+                            timeout: 30000,
+                            clickWriteButtonWhenNeeded: true,
+                            respectWriteClickGuard: false,
+                            markWriteButtonClicked: true
+                        });
+                    } catch (readyError) {
+                        console.warn("[新浪发布] ⚠️ 验证页返回后等待编辑器就绪失败:", readyError.message);
                     }
 
                     // 继续执行填充数据
@@ -440,68 +537,23 @@
     // ===========================
     const currentHash = window.location.hash;
     if (currentHash.match(/#\/draft/)) {
-        // 🔑 检查是否已经点击过（防止重复点击导致死循环）
-        if (window.__XL_WRITE_BTN_CLICKED__) {
-            console.log("[新浪发布] ⏭️ 已经点击过写文章按钮，跳过");
-        } else {
-            // 等待页面完全加载
-            await new Promise(r => setTimeout(r, 2000));
+        await delay(2000);
 
-            // 检查是否有编辑器相关元素（多种检测方式）
-            const titleInput = document.querySelector('input[placeholder*="标题"], textarea[placeholder*="标题"]');
-            const editor = document.querySelector('.wb-editor, [contenteditable="true"]');
-            // 编辑器工具栏
-            const toolbar = document.querySelector('[class*="toolbar"], [class*="editor-tool"]');
-            // 编辑页面特有的按钮：保存草稿、预览、下一步
-            const editPageBtns = document.querySelectorAll('button');
-            let hasEditPageBtn = false;
-            for (const btn of editPageBtns) {
-                const text = btn.textContent.trim();
-                if (text === '保存草稿' || text === '预览' || text === '下一步') {
-                    hasEditPageBtn = true;
-                    break;
-                }
-            }
-
-            const hasEditableElements = titleInput || editor || toolbar || hasEditPageBtn;
-
-            console.log("[新浪发布] 🔍 检测页面状态: 标题输入框=", !!titleInput, ", 编辑器=", !!editor, ", 工具栏=", !!toolbar, ", 编辑按钮=", hasEditPageBtn);
-
-            if (!hasEditableElements) {
-                // 没有输入元素，说明是草稿预览页，需要点击"写文章"
-                console.log("[新浪发布] 📝 检测到草稿预览页（无输入元素），尝试点击写文章按钮...");
-
-                // 查找"写文章"按钮
-                let writeBtn = null;
-                const allButtons = document.querySelectorAll('button');
-                console.log("[新浪发布] 🔍 找到", allButtons.length, "个 button 元素");
-
-                for (const btn of allButtons) {
-                    const text = btn.textContent.trim();
-                    if (text.includes('写文章')) {
-                        writeBtn = btn;
-                        console.log("[新浪发布] ✅ 匹配到写文章按钮:", text);
-                        break;
-                    }
-                }
-
-                if (writeBtn) {
-                    // 🔑 标记已点击，防止重复
-                    window.__XL_WRITE_BTN_CLICKED__ = true;
-
-                    console.log("[新浪发布] ✅ 找到写文章按钮，准备点击...");
-                    writeBtn.click();
-                    console.log("[新浪发布] ✅ 已点击写文章按钮");
-
-                    // 等待跳转到新文章页面
-                    await new Promise(r => setTimeout(r, 2000));
-                    console.log("[新浪发布] ✅ 点击后当前 URL:", window.location.href);
-                } else {
-                    console.warn("[新浪发布] ⚠️ 未找到写文章按钮");
-                }
+        try {
+            const draftState = getXinlangEditorState();
+            if (draftState.mask || !draftState.hasEditableElements) {
+                await ensureXinlangEditorReady({
+                    context: '草稿页初始化',
+                    timeout: 20000,
+                    clickWriteButtonWhenNeeded: true,
+                    respectWriteClickGuard: true,
+                    markWriteButtonClicked: true
+                });
             } else {
                 console.log("[新浪发布] ✅ 已在编辑页面（有输入元素），无需点击写文章按钮");
             }
+        } catch (e) {
+            console.warn("[新浪发布] ⚠️ 草稿页初始化等待编辑器就绪失败:", e.message);
         }
     }
 
@@ -1106,9 +1158,13 @@
             }
             console.log("[新浪发布] ✅ URL 已稳定:", window.location.href);
 
-            // 🔴 注意：不在这里点击"写文章"按钮
-            // 点击逻辑已在脚本初始化时执行（287-352行）
-            // 避免重复点击导致创建多个空草稿
+            await ensureXinlangEditorReady({
+                context: 'fillFormData 开始前',
+                timeout: 30000,
+                clickWriteButtonWhenNeeded: true,
+                respectWriteClickGuard: true,
+                markWriteButtonClicked: true
+            });
 
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
