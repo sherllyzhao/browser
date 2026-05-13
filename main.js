@@ -4003,10 +4003,14 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
-        (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页(in-page)');
+    // 检测自己平台登录页（含 dev/prod 远程域名 + 本地 localhost），尝试恢复登录或跳转到本地登录页
+    const isOwnLoginInPage =
+        (url.includes('china9.cn') ||
+         url.includes('localhost:5173') ||
+         url.includes('localhost:8080')) &&
+        url.includes('#/login');
+    if (isOwnLoginInPage) {
+      console.log('[Navigation] 🔄 检测到自己平台登录页(in-page)');
       if (!isNavigatingToLogin) {
         const restored = await tryRestoreLoginWithToken(lastValidUrl);
         if (!restored) {
