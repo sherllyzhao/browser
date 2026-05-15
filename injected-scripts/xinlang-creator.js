@@ -13,6 +13,46 @@
     'use strict';
 
     // ===========================
+    // 未认证账号拦截：微信扫码登录后新浪会跳到 /#/type 选择创作者类型
+    // 该账号尚未在新浪侧完成认证，直接提示用户并关闭窗口
+    // 放在最前面（独立于防重复注入），并监听 hashchange 兼容 SPA 路由跳转
+    // ===========================
+    function isXinlangUnauthPage() {
+        return window.location.hash === '#/type'
+            || window.location.href.includes('mp.sina.com.cn/#/type');
+    }
+
+    async function handleXinlangUnauthPage() {
+        if (window.__XINLANG_UNAUTH_HANDLED__) return;
+        window.__XINLANG_UNAUTH_HANDLED__ = true;
+        console.warn('[新浪授权] ⚠️ 检测到未认证账号页面 (/#/type)，提示用户并关闭窗口');
+        try {
+            alert('该账号尚未完成新浪认证，请先在新浪官方完成认证后再来授权');
+        } catch (e) {
+            console.error('[新浪授权] ❌ alert 调用失败:', e);
+        }
+        try {
+            await window.browserAPI.closeCurrentWindow();
+        } catch (e) {
+            console.error('[新浪授权] ❌ 关闭窗口失败:', e);
+        }
+    }
+
+    if (!window.__XINLANG_UNAUTH_LISTENER__) {
+        window.__XINLANG_UNAUTH_LISTENER__ = true;
+        window.addEventListener('hashchange', () => {
+            if (isXinlangUnauthPage()) {
+                handleXinlangUnauthPage();
+            }
+        });
+    }
+
+    if (isXinlangUnauthPage()) {
+        await handleXinlangUnauthPage();
+        return;
+    }
+
+    // ===========================
     // 防止脚本重复注入
     // ===========================
     if (window.__XINLANG_CREATOR_LOADED__) {
