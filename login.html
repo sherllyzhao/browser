@@ -430,17 +430,17 @@
           console.error('[Login] 加载域名配置失败:', err);
         }
       }
-                                    // fallback 默认配置
+                                                // fallback 默认配置
       domainConfig = {
-        isProduction: true,
-        aigcUrl: 'https://www.china9.cn/aigc_browser/',
-        geoUrl: 'https://www.china9.cn/jzt_all/#/geo/dashboard',
-        cookieUrl: 'https://www.china9.cn',
+        isProduction: false,
+        aigcUrl: 'http://localhost:5173/',
+        geoUrl: 'http://localhost:8080/geo/dashboard',
+        cookieUrl: 'https://dev.china9.cn',
         cookieDomain: '.china9.cn',
         domains: {
-          aigcPage: 'https://www.china9.cn',
-          geoPage: 'https://www.china9.cn',
-          apiDomain: 'https://api.china9.cn'
+          aigcPage: 'https://dev.china9.cn',
+          geoPage: 'https://jzt_dev_1.china9.cn',
+          apiDomain: 'https://apidev.china9.cn'
         }
       };
       return domainConfig;

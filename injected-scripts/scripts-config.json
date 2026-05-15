@@ -58,7 +58,7 @@
     "https://mp.toutiao.com/profile_v4/index*": ["common.js", "toutiao-creator.js"],
     "https://mp.toutiao.com/profile_v4/graphic/publish*": ["common.js", "toutiao-publish.js"],
     "https://mp.toutiao.com/profile_v4/graphic/manage*": ["common.js", "publish-success.js"],
-    "https://www.toutiao.com/?*": ["common.js", "toutiao-redirect.js"]
+    "https://www.toutiao.com/?*": ["common.js", "toutiao-redirect.js"],
   },
   "dependencies": {
     "common.js": "公共工具库，包含消息发送、DOM 操作等通用函数"

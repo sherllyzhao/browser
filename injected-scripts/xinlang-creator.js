@@ -215,6 +215,15 @@
 
             const user = result.data?.userInfo;
             console.log("🚀 ~ processAuthorization ~ user: ", user);
+            if(!user || !user.uid) {
+                alert('用户信息中缺少 uid 字段，无法继续授权，请检查账号是否正常');
+
+                // 统计接口成功后关闭弹窗
+                setTimeout(() => {
+                    window.browserAPI.closeCurrentWindow();
+                }, 100);
+                return;
+            }
 
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
