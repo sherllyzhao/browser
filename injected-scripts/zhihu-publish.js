@@ -170,6 +170,57 @@
         return textWrapper.textContent || "";
     }
 
+    function looksLikeZhihuSerializedPageState(htmlContent) {
+        const plainText = extractPlainTextFromHtml(String(htmlContent || "")).trim();
+        if (plainText.length < 800) {
+            return false;
+        }
+
+        const startsLikeJson = /^[{\[]/.test(plainText) || /^"[^"]+"\s*:/.test(plainText);
+        if (!startsLikeJson) {
+            return false;
+        }
+
+        const markers = [
+            '"toning_pc_v2"',
+            '"appViewConfig"',
+            '"userAgent"',
+            '"layerId"',
+            '"currentTab"',
+            '"notificationsComments"',
+            '"trafficSource"',
+            '"zhuanlan.zhihu.com"',
+            '\\u002Fwrite',
+            '/write'
+        ];
+        const markerCount = markers.filter(marker => plainText.includes(marker)).length;
+        const punctuationCount = (plainText.match(/[{}":,]/g) || []).length;
+        const punctuationDensity = punctuationCount / plainText.length;
+
+        return markerCount >= 3 && punctuationDensity > 0.08;
+    }
+
+    async function dumpSuspiciousZhihuContent(htmlContent, reason) {
+        try {
+            if (!window.browserAPI?.writeDebugFile) {
+                return;
+            }
+            await window.browserAPI.writeDebugFile({
+                prefix: "zhihu-suspicious-content",
+                content: {
+                    reason,
+                    href: window.location.href,
+                    title: document.title,
+                    length: String(htmlContent || "").length,
+                    preview: String(htmlContent || "").slice(0, 2000),
+                    timestamp: new Date().toISOString()
+                }
+            });
+        } catch (error) {
+            console.warn("[知乎发布] ⚠️ 可疑正文调试文件写入失败:", error?.message || error);
+        }
+    }
+
     async function pasteHtmlIntoEditor(editorEle, htmlContent, plainText = "") {
         if (!editorEle || !htmlContent) {
             return;
@@ -859,6 +910,12 @@
                                 // "Cannot read properties of null (reading 'trim')"
                                 if (!htmlContent || !htmlContent.trim()) {
                                     console.log('[知乎发布] ℹ️ 无文字内容（content 为空），跳过内容填写');
+                                    return;
+                                }
+
+                                if (looksLikeZhihuSerializedPageState(htmlContent)) {
+                                    console.warn("[知乎发布] ⚠️ 正文疑似知乎页面状态 JSON，已跳过填充，避免把源码写入编辑器");
+                                    await dumpSuspiciousZhihuContent(htmlContent, "serialized-page-state");
                                     return;
                                 }
 

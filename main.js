@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net, webContents: electronWebContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -22,6 +22,7 @@ let heartbeatInterval = null;
 let autoSaveInterval = null;
 let destroyedWindowCleanupInterval = null;
 const windowContextMap = new Map();
+const sessionRequestGuardConfig = new WeakMap();
 let shutdownStarted = false;
 
 // 跨平台图标路径
@@ -207,6 +208,100 @@ function shouldApplyContentTypePatch(details = {}) {
   return { shouldPatch: true, mimeType };
 }
 
+function isMainFrameRequest(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  return resourceType === 'mainframe' || resourceType === 'main_frame' || resourceType === 'main-frame';
+}
+
+function getWebContentsByRequest(details = {}) {
+  const id = Number(details.webContentsId || 0);
+  if (!id || !electronWebContents || typeof electronWebContents.fromId !== 'function') {
+    return null;
+  }
+
+  try {
+    return electronWebContents.fromId(id);
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveMainFrameResourceRedirect(details = {}) {
+  const requestUrl = details.url || '';
+  if (!isMainFrameRequest(details) || !isStaticResourceUrl(requestUrl)) {
+    return '';
+  }
+
+  const requestWebContents = getWebContentsByRequest(details);
+  if (browserView?.webContents && requestWebContents && requestWebContents.id === browserView.webContents.id) {
+    return resolveBrowserViewRecoveryTarget(browserView.webContents.getURL());
+  }
+
+  const ownerWindow = requestWebContents ? BrowserWindow.fromWebContents(requestWebContents) : null;
+  const context = ownerWindow ? windowContextMap.get(ownerWindow.id) : null;
+  if (context?.expectedPageUrl && !isStaticResourceUrl(context.expectedPageUrl)) {
+    return context.expectedPageUrl;
+  }
+
+  if (startupLoadGuard.active && startupLoadGuard.targetUrl && !isStaticResourceUrl(startupLoadGuard.targetUrl)) {
+    return startupLoadGuard.targetUrl;
+  }
+
+  return '';
+}
+
+function installSessionRequestGuard(targetSession, label, options = {}) {
+  if (!targetSession?.webRequest) return;
+
+  const current = sessionRequestGuardConfig.get(targetSession) || {
+    label,
+    blockBitbrowser: true,
+    blockMainFrameResources: true,
+    upgradeMp163: false
+  };
+  const merged = {
+    ...current,
+    ...options,
+    label
+  };
+  sessionRequestGuardConfig.set(targetSession, merged);
+
+  targetSession.webRequest.onBeforeRequest((details, callback) => {
+    const configForSession = sessionRequestGuardConfig.get(targetSession) || merged;
+    const requestUrl = details.url || '';
+
+    if (configForSession.blockBitbrowser && requestUrl.toLowerCase().startsWith('bitbrowser:')) {
+      console.log(`[${configForSession.label} WebRequest] ❌ Blocked bitbrowser protocol:`, requestUrl);
+      callback({ cancel: true });
+      return;
+    }
+
+    if (configForSession.blockMainFrameResources) {
+      const redirectUrl = resolveMainFrameResourceRedirect(details);
+      if (redirectUrl && redirectUrl !== requestUrl) {
+        console.warn(`[${configForSession.label} WebRequest] ⚠️ 主框架静态资源导航已改回页面: ${requestUrl} → ${redirectUrl}`);
+        callback({ redirectURL: redirectUrl });
+        return;
+      }
+    }
+
+    if (configForSession.upgradeMp163 && requestUrl.startsWith('http://mp.163.com/')) {
+      const httpsUrl = requestUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+      console.log(`[${configForSession.label} WebRequest] 🔒 HTTP→HTTPS: ${requestUrl}`);
+      callback({ redirectURL: httpsUrl });
+      return;
+    }
+
+    callback({});
+  });
+
+  console.log(`[Session] ✅ ${label} 请求守卫已安装`, {
+    blockBitbrowser: merged.blockBitbrowser,
+    blockMainFrameResources: merged.blockMainFrameResources,
+    upgradeMp163: merged.upgradeMp163
+  });
+}
+
 function normalizeContextPurpose(options = {}) {
   if (options.windowContext && typeof options.windowContext.purpose === 'string') {
     return options.windowContext.purpose;
@@ -317,6 +412,85 @@ async function captureWindowDebugDump(targetWindow, reason, currentURL) {
   });
 }
 
+async function inspectSourceTextDocument(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { isSourceTextDocument: false, reason: 'webcontents-destroyed' };
+  }
+
+  try {
+    return await webContents.executeJavaScript(`
+      (() => {
+        if (!document.body) {
+          return { isSourceTextDocument: false, reason: 'no-body' };
+        }
+
+        const hasEditor = !!document.querySelector(
+          '[contenteditable="true"], .public-DraftEditor-content, .ProseMirror, .ql-editor, .tox, .CodeMirror, .monaco-editor'
+        );
+        if (hasEditor) {
+          return { isSourceTextDocument: false, reason: 'editor-present' };
+        }
+
+        const body = document.body;
+        const bodyText = (body.innerText || '').trim().slice(0, 5000);
+        const visibleElementCount = Array.from(document.querySelectorAll('body *'))
+          .slice(0, 120)
+          .filter((el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && Number(style.opacity || '1') !== 0
+              && rect.width >= 12
+              && rect.height >= 12;
+          })
+          .length;
+
+        const cssPatterns = [
+          '@charset',
+          '@font-face',
+          ':hover{',
+          ':focus{',
+          '@media ',
+          '@keyframes ',
+          'text-decoration:none',
+          'background-color:transparent',
+          'display:block',
+          'position:absolute'
+        ];
+        const jsonMarkers = [
+          '"userAgent"',
+          '"appViewConfig"',
+          '"layerId"',
+          '"currentTab"',
+          '"notifications"',
+          '"zhuanlan.zhihu.com"',
+          '"ctx"',
+          '"register"'
+        ];
+        const cssScore = cssPatterns.filter((pattern) => bodyText.includes(pattern)).length;
+        const jsonScore = jsonMarkers.filter((pattern) => bodyText.includes(pattern)).length;
+        const startsLikeJson = /^[{\\[]/.test(bodyText) || /^"[^"]+"\\s*:/.test(bodyText);
+        const compactTextDocument = body.children.length <= 2 && visibleElementCount <= 3;
+        const isCssSource = compactTextDocument && cssScore >= 3;
+        const isJsonSource = compactTextDocument && bodyText.length > 800 && startsLikeJson && jsonScore >= 3;
+
+        return {
+          isSourceTextDocument: isCssSource || isJsonSource,
+          reason: isCssSource ? 'css-source-text' : (isJsonSource ? 'json-source-text' : 'normal'),
+          cssScore,
+          jsonScore,
+          visibleElementCount,
+          childCount: body.children.length,
+          href: location.href
+        };
+      })()
+    `, true);
+  } catch (error) {
+    return { isSourceTextDocument: false, reason: error.message || String(error) };
+  }
+}
+
 async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unknown') {
   if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
     return { redirected: false };
@@ -326,19 +500,27 @@ async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unk
   if (!context || !context.guardResourceUrls || context.bootstrapInProgress || !currentURL || currentURL === 'about:blank') {
     return { redirected: false };
   }
-  if (matchesExpectedPage(currentURL, context.expectedPageUrl)) {
+  const matchedExpectedPage = matchesExpectedPage(currentURL, context.expectedPageUrl);
+  const sourceTextState = await inspectSourceTextDocument(targetWindow.webContents) || {};
+  const isSourceTextDocument = !!sourceTextState.isSourceTextDocument;
+  const isResourcePage = isStaticResourceUrl(currentURL) || isSourceTextDocument;
+  if (matchedExpectedPage && !isSourceTextDocument) {
     return { redirected: false };
   }
-  if (!isStaticResourceUrl(currentURL)) {
+  if (!isResourcePage) {
     return { redirected: false };
   }
   if (context.guardRedirectInFlight) {
     return { redirected: true, deduped: true };
   }
+  if ((context.guardRedirectCount || 0) >= 3) {
+    console.warn(`[Publish Window Guard] ⚠️ 资源页恢复已达到上限，停止自动回跳: windowId=${targetWindow.id}, url=${currentURL}`);
+    return { redirected: false, limitReached: true };
+  }
 
   context.guardRedirectInFlight = true;
   context.guardRedirectCount = (context.guardRedirectCount || 0) + 1;
-  console.warn(`[Publish Window Guard] ⚠️ 检测到资源页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}`);
+  console.warn(`[Publish Window Guard] ⚠️ 检测到资源/源码页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}, state=${sourceTextState.reason}`);
   const dumpPath = await captureWindowDebugDump(targetWindow, reason, currentURL);
   if (dumpPath) {
     console.warn(`[Publish Window Guard] 调试快照已写入: ${dumpPath}`);
@@ -471,6 +653,11 @@ let refreshLoadGuard = {
   active: false,
   startedAt: 0,
   timer: null
+};
+let browserViewResourceRecovery = {
+  inFlight: false,
+  lastUrl: '',
+  startedAt: 0
 };
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
@@ -812,6 +999,47 @@ async function inspectBrowserViewReadiness() {
           .slice(0, 80)
           .filter((el) => hasVisibleElement(el, 12))
           .length;
+        const bodyTextPreview = (body.innerText || '').trim().slice(0, 5000);
+        const cssTextPatterns = [
+          '@charset',
+          '@font-face',
+          ':hover{',
+          ':focus{',
+          '@media ',
+          '@keyframes ',
+          'text-decoration:none',
+          'background-color:transparent',
+          'display:block',
+          'position:absolute'
+        ];
+        const cssTextMatchCount = cssTextPatterns.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const jsonTextMarkers = [
+          '"userAgent"',
+          '"appViewConfig"',
+          '"layerId"',
+          '"currentTab"',
+          '"notifications"',
+          '"zhuanlan.zhihu.com"',
+          '"ctx"',
+          '"register"'
+        ];
+        const jsonTextMarkerCount = jsonTextMarkers.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const startsLikeJson = /^[{\\[]/.test(bodyTextPreview) || /^"[^"]+"\\s*:/.test(bodyTextPreview);
+        const looksLikeCssSource = cssTextMatchCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        const looksLikeJsonSource = bodyTextPreview.length > 800 && startsLikeJson && jsonTextMarkerCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        if (looksLikeCssSource || looksLikeJsonSource) {
+          return {
+            ready: false,
+            reason: looksLikeCssSource ? 'css-source-text' : 'json-source-text',
+            htmlLength,
+            textLength,
+            childCount,
+            visibleSampleElements,
+            cssTextMatchCount,
+            jsonTextMarkerCount,
+            href: location.href
+          };
+        }
         const bodyHasViewportSize = bodyRect.width >= 200 && bodyRect.height >= 120;
         const likelyRenderedShell = htmlLength > 1000 && childCount >= 3 && bodyHasViewportSize;
         const ready = (
@@ -994,6 +1222,70 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
 
 function getDefaultProjectHomeUrl() {
   return globalStorage.last_project === 'geo' ? config.getGeoUrl() : config.getAigcUrl();
+}
+
+function shouldRecoverBrowserViewResourceUrl(rawUrl = '') {
+  if (!rawUrl || rawUrl === 'about:blank') return false;
+  if (!isStaticResourceUrl(rawUrl)) return false;
+  return isFirstPartyUrl(rawUrl) || startupLoadGuard.active;
+}
+
+function resolveBrowserViewRecoveryTarget(preferredUrl = '') {
+  const candidate = String(preferredUrl || '').trim();
+  if (candidate && !isStaticResourceUrl(candidate) && (candidate.startsWith('http://') || candidate.startsWith('https://') || candidate.startsWith('file://'))) {
+    return candidate;
+  }
+
+  if (startupLoadGuard.active && startupLoadGuard.targetUrl && !isStaticResourceUrl(startupLoadGuard.targetUrl)) {
+    return startupLoadGuard.targetUrl;
+  }
+
+  return getDefaultProjectHomeUrl();
+}
+
+async function recoverBrowserViewFromResourcePage(currentUrl, reason = 'unknown', preferredUrl = '') {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+    return false;
+  }
+  if (!shouldRecoverBrowserViewResourceUrl(currentUrl)) {
+    return false;
+  }
+  if (browserViewResourceRecovery.inFlight) {
+    console.warn('[BrowserView Resource Guard] 已在恢复中，跳过重复触发:', currentUrl);
+    return true;
+  }
+
+  const targetUrl = resolveBrowserViewRecoveryTarget(preferredUrl);
+  if (!targetUrl || targetUrl === currentUrl) {
+    return false;
+  }
+
+  browserViewResourceRecovery = {
+    inFlight: true,
+    lastUrl: currentUrl,
+    startedAt: Date.now()
+  };
+
+  console.warn(`[BrowserView Resource Guard] 检测到主窗口落到资源页，准备恢复 (${reason}): ${currentUrl} -> ${targetUrl}`);
+  if (!startupLoadGuard.active) {
+    beginRefreshLoadGuard('页面异常，正在恢复...');
+  }
+
+  try {
+    const loadPromise = targetUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(targetUrl))
+      : browserView.webContents.loadURL(targetUrl);
+    await loadPromise;
+    console.log('[BrowserView Resource Guard] ✅ 已恢复到目标页面:', targetUrl);
+  } catch (error) {
+    console.error('[BrowserView Resource Guard] ❌ 恢复失败:', error.message || error);
+  } finally {
+    setTimeout(() => {
+      browserViewResourceRecovery.inFlight = false;
+    }, 1500);
+  }
+
+  return true;
 }
 
 function resolvePostRestoreUrl(preferredUrl) {
@@ -3065,19 +3357,11 @@ function createWindow() {
     console.log('[Session] ℹ️ 已跳过启动期缓存清理，首屏恢复改由启动守卫负责');
   });
 
-  // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
-  // 使用 <all_urls> 拦截所有请求
-  persistentSession.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
-    // 检测非标准协议
-    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-      console.log('[WebRequest] ❌ Blocked bitbrowser protocol:', url);
-      callback({ cancel: true });
-      return;
-    }
-    callback({});
+  // 在 session 级别拦截自定义协议和主框架静态资源误导航
+  installSessionRequestGuard(persistentSession, '持久化 session', {
+    blockBitbrowser: true,
+    blockMainFrameResources: true
   });
-  console.log('[Session] ✅ 已添加 webRequest 协议拦截器');
 
   // 🔴 修复外部页面 CSS/JS 乱码
   addContentTypeFix(persistentSession, '持久化 session');
@@ -3726,6 +4010,14 @@ function createWindow() {
       });
       return;
     }
+    if (shouldRecoverBrowserViewResourceUrl(url)) {
+      console.warn('[Navigation] ⚠️ 阻止主窗口跳转到静态资源页:', url);
+      event.preventDefault();
+      recoverBrowserViewFromResourcePage(url, 'will-navigate', lastValidUrl).catch(err => {
+        console.error('[Navigation] ❌ 静态资源页恢复失败:', err);
+      });
+      return;
+    }
     // 记录用户点击的目标 URL（即使会被重定向）
     if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
@@ -3802,6 +4094,12 @@ function createWindow() {
   // 监听页面导航完成
   browserView.webContents.on('did-navigate', async (event, url) => {
     console.log(`[Navigation] 导航完成 → ${url}`);
+    if (shouldRecoverBrowserViewResourceUrl(url)) {
+      const recovered = await recoverBrowserViewFromResourcePage(url, 'did-navigate', lastValidUrl);
+      if (recovered) {
+        return;
+      }
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     // 根据 URL 判断是否需要隐藏公共头部
@@ -6604,17 +6902,11 @@ async function openManagedChildWindow(url, options = {}) {
       windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
-      // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
-      windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const reqUrl = details.url;
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
-        callback({});
+      // 为临时 session 添加统一请求守卫（阻止 bitbrowser:// 和主框架静态资源误导航）
+      installSessionRequestGuard(windowSession, '临时 session', {
+        blockBitbrowser: true,
+        blockMainFrameResources: true
       });
-      console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
@@ -6637,12 +6929,27 @@ async function openManagedChildWindow(url, options = {}) {
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
+      show: false,
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
     const windowContext = buildWindowContext(url, options);
     windowContextMap.set(newWindow.id, windowContext);
     console.log('[Window Manager] 窗口上下文:', windowContext);
+    const showManagedWindow = (reason) => {
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log(`[Window Manager] bootstrap 进行中，暂不显示窗口 (${reason})`);
+        return;
+      }
+      if (!newWindow.isDestroyed() && !newWindow.isVisible()) {
+        newWindow.show();
+        console.log(`[Window Manager] 已显示窗口 (${reason})`);
+      }
+    };
+    const showFallbackTimer = setTimeout(() => showManagedWindow('fallback-timeout'), 12000);
+    newWindow.once('ready-to-show', () => showManagedWindow('ready-to-show'));
+    newWindow.once('closed', () => clearTimeout(showFallbackTimer));
     const publishDataKey = `publish_data_window_${newWindow.id}`;
     if (options.publishData && typeof options.publishData === 'object') {
       if (globalStorage[publishDataKey]) {
@@ -6862,22 +7169,10 @@ async function openManagedChildWindow(url, options = {}) {
     // 页面在 HTTPS 上运行，但 163.com 自己的 JS 发 HTTP API 请求（如 navinfo.do）被 Mixed Content 拦截
     // 仅对非共享 session 设置（避免影响主窗口 BrowserView 的其他页面）
     if (sessionType !== 'persistent') {
-      windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const reqUrl = details.url;
-        // 阻止 bitbrowser:// 协议
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Window WebRequest] ❌ Blocked bitbrowser:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
-        // HTTP→HTTPS 升级：163.com 的所有请求（主页面 + API 子请求）
-        if (reqUrl && reqUrl.startsWith('http://mp.163.com/')) {
-          const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
-          console.log(`[Window WebRequest] 🔒 HTTP→HTTPS: ${reqUrl}`);
-          callback({ redirectURL: httpsUrl });
-          return;
-        }
-        callback({});
+      installSessionRequestGuard(windowSession, '窗口 session', {
+        blockBitbrowser: true,
+        blockMainFrameResources: true,
+        upgradeMp163: true
       });
     }
 
@@ -7034,13 +7329,9 @@ async function openManagedChildWindow(url, options = {}) {
 
       try {
         const primaryBootstrap = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
-        const originInfo = getUrlInfo(url).origin || '';
-        // 多级 fallback 候选：主 bootstrap → favicon.ico → robots.txt
-        const bootstrapCandidates = [primaryBootstrap];
-        if (originInfo) {
-          bootstrapCandidates.push(`${originInfo}/favicon.ico`);
-          bootstrapCandidates.push(`${originInfo}/robots.txt`);
-        }
+        // 只加载文档型 bootstrap。静态资源（favicon/robots/json/css）一旦作为主文档加载，
+        // 就可能把源码文本直接展示给用户。
+        const bootstrapCandidates = [primaryBootstrap].filter(candidate => candidate && !isStaticResourceUrl(candidate));
         console.log(`[Window Manager][${__wmTs()}] 🔄 bootstrap 候选列表:`, bootstrapCandidates);
 
         let bootstrapLoaded = false;
@@ -7102,7 +7393,18 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 加载目标 URL
     console.log(`[Window Manager][${__wmTs()}] 🚀 loadURL 目标页: ${url}`);
-    newWindow.loadURL(url);
+    const targetLoadPromise = newWindow.loadURL(url);
+    targetLoadPromise
+      .then(() => {
+        console.log(`[Window Manager][${__wmTs()}] ✅ 目标页加载完成，windowId=${newWindow.id}`);
+      })
+      .catch(err => {
+        console.error(`[Window Manager][${__wmTs()}] ❌ 目标页加载失败: ${err.message || err}`);
+      })
+      .finally(() => {
+        clearTimeout(showFallbackTimer);
+        showManagedWindow('target-load-finished');
+      });
     console.log(`[Window Manager][${__wmTs()}] ✅ loadURL 已发出，windowId=${newWindow.id}`);
     return { success: true, windowId: newWindow.id };
   } catch (err) {
@@ -8229,15 +8531,11 @@ function getAccountSession(platform, accountId) {
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
   accountSession.setUserAgent(customUA);
 
-  // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
-  accountSession.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
-    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-      console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
-      callback({ cancel: true });
-      return;
-    }
-    callback({});
+  // 添加统一请求守卫（阻止 bitbrowser://、主框架静态资源误导航，并兼容网易号 HTTP）
+  installSessionRequestGuard(accountSession, `账号 session ${partitionName}`, {
+    blockBitbrowser: true,
+    blockMainFrameResources: true,
+    upgradeMp163: true
   });
 
   // 缓存 session
