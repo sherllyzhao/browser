@@ -322,8 +322,15 @@
         console.log("[新浪发布] 📋 sendTime:", sendTime);
 
         // 等待发布弹窗出现（最多等 60 秒，给用户更多时间）
+        // waitForElement 超时会 reject 抛错，这里捕获后降级走正常发布流程（main 继续往下走 528 行后的写文章/填表单/发布逻辑）
         console.log("[新浪发布] ⏳ 开始等待发布弹窗（最多60秒）...");
-        const existingDialog = await waitForElement('.n-dialog', 60000, 500);
+        let existingDialog = null;
+        try {
+            existingDialog = await waitForElement('.n-dialog', 60000, 500);
+        } catch (waitErr) {
+            console.warn("[新浪发布] ⚠️ 等待 .n-dialog 弹窗超时，将清除验证页数据并降级到正常发布流程:", waitErr.message);
+            existingDialog = null;
+        }
         if (existingDialog) {
             console.log("[新浪发布] ✅ 发布弹窗已出现，继续发布流程...");
 

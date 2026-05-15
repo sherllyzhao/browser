@@ -1586,9 +1586,219 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
+    function getFirstMeaningfulValue(...values) {
+        for (const value of values) {
+            if (value === undefined || value === null) {
+                continue;
+            }
+            if (typeof value === "string" && value.trim() === "") {
+                continue;
+            }
+            return value;
+        }
+        return null;
+    }
+
+    function pruneEmptyFields(payload = {}) {
+        return Object.fromEntries(
+            Object.entries(payload).filter(([_, value]) => {
+                if (value === undefined || value === null) {
+                    return false;
+                }
+                if (typeof value === "string" && value.trim() === "") {
+                    return false;
+                }
+                return true;
+            })
+        );
+    }
+
+    function normalizeStatisticsPlatformName(platform = "") {
+        if (typeof platform !== "string") {
+            return "";
+        }
+        return platform.replace(/发布$/u, "").trim();
+    }
+
+    window.getCurrentPublishDataForStatistics = async function (logPrefix = "[统计接口]") {
+        try {
+            if (window.browserAPI?.getWindowId && window.browserAPI?.getGlobalData) {
+                const windowId = await window.browserAPI.getWindowId();
+                if (windowId) {
+                    const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+                    if (publishData) {
+                        console.log(`${logPrefix} ✅ 从 publish_data_window_${windowId} 读取到发布数据`);
+                        return publishData;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`${logPrefix} ⚠️ 从窗口级发布数据读取失败:`, e);
+        }
+
+        if (window.__AUTH_DATA__?.message) {
+            console.log(`${logPrefix} ℹ️ 回退使用 window.__AUTH_DATA__.message`);
+            return window.__AUTH_DATA__.message;
+        }
+
+        console.log(`${logPrefix} ℹ️ 未找到可用的发布数据，统计字段将仅上报基础信息`);
+        return null;
+    };
+
+    window.extractStatisticsMeta = async function (platform = "", logPrefix = "[统计接口]") {
+        const publishData = await window.getCurrentPublishDataForStatistics(logPrefix);
+        const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
+        const element = rawData?.element || rawData || {};
+        const accountInfo = element?.account_info || element?.accountInfo || {};
+        const mediaInfo = accountInfo?.media || element?.media || {};
+        const mediaAuth = element?.media_auth || element?.mediaAuth || {};
+
+        const meta = pruneEmptyFields({
+            media_id: getFirstMeaningfulValue(
+                element?.media_id,
+                mediaInfo?.id,
+                accountInfo?.media_id,
+                mediaAuth?.media_id
+            ),
+            account_id: getFirstMeaningfulValue(
+                element?.account_id,
+                accountInfo?.id,
+                element?.media_auth_id,
+                mediaAuth?.id,
+                element?.platform_uid,
+                element?.platformUid,
+                element?.uid,
+                element?.open_id,
+                element?.openid,
+                accountInfo?.platform_uid,
+                accountInfo?.platformUid,
+                accountInfo?.uid,
+                accountInfo?.open_id,
+                accountInfo?.openid,
+                mediaAuth?.open_id,
+                mediaAuth?.uid,
+                mediaAuth?.origin_id
+            ),
+            nickname: getFirstMeaningfulValue(
+                element?.nickname,
+                element?.account_name,
+                accountInfo?.nickname,
+                accountInfo?.title,
+                mediaAuth?.nickname,
+                mediaAuth?.title
+            ),
+            avatar: getFirstMeaningfulValue(
+                element?.avatar,
+                accountInfo?.avatar,
+                mediaAuth?.avatar
+            ),
+            media_logo: getFirstMeaningfulValue(
+                element?.media_logo,
+                mediaInfo?.logo,
+                mediaInfo?.icon,
+                mediaInfo?.avatar,
+                element?.icon
+            ),
+            media_name: getFirstMeaningfulValue(
+                element?.media_name,
+                mediaInfo?.name,
+                mediaInfo?.title
+            ),
+        });
+
+        console.log(`${logPrefix} 📦 提取到统计附加字段:`, meta);
+        return meta;
+    };
+
+    window.buildStatisticsPayload = async function (publishId, platform = "", extraData = {}) {
+        const logPrefix = `[${platform || "发布"}][统计接口]`;
+        const meta = await window.extractStatisticsMeta(platform, logPrefix);
+        const payload = pruneEmptyFields({
+            id: publishId,
+            ...meta,
+            ...(extraData || {}),
+        });
+
+        console.log(`${logPrefix} 📤 最终上报 payload:`, payload);
+        return payload;
+    };
+
+    window.buildStatisticsRequestData = async function (publishId, platform = "", extraData = {}) {
+        const payload = await window.buildStatisticsPayload(publishId, platform, extraData);
+        return { data: JSON.stringify(payload) };
+    };
+
+    function getStatisticsReportCacheKey(windowId, resultType = "unknown") {
+        return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
+    }
+
+    window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
+        if (!publishId) {
+            return { acquired: true, key: null, windowId: null };
+        }
+
+        let windowId = null;
+        try {
+            if (window.browserAPI?.getWindowId) {
+                windowId = await window.browserAPI.getWindowId();
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 获取窗口 ID 失败，降级为默认去重 key:", e.message);
+        }
+
+        const key = getStatisticsReportCacheKey(windowId, resultType);
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (cachedRaw) {
+                const cached = JSON.parse(cachedRaw);
+                if (String(cached?.publishId || "") === String(publishId)) {
+                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报，跳过`, cached);
+                    return { acquired: false, key, windowId, cached };
+                }
+            }
+
+            sessionStorage.setItem(key, JSON.stringify({
+                publishId,
+                resultType,
+                platform: platform || "",
+                timestamp: Date.now(),
+            }));
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
+        }
+
+        return { acquired: true, key, windowId };
+    };
+
+    window.releaseStatisticsReportLock = function (key, publishId = "") {
+        if (!key) {
+            return;
+        }
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (!cachedRaw) {
+                return;
+            }
+
+            const cached = JSON.parse(cachedRaw);
+            if (!publishId || String(cached?.publishId || "") === String(publishId)) {
+                sessionStorage.removeItem(key);
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 清理统计去重锁失败:", e.message);
+        }
+    };
+
     // 发送统计接口（发布成功时调用）
     window.sendStatistics = async function (publishId, platform = "") {
-        const scanData = { data: JSON.stringify({ id: publishId }) };
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
+        const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
             const url = await getStatisticsUrl(false);
@@ -1601,6 +1811,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 成功统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 成功统计接口请求失败:`, e);
             return { success: false, error: e };
         }
@@ -1609,14 +1820,18 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // 发送错误统计接口（发布失败时调用）
     // 🔑 增强版：附带详细的错误上下文日志
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null) {
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
         // 使用 PublishLogger 记录错误
         if (window.PublishLogger && errorObj) {
             window.PublishLogger.error(platform || "发布", "sendStatisticsError", errorObj, { publishId, statusText });
         }
 
         // 构建错误数据（包含更多上下文信息）
-        const errorData = {
-            id: publishId,
+        const errorExtraData = {
             status_text: statusText,
             // 🔑 附加诊断信息
             context: {
@@ -1630,7 +1845,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         if (window.PublishLogger) {
             const recentLogs = window.PublishLogger.getRecentLogs(5);
             if (recentLogs.length > 0) {
-                errorData.context.recentActions = recentLogs.map(log => ({
+                errorExtraData.context.recentActions = recentLogs.map(log => ({
                     time: log.timestamp,
                     action: log.action,
                     message: log.message,
@@ -1638,7 +1853,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             }
         }
 
-        const scanData = { data: JSON.stringify(errorData) };
+        const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
         try {
             console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
             const url = await getStatisticsUrl(true);
@@ -1651,6 +1866,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 失败统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 失败统计接口请求失败:`, e);
             return { success: false, error: e };
         }
@@ -2328,7 +2544,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     //    新浪
         xinlang: {
             logPrefix: "[新浪发布]",
-            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content > div", recursiveSelector: ".n-alert" }],
+            // 🔴 修复：".n-alert-body__content > div" 查不到子 div（实际"参数错误"是直接文本节点）
+            // 改为直接读 .n-alert-body__content 的 textContent
+            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content", recursiveSelector: ".n-alert" }],
         }
     };
 
@@ -2569,6 +2787,8 @@ if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && 
 if (typeof deepShadowSearch === "undefined") window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
 if (typeof sendStatistics === "undefined") window.sendStatistics && (sendStatistics = window.sendStatistics);
 if (typeof sendStatisticsError === "undefined") window.sendStatisticsError && (sendStatisticsError = window.sendStatisticsError);
+if (typeof buildStatisticsPayload === "undefined") window.buildStatisticsPayload && (buildStatisticsPayload = window.buildStatisticsPayload);
+if (typeof buildStatisticsRequestData === "undefined") window.buildStatisticsRequestData && (buildStatisticsRequestData = window.buildStatisticsRequestData);
 if (typeof getApiDomain === "undefined") window.getApiDomain && (getApiDomain = window.getApiDomain);
 if (typeof getStatisticsUrl === "undefined") window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === "undefined") window.clickWithRetry && (clickWithRetry = window.clickWithRetry);

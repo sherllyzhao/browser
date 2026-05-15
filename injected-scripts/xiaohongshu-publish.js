@@ -1048,7 +1048,9 @@ if (location.search.includes("published=true")) {
                 if (!hasError && publishId) {
                     try {
                         const successUrl = await getStatisticsUrl();
-                        const scanData = { data: JSON.stringify({ id: publishId }) };
+                        const scanData = window.buildStatisticsRequestData
+                            ? await window.buildStatisticsRequestData(publishId, "小红书发布")
+                            : { data: JSON.stringify({ id: publishId }) };
                         console.log("[小红书发布] 📤 统计接口地址:", successUrl);
                         console.log("[小红书发布] 📤 请求参数:", JSON.stringify(scanData));
 
