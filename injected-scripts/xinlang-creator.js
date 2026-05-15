@@ -13,6 +13,46 @@
     'use strict';
 
     // ===========================
+    // 未认证账号拦截：微信扫码登录后新浪会跳到 /#/type 选择创作者类型
+    // 该账号尚未在新浪侧完成认证，直接提示用户并关闭窗口
+    // 放在最前面（独立于防重复注入），并监听 hashchange 兼容 SPA 路由跳转
+    // ===========================
+    function isXinlangUnauthPage() {
+        return window.location.hash === '#/type'
+            || window.location.href.includes('mp.sina.com.cn/#/type');
+    }
+
+    async function handleXinlangUnauthPage() {
+        if (window.__XINLANG_UNAUTH_HANDLED__) return;
+        window.__XINLANG_UNAUTH_HANDLED__ = true;
+        console.warn('[新浪授权] ⚠️ 检测到未认证账号页面 (/#/type)，提示用户并关闭窗口');
+        try {
+            alert('该账号尚未完成新浪认证，请先在新浪官方完成认证后再来授权');
+        } catch (e) {
+            console.error('[新浪授权] ❌ alert 调用失败:', e);
+        }
+        try {
+            await window.browserAPI.closeCurrentWindow();
+        } catch (e) {
+            console.error('[新浪授权] ❌ 关闭窗口失败:', e);
+        }
+    }
+
+    if (!window.__XINLANG_UNAUTH_LISTENER__) {
+        window.__XINLANG_UNAUTH_LISTENER__ = true;
+        window.addEventListener('hashchange', () => {
+            if (isXinlangUnauthPage()) {
+                handleXinlangUnauthPage();
+            }
+        });
+    }
+
+    if (isXinlangUnauthPage()) {
+        await handleXinlangUnauthPage();
+        return;
+    }
+
+    // ===========================
     // 防止脚本重复注入
     // ===========================
     if (window.__XINLANG_CREATOR_LOADED__) {
@@ -90,6 +130,96 @@
     // ===========================
     let isProcessing = false;
     let hasProcessed = false;
+    let hasHandledLoginGate = false;
+
+    function getXinlangLoginGateState() {
+        const wrapper = document.querySelector('.notic_wapper');
+        if (!wrapper) {
+            return { matched: false, wrapper: null, loginButton: null, text: '' };
+        }
+
+        const loginButton = wrapper.querySelector('.btn_buttom');
+        const text = (wrapper.innerText || wrapper.textContent || '').replace(/\s+/g, ' ').trim();
+        const loginText = (loginButton?.textContent || '').trim();
+        const hasLoginText = loginText.includes('登录');
+        const hasUpgradeKeyword = ['新浪统一创作平台', '头条文章', '体验升级'].some(keyword => text.includes(keyword));
+
+        return {
+            matched: !!loginButton && (hasLoginText || hasUpgradeKeyword),
+            wrapper,
+            loginButton,
+            text,
+        };
+    }
+
+    async function handleXinlangLoginGate(options = {}) {
+        const state = getXinlangLoginGateState();
+        if (!state.matched) {
+            return { handled: false };
+        }
+
+        const { messageData = null, storedCompanyId = null, source = 'unknown' } = options;
+
+        if (messageData && window.browserAPI?.setGlobalData) {
+            try {
+                await window.browserAPI.setGlobalData('xinlang_auth_data', {
+                    messageData,
+                    companyId: storedCompanyId || companyId,
+                    timestamp: Date.now(),
+                    source: `login-gate:${source}`,
+                });
+                console.log('[新浪授权] 💾 登录公告页已保存待处理授权数据，等待登录后恢复');
+            } catch (e) {
+                console.error('[新浪授权] ❌ 登录公告页保存待处理授权数据失败:', e);
+            }
+        }
+
+        if (hasHandledLoginGate) {
+            console.log('[新浪授权] ⏭️ 登录公告页已处理过，等待页面跳转');
+            return { handled: true, deduped: true };
+        }
+
+        hasHandledLoginGate = true;
+
+        let windowId = null;
+        let publishData = null;
+        let windowContext = null;
+        let isAuthModeWindow = false;
+
+        try {
+            windowId = await window.browserAPI?.getWindowId?.();
+            if (windowId) {
+                publishData = await window.browserAPI?.getGlobalData?.(`publish_data_window_${windowId}`);
+                isAuthModeWindow = !!(await window.browserAPI?.getGlobalData?.(`auth_mode_window_${windowId}`));
+            }
+            windowContext = await window.browserAPI?.getWindowContext?.();
+        } catch (e) {
+            console.warn('[新浪授权] ⚠️ 读取登录公告页上下文失败:', e.message);
+        }
+
+        console.warn('[新浪授权] ⚠️ 检测到新浪登录公告页，暂停授权处理并触发登录', {
+            source,
+            windowId,
+            purpose: windowContext?.purpose || '',
+            hasPublishData: !!publishData,
+            isAuthModeWindow,
+        });
+
+        try {
+            state.loginButton.dispatchEvent(new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true,
+            }));
+            console.log('[新浪授权] ✅ 已点击登录公告页的“登录”按钮');
+        } catch (e) {
+            console.warn('[新浪授权] ⚠️ 模拟点击失败，回退到原生 click:', e.message);
+            state.loginButton.click();
+            console.log('[新浪授权] ✅ 已通过原生 click 触发登录');
+        }
+
+        return { handled: true, windowId, purpose: windowContext?.purpose || '' };
+    }
 
     // ===========================
     // 4. 核心授权处理函数（两种模式共用）
@@ -125,6 +255,15 @@
 
             const user = result.data?.userInfo;
             console.log("🚀 ~ processAuthorization ~ user: ", user);
+            if(!user || !user.uid) {
+                alert('用户信息中缺少 uid 字段，无法继续授权，请检查账号是否正常');
+
+                // 统计接口成功后关闭弹窗
+                setTimeout(() => {
+                    window.browserAPI.closeCurrentWindow();
+                }, 100);
+                return;
+            }
 
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
@@ -287,6 +426,15 @@
                             };
                             console.log('[新浪授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
 
+                            const loginGateResult = await handleXinlangLoginGate({
+                                messageData,
+                                storedCompanyId: companyId,
+                                source: 'auth-message',
+                            });
+                            if (loginGateResult.handled) {
+                                return;
+                            }
+
                             // 调用核心处理函数
                             await processAuthorization(messageData, companyId);
                         }
@@ -298,6 +446,11 @@
 
             console.log('[新浪授权] ✅ 消息监听器注册成功');
         }
+    }
+
+    const pageInitLoginGateResult = await handleXinlangLoginGate({ source: 'page-init' });
+    if (pageInitLoginGateResult.handled) {
+        console.log('[新浪授权] 🔐 当前停留在登录公告页，已触发登录流程，等待后续跳转');
     }
 
     // ===========================
@@ -364,6 +517,16 @@
         const dataAge = Date.now() - authData.timestamp;
         if (dataAge < 5 * 60 * 1000) {
             console.log('[新浪授权] ✅ 检测到有效的跳转数据，开始处理...');
+
+            const loginGateResult = await handleXinlangLoginGate({
+                messageData: authData.messageData || {},
+                storedCompanyId: authData.companyId || companyId,
+                source: 'stored-auth-data',
+            });
+            if (loginGateResult.handled) {
+                console.log('[新浪授权] 🔐 登录公告页拦截成功，保留授权数据等待登录后恢复');
+                return;
+            }
 
             // 清除数据（防止重复处理）
             await window.browserAPI.removeGlobalData('xinlang_auth_data');

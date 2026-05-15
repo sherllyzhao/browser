@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net } = require('electron');
+const { app, BrowserWindow, BrowserView, ipcMain, session, dialog, Menu, globalShortcut, nativeImage, Tray, protocol, shell, net, webContents: electronWebContents } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -23,6 +23,7 @@ let heartbeatInterval = null;
 let autoSaveInterval = null;
 let destroyedWindowCleanupInterval = null;
 const windowContextMap = new Map();
+const sessionRequestGuardConfig = new WeakMap();
 let shutdownStarted = false;
 
 // 跨平台图标路径
@@ -67,6 +68,7 @@ function installBrokenPipeGuard(stream, streamName) {
 
 installBrokenPipeGuard(process.stdout, 'stdout');
 installBrokenPipeGuard(process.stderr, 'stderr');
+
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   if (!host) return false;
@@ -207,6 +209,100 @@ function shouldApplyContentTypePatch(details = {}) {
   return { shouldPatch: true, mimeType };
 }
 
+function isMainFrameRequest(details = {}) {
+  const resourceType = String(details.resourceType || '').toLowerCase();
+  return resourceType === 'mainframe' || resourceType === 'main_frame' || resourceType === 'main-frame';
+}
+
+function getWebContentsByRequest(details = {}) {
+  const id = Number(details.webContentsId || 0);
+  if (!id || !electronWebContents || typeof electronWebContents.fromId !== 'function') {
+    return null;
+  }
+
+  try {
+    return electronWebContents.fromId(id);
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveMainFrameResourceRedirect(details = {}) {
+  const requestUrl = details.url || '';
+  if (!isMainFrameRequest(details) || !isStaticResourceUrl(requestUrl)) {
+    return '';
+  }
+
+  const requestWebContents = getWebContentsByRequest(details);
+  if (browserView?.webContents && requestWebContents && requestWebContents.id === browserView.webContents.id) {
+    return resolveBrowserViewRecoveryTarget(browserView.webContents.getURL());
+  }
+
+  const ownerWindow = requestWebContents ? BrowserWindow.fromWebContents(requestWebContents) : null;
+  const context = ownerWindow ? windowContextMap.get(ownerWindow.id) : null;
+  if (context?.expectedPageUrl && !isStaticResourceUrl(context.expectedPageUrl)) {
+    return context.expectedPageUrl;
+  }
+
+  if (startupLoadGuard.active && startupLoadGuard.targetUrl && !isStaticResourceUrl(startupLoadGuard.targetUrl)) {
+    return startupLoadGuard.targetUrl;
+  }
+
+  return '';
+}
+
+function installSessionRequestGuard(targetSession, label, options = {}) {
+  if (!targetSession?.webRequest) return;
+
+  const current = sessionRequestGuardConfig.get(targetSession) || {
+    label,
+    blockBitbrowser: true,
+    blockMainFrameResources: true,
+    upgradeMp163: false
+  };
+  const merged = {
+    ...current,
+    ...options,
+    label
+  };
+  sessionRequestGuardConfig.set(targetSession, merged);
+
+  targetSession.webRequest.onBeforeRequest((details, callback) => {
+    const configForSession = sessionRequestGuardConfig.get(targetSession) || merged;
+    const requestUrl = details.url || '';
+
+    if (configForSession.blockBitbrowser && requestUrl.toLowerCase().startsWith('bitbrowser:')) {
+      console.log(`[${configForSession.label} WebRequest] ❌ Blocked bitbrowser protocol:`, requestUrl);
+      callback({ cancel: true });
+      return;
+    }
+
+    if (configForSession.blockMainFrameResources) {
+      const redirectUrl = resolveMainFrameResourceRedirect(details);
+      if (redirectUrl && redirectUrl !== requestUrl) {
+        console.warn(`[${configForSession.label} WebRequest] ⚠️ 主框架静态资源导航已改回页面: ${requestUrl} → ${redirectUrl}`);
+        callback({ redirectURL: redirectUrl });
+        return;
+      }
+    }
+
+    if (configForSession.upgradeMp163 && requestUrl.startsWith('http://mp.163.com/')) {
+      const httpsUrl = requestUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+      console.log(`[${configForSession.label} WebRequest] 🔒 HTTP→HTTPS: ${requestUrl}`);
+      callback({ redirectURL: httpsUrl });
+      return;
+    }
+
+    callback({});
+  });
+
+  console.log(`[Session] ✅ ${label} 请求守卫已安装`, {
+    blockBitbrowser: merged.blockBitbrowser,
+    blockMainFrameResources: merged.blockMainFrameResources,
+    upgradeMp163: merged.upgradeMp163
+  });
+}
+
 function normalizeContextPurpose(options = {}) {
   if (options.windowContext && typeof options.windowContext.purpose === 'string') {
     return options.windowContext.purpose;
@@ -317,6 +413,85 @@ async function captureWindowDebugDump(targetWindow, reason, currentURL) {
   });
 }
 
+async function inspectSourceTextDocument(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { isSourceTextDocument: false, reason: 'webcontents-destroyed' };
+  }
+
+  try {
+    return await webContents.executeJavaScript(`
+      (() => {
+        if (!document.body) {
+          return { isSourceTextDocument: false, reason: 'no-body' };
+        }
+
+        const hasEditor = !!document.querySelector(
+          '[contenteditable="true"], .public-DraftEditor-content, .ProseMirror, .ql-editor, .tox, .CodeMirror, .monaco-editor'
+        );
+        if (hasEditor) {
+          return { isSourceTextDocument: false, reason: 'editor-present' };
+        }
+
+        const body = document.body;
+        const bodyText = (body.innerText || '').trim().slice(0, 5000);
+        const visibleElementCount = Array.from(document.querySelectorAll('body *'))
+          .slice(0, 120)
+          .filter((el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && Number(style.opacity || '1') !== 0
+              && rect.width >= 12
+              && rect.height >= 12;
+          })
+          .length;
+
+        const cssPatterns = [
+          '@charset',
+          '@font-face',
+          ':hover{',
+          ':focus{',
+          '@media ',
+          '@keyframes ',
+          'text-decoration:none',
+          'background-color:transparent',
+          'display:block',
+          'position:absolute'
+        ];
+        const jsonMarkers = [
+          '"userAgent"',
+          '"appViewConfig"',
+          '"layerId"',
+          '"currentTab"',
+          '"notifications"',
+          '"zhuanlan.zhihu.com"',
+          '"ctx"',
+          '"register"'
+        ];
+        const cssScore = cssPatterns.filter((pattern) => bodyText.includes(pattern)).length;
+        const jsonScore = jsonMarkers.filter((pattern) => bodyText.includes(pattern)).length;
+        const startsLikeJson = /^[{\\[]/.test(bodyText) || /^"[^"]+"\\s*:/.test(bodyText);
+        const compactTextDocument = body.children.length <= 2 && visibleElementCount <= 3;
+        const isCssSource = compactTextDocument && cssScore >= 3;
+        const isJsonSource = compactTextDocument && bodyText.length > 800 && startsLikeJson && jsonScore >= 3;
+
+        return {
+          isSourceTextDocument: isCssSource || isJsonSource,
+          reason: isCssSource ? 'css-source-text' : (isJsonSource ? 'json-source-text' : 'normal'),
+          cssScore,
+          jsonScore,
+          visibleElementCount,
+          childCount: body.children.length,
+          href: location.href
+        };
+      })()
+    `, true);
+  } catch (error) {
+    return { isSourceTextDocument: false, reason: error.message || String(error) };
+  }
+}
+
 async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unknown') {
   if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
     return { redirected: false };
@@ -326,19 +501,27 @@ async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unk
   if (!context || !context.guardResourceUrls || context.bootstrapInProgress || !currentURL || currentURL === 'about:blank') {
     return { redirected: false };
   }
-  if (matchesExpectedPage(currentURL, context.expectedPageUrl)) {
+  const matchedExpectedPage = matchesExpectedPage(currentURL, context.expectedPageUrl);
+  const sourceTextState = await inspectSourceTextDocument(targetWindow.webContents) || {};
+  const isSourceTextDocument = !!sourceTextState.isSourceTextDocument;
+  const isResourcePage = isStaticResourceUrl(currentURL) || isSourceTextDocument;
+  if (matchedExpectedPage && !isSourceTextDocument) {
     return { redirected: false };
   }
-  if (!isStaticResourceUrl(currentURL)) {
+  if (!isResourcePage) {
     return { redirected: false };
   }
   if (context.guardRedirectInFlight) {
     return { redirected: true, deduped: true };
   }
+  if ((context.guardRedirectCount || 0) >= 3) {
+    console.warn(`[Publish Window Guard] ⚠️ 资源页恢复已达到上限，停止自动回跳: windowId=${targetWindow.id}, url=${currentURL}`);
+    return { redirected: false, limitReached: true };
+  }
 
   context.guardRedirectInFlight = true;
   context.guardRedirectCount = (context.guardRedirectCount || 0) + 1;
-  console.warn(`[Publish Window Guard] ⚠️ 检测到资源页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}`);
+  console.warn(`[Publish Window Guard] ⚠️ 检测到资源/源码页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}, state=${sourceTextState.reason}`);
   const dumpPath = await captureWindowDebugDump(targetWindow, reason, currentURL);
   if (dumpPath) {
     console.warn(`[Publish Window Guard] 调试快照已写入: ${dumpPath}`);
@@ -476,6 +659,11 @@ let refreshLoadGuard = {
   active: false,
   startedAt: 0,
   timer: null
+};
+let browserViewResourceRecovery = {
+  inFlight: false,
+  lastUrl: '',
+  startedAt: 0
 };
 
 // 全局数据持久化存储（存储到文件，应用重启后仍然保留）
@@ -647,6 +835,33 @@ function isLikelyLoginUrl(url = '') {
          lower.includes('/oauth') ||
          lower.includes('qrlogin') ||
          lower.includes('/account/login');
+}
+
+
+// 设置用户数据路径
+if (isProduction) {
+  if (isPortable) {
+    // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
+    // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
+    const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
+
+    // 确保目录存在
+    if (!fs.existsSync(portableDataPath)) {
+      try {
+        fs.mkdirSync(portableDataPath, { recursive: true });
+        console.log('[Portable Mode] 已创建数据目录:', portableDataPath);
+      } catch (err) {
+        console.error('[Portable Mode] 创建目录失败:', err);
+      }
+    }
+
+    app.setPath('userData', portableDataPath);
+    console.log('[Portable Mode] ✅ 便携版模式启用');
+    console.log('[Portable Mode] 数据存储在固定位置:', portableDataPath);
+  } else {
+    // 安装版：使用系统默认路径
+    console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
+  }
 }
 
 function isLikelyPublishUrl(url = '') {
@@ -906,6 +1121,47 @@ async function inspectBrowserViewReadiness() {
           .slice(0, 80)
           .filter((el) => hasVisibleElement(el, 12))
           .length;
+        const bodyTextPreview = (body.innerText || '').trim().slice(0, 5000);
+        const cssTextPatterns = [
+          '@charset',
+          '@font-face',
+          ':hover{',
+          ':focus{',
+          '@media ',
+          '@keyframes ',
+          'text-decoration:none',
+          'background-color:transparent',
+          'display:block',
+          'position:absolute'
+        ];
+        const cssTextMatchCount = cssTextPatterns.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const jsonTextMarkers = [
+          '"userAgent"',
+          '"appViewConfig"',
+          '"layerId"',
+          '"currentTab"',
+          '"notifications"',
+          '"zhuanlan.zhihu.com"',
+          '"ctx"',
+          '"register"'
+        ];
+        const jsonTextMarkerCount = jsonTextMarkers.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const startsLikeJson = /^[{\\[]/.test(bodyTextPreview) || /^"[^"]+"\\s*:/.test(bodyTextPreview);
+        const looksLikeCssSource = cssTextMatchCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        const looksLikeJsonSource = bodyTextPreview.length > 800 && startsLikeJson && jsonTextMarkerCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        if (looksLikeCssSource || looksLikeJsonSource) {
+          return {
+            ready: false,
+            reason: looksLikeCssSource ? 'css-source-text' : 'json-source-text',
+            htmlLength,
+            textLength,
+            childCount,
+            visibleSampleElements,
+            cssTextMatchCount,
+            jsonTextMarkerCount,
+            href: location.href
+          };
+        }
         const bodyHasViewportSize = bodyRect.width >= 200 && bodyRect.height >= 120;
         const likelyRenderedShell = htmlLength > 1000 && childCount >= 3 && bodyHasViewportSize;
         const ready = (
@@ -1088,6 +1344,70 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
 
 function getDefaultProjectHomeUrl() {
   return globalStorage.last_project === 'geo' ? config.getGeoUrl() : config.getAigcUrl();
+}
+
+function shouldRecoverBrowserViewResourceUrl(rawUrl = '') {
+  if (!rawUrl || rawUrl === 'about:blank') return false;
+  if (!isStaticResourceUrl(rawUrl)) return false;
+  return isFirstPartyUrl(rawUrl) || startupLoadGuard.active;
+}
+
+function resolveBrowserViewRecoveryTarget(preferredUrl = '') {
+  const candidate = String(preferredUrl || '').trim();
+  if (candidate && !isStaticResourceUrl(candidate) && (candidate.startsWith('http://') || candidate.startsWith('https://') || candidate.startsWith('file://'))) {
+    return candidate;
+  }
+
+  if (startupLoadGuard.active && startupLoadGuard.targetUrl && !isStaticResourceUrl(startupLoadGuard.targetUrl)) {
+    return startupLoadGuard.targetUrl;
+  }
+
+  return getDefaultProjectHomeUrl();
+}
+
+async function recoverBrowserViewFromResourcePage(currentUrl, reason = 'unknown', preferredUrl = '') {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+    return false;
+  }
+  if (!shouldRecoverBrowserViewResourceUrl(currentUrl)) {
+    return false;
+  }
+  if (browserViewResourceRecovery.inFlight) {
+    console.warn('[BrowserView Resource Guard] 已在恢复中，跳过重复触发:', currentUrl);
+    return true;
+  }
+
+  const targetUrl = resolveBrowserViewRecoveryTarget(preferredUrl);
+  if (!targetUrl || targetUrl === currentUrl) {
+    return false;
+  }
+
+  browserViewResourceRecovery = {
+    inFlight: true,
+    lastUrl: currentUrl,
+    startedAt: Date.now()
+  };
+
+  console.warn(`[BrowserView Resource Guard] 检测到主窗口落到资源页，准备恢复 (${reason}): ${currentUrl} -> ${targetUrl}`);
+  if (!startupLoadGuard.active) {
+    beginRefreshLoadGuard('页面异常，正在恢复...');
+  }
+
+  try {
+    const loadPromise = targetUrl.startsWith('file://')
+      ? loadLocalPage(browserView.webContents, path.basename(targetUrl))
+      : browserView.webContents.loadURL(targetUrl);
+    await loadPromise;
+    console.log('[BrowserView Resource Guard] ✅ 已恢复到目标页面:', targetUrl);
+  } catch (error) {
+    console.error('[BrowserView Resource Guard] ❌ 恢复失败:', error.message || error);
+  } finally {
+    setTimeout(() => {
+      browserViewResourceRecovery.inFlight = false;
+    }, 1500);
+  }
+
+  return true;
 }
 
 function resolvePostRestoreUrl(preferredUrl) {
@@ -3311,7 +3631,11 @@ function createWindow() {
     console.log('[Session] ℹ️ 已跳过启动期缓存清理，首屏恢复改由启动守卫负责');
   });
 
-  // 在 session 级别拦截自定义协议请求（如 bitbrowser://）
+  // 在 session 级别拦截自定义协议和主框架静态资源误导航
+  installSessionRequestGuard(persistentSession, '持久化 session', {
+    blockBitbrowser: true,
+    blockMainFrameResources: true
+  });
   // 使用 <all_urls> 拦截所有请求
   persistentSession.webRequest.onBeforeRequest((details, callback) => {
     const url = details.url;
@@ -3972,6 +4296,14 @@ function createWindow() {
       });
       return;
     }
+    if (shouldRecoverBrowserViewResourceUrl(url)) {
+      console.warn('[Navigation] ⚠️ 阻止主窗口跳转到静态资源页:', url);
+      event.preventDefault();
+      recoverBrowserViewFromResourcePage(url, 'will-navigate', lastValidUrl).catch(err => {
+        console.error('[Navigation] ❌ 静态资源页恢复失败:', err);
+      });
+      return;
+    }
     // 记录用户点击的目标 URL（即使会被重定向）
     if (!url.includes(config.domains.authRedirect) && !url.startsWith('file://')) {
       pendingNavigationUrl = url;
@@ -4048,6 +4380,12 @@ function createWindow() {
   // 监听页面导航完成
   browserView.webContents.on('did-navigate', async (event, url) => {
     console.log(`[Navigation] 导航完成 → ${url}`);
+    if (shouldRecoverBrowserViewResourceUrl(url)) {
+      const recovered = await recoverBrowserViewFromResourcePage(url, 'did-navigate', lastValidUrl);
+      if (recovered) {
+        return;
+      }
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('url-changed', url);
     // 根据 URL 判断是否需要隐藏公共头部
@@ -4249,10 +4587,14 @@ function createWindow() {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    // 检测远程登录页，尝试恢复登录或跳转到本地登录页
-    if (url.includes('dev.china9.cn/aigc_browser/#/login') ||
-        (url.includes('china9.cn') && url.includes('#/login'))) {
-      console.log('[Navigation] 🔄 检测到远程登录页(in-page)');
+    // 检测自己平台登录页（含 dev/prod 远程域名 + 本地 localhost），尝试恢复登录或跳转到本地登录页
+    const isOwnLoginInPage =
+        (url.includes('china9.cn') ||
+         url.includes('localhost:5173') ||
+         url.includes('localhost:8080')) &&
+        url.includes('#/login');
+    if (isOwnLoginInPage) {
+      console.log('[Navigation] 🔄 检测到自己平台登录页(in-page)');
       if (!isNavigatingToLogin) {
         const restored = await tryRestoreLoginWithToken(lastValidUrl);
         if (!restored) {
@@ -4493,6 +4835,56 @@ function createWindow() {
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
 
+    // 🔐 维护窗口"上次 URL"，用于 did-navigate 检测登录页跳转
+    let lastNavUrl = '';
+    const LOGIN_URL_PATTERNS = ['/login', 'passport.', '/sso/', '/auth/', '/signin', 'security.weibo.com'];
+    const isLoginPageUrl = (u) => {
+      if (!u) return false;
+      const lower = u.toLowerCase();
+      return LOGIN_URL_PATTERNS.some(p => lower.includes(p));
+    };
+
+    // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
+    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      const prevWasLogin = isLoginPageUrl(lastNavUrl);
+      const currIsLogin = isLoginPageUrl(navUrl);
+      lastNavUrl = navUrl;
+
+      if (!prevWasLogin || currIsLogin) return;
+
+      const accountInfo = windowAccountMap.get(windowId);
+      if (!accountInfo && !hasWindowSessionSaveCandidate(windowId)) return;
+      if (isSavingSession) {
+        console.log('[did-create-window] 🔐 正在保存中，跳过 did-navigate 触发的保存');
+        return;
+      }
+
+      console.log(`[did-create-window] 🔐 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+      isSavingSession = true;
+      try {
+        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        console.log('[did-create-window] 🔐 重登录后保存结果:', result);
+        if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
+          const publishDataKey = `publish_data_window_${windowId}`;
+          const publishData = globalStorage[publishDataKey];
+          browserView.webContents.send('session-updated', {
+            windowId: windowId,
+            platform: result.accountInfo?.platform || accountInfo?.platform,
+            accountId: result.accountInfo?.accountId || accountInfo?.accountId,
+            backendAccountId: result.backendAccountId,
+            success: result.success,
+            cookieCount: result.cookieCount,
+            publishData: publishData,
+            reason: 'relogin'
+          });
+        }
+      } catch (err) {
+        console.error('[did-create-window] 🔐 重登录后保存失败:', err);
+      } finally {
+        isSavingSession = false;
+      }
+    });
+
     // 🔑 监听窗口关闭前事件，尝试保存登录信息（如果是多账号模式窗口）
     newWindow.on('close', async (e) => {
       console.log('[did-create-window] ========== 窗口关闭前 ==========');
@@ -4507,12 +4899,12 @@ function createWindow() {
 
       // 检查是否是多账号模式的窗口（虽然 did-create-window 创建的窗口通常不是）
       const accountInfo = windowAccountMap.get(windowId);
-      if (accountInfo) {
+      if (accountInfo || hasWindowSessionSaveCandidate(windowId)) {
         // 阻止窗口立即关闭，等待保存完成
         e.preventDefault();
         isSavingSession = true;
 
-        console.log('[did-create-window] 发现多账号映射，等待保存会话数据完成后再关闭');
+        console.log('[did-create-window] 发现可保存的发布窗口，等待保存会话数据完成后再关闭');
 
         try {
           // 调用公共函数保存登录信息
@@ -4525,10 +4917,12 @@ function createWindow() {
             const publishData = globalStorage[publishDataKey];
             browserView.webContents.send('session-updated', {
               windowId: windowId,
-              platform: accountInfo.platform,
-              accountId: accountInfo.accountId,
+              platform: result.accountInfo?.platform || accountInfo?.platform,
+              accountId: result.accountInfo?.accountId || accountInfo?.accountId,
+              backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
+              cookies: result.cookies || [],
               publishData: publishData,
               timestamp: Date.now()
             });
@@ -4554,6 +4948,13 @@ function createWindow() {
         console.log('[Window Manager] 窗口已关闭，当前窗口数量:', childWindows.length);
       }
       toutiaoBarePublishState.delete(windowId);
+      // 清理发布数据，避免残留数据影响后续授权窗口
+      const pdKey = `publish_data_window_${windowId}`;
+      if (globalStorage[pdKey]) {
+        delete globalStorage[pdKey];
+        saveGlobalStorage();
+        console.log(`[Window Manager] 🧹 已清理发布数据: ${pdKey}`);
+      }
     });
 
     // 开发环境自动打开 DevTools
@@ -4959,18 +5360,21 @@ app.whenReady().then(async () => {
 
     // 重定向 console 输出到文件和控制台；日志异常不能反向打崩主进程
     console.log = function(...args) {
-      writeToLogStream('LOG', args);
-      mirrorToOriginalConsole(originalLog, args);
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
+      originalLog.apply(console, args);
     };
 
     console.error = function(...args) {
-      writeToLogStream('ERROR', args);
-      mirrorToOriginalConsole(originalError, args);
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
+      originalError.apply(console, args);
     };
 
     console.warn = function(...args) {
-      writeToLogStream('WARN', args);
-      mirrorToOriginalConsole(originalWarn, args);
+      const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
+      originalWarn.apply(console, args);
     };
 
     console.log('=================================');
@@ -6498,6 +6902,10 @@ async function openManagedChildWindow(url, options = {}) {
     return { success: false, error: 'No URL provided' };
   }
 
+  // ⏱ 全链路阶段性耗时基准时间
+  const __WM_T0__ = Date.now();
+  const __wmTs = () => `T+${Date.now() - __WM_T0__}ms`;
+
   try {
     const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
 
@@ -6508,6 +6916,7 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 调试日志：打印完整的 options
     console.log('[Window Manager] ========== 收到 open-new-window 请求 ==========');
+    console.log(`[Window Manager][${__wmTs()}] 🕐 入口时间: ${new Date().toLocaleString()}`);
     console.log('[Window Manager] URL:', url);
     console.log('[Window Manager] options:', JSON.stringify(options, null, 2));
     console.log('[Window Manager] options.platform:', options.platform);
@@ -6532,8 +6941,15 @@ async function openManagedChildWindow(url, options = {}) {
         }
       }
 
+      const backendAccountId = getPublishBackendAccountId(options.publishData);
+      const cachedSessionData = getLatestSessionCache(options.platform, backendAccountId);
+      const effectiveSessionData = cachedSessionData || options.sessionData;
+      if (cachedSessionData) {
+        console.log(`[Window Manager] ✅ 命中本地最新会话缓存: platform=${options.platform}, backendAccountId=${backendAccountId}`);
+      }
+
       // 如果提供了 sessionData，先清空旧的 cookies，再恢复新的会话数据
-      if (options.sessionData) {
+      if (effectiveSessionData) {
         console.log('[Window Manager] ========== 检测到 sessionData，开始自动清空并恢复会话数据 ==========');
 
         try {
@@ -6553,7 +6969,19 @@ async function openManagedChildWindow(url, options = {}) {
               console.error(`[Window Manager] 删除 cookie 失败 (${cookie.name}):`, err.message);
             }
           }
-          console.log(`[Window Manager] ✅ 清空完成，删除了 ${deletedCount} 个 cookies`);
+          console.log(`[Window Manager][${__wmTs()}] ✅ cookies 清空完成，删除了 ${deletedCount} 个`);
+
+          // 1.5 🔑 彻底清理其他 storage（避免上次发布/上个账号残留）
+          // 原只清 cookies，但 localStorage/sessionStorage/indexedDB/serviceWorker 可能还有旧状态
+          // 这些残留会让 wujie 微前端读到陈旧数据导致加载异常
+          try {
+            await windowSession.clearStorageData({
+              storages: ['appcache', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
+            });
+            console.log(`[Window Manager][${__wmTs()}] ✅ 其他 storage 已彻底清理 (localstorage/indexdb/serviceworkers/cachestorage 等)`);
+          } catch (clearErr) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ storage 清理异常: ${clearErr.message}`);
+          }
 
           // 2. 恢复新的会话数据
           // 支持多种数据格式：
@@ -6561,7 +6989,7 @@ async function openManagedChildWindow(url, options = {}) {
           // - 格式2: [{...}, ...] - 直接的 cookies 数组
           // - 格式3: ["{...}", ...] - JSON 字符串数组（每个字符串是一个 cookie）
           // - 格式4: ["{domain, timestamp, cookies: [...]}"] - 包装的 session 数据（element.cookies 的实际格式）
-          let sessionData = options.sessionData;
+          let sessionData = effectiveSessionData;
 
           // 如果是字符串，先尝试解析（可能需要解析多次，因为可能有双重 JSON 编码）
           if (typeof sessionData === 'string') {
@@ -6678,9 +7106,11 @@ async function openManagedChildWindow(url, options = {}) {
           }
 
           if (cookiesArray.length > 0) {
-            console.log(`[Window Manager] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
+            console.log(`[Window Manager][${__wmTs()}] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
 
             let restoredCount = 0;
+            const keyCookieNames = ['sessionid', 'sessionid_ss', 'pass_ticket', 'wxuin', 'web_session', 'BDUSS', 'STOKEN', 'uuid_v2'];
+            const foundKeyCookies = [];
             for (let cookieItem of cookiesArray) {
               try {
                 // 如果是字符串，需要先解析（格式3）
@@ -6724,26 +7154,98 @@ async function openManagedChildWindow(url, options = {}) {
 
                 await windowSession.cookies.set(cookieDetails);
                 restoredCount++;
+                if (keyCookieNames.includes(cookie.name)) {
+                  foundKeyCookies.push(`${cookie.name}(${cookie.domain})`);
+                }
               } catch (cookieErr) {
                 console.error(`[Window Manager] Cookie 恢复失败:`, cookieErr.message);
               }
             }
-            console.log(`[Window Manager] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+            console.log(`[Window Manager][${__wmTs()}] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+            console.log(`[Window Manager][${__wmTs()}] 🗝 关键登录 cookie 命中:`, foundKeyCookies.length > 0 ? foundKeyCookies : '⚠️ 无（可能影响登录状态）');
+
+            // 🔑 恢复后主动校验：重新读取实际写入的 cookies，判断是否与期望一致
+            // 场景：部分机器磁盘/权限异常导致 set 表面成功但实际未持久化
+            try {
+                const verifyCookies = await windowSession.cookies.get({});
+                console.log(`[Window Manager][${__wmTs()}] 🔎 校验：实际读回 cookies 数量=${verifyCookies.length}，期望≈${restoredCount}`);
+
+                const verifyKeyNames = new Set();
+                for (const c of verifyCookies) {
+                    if (keyCookieNames.includes(c.name)) {
+                        verifyKeyNames.add(`${c.name}(${c.domain})`);
+                    }
+                }
+                const verifyList = Array.from(verifyKeyNames);
+                console.log(`[Window Manager][${__wmTs()}] 🔎 校验：关键 cookie 实际存在:`, verifyList.length > 0 ? verifyList : '⚠️ 无');
+
+                // 阈值：实际数小于期望数的 50%，或者恢复过程中发现关键 cookie 但读回后丢失，触发重试一次
+                const shouldRetry = (verifyCookies.length < Math.max(1, Math.floor(restoredCount * 0.5)))
+                    || (foundKeyCookies.length > 0 && verifyList.length === 0);
+
+                if (shouldRetry) {
+                    console.warn(`[Window Manager][${__wmTs()}] ⚠️ cookies 写入不完整，尝试重写一次...`);
+                    let retryWrite = 0;
+                    for (let cookieItem of cookiesArray) {
+                        try {
+                            let cookie = cookieItem;
+                            if (typeof cookieItem === 'string') {
+                                try { cookie = JSON.parse(cookieItem); } catch (_) { continue; }
+                            }
+                            if (!cookie.name || !cookie.domain) continue;
+                            const protocol = cookie.secure ? 'https' : 'http';
+                            const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+                            const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
+                            const cookieDetails = {
+                                url: cookieUrl,
+                                name: cookie.name,
+                                value: cookie.value || '',
+                                domain: cookie.domain,
+                                path: cookie.path || '/',
+                                secure: cookie.secure || false,
+                                httpOnly: cookie.httpOnly || false,
+                                sameSite: cookie.sameSite || 'no_restriction',
+                                expirationDate: cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60)
+                            };
+                            await windowSession.cookies.set(cookieDetails);
+                            retryWrite++;
+                        } catch (_) {}
+                    }
+                    console.log(`[Window Manager][${__wmTs()}] 🔁 重写完成: ${retryWrite} 个`);
+                }
+            } catch (verifyErr) {
+                console.error(`[Window Manager][${__wmTs()}] ❌ cookies 校验失败:`, verifyErr.message);
+            }
           }
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
-          console.log('[Window Manager] ⏳ 正在刷新 Session 数据到磁盘...');
-          await windowSession.flushStorageData();
-          console.log('[Window Manager] ✅ Session 数据已刷新到磁盘');
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 第一次 flushStorageData...`);
+          try {
+            await windowSession.flushStorageData();
+            console.log(`[Window Manager][${__wmTs()}] ✅ 第一次 flush 完成`);
+          } catch (flushErr1) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ 第一次 flush 异常: ${flushErr1.message}`);
+          }
 
-          // 🔑 延迟 500ms，确保数据完全写入后再创建窗口
-          console.log('[Window Manager] ⏳ 等待 500ms 确保数据持久化...');
-          await new Promise(resolve => setTimeout(resolve, 500));
-          console.log('[Window Manager] ✅ 等待完成，准备创建窗口');
+          // 🔑 延迟 1000ms（原 500ms 对慢盘/老机不够），确保数据完全写入后再创建窗口
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 等待 1000ms 确保数据持久化...`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-          console.log('[Window Manager] ========== 会话数据处理完成 ==========');
+          // 🔑 二次兜底 flush：慢磁盘首次 flush 可能只写到内核 buffer，再 flush 一次确保真正落盘
+          console.log(`[Window Manager][${__wmTs()}] ⏳ 第二次 flushStorageData 兜底...`);
+          try {
+            await windowSession.flushStorageData();
+            console.log(`[Window Manager][${__wmTs()}] ✅ 第二次 flush 完成`);
+          } catch (flushErr2) {
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ 第二次 flush 异常: ${flushErr2.message}`);
+          }
+
+          console.log(`[Window Manager][${__wmTs()}] ✅ 等待完成，准备创建窗口`);
+
+          console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
         } catch (err) {
-          console.error('[Window Manager] ❌ 会话数据处理失败:', err);
+          console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
+          console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
           // 不影响窗口创建，继续执行
         }
       }
@@ -6759,17 +7261,11 @@ async function openManagedChildWindow(url, options = {}) {
       windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
-      // 为临时 session 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
-      windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const reqUrl = details.url;
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Temp Session WebRequest] ❌ Blocked bitbrowser protocol:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
-        callback({});
+      // 为临时 session 添加统一请求守卫（阻止 bitbrowser:// 和主框架静态资源误导航）
+      installSessionRequestGuard(windowSession, '临时 session', {
+        blockBitbrowser: true,
+        blockMainFrameResources: true
       });
-      console.log('[Window Manager] 临时 session webRequest 拦截器已添加');
       addContentTypeFix(windowSession, '临时 session');
     } else {
       // 使用与主 BrowserView 相同的持久化 session
@@ -6792,12 +7288,27 @@ async function openManagedChildWindow(url, options = {}) {
     const newWindow = new BrowserWindow({
       width: 1200,
       height: 800,
+      show: false,
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
     const windowContext = buildWindowContext(url, options);
     windowContextMap.set(newWindow.id, windowContext);
     console.log('[Window Manager] 窗口上下文:', windowContext);
+    const showManagedWindow = (reason) => {
+      const currentContext = windowContextMap.get(newWindow.id);
+      if (currentContext?.bootstrapInProgress) {
+        console.log(`[Window Manager] bootstrap 进行中，暂不显示窗口 (${reason})`);
+        return;
+      }
+      if (!newWindow.isDestroyed() && !newWindow.isVisible()) {
+        newWindow.show();
+        console.log(`[Window Manager] 已显示窗口 (${reason})`);
+      }
+    };
+    const showFallbackTimer = setTimeout(() => showManagedWindow('fallback-timeout'), 12000);
+    newWindow.once('ready-to-show', () => showManagedWindow('ready-to-show'));
+    newWindow.once('closed', () => clearTimeout(showFallbackTimer));
     const publishDataKey = `publish_data_window_${newWindow.id}`;
     if (options.publishData && typeof options.publishData === 'object') {
       if (globalStorage[publishDataKey]) {
@@ -6843,6 +7354,56 @@ async function openManagedChildWindow(url, options = {}) {
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
 
+    // 🔐 维护窗口"上次 URL"，用于 did-navigate 检测登录页跳转
+    let lastNavUrl = '';
+    const LOGIN_URL_PATTERNS = ['/login', 'passport.', '/sso/', '/auth/', '/signin', 'security.weibo.com'];
+    const isLoginPageUrl = (u) => {
+      if (!u) return false;
+      const lower = u.toLowerCase();
+      return LOGIN_URL_PATTERNS.some(p => lower.includes(p));
+    };
+
+    // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
+    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      const prevWasLogin = isLoginPageUrl(lastNavUrl);
+      const currIsLogin = isLoginPageUrl(navUrl);
+      lastNavUrl = navUrl;
+
+      if (!prevWasLogin || currIsLogin) return;
+
+      const accountInfo = windowAccountMap.get(windowId);
+      if (!accountInfo && !hasWindowSessionSaveCandidate(windowId)) return;
+      if (isSavingSession) {
+        console.log('[Window Manager] 🔐 正在保存中，跳过 did-navigate 触发的保存');
+        return;
+      }
+
+      console.log(`[Window Manager] 🔐 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+      isSavingSession = true;
+      try {
+        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        console.log('[Window Manager] 🔐 重登录后保存结果:', result);
+        if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
+          const publishDataKey = `publish_data_window_${windowId}`;
+          const publishData = globalStorage[publishDataKey];
+          browserView.webContents.send('session-updated', {
+            windowId: windowId,
+            platform: result.accountInfo?.platform || accountInfo?.platform,
+            accountId: result.accountInfo?.accountId || accountInfo?.accountId,
+            backendAccountId: result.backendAccountId,
+            success: result.success,
+            cookieCount: result.cookieCount,
+            publishData: publishData,
+            reason: 'relogin'
+          });
+        }
+      } catch (err) {
+        console.error('[Window Manager] 🔐 重登录后保存失败:', err);
+      } finally {
+        isSavingSession = false;
+      }
+    });
+
     // 🔑 监听窗口关闭前事件，保存最新会话数据到后台
     // 使用 e.preventDefault() 阻止立即关闭，等待保存完成后再销毁窗口
     newWindow.on('close', async (e) => {
@@ -6857,12 +7418,12 @@ async function openManagedChildWindow(url, options = {}) {
 
       // 检查是否是多账号模式的窗口，需要保存登录信息
       const accountInfo = windowAccountMap.get(windowId);
-      if (accountInfo) {
+      if (accountInfo || hasWindowSessionSaveCandidate(windowId)) {
         // 阻止窗口立即关闭，等待保存完成
         e.preventDefault();
         isSavingSession = true;
 
-        console.log('[Window Manager] 多账号模式窗口，等待保存会话数据完成后再关闭');
+        console.log('[Window Manager] 检测到可保存的发布窗口，等待保存会话数据完成后再关闭');
 
         try {
           // 调用公共函数保存登录信息
@@ -6875,10 +7436,12 @@ async function openManagedChildWindow(url, options = {}) {
             const publishData = globalStorage[publishDataKey];
             browserView.webContents.send('session-updated', {
               windowId: windowId,
-              platform: accountInfo.platform,
-              accountId: accountInfo.accountId,
+              platform: result.accountInfo?.platform || accountInfo?.platform,
+              accountId: result.accountInfo?.accountId || accountInfo?.accountId,
+              backendAccountId: result.backendAccountId,
               success: result.success,
               cookieCount: result.cookieCount,
+              cookies: result.cookies || [],
               publishData: publishData,
               timestamp: Date.now()
             });
@@ -6913,10 +7476,11 @@ async function openManagedChildWindow(url, options = {}) {
       }
       windowContextMap.delete(windowId);
       toutiaoBarePublishState.delete(windowId);
-      if (isBareToutiao && globalStorage[publishDataKey]) {
+      // 清理发布数据，避免残留数据影响后续授权窗口
+      if (globalStorage[publishDataKey]) {
         delete globalStorage[publishDataKey];
         saveGlobalStorage();
-        console.log(`[Window Manager] 🧹 已清理头条发布数据: ${publishDataKey}`);
+        console.log(`[Window Manager] 🧹 已清理发布数据: ${publishDataKey}`);
       }
       // 清理窗口账号映射
       if (windowAccountMap.has(windowId)) {
@@ -6964,22 +7528,10 @@ async function openManagedChildWindow(url, options = {}) {
     // 页面在 HTTPS 上运行，但 163.com 自己的 JS 发 HTTP API 请求（如 navinfo.do）被 Mixed Content 拦截
     // 仅对非共享 session 设置（避免影响主窗口 BrowserView 的其他页面）
     if (sessionType !== 'persistent') {
-      windowSession.webRequest.onBeforeRequest((details, callback) => {
-        const reqUrl = details.url;
-        // 阻止 bitbrowser:// 协议
-        if (reqUrl && reqUrl.toLowerCase().startsWith('bitbrowser:')) {
-          console.log('[Window WebRequest] ❌ Blocked bitbrowser:', reqUrl);
-          callback({ cancel: true });
-          return;
-        }
-        // HTTP→HTTPS 升级：163.com 的所有请求（主页面 + API 子请求）
-        if (reqUrl && reqUrl.startsWith('http://mp.163.com/')) {
-          const httpsUrl = reqUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
-          console.log(`[Window WebRequest] 🔒 HTTP→HTTPS: ${reqUrl}`);
-          callback({ redirectURL: httpsUrl });
-          return;
-        }
-        callback({});
+      installSessionRequestGuard(windowSession, '窗口 session', {
+        blockBitbrowser: true,
+        blockMainFrameResources: true,
+        upgradeMp163: true
       });
     }
 
@@ -7113,33 +7665,60 @@ async function openManagedChildWindow(url, options = {}) {
             sessionData = JSON.parse(sessionData);
           }
         } catch (e) {
-          // 忽略解析错误
+          console.warn(`[Window Manager][${__wmTs()}] ⚠️ localStorage 预扫描阶段的 sessionData 解析失败（忽略）: ${e.message}`);
         }
       }
 
       // 检查是否有 localStorage 数据
       if (sessionData && typeof sessionData === 'object' && sessionData.localStorage) {
         localStorageData = sessionData.localStorage;
-        console.log('[Window Manager] 🔑 检测到 localStorage 数据:', Object.keys(localStorageData));
+        console.log(`[Window Manager][${__wmTs()}] 🔑 检测到 localStorage 数据 (key 数=${Object.keys(localStorageData).length}):`, Object.keys(localStorageData));
+      } else {
+        console.log(`[Window Manager][${__wmTs()}] ℹ️ sessionData 中无 localStorage 数据，跳过预设`);
       }
     }
 
     // 如果有 localStorage 数据需要预设，先加载 about:blank
     if (localStorageData && Object.keys(localStorageData).length > 0) {
-      console.log('[Window Manager] 🔄 预设 localStorage，先加载 about:blank...');
+      console.log(`[Window Manager][${__wmTs()}] 🔄 预设 localStorage，先加载 bootstrap...`);
 
       if (windowContext) {
         windowContext.bootstrapInProgress = true;
       }
 
       try {
-        const bootstrapUrl = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
-        console.log('[Window Manager] 🔄 加载 bootstrap 文档页:', bootstrapUrl);
-        await newWindow.loadURL(bootstrapUrl);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const primaryBootstrap = windowContext?.bootstrapUrl || getUrlInfo(url).origin || url;
+        // 只加载文档型 bootstrap。静态资源（favicon/robots/json/css）一旦作为主文档加载，
+        // 就可能把源码文本直接展示给用户。
+        const bootstrapCandidates = [primaryBootstrap].filter(candidate => candidate && !isStaticResourceUrl(candidate));
+        console.log(`[Window Manager][${__wmTs()}] 🔄 bootstrap 候选列表:`, bootstrapCandidates);
 
-        // 设置 localStorage
-        const localStorageScript = `
+        let bootstrapLoaded = false;
+        let lastBootstrapErr = null;
+        for (const candidateUrl of bootstrapCandidates) {
+          const bootstrapStartTs = Date.now();
+          try {
+            console.log(`[Window Manager][${__wmTs()}] 🔄 尝试加载 bootstrap: ${candidateUrl}`);
+            await newWindow.loadURL(candidateUrl);
+            console.log(`[Window Manager][${__wmTs()}] ✅ bootstrap 加载成功: ${candidateUrl} (${Date.now() - bootstrapStartTs}ms)`);
+            bootstrapLoaded = true;
+            break;
+          } catch (loadErr) {
+            lastBootstrapErr = loadErr;
+            console.warn(`[Window Manager][${__wmTs()}] ⚠️ bootstrap 失败 (${candidateUrl}): ${loadErr.message}，尝试下一个候选`);
+          }
+        }
+
+        if (!bootstrapLoaded) {
+          console.error(`[Window Manager][${__wmTs()}] ❌ 所有 bootstrap 候选均失败，跳过 localStorage 预设`);
+          if (lastBootstrapErr) {
+            console.error(`[Window Manager][${__wmTs()}] 🧾 最后一次错误:`, lastBootstrapErr.stack || lastBootstrapErr.message);
+          }
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // 设置 localStorage
+          const localStorageScript = `
           (function() {
             const data = ${JSON.stringify(localStorageData)};
             console.log('[预设 localStorage] 开始设置...', Object.keys(data));
@@ -7155,13 +7734,15 @@ async function openManagedChildWindow(url, options = {}) {
           })();
         `;
 
-        await newWindow.webContents.executeJavaScript(localStorageScript);
-        console.log('[Window Manager] ✅ localStorage 预设完成');
+          await newWindow.webContents.executeJavaScript(localStorageScript);
+          console.log(`[Window Manager][${__wmTs()}] ✅ localStorage 预设完成`);
 
-        // 等待一下确保 localStorage 写入
-        await new Promise(resolve => setTimeout(resolve, 100));
+          // 等待一下确保 localStorage 写入
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       } catch (err) {
-        console.error('[Window Manager] ❌ localStorage 预设失败:', err.message);
+        console.error(`[Window Manager][${__wmTs()}] ❌ localStorage 预设失败: ${err.message}`);
+        console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
       } finally {
         if (windowContext) {
           windowContext.bootstrapInProgress = false;
@@ -7170,9 +7751,24 @@ async function openManagedChildWindow(url, options = {}) {
     }
 
     // 加载目标 URL
-    newWindow.loadURL(url);
+    console.log(`[Window Manager][${__wmTs()}] 🚀 loadURL 目标页: ${url}`);
+    const targetLoadPromise = newWindow.loadURL(url);
+    targetLoadPromise
+      .then(() => {
+        console.log(`[Window Manager][${__wmTs()}] ✅ 目标页加载完成，windowId=${newWindow.id}`);
+      })
+      .catch(err => {
+        console.error(`[Window Manager][${__wmTs()}] ❌ 目标页加载失败: ${err.message || err}`);
+      })
+      .finally(() => {
+        clearTimeout(showFallbackTimer);
+        showManagedWindow('target-load-finished');
+      });
+    console.log(`[Window Manager][${__wmTs()}] ✅ loadURL 已发出，windowId=${newWindow.id}`);
     return { success: true, windowId: newWindow.id };
   } catch (err) {
+    console.error(`[Window Manager][${__wmTs()}] ❌ openManagedChildWindow 顶层异常:`, err);
+    console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
     return { success: false, error: err.message };
   }
 }
@@ -7901,6 +8497,352 @@ ipcMain.handle('trigger-download', async (event, url) => {
 // ========== 第三方窗口关闭前保存登录信息的公共函数 ==========
 // 用于在窗口关闭前自动上传最新的登录信息到后台
 
+function getPublishBackendAccountId(publishData) {
+  return publishData?.element?.account_info?.id
+    || publishData?.element?.accountInfo?.id
+    || publishData?.account_info?.id
+    || publishData?.accountInfo?.id
+    || null;
+}
+
+function buildLatestSessionCacheKey(platform, backendAccountId) {
+  if (!platform || !backendAccountId) {
+    return '';
+  }
+  return `latest_session_${platform}_${backendAccountId}`;
+}
+
+function getLatestSessionCache(platform, backendAccountId) {
+  const cacheKey = buildLatestSessionCacheKey(platform, backendAccountId);
+  if (!cacheKey) {
+    return null;
+  }
+  return globalStorage[cacheKey] || null;
+}
+
+function saveLatestSessionCache({ platform, backendAccountId, cookieDomains, cookiesArray, source = 'window-close' }) {
+  const cacheKey = buildLatestSessionCacheKey(platform, backendAccountId);
+  if (!cacheKey || !Array.isArray(cookiesArray) || cookiesArray.length === 0) {
+    return null;
+  }
+
+  const payload = {
+    platform,
+    backendAccountId,
+    domain: cookieDomains[0] || '',
+    cookieDomains: Array.isArray(cookieDomains) ? cookieDomains : [],
+    cookies: cookiesArray,
+    timestamp: Date.now(),
+    source
+  };
+
+  globalStorage[cacheKey] = payload;
+  saveGlobalStorage();
+  console.log(`[Save Session] 💾 已写入本地最新会话缓存: ${cacheKey}, cookies=${cookiesArray.length}`);
+  return payload;
+}
+
+function getApiOriginForSessionSave() {
+  let apiOrigin = config.apiBaseUrl;
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const mainUrl = browserView.webContents.getURL();
+      const urlObj = new URL(mainUrl);
+      if (urlObj.origin && !urlObj.origin.includes('file://')) {
+        apiOrigin = urlObj.origin;
+      }
+    } catch (urlErr) {
+      console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
+    }
+  }
+  return apiOrigin;
+}
+
+async function buildSessionSaveAuthHeaders(apiOrigin) {
+  const headers = {};
+  const token = String(globalStorage.login_token || '');
+  if (token) {
+    headers.token = token;
+    headers.access_token = token;
+  }
+
+  if (browserView && !browserView.webContents.isDestroyed()) {
+    try {
+      const ses = browserView.webContents.session;
+      const apiUrl = new URL(apiOrigin);
+      const domain = apiUrl.hostname;
+      const allCookies = await ses.cookies.get({});
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      const cookieString = domainCookies.map(cookie => {
+        const value = /[^\x00-\xff]/.test(cookie.value) ? encodeURIComponent(cookie.value) : cookie.value;
+        return `${cookie.name}=${value}`;
+      }).join('; ');
+      if (cookieString) {
+        headers.Cookie = cookieString;
+      }
+      console.log(`[Save Session] 主站认证 cookies: ${domainCookies.length} 个`);
+    } catch (err) {
+      console.warn('[Save Session] 读取主站认证 cookies 失败:', err.message);
+    }
+  }
+
+  headers.Origin = apiOrigin;
+  headers.Referer = `${apiOrigin.replace(/\/$/, '')}/`;
+  return headers;
+}
+
+function evaluateSessionSaveResponse(statusCode, responseJson, responseText) {
+  if (!(statusCode >= 200 && statusCode < 300)) {
+    return {
+      success: false,
+      error: `HTTP ${statusCode}`,
+      detail: responseText
+    };
+  }
+
+  if (responseJson && typeof responseJson === 'object') {
+    if (responseJson.success === false) {
+      return {
+        success: false,
+        error: responseJson.msg || responseJson.message || '后台返回 success=false',
+        detail: responseJson
+      };
+    }
+
+    if (Object.prototype.hasOwnProperty.call(responseJson, 'code')) {
+      const numericCode = Number(responseJson.code);
+      if (Number.isFinite(numericCode) && ![0, 1, 200].includes(numericCode)) {
+        return {
+          success: false,
+          error: responseJson.msg || responseJson.message || `后台返回业务码 ${responseJson.code}`,
+          detail: responseJson
+        };
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+function hasWindowSessionSaveCandidate(windowId) {
+  if (windowAccountMap.get(windowId)) {
+    return true;
+  }
+  return !!globalStorage[`publish_data_window_${windowId}`];
+}
+
+async function collectWindowSessionSaveContext(targetWindow, windowId) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
+    return { success: false, error: '窗口已销毁' };
+  }
+
+  const publishDataKey = `publish_data_window_${windowId}`;
+  const publishData = globalStorage[publishDataKey];
+  const windowContext = windowContextMap.get(windowId) || null;
+  const mappedAccountInfo = windowAccountMap.get(windowId) || null;
+  const inferredPlatform = mappedAccountInfo?.platform || publishData?.platform || windowContext?.platform || null;
+  const inferredAccountId = mappedAccountInfo?.accountId
+    || String(getPublishBackendAccountId(publishData) || `shared_${windowId}`);
+  const accountInfo = inferredPlatform ? {
+    platform: inferredPlatform,
+    accountId: inferredAccountId
+  } : null;
+
+  if (!accountInfo) {
+    console.log('[Save Session] ⚠️ 该窗口没有可识别的平台上下文，跳过保存');
+    return { success: false, error: '缺少平台上下文' };
+  }
+
+  console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
+
+  if (!publishData) {
+    console.log('[Save Session] ⚠️ 未找到发布数据，跳过保存');
+    return { success: false, error: '未找到发布数据' };
+  }
+
+  const backendAccountId = getPublishBackendAccountId(publishData);
+
+  const saveSessionApi = publishData?.element?.saveSessionApi
+    || publishData?.element?.save_session_api
+    || config.platformApis[accountInfo.platform];
+
+  let cookieDomains = config.platformDomains[accountInfo.platform] || [];
+  const elementCookies = publishData?.element?.cookies;
+  if (elementCookies) {
+    try {
+      const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
+      if (cookiesData.domain) {
+        cookieDomains = [cookiesData.domain];
+        console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
+      }
+    } catch (parseErr) {
+      console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
+    }
+  }
+
+  if (!saveSessionApi) {
+    console.log('[Save Session] ⚠️ 未找到保存接口配置，跳过保存');
+    return { success: false, error: '未找到保存接口配置' };
+  }
+
+  if (cookieDomains.length === 0) {
+    console.log('[Save Session] ⚠️ 未找到 cookie domain 配置，跳过保存');
+    return { success: false, error: '未找到 cookie domain 配置' };
+  }
+
+  if (!backendAccountId) {
+    console.log('[Save Session] ⚠️ 未找到账号 ID（account_info.id），跳过保存');
+    return { success: false, error: '未找到账号 ID' };
+  }
+
+  const windowSession = targetWindow.webContents.session;
+  const allCookies = await windowSession.cookies.get({});
+  const platformCookies = allCookies.filter(cookie => {
+    const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+    return cookieDomains.some(domain => cookieDomain.includes(domain) || domain.includes(cookieDomain));
+  });
+
+  console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
+  if (platformCookies.length === 0) {
+    console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
+    return { success: false, error: '未找到平台相关 cookies' };
+  }
+
+  const cookiesArray = platformCookies.map(cookie => ({
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    expirationDate: cookie.expirationDate
+  }));
+
+  const apiOrigin = getApiOriginForSessionSave();
+  console.log('[Save Session] 后台 API 域名:', apiOrigin);
+  console.log('[Save Session] 保存接口路径:', saveSessionApi);
+  console.log('[Save Session] 账号 ID:', backendAccountId);
+
+  return {
+    success: true,
+    accountInfo,
+    publishData,
+    backendAccountId,
+    saveSessionApi,
+    cookieDomains,
+    cookiesArray,
+    apiOrigin
+  };
+}
+
+async function uploadSessionToBackend({ apiOrigin, saveSessionApi, backendAccountId, cookieDomains, cookiesArray }) {
+  const postData = JSON.stringify({
+    id: backendAccountId,
+    cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
+  });
+
+  const apiUrl = new URL(saveSessionApi, apiOrigin);
+  const protocol = apiUrl.protocol === 'https:' ? https : http;
+  const authHeaders = await buildSessionSaveAuthHeaders(apiOrigin);
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(postData),
+    ...authHeaders
+  };
+
+  return new Promise((resolve) => {
+    const req = protocol.request({
+      hostname: apiUrl.hostname,
+      port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
+      path: `${apiUrl.pathname}${apiUrl.search}`,
+      method: 'POST',
+      headers: requestHeaders,
+      timeout: 10000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        let responseJson = null;
+        try {
+          responseJson = JSON.parse(data);
+        } catch (_) {
+          responseJson = null;
+        }
+
+        const evaluation = evaluateSessionSaveResponse(res.statusCode || 0, responseJson, data);
+        if (!evaluation.success) {
+          console.error('[Save Session] ❌ 后台未接受会话数据:', {
+            statusCode: res.statusCode,
+            error: evaluation.error,
+            response: String(data || '').substring(0, 300)
+          });
+          resolve({
+            success: false,
+            error: evaluation.error,
+            statusCode: res.statusCode,
+            response: responseJson || data
+          });
+          return;
+        }
+
+        console.log('[Save Session] ✅ 会话数据已保存到后台, status:', res.statusCode, '响应:', String(data || '').substring(0, 200));
+        resolve({
+          success: true,
+          statusCode: res.statusCode,
+          response: responseJson || data,
+          cookieCount: cookiesArray.length,
+          cookies: cookiesArray,
+          backendAccountId
+        });
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
+      resolve({ success: false, error: err.message });
+    });
+
+    req.on('timeout', () => {
+      console.error('[Save Session] ❌ 保存请求超时');
+      req.destroy();
+      resolve({ success: false, error: '请求超时' });
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function persistWindowSessionToBackend(targetWindow, windowId, source = 'window-close') {
+  const context = await collectWindowSessionSaveContext(targetWindow, windowId);
+  if (!context.success) {
+    return context;
+  }
+
+  saveLatestSessionCache({
+    platform: context.accountInfo.platform,
+    backendAccountId: context.backendAccountId,
+    cookieDomains: context.cookieDomains,
+    cookiesArray: context.cookiesArray,
+    source
+  });
+
+  const uploadResult = await uploadSessionToBackend(context);
+  return {
+    ...uploadResult,
+    publishData: context.publishData,
+    accountInfo: context.accountInfo,
+    backendAccountId: context.backendAccountId
+  };
+}
+
 /**
  * 保存窗口的登录信息到后台
  * @param {BrowserWindow} targetWindow - 要保存的窗口
@@ -7910,157 +8852,8 @@ ipcMain.handle('trigger-download', async (event, url) => {
 async function saveWindowSessionToBackend(targetWindow, windowId) {
   console.log('[Save Session] ========== 窗口关闭前保存登录信息 ==========');
   console.log('[Save Session] windowId:', windowId);
-
   try {
-    // 检查窗口是否还有效
-    if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
-      console.log('[Save Session] ⚠️ 窗口已销毁，跳过保存');
-      return { success: false, error: '窗口已销毁' };
-    }
-
-    // 检查是否是多账号模式的窗口
-    const accountInfo = windowAccountMap.get(windowId);
-    if (!accountInfo) {
-      console.log('[Save Session] ⚠️ 该窗口没有关联账号（非多账号模式），跳过保存');
-      return { success: false, error: '非多账号模式窗口' };
-    }
-
-    console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
-
-    // 获取发布数据中的账号信息
-    const publishDataKey = `publish_data_window_${windowId}`;
-    const publishData = globalStorage[publishDataKey];
-    const backendAccountId = publishData?.element?.account_info?.id;
-
-    // 优先从 element 获取配置，否则使用配置文件
-    const saveSessionApi = publishData?.element?.saveSessionApi
-      || publishData?.element?.save_session_api
-      || config.platformApis[accountInfo.platform];
-
-    // 从 element.cookies 提取 domain，否则使用配置文件
-    let cookieDomains = config.platformDomains[accountInfo.platform] || [];
-    const elementCookies = publishData?.element?.cookies;
-    if (elementCookies) {
-      try {
-        const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-        if (cookiesData.domain) {
-          cookieDomains = [cookiesData.domain];
-          console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
-        }
-      } catch (parseErr) {
-        console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
-      }
-    }
-
-    if (!saveSessionApi) {
-      console.log('[Save Session] ⚠️ 未找到保存接口配置，跳过保存');
-      return { success: false, error: '未找到保存接口配置' };
-    }
-
-    if (cookieDomains.length === 0) {
-      console.log('[Save Session] ⚠️ 未找到 cookie domain 配置，跳过保存');
-      return { success: false, error: '未找到 cookie domain 配置' };
-    }
-
-    if (!backendAccountId) {
-      console.log('[Save Session] ⚠️ 未找到账号 ID（account_info.id），跳过保存');
-      return { success: false, error: '未找到账号 ID' };
-    }
-
-    // 获取该窗口 session 的最新 cookies
-    const windowSession = targetWindow.webContents.session;
-    const allCookies = await windowSession.cookies.get({});
-
-    // 根据 domains 过滤 cookies
-    const platformCookies = allCookies.filter(cookie => {
-      const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-      return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
-    });
-
-    console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
-
-    if (platformCookies.length === 0) {
-      console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
-      return { success: false, error: '未找到平台相关 cookies' };
-    }
-
-    // 转换为可序列化的格式
-    const cookiesArray = platformCookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      secure: c.secure,
-      httpOnly: c.httpOnly,
-      sameSite: c.sameSite,
-      expirationDate: c.expirationDate
-    }));
-
-    // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.apiBaseUrl;
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      try {
-        const mainUrl = browserView.webContents.getURL();
-        const urlObj = new URL(mainUrl);
-        if (urlObj.origin && !urlObj.origin.includes('file://')) {
-          apiOrigin = urlObj.origin;
-        }
-      } catch (urlErr) {
-        console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
-      }
-    }
-
-    console.log('[Save Session] 后台 API 域名:', apiOrigin);
-    console.log('[Save Session] 保存接口路径:', saveSessionApi);
-    console.log('[Save Session] 账号 ID:', backendAccountId);
-
-    // 调用后台接口保存 cookies（使用 Promise 包装，等待完成）
-    const https = require('https');
-    const http = require('http');
-
-    const postData = JSON.stringify({
-      id: backendAccountId,
-      cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
-    });
-
-    const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
-    const protocol = apiUrl.protocol === 'https:' ? https : http;
-
-    const result = await new Promise((resolve) => {
-      const req = protocol.request({
-        hostname: apiUrl.hostname,
-        port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
-        path: apiUrl.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        },
-        timeout: 10000 // 10秒超时
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          console.log('[Save Session] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
-          resolve({ success: true, cookieCount: cookiesArray.length });
-        });
-      });
-
-      req.on('error', (err) => {
-        console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
-        resolve({ success: false, error: err.message });
-      });
-
-      req.on('timeout', () => {
-        console.error('[Save Session] ❌ 保存请求超时');
-        req.destroy();
-        resolve({ success: false, error: '请求超时' });
-      });
-
-      req.write(postData);
-      req.end();
-    });
-
+    const result = await persistWindowSessionToBackend(targetWindow, windowId, 'window-close');
     console.log('[Save Session] ========== 保存完成 ==========');
     return result;
   } catch (err) {
@@ -8097,15 +8890,11 @@ function getAccountSession(platform, accountId) {
   const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
   accountSession.setUserAgent(customUA);
 
-  // 添加 webRequest 拦截器（阻止 bitbrowser:// 等协议）
-  accountSession.webRequest.onBeforeRequest((details, callback) => {
-    const url = details.url;
-    if (url && url.toLowerCase().startsWith('bitbrowser:')) {
-      console.log(`[Account Session ${partitionName}] ❌ Blocked bitbrowser protocol:`, url);
-      callback({ cancel: true });
-      return;
-    }
-    callback({});
+  // 添加统一请求守卫（阻止 bitbrowser://、主框架静态资源误导航，并兼容网易号 HTTP）
+  installSessionRequestGuard(accountSession, `账号 session ${partitionName}`, {
+    blockBitbrowser: true,
+    blockMainFrameResources: true,
+    upgradeMp163: true
   });
 
   // 缓存 session
@@ -9036,7 +9825,6 @@ ipcMain.handle('save-session-to-backend', async (event) => {
   console.log('[Save Session] ========== 手动保存会话数据 ==========');
 
   try {
-    // 获取调用者窗口
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
     if (!senderWindow) {
       return { success: false, error: '无法获取发送者窗口' };
@@ -9044,136 +9832,7 @@ ipcMain.handle('save-session-to-backend', async (event) => {
 
     const windowId = senderWindow.id;
     console.log('[Save Session] 窗口ID:', windowId);
-
-    // 检查是否是多账号模式的窗口
-    const accountInfo = windowAccountMap.get(windowId);
-    if (!accountInfo) {
-      return { success: false, error: '该窗口没有关联账号（非多账号模式）' };
-    }
-
-    console.log('[Save Session] 平台:', accountInfo.platform, '账号ID:', accountInfo.accountId);
-
-    // 获取发布数据中的账号信息
-    const publishDataKey = `publish_data_window_${windowId}`;
-    const publishData = globalStorage[publishDataKey];
-    const backendAccountId = publishData?.element?.account_info?.id;
-
-    // 优先从 element 获取配置，否则使用配置文件
-    const saveSessionApi = publishData?.element?.saveSessionApi
-      || publishData?.element?.save_session_api
-      || config.platformApis[accountInfo.platform];
-
-    // 从 element.cookies 提取 domain，否则使用配置文件
-    let cookieDomains = config.platformDomains[accountInfo.platform] || [];
-    const elementCookies = publishData?.element?.cookies;
-    if (elementCookies) {
-      try {
-        const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-        if (cookiesData.domain) {
-          cookieDomains = [cookiesData.domain];
-          console.log('[Save Session] 从 element.cookies 提取 domain:', cookiesData.domain);
-        }
-      } catch (parseErr) {
-        console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
-      }
-    }
-
-    if (!saveSessionApi) {
-      return { success: false, error: '未找到保存接口配置' };
-    }
-
-    if (cookieDomains.length === 0) {
-      return { success: false, error: '未找到 cookie domain 配置' };
-    }
-
-    if (!backendAccountId) {
-      return { success: false, error: '未找到账号 ID（account_info.id）' };
-    }
-
-    // 获取该窗口 session 的最新 cookies
-    const windowSession = senderWindow.webContents.session;
-    const allCookies = await windowSession.cookies.get({});
-
-    // 根据 domains 过滤 cookies
-    const platformCookies = allCookies.filter(cookie => {
-      const cd = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-      return cookieDomains.some(d => cd.includes(d) || d.includes(cd));
-    });
-
-    console.log(`[Save Session] 找到 ${platformCookies.length} 个平台相关 cookies (domains: ${cookieDomains.join(', ')})`);
-
-    if (platformCookies.length === 0) {
-      return { success: false, error: '未找到平台相关 cookies' };
-    }
-
-    // 转换为可序列化的格式
-    const cookiesArray = platformCookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      secure: c.secure,
-      httpOnly: c.httpOnly,
-      sameSite: c.sameSite,
-      expirationDate: c.expirationDate
-    }));
-
-    // 获取后台 API 域名（从 browserView 的 URL 获取，否则用配置文件默认值）
-    let apiOrigin = config.apiBaseUrl;
-    if (browserView && !browserView.webContents.isDestroyed()) {
-      try {
-        const mainUrl = browserView.webContents.getURL();
-        const urlObj = new URL(mainUrl);
-        if (urlObj.origin && !urlObj.origin.includes('file://')) {
-          apiOrigin = urlObj.origin;
-        }
-      } catch (urlErr) {
-        console.error('[Save Session] 解析主窗口 URL 失败:', urlErr);
-      }
-    }
-
-    console.log('[Save Session] 后台 API 域名:', apiOrigin);
-    console.log('[Save Session] 保存接口路径:', saveSessionApi);
-    console.log('[Save Session] 账号 ID:', backendAccountId);
-
-    // 调用后台接口保存 cookies（使用 Promise 包装）
-    const postData = JSON.stringify({
-      id: backendAccountId,
-      cookies: JSON.stringify({ domain: cookieDomains[0], cookies: cookiesArray })
-    });
-
-    const apiUrl = new URL(`${apiOrigin}${saveSessionApi}`);
-    const protocol = apiUrl.protocol === 'https:' ? https : http;
-
-    const result = await new Promise((resolve, reject) => {
-      const req = protocol.request({
-        hostname: apiUrl.hostname,
-        port: apiUrl.port || (apiUrl.protocol === 'https:' ? 443 : 80),
-        path: apiUrl.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        }
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          console.log('[Save Session] ✅ 会话数据已保存到后台, 响应:', data.substring(0, 200));
-          resolve({ success: true, response: data, cookieCount: cookiesArray.length });
-        });
-      });
-
-      req.on('error', (err) => {
-        console.error('[Save Session] ❌ 保存会话数据到后台失败:', err.message);
-        reject(err);
-      });
-
-      req.write(postData);
-      req.end();
-    });
-
-    return result;
+    return await persistWindowSessionToBackend(senderWindow, windowId, 'manual-save');
   } catch (err) {
     console.error('[Save Session] 保存失败:', err);
     return { success: false, error: err.message };

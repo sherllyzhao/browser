@@ -319,11 +319,18 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     // 隐藏页面内容并显示加载遮罩（纯CSS loading动画）
-    window.hidePageAndShowMask = function () {
+    // ⚠️ 为避免永久白屏（如平台返回错误页、脚本因等待元素超时抛错），
+    // 默认 15s 兔兑底自动解除遮罩。调用方可传 safetyTimeoutMs 覆盖（0 表示禁用）
+    window.hidePageAndShowMask = function (safetyTimeoutMs) {
+        const __ts__ = Date.now();
+        console.log(`[hidePageAndShowMask] 🎭 调用开始 @${new Date().toLocaleTimeString()}, body 存在: ${!!document.body}`);
         // 隐藏 body 内容
         if (document.body) {
             document.body.style.visibility = "hidden";
             document.body.style.opacity = "0";
+            console.log(`[hidePageAndShowMask] 🎭 body 已隐藏 (visibility=hidden, opacity=0)`);
+        } else {
+            console.warn(`[hidePageAndShowMask] ⚠️ body 不存在，仅添加遮罩`);
         }
 
         // 添加白色遮罩层 + loading动画
@@ -341,11 +348,65 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     `;
             mask.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:999999;display:flex;align-items:center;justify-content:center;";
             document.documentElement.appendChild(mask);
+            console.log(`[hidePageAndShowMask] 🎭 遮罩层已添加，耗时 ${Date.now() - __ts__}ms`);
+        } else {
+            console.log(`[hidePageAndShowMask] 🎭 遮罩层已存在，跳过添加`);
+        }
+
+        // 🐰 兔兑底定时器：防止主体脚本抛错/超时导致 showPageAndHideMask 永不被调用
+        // 背景：ab58f2d 引入开头遮罩，若脚本 60s 等按钮可用超时抛错，show 永远不执行 → 永久白屏
+        // 兜底：默认 15s 后强制 show，同时把页面可见文字打到日志（便于排查平台的实际错误提示）
+        try {
+            if (window.__MASK_SAFETY_TIMER__) {
+                clearTimeout(window.__MASK_SAFETY_TIMER__);
+                window.__MASK_SAFETY_TIMER__ = null;
+            }
+            const timeoutMs = (typeof safetyTimeoutMs === 'number' && safetyTimeoutMs >= 0)
+                ? safetyTimeoutMs
+                : 15000;
+            if (timeoutMs > 0) {
+                window.__MASK_SAFETY_TIMER__ = setTimeout(() => {
+                    try {
+                        const mask = document.getElementById('__page_loading_mask__');
+                        if (!mask) {
+                            console.log(`[MaskSafetyTimer] ⏰ 兜底触发但遮罩已不存在，忽略`);
+                            return;
+                        }
+                        console.warn(`[MaskSafetyTimer] ⏰ ${timeoutMs}ms 兜底触发：遮罩未被主动解除，强制 show`);
+                        // 打印页面可见文字前 500 字，帮助排查平台错误页
+                        try {
+                            const bodyText = (document.body?.innerText || '').trim();
+                            if (bodyText) {
+                                console.warn(`[MaskSafetyTimer] 📢 当前页面可见文字（前 500 字）:\n${bodyText.slice(0, 500)}`);
+                            } else {
+                                console.warn(`[MaskSafetyTimer] 📢 页面 innerText 为空`);
+                            }
+                        } catch (_) {}
+                        if (typeof window.showPageAndHideMask === 'function') {
+                            window.showPageAndHideMask();
+                        }
+                    } catch (err) {
+                        console.error(`[MaskSafetyTimer] ❌ 兜底异常:`, err);
+                    }
+                }, timeoutMs);
+                console.log(`[hidePageAndShowMask] 🐰 兔兑底定时器已注册 (${timeoutMs}ms 后自动 show)`);
+            }
+        } catch (timerErr) {
+            console.error(`[hidePageAndShowMask] ❌ 注册兔兑底定时器失败:`, timerErr);
         }
     };
 
     // 显示页面内容并隐藏加载遮罩
     window.showPageAndHideMask = function () {
+        // 🐰 清除兔兑底定时器，避免误触
+        try {
+            if (window.__MASK_SAFETY_TIMER__) {
+                clearTimeout(window.__MASK_SAFETY_TIMER__);
+                window.__MASK_SAFETY_TIMER__ = null;
+                console.log(`[showPageAndHideMask] 🐰 已清除兔兑底定时器`);
+            }
+        } catch (_) {}
+
         // 显示 body 内容
         if (document.body) {
             document.body.style.visibility = "visible";
@@ -356,6 +417,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         const mask = document.getElementById("__page_loading_mask__");
         if (mask) {
             mask.remove();
+            console.log(`[showPageAndHideMask] ✅ 遮罩已移除`);
+        } else {
+            console.log(`[showPageAndHideMask] ℹ️ 遮罩不存在，跳过移除`);
         }
     };
 
@@ -399,53 +463,95 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
      * @param {number} maxRetries - 最大重试次数，默认 3 次
      */
     window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
+        const __startTs__ = Date.now();
         // 🔑 使用 localStorage 而不是 sessionStorage（登录跳转会清空 sessionStorage）
         const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
         let retryCount = parseInt(localStorage.getItem(retryKey) || '0');
 
+        console.log(`[${platform}][白屏检测] 🛡 启动 | checkDelay=${checkDelay}ms | maxRetries=${maxRetries} | 当前重试次数=${retryCount}`);
+        console.log(`[${platform}][白屏检测] 📋 keySelectors:`, keySelectors);
+
         if (retryCount >= maxRetries) {
-            console.log(`[${platform}] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
+            console.log(`[${platform}][白屏检测] ⚠️ 已达到最大重试次数 ${maxRetries}，停止自动刷新`);
             localStorage.removeItem(retryKey);
             return;
         }
 
         // 延迟检测页面是否正常加载
         setTimeout(() => {
+            const __checkTs__ = Date.now();
+            console.log(`[${platform}][白屏检测] ⏰ 定时检测触发 @${new Date().toLocaleTimeString()}, 距启动 ${__checkTs__ - __startTs__}ms`);
             try {
                 // 检测 1: body 是否为空或几乎为空
                 const bodyText = (document.body?.innerText || '').trim();
                 const bodyHtml = (document.body?.innerHTML || '').trim();
 
+                console.log(`[${platform}][白屏检测] 📊 页面快照:`, {
+                    url: window.location.href,
+                    readyState: document.readyState,
+                    bodyExists: !!document.body,
+                    bodyTextLength: bodyText.length,
+                    bodyHtmlLength: bodyHtml.length,
+                    bodyTextPreview: bodyText.slice(0, 100)
+                });
+
                 // 检测 2: 是否有关键元素（支持 Shadow DOM）
                 let hasKeyElement = false;
+                let hitSelector = null;
+                const selectorResults = {};
                 if (keySelectors.length > 0) {
                     for (const selector of keySelectors) {
                         // 先在普通 DOM 中查找
-                        if (document.querySelector(selector)) {
-                            hasKeyElement = true;
-                            break;
+                        const directHit = document.querySelector(selector);
+                        if (directHit) {
+                            selectorResults[selector] = 'direct-match';
+                            if (!hasKeyElement) {
+                                hasKeyElement = true;
+                                hitSelector = selector;
+                            }
+                            continue;
                         }
 
-                        // 🔑 如果是 wujie-app，检查 shadowRoot
+                        // 🔑 如果是 wujie-app，检查 shadowRoot 是否真正有内容
+                        // 原问题：wujie-app 元素存在 + shadowRoot 存在就认为正常，但微前端子应用加载中/失败时
+                        // shadowRoot 存在但内部为空（或仅有 loading 骨架），导致"白屏但检测不触发 reload"
+                        // 修复：同时要求 shadowRoot.innerHTML 长度 > 300 或内部有可见元素
                         if (selector === 'wujie-app') {
                             const wujieApp = document.querySelector('wujie-app');
                             if (wujieApp && wujieApp.shadowRoot) {
-                                hasKeyElement = true;
-                                break;
+                                const shadowHtml = wujieApp.shadowRoot.innerHTML || '';
+                                // 内部是否有实际渲染的子节点（body/div/form 等常见容器）
+                                const hasRealContent = !!(
+                                    wujieApp.shadowRoot.querySelector('body') ||
+                                    wujieApp.shadowRoot.querySelector('div') ||
+                                    wujieApp.shadowRoot.querySelector('form')
+                                );
+                                const innerMeaningful = shadowHtml.length > 300 && hasRealContent;
+                                selectorResults[selector] = `shadow-root (innerHTML=${shadowHtml.length}, hasRealContent=${hasRealContent}, meaningful=${innerMeaningful})`;
+                                if (innerMeaningful && !hasKeyElement) {
+                                    hasKeyElement = true;
+                                    hitSelector = selector;
+                                }
+                                continue;
                             }
                         }
+                        selectorResults[selector] = 'miss';
                     }
                 } else {
                     // 如果没有指定关键选择器，默认认为有元素（只检测 body 内容）
                     hasKeyElement = true;
                 }
 
+                console.log(`[${platform}][白屏检测] 🔎 选择器命中明细:`, selectorResults);
+                console.log(`[${platform}][白屏检测] 🎯 命中结果: hasKeyElement=${hasKeyElement}, 命中=${hitSelector || '无'}`);
+
                 // 检测 3: 是否是白屏（body 内容很少且没有关键元素）
                 const isBlankPage = bodyText.length < 50 && bodyHtml.length < 200 && !hasKeyElement;
+                console.log(`[${platform}][白屏检测] 🧮 判定: isBlankPage=${isBlankPage} (bodyText<50=${bodyText.length < 50}, bodyHtml<200=${bodyHtml.length < 200}, !hasKeyElement=${!hasKeyElement})`);
 
                 if (isBlankPage) {
-                    console.log(`[${platform}] ❌ 检测到白屏，准备刷新页面...`);
-                    console.log(`[${platform}] 页面状态:`, {
+                    console.log(`[${platform}][白屏检测] ❌ 检测到白屏，准备刷新页面...`);
+                    console.log(`[${platform}][白屏检测] 📊 白屏详情:`, {
                         bodyTextLength: bodyText.length,
                         bodyHtmlLength: bodyHtml.length,
                         hasKeyElement,
@@ -456,6 +562,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // 增加重试计数
                     localStorage.setItem(retryKey, String(retryCount + 1));
+                    console.log(`[${platform}][白屏检测] 🔢 重试计数更新: ${retryCount} → ${retryCount + 1}`);
 
                     // 隐藏页面并显示 loading
                     if (typeof window.hidePageAndShowMask === 'function') {
@@ -464,15 +571,17 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // 延迟 1 秒后刷新
                     setTimeout(() => {
+                        console.log(`[${platform}][白屏检测] 🔁 执行 window.location.reload()`);
                         window.location.reload();
                     }, 1000);
                 } else {
                     // 页面正常，清除重试计数
                     localStorage.removeItem(retryKey);
-                    console.log(`[${platform}] ✅ 页面加载正常`);
+                    console.log(`[${platform}][白屏检测] ✅ 页面加载正常 (命中: ${hitSelector || 'N/A'}, 耗时 ${Date.now() - __checkTs__}ms)`);
                 }
             } catch (e) {
-                console.error(`[${platform}] ❌ 白屏检测失败:`, e);
+                console.error(`[${platform}][白屏检测] ❌ 白屏检测异常:`, e);
+                console.error(`[${platform}][白屏检测] 🧾 堆栈:`, e.stack);
             }
         }, checkDelay);
     };
@@ -1477,9 +1586,219 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
+    function getFirstMeaningfulValue(...values) {
+        for (const value of values) {
+            if (value === undefined || value === null) {
+                continue;
+            }
+            if (typeof value === "string" && value.trim() === "") {
+                continue;
+            }
+            return value;
+        }
+        return null;
+    }
+
+    function pruneEmptyFields(payload = {}) {
+        return Object.fromEntries(
+            Object.entries(payload).filter(([_, value]) => {
+                if (value === undefined || value === null) {
+                    return false;
+                }
+                if (typeof value === "string" && value.trim() === "") {
+                    return false;
+                }
+                return true;
+            })
+        );
+    }
+
+    function normalizeStatisticsPlatformName(platform = "") {
+        if (typeof platform !== "string") {
+            return "";
+        }
+        return platform.replace(/发布$/u, "").trim();
+    }
+
+    window.getCurrentPublishDataForStatistics = async function (logPrefix = "[统计接口]") {
+        try {
+            if (window.browserAPI?.getWindowId && window.browserAPI?.getGlobalData) {
+                const windowId = await window.browserAPI.getWindowId();
+                if (windowId) {
+                    const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+                    if (publishData) {
+                        console.log(`${logPrefix} ✅ 从 publish_data_window_${windowId} 读取到发布数据`);
+                        return publishData;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`${logPrefix} ⚠️ 从窗口级发布数据读取失败:`, e);
+        }
+
+        if (window.__AUTH_DATA__?.message) {
+            console.log(`${logPrefix} ℹ️ 回退使用 window.__AUTH_DATA__.message`);
+            return window.__AUTH_DATA__.message;
+        }
+
+        console.log(`${logPrefix} ℹ️ 未找到可用的发布数据，统计字段将仅上报基础信息`);
+        return null;
+    };
+
+    window.extractStatisticsMeta = async function (platform = "", logPrefix = "[统计接口]") {
+        const publishData = await window.getCurrentPublishDataForStatistics(logPrefix);
+        const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
+        const element = rawData?.element || rawData || {};
+        const accountInfo = element?.account_info || element?.accountInfo || {};
+        const mediaInfo = accountInfo?.media || element?.media || {};
+        const mediaAuth = element?.media_auth || element?.mediaAuth || {};
+
+        const meta = pruneEmptyFields({
+            media_id: getFirstMeaningfulValue(
+                element?.media_id,
+                mediaInfo?.id,
+                accountInfo?.media_id,
+                mediaAuth?.media_id
+            ),
+            account_id: getFirstMeaningfulValue(
+                element?.account_id,
+                accountInfo?.id,
+                element?.media_auth_id,
+                mediaAuth?.id,
+                element?.platform_uid,
+                element?.platformUid,
+                element?.uid,
+                element?.open_id,
+                element?.openid,
+                accountInfo?.platform_uid,
+                accountInfo?.platformUid,
+                accountInfo?.uid,
+                accountInfo?.open_id,
+                accountInfo?.openid,
+                mediaAuth?.open_id,
+                mediaAuth?.uid,
+                mediaAuth?.origin_id
+            ),
+            nickname: getFirstMeaningfulValue(
+                element?.nickname,
+                element?.account_name,
+                accountInfo?.nickname,
+                accountInfo?.title,
+                mediaAuth?.nickname,
+                mediaAuth?.title
+            ),
+            avatar: getFirstMeaningfulValue(
+                element?.avatar,
+                accountInfo?.avatar,
+                mediaAuth?.avatar
+            ),
+            media_logo: getFirstMeaningfulValue(
+                element?.media_logo,
+                mediaInfo?.logo,
+                mediaInfo?.icon,
+                mediaInfo?.avatar,
+                element?.icon
+            ),
+            media_name: getFirstMeaningfulValue(
+                element?.media_name,
+                mediaInfo?.name,
+                mediaInfo?.title
+            ),
+        });
+
+        console.log(`${logPrefix} 📦 提取到统计附加字段:`, meta);
+        return meta;
+    };
+
+    window.buildStatisticsPayload = async function (publishId, platform = "", extraData = {}) {
+        const logPrefix = `[${platform || "发布"}][统计接口]`;
+        const meta = await window.extractStatisticsMeta(platform, logPrefix);
+        const payload = pruneEmptyFields({
+            id: publishId,
+            ...meta,
+            ...(extraData || {}),
+        });
+
+        console.log(`${logPrefix} 📤 最终上报 payload:`, payload);
+        return payload;
+    };
+
+    window.buildStatisticsRequestData = async function (publishId, platform = "", extraData = {}) {
+        const payload = await window.buildStatisticsPayload(publishId, platform, extraData);
+        return { data: JSON.stringify(payload) };
+    };
+
+    function getStatisticsReportCacheKey(windowId, resultType = "unknown") {
+        return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
+    }
+
+    window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
+        if (!publishId) {
+            return { acquired: true, key: null, windowId: null };
+        }
+
+        let windowId = null;
+        try {
+            if (window.browserAPI?.getWindowId) {
+                windowId = await window.browserAPI.getWindowId();
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 获取窗口 ID 失败，降级为默认去重 key:", e.message);
+        }
+
+        const key = getStatisticsReportCacheKey(windowId, resultType);
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (cachedRaw) {
+                const cached = JSON.parse(cachedRaw);
+                if (String(cached?.publishId || "") === String(publishId)) {
+                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报，跳过`, cached);
+                    return { acquired: false, key, windowId, cached };
+                }
+            }
+
+            sessionStorage.setItem(key, JSON.stringify({
+                publishId,
+                resultType,
+                platform: platform || "",
+                timestamp: Date.now(),
+            }));
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
+        }
+
+        return { acquired: true, key, windowId };
+    };
+
+    window.releaseStatisticsReportLock = function (key, publishId = "") {
+        if (!key) {
+            return;
+        }
+
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (!cachedRaw) {
+                return;
+            }
+
+            const cached = JSON.parse(cachedRaw);
+            if (!publishId || String(cached?.publishId || "") === String(publishId)) {
+                sessionStorage.removeItem(key);
+            }
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 清理统计去重锁失败:", e.message);
+        }
+    };
+
     // 发送统计接口（发布成功时调用）
     window.sendStatistics = async function (publishId, platform = "") {
-        const scanData = { data: JSON.stringify({ id: publishId }) };
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
+        const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
             const url = await getStatisticsUrl(false);
@@ -1492,6 +1811,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 成功统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 成功统计接口请求失败:`, e);
             return { success: false, error: e };
         }
@@ -1500,14 +1820,18 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // 发送错误统计接口（发布失败时调用）
     // 🔑 增强版：附带详细的错误上下文日志
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null) {
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: "duplicate-report" };
+        }
+
         // 使用 PublishLogger 记录错误
         if (window.PublishLogger && errorObj) {
             window.PublishLogger.error(platform || "发布", "sendStatisticsError", errorObj, { publishId, statusText });
         }
 
         // 构建错误数据（包含更多上下文信息）
-        const errorData = {
-            id: publishId,
+        const errorExtraData = {
             status_text: statusText,
             // 🔑 附加诊断信息
             context: {
@@ -1521,7 +1845,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         if (window.PublishLogger) {
             const recentLogs = window.PublishLogger.getRecentLogs(5);
             if (recentLogs.length > 0) {
-                errorData.context.recentActions = recentLogs.map(log => ({
+                errorExtraData.context.recentActions = recentLogs.map(log => ({
                     time: log.timestamp,
                     action: log.action,
                     message: log.message,
@@ -1529,7 +1853,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             }
         }
 
-        const scanData = { data: JSON.stringify(errorData) };
+        const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
         try {
             console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
             const url = await getStatisticsUrl(true);
@@ -1542,6 +1866,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             console.log(`[${platform || "发布"}] ✅ 失败统计接口请求成功`);
             return { success: true, response };
         } catch (e) {
+            window.releaseStatisticsReportLock(reportLock.key, publishId);
             console.error(`[${platform || "发布"}] ❌ 失败统计接口请求失败:`, e);
             return { success: false, error: e };
         }
@@ -2216,6 +2541,13 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             logPrefix: "[知乎发布]",
             selectors: [{ containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }],
         },
+    //    新浪
+        xinlang: {
+            logPrefix: "[新浪发布]",
+            // 🔴 修复：".n-alert-body__content > div" 查不到子 div（实际"参数错误"是直接文本节点）
+            // 改为直接读 .n-alert-body__content 的 textContent
+            selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content", recursiveSelector: ".n-alert" }],
+        }
     };
 
     // 判断当前系统类型
@@ -2455,6 +2787,8 @@ if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && 
 if (typeof deepShadowSearch === "undefined") window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
 if (typeof sendStatistics === "undefined") window.sendStatistics && (sendStatistics = window.sendStatistics);
 if (typeof sendStatisticsError === "undefined") window.sendStatisticsError && (sendStatisticsError = window.sendStatisticsError);
+if (typeof buildStatisticsPayload === "undefined") window.buildStatisticsPayload && (buildStatisticsPayload = window.buildStatisticsPayload);
+if (typeof buildStatisticsRequestData === "undefined") window.buildStatisticsRequestData && (buildStatisticsRequestData = window.buildStatisticsRequestData);
 if (typeof getApiDomain === "undefined") window.getApiDomain && (getApiDomain = window.getApiDomain);
 if (typeof getStatisticsUrl === "undefined") window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === "undefined") window.clickWithRetry && (clickWithRetry = window.clickWithRetry);

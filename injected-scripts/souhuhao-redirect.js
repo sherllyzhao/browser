@@ -52,7 +52,9 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
                         apiUrl = 'https://api.china9.cn/api/mediaauth/tjlog';
                     }
                     console.log('[搜狐号重定向] 📤 API 地址:', apiUrl);
-                    const scanData = { data: JSON.stringify({ id: publishId }) };
+                    const scanData = window.buildStatisticsRequestData
+                        ? await window.buildStatisticsRequestData(publishId, '搜狐号发布')
+                        : { data: JSON.stringify({ id: publishId }) };
                     const response = await fetch(apiUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },

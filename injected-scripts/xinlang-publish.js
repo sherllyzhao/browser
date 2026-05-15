@@ -53,6 +53,7 @@
         window.__XL_introFilled = false; // 简介填写标志
         window.__XL_receivedMessageData = null; // 保存收到的父窗口消息
         window.__XL_currentWindowId = null; // 当前窗口 ID
+        window.__XL_WRITE_BTN_CLICKED__ = false; // 防止重复点击"写文章"
     }
 
     // 使用 window 上的变量（兼容多次注入）
@@ -80,8 +81,8 @@
 
     // 初始化错误监听器
     const initErrorListener = () => {
-        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.tengxun) {
-            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.tengxun);
+        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.xinlang) {
+            errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.xinlang);
             console.log("[新浪发布] ✅ 使用公共错误监听器配置");
         } else {
             // 回退方案：使用本地配置
@@ -103,7 +104,45 @@
         errorListener.start();
     };
     const stopErrorListener = () => errorListener?.stop();
-    const getLatestError = () => errorListener?.getLatestError() || null;
+
+    // 🔴 全文本扫描"参数错误/点击重试"等关键错误词（错误监听器选择器没覆盖到时的兜底）
+    const PARAM_ERROR_KEYWORDS = ['参数错误', '点击重试', '系统繁忙', '请求失败', '操作失败'];
+    const detectXinlangParamError = () => {
+        try {
+            const root = document.body;
+            if (!root) return null;
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                acceptNode: (node) => {
+                    const parent = node.parentElement;
+                    if (!parent) return NodeFilter.FILTER_REJECT;
+                    // 跳过不可见元素和脚本/样式节点
+                    const tag = parent.tagName;
+                    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    if (parent.offsetParent === null && parent !== document.body) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            });
+            let node;
+            while ((node = walker.nextNode())) {
+                const text = (node.textContent || '').trim();
+                if (!text || text.length > 60) continue; // 过长的文本通常是正文，跳过
+                for (const keyword of PARAM_ERROR_KEYWORDS) {
+                    if (text.includes(keyword)) {
+                        return text;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[新浪发布] detectXinlangParamError 出错:', e.message);
+        }
+        return null;
+    };
+
+    const getLatestError = () => errorListener?.getLatestError() || detectXinlangParamError() || null;
 
     // 获取窗口专属的发布成功数据 key
     const getPublishSuccessKey = () => {
@@ -111,6 +150,114 @@
         console.log("[新浪发布] 🔑 使用 localStorage key:", key);
         return key;
     };
+
+    const XINLANG_EDITOR_MASK_SELECTOR = '.n-spin-body.wb-editor-spin';
+    const XINLANG_TITLE_SELECTOR = 'input[placeholder*="标题"], textarea[placeholder*="标题"]';
+    const XINLANG_EDITOR_SELECTOR = '.wb-editor, [contenteditable="true"]';
+    const XINLANG_TOOLBAR_SELECTOR = '[class*="toolbar"], [class*="editor-tool"]';
+
+    function isVisibleElement(element) {
+        if (!element) return false;
+        const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        const opacity = style ? Number(style.opacity) : 1;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || opacity === 0)) {
+            return false;
+        }
+        return element.offsetParent !== null || style?.position === 'fixed';
+    }
+
+    function findXinlangWriteButton() {
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        return allButtons.find((btn) => {
+            const text = (btn.textContent || '').replace(/\s+/g, '');
+            return text.includes('写文章') && !btn.disabled && isVisibleElement(btn);
+        }) || null;
+    }
+
+    function getXinlangEditorState() {
+        const titleInput = document.querySelector(XINLANG_TITLE_SELECTOR);
+        const editor = document.querySelector(XINLANG_EDITOR_SELECTOR);
+        const toolbar = document.querySelector(XINLANG_TOOLBAR_SELECTOR);
+        const hasEditPageBtn = Array.from(document.querySelectorAll('button')).some((btn) => {
+            const text = (btn.textContent || '').trim();
+            return text === '保存草稿' || text === '预览' || text === '下一步';
+        });
+        const mask = Array.from(document.querySelectorAll(XINLANG_EDITOR_MASK_SELECTOR))
+            .find((element) => isVisibleElement(element)) || null;
+
+        return {
+            titleInput,
+            editor,
+            toolbar,
+            hasEditPageBtn,
+            mask,
+            hasEditableElements: !!(titleInput || editor || toolbar || hasEditPageBtn)
+        };
+    }
+
+    async function ensureXinlangEditorReady(options = {}) {
+        const {
+            context = '编辑器准备阶段',
+            timeout = 30000,
+            clickWriteButtonWhenNeeded = false,
+            respectWriteClickGuard = false,
+            markWriteButtonClicked = false,
+            pollInterval = 500
+        } = options;
+
+        const startTime = Date.now();
+        let hasClickedWriteButton = false;
+        let lastStateSummary = '';
+
+        while (Date.now() - startTime < timeout) {
+            const state = getXinlangEditorState();
+            const hasMask = !!state.mask;
+            const stateSummary = `标题=${!!state.titleInput}, 编辑器=${!!state.editor}, 工具栏=${!!state.toolbar}, 编辑按钮=${state.hasEditPageBtn}, 遮罩=${hasMask}`;
+
+            if (stateSummary !== lastStateSummary) {
+                console.log(`[新浪发布] 🔍 ${context}状态: ${stateSummary}`);
+                lastStateSummary = stateSummary;
+            }
+
+            if (state.hasEditableElements && !hasMask) {
+                console.log(`[新浪发布] ✅ ${context}编辑器已就绪`);
+                return state;
+            }
+
+            const shouldClickWriteButton = clickWriteButtonWhenNeeded
+                && !hasClickedWriteButton
+                && (hasMask || !state.hasEditableElements)
+                && (!respectWriteClickGuard || !window.__XL_WRITE_BTN_CLICKED__);
+
+            if (shouldClickWriteButton) {
+                const writeBtn = findXinlangWriteButton();
+                if (writeBtn) {
+                    console.log(`[新浪发布] 🖱️ ${context}检测到${hasMask ? '编辑器遮罩' : '预览态'}，点击"写文章"按钮`);
+                    writeBtn.click();
+                    hasClickedWriteButton = true;
+                    if (markWriteButtonClicked) {
+                        window.__XL_WRITE_BTN_CLICKED__ = true;
+                    }
+                    await delay(800);
+                    continue;
+                }
+
+                console.warn(`[新浪发布] ⚠️ ${context}需要点击"写文章"，但未找到可用按钮`);
+            }
+
+            await delay(pollInterval);
+        }
+
+        const finalState = getXinlangEditorState();
+        throw new Error(
+            `[新浪发布] ${context}等待编辑器就绪超时: `
+            + `标题=${!!finalState.titleInput}, `
+            + `编辑器=${!!finalState.editor}, `
+            + `工具栏=${!!finalState.toolbar}, `
+            + `编辑按钮=${finalState.hasEditPageBtn}, `
+            + `遮罩=${!!finalState.mask}`
+        );
+    }
 
     console.log("═══════════════════════════════════════");
     console.log("✅ 新浪发布脚本已注入");
@@ -175,8 +322,15 @@
         console.log("[新浪发布] 📋 sendTime:", sendTime);
 
         // 等待发布弹窗出现（最多等 60 秒，给用户更多时间）
+        // waitForElement 超时会 reject 抛错，这里捕获后降级走正常发布流程（main 继续往下走 528 行后的写文章/填表单/发布逻辑）
         console.log("[新浪发布] ⏳ 开始等待发布弹窗（最多60秒）...");
-        const existingDialog = await waitForElement('.n-dialog', 60000, 500);
+        let existingDialog = null;
+        try {
+            existingDialog = await waitForElement('.n-dialog', 60000, 500);
+        } catch (waitErr) {
+            console.warn("[新浪发布] ⚠️ 等待 .n-dialog 弹窗超时，将清除验证页数据并降级到正常发布流程:", waitErr.message);
+            existingDialog = null;
+        }
         if (existingDialog) {
             console.log("[新浪发布] ✅ 发布弹窗已出现，继续发布流程...");
 
@@ -199,29 +353,17 @@
                     } catch (e) {
                     }
 
-                    // 🔴 再次检测页面状态，根据编辑元素判断是否需要点击"写文章"
-                    await delay(1000);
-                    const titleInput = document.querySelector('input[placeholder*="标题"], textarea[placeholder*="标题"]');
-                    const editor = document.querySelector('.wb-editor, [contenteditable="true"]');
-                    const toolbar = document.querySelector('[class*="toolbar"], [class*="editor-tool"]');
-                    const hasEditableElements = titleInput || editor || toolbar;
-
-                    console.log("[新浪发布] 🔍 验证页返回后检测页面状态: 编辑元素=", !!hasEditableElements);
-
-                    if (!hasEditableElements) {
-                        // 没有编辑元素，说明需要点击"写文章"
-                        console.log("[新浪发布] 📝 页面处于预览状态，尝试点击写文章按钮...");
-
-                        const allButtons = document.querySelectorAll('button');
-                        for (const btn of allButtons) {
-                            const text = btn.textContent.trim();
-                            if (text.includes('写文章')) {
-                                console.log("[新浪发布] ✅ 找到写文章按钮，准备点击...");
-                                btn.click();
-                                await delay(2000);
-                                break;
-                            }
-                        }
+                    try {
+                        await delay(1000);
+                        await ensureXinlangEditorReady({
+                            context: '验证页返回后',
+                            timeout: 30000,
+                            clickWriteButtonWhenNeeded: true,
+                            respectWriteClickGuard: false,
+                            markWriteButtonClicked: true
+                        });
+                    } catch (readyError) {
+                        console.warn("[新浪发布] ⚠️ 验证页返回后等待编辑器就绪失败:", readyError.message);
                     }
 
                     // 继续执行填充数据
@@ -350,13 +492,7 @@
 
                     if (publishId) {
                         try {
-                            const successUrl = await getStatisticsUrl();
-                            const scanData = {data: JSON.stringify({id: publishId})};
-                            await fetch(successUrl, {
-                                method: "POST",
-                                headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify(scanData),
-                            });
+                            await sendStatistics(publishId, "新浪发布");
                             console.log("[新浪发布] ✅ 即时发布统计上报成功");
                         } catch (e) {
                             console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -402,68 +538,23 @@
     // ===========================
     const currentHash = window.location.hash;
     if (currentHash.match(/#\/draft/)) {
-        // 🔑 检查是否已经点击过（防止重复点击导致死循环）
-        if (window.__XL_WRITE_BTN_CLICKED__) {
-            console.log("[新浪发布] ⏭️ 已经点击过写文章按钮，跳过");
-        } else {
-            // 等待页面完全加载
-            await new Promise(r => setTimeout(r, 2000));
+        await delay(2000);
 
-            // 检查是否有编辑器相关元素（多种检测方式）
-            const titleInput = document.querySelector('input[placeholder*="标题"], textarea[placeholder*="标题"]');
-            const editor = document.querySelector('.wb-editor, [contenteditable="true"]');
-            // 编辑器工具栏
-            const toolbar = document.querySelector('[class*="toolbar"], [class*="editor-tool"]');
-            // 编辑页面特有的按钮：保存草稿、预览、下一步
-            const editPageBtns = document.querySelectorAll('button');
-            let hasEditPageBtn = false;
-            for (const btn of editPageBtns) {
-                const text = btn.textContent.trim();
-                if (text === '保存草稿' || text === '预览' || text === '下一步') {
-                    hasEditPageBtn = true;
-                    break;
-                }
-            }
-
-            const hasEditableElements = titleInput || editor || toolbar || hasEditPageBtn;
-
-            console.log("[新浪发布] 🔍 检测页面状态: 标题输入框=", !!titleInput, ", 编辑器=", !!editor, ", 工具栏=", !!toolbar, ", 编辑按钮=", hasEditPageBtn);
-
-            if (!hasEditableElements) {
-                // 没有输入元素，说明是草稿预览页，需要点击"写文章"
-                console.log("[新浪发布] 📝 检测到草稿预览页（无输入元素），尝试点击写文章按钮...");
-
-                // 查找"写文章"按钮
-                let writeBtn = null;
-                const allButtons = document.querySelectorAll('button');
-                console.log("[新浪发布] 🔍 找到", allButtons.length, "个 button 元素");
-
-                for (const btn of allButtons) {
-                    const text = btn.textContent.trim();
-                    if (text.includes('写文章')) {
-                        writeBtn = btn;
-                        console.log("[新浪发布] ✅ 匹配到写文章按钮:", text);
-                        break;
-                    }
-                }
-
-                if (writeBtn) {
-                    // 🔑 标记已点击，防止重复
-                    window.__XL_WRITE_BTN_CLICKED__ = true;
-
-                    console.log("[新浪发布] ✅ 找到写文章按钮，准备点击...");
-                    writeBtn.click();
-                    console.log("[新浪发布] ✅ 已点击写文章按钮");
-
-                    // 等待跳转到新文章页面
-                    await new Promise(r => setTimeout(r, 2000));
-                    console.log("[新浪发布] ✅ 点击后当前 URL:", window.location.href);
-                } else {
-                    console.warn("[新浪发布] ⚠️ 未找到写文章按钮");
-                }
+        try {
+            const draftState = getXinlangEditorState();
+            if (draftState.mask || !draftState.hasEditableElements) {
+                await ensureXinlangEditorReady({
+                    context: '草稿页初始化',
+                    timeout: 20000,
+                    clickWriteButtonWhenNeeded: true,
+                    respectWriteClickGuard: true,
+                    markWriteButtonClicked: true
+                });
             } else {
                 console.log("[新浪发布] ✅ 已在编辑页面（有输入元素），无需点击写文章按钮");
             }
+        } catch (e) {
+            console.warn("[新浪发布] ⚠️ 草稿页初始化等待编辑器就绪失败:", e.message);
         }
     }
 
@@ -510,6 +601,17 @@
                     // windowId 匹配后才保存消息数据
                     receivedMessageData = messageData;
                     console.log("[新浪发布] 💾 已保存收到的消息数据到 receivedMessageData");
+
+                    // 🔑 同时保存到 globalData（用于重新发布过程中的跳转/重载后恢复统计上下文）
+                    try {
+                        const windowId = await window.browserAPI.getWindowId();
+                        if (windowId) {
+                            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+                            console.log("[新浪发布] 💾 数据已保存到 globalData, key: publish_data_window_" + windowId);
+                        }
+                    } catch (e) {
+                        console.error("[新浪发布] ❌ 保存数据到 globalData 失败:", e);
+                    }
 
                     console.log("[新浪发布] ✅ 收到发布数据:", messageData);
 
@@ -643,9 +745,9 @@
             if (publishData && !isProcessing && !hasProcessed) {
                 console.log("[新浪发布] ✅ 检测到恢复 cookies 后的数据，开始处理...");
 
-                // 清除已使用的数据，避免重复处理
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log("[新浪发布] 🗑️ 已清除 publish_data_window_" + windowId);
+                // 🔑 不再在这里提前删除，避免重新发布失败上报时丢失统计附加字段
+                // 统一由 closeWindowWithMessage 在窗口关闭前清理
+                console.log("[新浪发布] 📝 保留 publish_data_window_" + windowId + " 数据，待发布结束后清理");
 
                 // 标记为正在处理
                 isProcessing = true;
@@ -686,6 +788,345 @@
     // ===========================
     // 9. 发布视频到新浪（移到 IIFE 内部以访问变量）
     // ===========================
+
+    function getXinlangEditorText(editorEle) {
+        if (!editorEle) {
+            return '';
+        }
+        return (editorEle.innerText || editorEle.textContent || '')
+            .replace(/\u200B/g, '')
+            .replace(/\r/g, '')
+            .trim();
+    }
+
+    function triggerXinlangEditorEvents(editorEle, plainText, inputType = 'insertFromPaste') {
+        if (!editorEle) {
+            return;
+        }
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                inputType,
+                data: plainText || null
+            }));
+        } catch (e) {
+        }
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('input', {
+                bubbles: true,
+                cancelable: true,
+                inputType,
+                data: plainText || null
+            }));
+        } catch (e) {
+            editorEle.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
+        }
+
+        editorEle.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    function clearXinlangEditor(editorEle) {
+        if (!editorEle) {
+            return;
+        }
+
+        if (typeof editorEle.focus === 'function') {
+            editorEle.focus();
+        }
+
+        const selection = window.getSelection?.();
+        if (selection && typeof document.createRange === 'function') {
+            const range = document.createRange();
+            range.selectNodeContents(editorEle);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            try {
+                document.execCommand('delete', false);
+            } catch (e) {
+                editorEle.innerHTML = '';
+            }
+            selection.removeAllRanges();
+        } else {
+            editorEle.innerHTML = '';
+        }
+
+        if (getXinlangEditorText(editorEle)) {
+            editorEle.innerHTML = '';
+        }
+    }
+
+    function prepareXinlangEditorContent(rawHtml) {
+        const htmlContent = rawHtml || '';
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlContent;
+
+        const tempCleaner = document.createElement('div');
+        tempCleaner.innerHTML = htmlContent;
+
+        function removeLeadingEmptyNodes(node) {
+            while (node.firstChild) {
+                const child = node.firstChild;
+                if (child.nodeType === 3) {
+                    const trimmedText = child.textContent.trim();
+                    if (trimmedText) {
+                        child.textContent = trimmedText + '\u200B';
+                        return true;
+                    }
+                    node.removeChild(child);
+                } else if (child.nodeType === 1) {
+                    if (child.textContent.trim()) {
+                        if (removeLeadingEmptyNodes(child)) {
+                            return true;
+                        }
+                        if (!child.textContent.trim()) {
+                            node.removeChild(child);
+                        } else {
+                            return true;
+                        }
+                    } else {
+                        node.removeChild(child);
+                    }
+                } else {
+                    node.removeChild(child);
+                }
+            }
+            return false;
+        }
+
+        removeLeadingEmptyNodes(tempCleaner);
+
+        function getListItemPrefix(node) {
+            const parentTag = node.parentElement?.tagName;
+            if (parentTag === 'OL') {
+                const siblings = Array.from(node.parentElement.children).filter(child => child.tagName === 'LI');
+                const index = siblings.indexOf(node);
+                return `${index >= 0 ? index + 1 : 1}. `;
+            }
+            if (parentTag === 'UL') {
+                return '- ';
+            }
+            return '';
+        }
+
+        function extractStructuredText(root) {
+            if (!root) {
+                return '';
+            }
+
+            const walk = node => {
+                if (!node) {
+                    return '';
+                }
+
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent || '';
+                }
+
+                if (node.nodeType !== Node.ELEMENT_NODE) {
+                    return '';
+                }
+
+                if (node.tagName === 'BR') {
+                    return '\n';
+                }
+
+                if (node.tagName === 'PRE') {
+                    return `${node.textContent || ''}\n`;
+                }
+
+                let result = '';
+                for (const child of node.childNodes) {
+                    result += walk(child);
+                }
+
+                if (node.tagName === 'LI') {
+                    const line = result.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+                    return line ? `${getListItemPrefix(node)}${line}\n` : '';
+                }
+
+                if (node.tagName === 'BLOCKQUOTE') {
+                    const quoteLines = result
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(Boolean)
+                        .map(line => `> ${line}`)
+                        .join('\n');
+                    return quoteLines ? `${quoteLines}\n` : '';
+                }
+
+                if (['P', 'DIV', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'SECTION', 'ARTICLE'].includes(node.tagName)) {
+                    result += '\n';
+                }
+
+                return result;
+            };
+
+            return walk(root)
+                .replace(/\u200B/g, '')
+                .replace(/\r/g, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .split('\n')
+                .map(line => line.replace(/[ \t]+$/g, ''))
+                .join('\n')
+                .trim();
+        }
+
+        function collectRichFormattingFeatures(root) {
+            if (!root) {
+                return {
+                    links: 0,
+                    images: 0,
+                    lists: 0,
+                    quotes: 0,
+                    headings: 0,
+                    emphasis: 0
+                };
+            }
+
+            return {
+                links: root.querySelectorAll('a').length,
+                images: root.querySelectorAll('img').length,
+                lists: root.querySelectorAll('ul, ol, li').length,
+                quotes: root.querySelectorAll('blockquote').length,
+                headings: root.querySelectorAll('h1, h2, h3, h4, h5, h6').length,
+                emphasis: root.querySelectorAll('strong, b, em, i, u, s, code').length
+            };
+        }
+
+        return {
+            html: tempCleaner.innerHTML.replace(/\u200B/g, '').trim(),
+            text: extractStructuredText(tempCleaner),
+            features: collectRichFormattingFeatures(tempCleaner)
+        };
+    }
+
+    async function fillXinlangEditorContent(rawHtml) {
+        const editorEle = await waitForElement('.wb-editor', 20000);
+        const currentText = getXinlangEditorText(editorEle);
+        if (currentText) {
+            console.log(`[新浪发布] ⏭️ 编辑器已有内容（${currentText.length}字），跳过内容填写`);
+            return;
+        }
+
+        const prepared = prepareXinlangEditorContent(rawHtml);
+        const htmlContent = prepared.html;
+        const plainText = prepared.text;
+        const richFeatures = prepared.features || {};
+
+        if (!htmlContent && !plainText) {
+            throw new Error('正文内容为空，无法填写');
+        }
+
+        console.log('[新浪发布] 🧹 已清理开头所有空白内容');
+        console.log('[新浪发布] 🎨 正文样式特征:', richFeatures);
+
+        const applyAndVerify = async (name, writer, inputType = 'insertFromPaste') => {
+            clearXinlangEditor(editorEle);
+            await delay(200);
+            await writer();
+            triggerXinlangEditorEvents(editorEle, plainText, inputType);
+            // 🔴 给富文本编辑器更长时间异步解析多段 HTML（之前 800ms 太短，paste 多段时只能拿到第一段）
+            await delay(1500);
+
+            const afterText = getXinlangEditorText(editorEle);
+            const expectedLen = (plainText || '').length;
+            const actualLen = afterText.length;
+            // 🔴 严格校验：至少达到目标长度 80%，且不少于 5 字；避免只填了第一段就被判为成功
+            const minLen = expectedLen <= 5 ? expectedLen : Math.max(5, Math.floor(expectedLen * 0.8));
+            if (afterText && actualLen >= minLen) {
+                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}`);
+                return true;
+            }
+
+            if (afterText) {
+                console.warn(`[新浪发布] ⚠️ ${name} 正文长度不足 (${actualLen}/${expectedLen})，尝试下一种策略`);
+            } else {
+                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空`);
+            }
+            return false;
+        };
+
+        const strategies = [
+            {
+                name: '方法1(clipboard paste)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    if (typeof ClipboardEvent !== 'function' || typeof DataTransfer !== 'function') {
+                        throw new Error('ClipboardEvent 或 DataTransfer 不可用');
+                    }
+
+                    const clipboardData = new DataTransfer();
+                    clipboardData.setData('text/html', htmlContent || plainText);
+                    clipboardData.setData('text/plain', plainText);
+                    editorEle.focus();
+                    editorEle.dispatchEvent(new ClipboardEvent('paste', {
+                        clipboardData,
+                        bubbles: true,
+                        cancelable: true
+                    }));
+                }
+            },
+            {
+                name: '方法2(insertHTML)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    editorEle.focus();
+                    const insertOk = document.execCommand('insertHTML', false, htmlContent || plainText);
+                    if (!insertOk) {
+                        throw new Error('execCommand(insertHTML) 返回 false');
+                    }
+                }
+            },
+            {
+                name: '方法3(直接 DOM)',
+                inputType: 'insertFromPaste',
+                writer: async () => {
+                    if (htmlContent) {
+                        editorEle.innerHTML = htmlContent;
+                    } else {
+                        editorEle.textContent = plainText;
+                    }
+                }
+            },
+            {
+                name: '方法4(insertText)',
+                inputType: 'insertText',
+                writer: async () => {
+                    editorEle.focus();
+                    const lines = plainText.split('\n').map(line => line.trim()).filter(Boolean);
+                    const safeLines = lines.length > 0 ? lines : [plainText];
+
+                    for (let i = 0; i < safeLines.length; i++) {
+                        if (i > 0) {
+                            document.execCommand('insertParagraph', false);
+                        }
+                        document.execCommand('insertText', false, safeLines[i]);
+                    }
+                }
+            }
+        ];
+
+        for (const strategy of strategies) {
+            try {
+                const success = await applyAndVerify(strategy.name, strategy.writer, strategy.inputType);
+                if (success) {
+                    try {
+                        editorEle.dispatchEvent(new FocusEvent('blur', {bubbles: true}));
+                    } catch (e) {
+                        editorEle.dispatchEvent(new Event('blur', {bubbles: true}));
+                    }
+                    return;
+                }
+            } catch (e) {
+                console.warn(`[新浪发布] ⚠️ ${strategy.name} 失败:`, e.message);
+            }
+        }
+
+        throw new Error('正文填写失败，编辑器仍为空');
+    }
 
     // 填写表单数据
     async function fillFormData(dataObj) {
@@ -729,19 +1170,26 @@
             }
             console.log("[新浪发布] ✅ URL 已稳定:", window.location.href);
 
-            // 🔴 注意：不在这里点击"写文章"按钮
-            // 点击逻辑已在脚本初始化时执行（287-352行）
-            // 避免重复点击导致创建多个空草稿
+            await ensureXinlangEditorReady({
+                context: 'fillFormData 开始前',
+                timeout: 30000,
+                clickWriteButtonWhenNeeded: true,
+                respectWriteClickGuard: true,
+                markWriteButtonClicked: true
+            });
 
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
                 // alert('No cover image found');
                 fillFormRunning = false;
+                window.__XL_fillFormRunning = false;
                 return;
             }
 
             setTimeout(async () => {
+                startErrorListener();
                 // 标题（带重试和验证）
+                try {
                 await retryOperation(async () => {
                     const titleEles = await waitForElements(".n-input__textarea-el", 5000);
                     if (titleEles.length > 0) {
@@ -779,8 +1227,20 @@
 
                                     // 🔑 验证是否成功设置
                                     const verifyValue = (titleEle.value || '').trim();
+
+                                    // 🔴 检查平台是否弹出了错误提示（如"标题字数已达到最大限制"）
+                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    const titleErrorMsg = getLatestError();
+                                    if (titleErrorMsg) {
+                                        throw Error(`[新浪发布]：标题设置失败 - ${titleErrorMsg}`);
+                                    }
+
+                                    // 🔴 检查标题是否被平台截断（字数超限时平台会自动截断）
                                     if (verifyValue !== expectedValue) {
-                                        console.log(`标题设置失败: 期望"${expectedValue}", 实际"${verifyValue}"`);
+                                        if (verifyValue.length < expectedValue.length) {
+                                            throw Error(`[新浪发布]：标题字数超限，平台已截断（期望${expectedValue.length}字，实际${verifyValue.length}字）："${expectedValue}"`);
+                                        }
+                                        throw Error(`[新浪发布]：标题设置失败，期望"${expectedValue}"，实际"${verifyValue}"`);
                                     }
 
                                     console.log('[新浪发布] ✅ 标题设置成功:', verifyValue);
@@ -854,108 +1314,30 @@
                         }
                     }
                 }, 5, 1000);
-
-                try {
-                    // 内容（带重试）
-                    setTimeout(async () => {
-                        try {
-                            await retryOperation(async () => {
-                                const editorEle = await waitForElement(".wb-editor", 20000); // 🔑 增加到 20 秒
-
-                                // 🔴 检查编辑器是否已有内容（防止从验证页返回时重复填写）
-                                // 注意：必须检查 textContent 而不是 innerHTML，因为编辑器可能包含空白 HTML 标签
-                                const editorText = (editorEle.textContent || '').trim();
-                                if (editorText && editorText.length > 0) {
-                                    console.log('[新浪发布] ⏭️ 编辑器已有内容（' + editorText.length + '字），跳过内容填写');
-                                    return;
-                                }
-
-                                let htmlContent = dataObj.video.video.content;
-
-                                // 解析 HTML 中的图片，通过新浪 dumpproxy 接口上传
-                                const tempDiv = document.createElement('div');
-                                tempDiv.innerHTML = htmlContent;
-
-                                // 🔴 清理开头的空白 - 直接删除文字内容之前的所有HTML
-                                const tempCleaner = document.createElement('div');
-                                tempCleaner.innerHTML = htmlContent;
-
-                                // 递归删除所有开头的空节点，直到找到第一个有非空文本的节点
-                                function removeLeadingEmptyNodes(node) {
-                                    while (node.firstChild) {
-                                        const child = node.firstChild;
-                                        if (child.nodeType === 3) { // 文本节点
-                                            const trimmedText = child.textContent.trim();
-                                            if (trimmedText) {
-                                                // 有内容，保留但删除前面的空白
-                                                child.textContent = trimmedText + '\u200B'; // 用零宽字符保留格式
-                                                return true; // 找到了内容，停止
-                                            } else {
-                                                node.removeChild(child);
-                                            }
-                                        } else if (child.nodeType === 1) { // 元素节点
-                                            // 先检查这个节点是否有非空文本
-                                            if (child.textContent.trim()) {
-                                                // 有内容，递归处理这个节点
-                                                if (removeLeadingEmptyNodes(child)) {
-                                                    return true; // 找到了内容，停止
-                                                }
-                                                // 如果递归后仍然是空的，删除它
-                                                if (!child.textContent.trim()) {
-                                                    node.removeChild(child);
-                                                } else {
-                                                    return true; // 有内容，停止
-                                                }
-                                            } else {
-                                                // 完全空节点，删除
-                                                node.removeChild(child);
-                                            }
-                                        } else {
-                                            // 注释、文档等其他节点，直接删除
-                                            node.removeChild(child);
-                                        }
-                                    }
-                                    return false;
-                                }
-
-                                removeLeadingEmptyNodes(tempCleaner);
-                                htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
-                                console.log('[新浪发布] 🧹 已清理开头所有空白内容');
-
-                                // 清空编辑器
-                                editorEle.innerHTML = '';
-
-                                // 让编辑器获得焦点
-                                editorEle.focus();
-
-                                // 通过粘贴事件插入内容（让 Draft.js 自己处理）
-                                const pasteEvent = new ClipboardEvent('paste', {
-                                    clipboardData: new DataTransfer(),
-                                    bubbles: true,
-                                    cancelable: true
-                                });
-
-                                // 设置粘贴的 HTML 和纯文本内容
-                                pasteEvent.clipboardData.setData('text/html', htmlContent);
-                                pasteEvent.clipboardData.setData('text/plain', tempDiv.textContent);
-
-                                editorEle.dispatchEvent(pasteEvent);
-
-                                // 等待编辑器处理粘贴事件
-                                await new Promise(resolve => setTimeout(resolve, 800));
-
-                                console.log('[新浪发布] ✅ 内容填写完成');
-                            }, 3, 1000);
-                        } catch (e) {
-                            console.log('[新浪发布] ❌ 内容填写失败:', e.message);
-                        }
-                    }, 200);
-                } catch (e) {
-                    console.log('[新浪发布] ❌ 内容填写失败:', e.message)
+                } catch (titleError) {
+                    console.error("[新浪发布] ❌ 标题设置失败:", titleError.message);
+                    stopErrorListener();
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, titleError.message || "标题设置失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("标题设置失败，刷新数据", 1000);
+                    return;
                 }
 
-                // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
-                startErrorListener();
+                try {
+                    await retryOperation(async () => {
+                        await fillXinlangEditorContent(dataObj?.video?.video?.content || dataObj?.video?.video?.intro || '');
+                    }, 3, 1000);
+                } catch (contentError) {
+                    console.error("[新浪发布] ❌ 内容填写失败:", contentError.message);
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, contentError.message || "内容填写失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("正文填写失败，刷新数据", 1000);
+                    return;
+                }
 
                 // 设置封面（使用主进程下载绕过跨域）
                 await (async () => {
@@ -1434,7 +1816,34 @@
 
                                         //    发布弹窗
                                         try {
-                                            const publishDialogEle = await waitForElement('.n-dialog', 300000, 500);
+                                            // 🔴 改造：边等待弹窗边检测错误，避免参数错误时卡 5 分钟
+                                            const waitDialogOrError = async (timeout) => {
+                                                const startTime = Date.now();
+                                                while (Date.now() - startTime < timeout) {
+                                                    const errMsg = getLatestError();
+                                                    if (errMsg) {
+                                                        return { type: 'error', message: errMsg };
+                                                    }
+                                                    const dialog = document.querySelector('.n-dialog');
+                                                    if (dialog && dialog.offsetParent !== null) {
+                                                        return { type: 'dialog', element: dialog };
+                                                    }
+                                                    await delay(500);
+                                                }
+                                                return { type: 'timeout' };
+                                            };
+                                            const dialogResult = await waitDialogOrError(300000);
+                                            if (dialogResult.type === 'error') {
+                                                console.error('[新浪发布] ❌ 等待发布弹窗期间检测到错误:', dialogResult.message);
+                                                stopErrorListener();
+                                                const pid = dataObj.video?.dyPlatform?.id;
+                                                if (pid) {
+                                                    await sendStatisticsError(pid, dialogResult.message, "新浪发布");
+                                                }
+                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                return;
+                                            }
+                                            const publishDialogEle = dialogResult.element;
                                             if (!publishDialogEle) {
                                                 console.log('[新浪发布]：找不到发布弹窗（等待超时）');
                                             }
@@ -1477,13 +1886,7 @@
 
                                                 if (publishIdForSuccess) {
                                                     try {
-                                                        const successUrl = await getStatisticsUrl();
-                                                        const scanData = {data: JSON.stringify({id: publishIdForSuccess})};
-                                                        await fetch(successUrl, {
-                                                            method: "POST",
-                                                            headers: {"Content-Type": "application/json"},
-                                                            body: JSON.stringify(scanData),
-                                                        });
+                                                        await sendStatistics(publishIdForSuccess, "新浪发布");
                                                         console.log("[新浪发布] ✅ 发布统计上报成功");
                                                     } catch (e) {
                                                         console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -1619,13 +2022,7 @@
 
                                                 if (publishIdForInstant) {
                                                     try {
-                                                        const successUrl = await getStatisticsUrl();
-                                                        const scanData = {data: JSON.stringify({id: publishIdForInstant})};
-                                                        await fetch(successUrl, {
-                                                            method: "POST",
-                                                            headers: {"Content-Type": "application/json"},
-                                                            body: JSON.stringify(scanData),
-                                                        });
+                                                        await sendStatistics(publishIdForInstant, "新浪发布");
                                                         console.log("[新浪发布] ✅ 即时发布统计上报成功");
                                                     } catch (e) {
                                                         console.error("[新浪发布] ❌ 统计上报失败:", e);
@@ -1705,28 +2102,20 @@
                         await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
                     }
                 })();
-
                 fillFormRunning = false;
                 window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');
             }, 10000);
         } catch (error) {
-            // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
             console.error("[新浪发布] fillFormData 错误:", error);
-            // 发送错误上报
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {
                 await sendStatisticsError(publishId, error.message || "填写表单失败", "新浪发布");
             }
-            // 同步错误时重置标记
-            fillFormRunning = false;
-            window.__XL_fillFormRunning = false; // 🔴 释放全局锁
-            // 填写表单失败也要关闭窗口，不阻塞下一个任务
             await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
+            fillFormRunning = false;
+            window.__XL_fillFormRunning = false;
         }
-        // 注意：不在 finally 中重置 fillFormRunning
-        // 因为 setTimeout 是异步的，finally 会立即执行
-        // fillFormRunning 的重置在 setTimeout 回调内部完成（line 974）
     }
 })(); // IIFE 结束
 
@@ -1918,13 +2307,7 @@ async function selectScheduledTime(sendTime) {
 
             if (publishIdForTimer) {
                 try {
-                    const successUrl = await getStatisticsUrl();
-                    const scanData = {data: JSON.stringify({id: publishIdForTimer})};
-                    await fetch(successUrl, {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify(scanData),
-                    });
+                    await sendStatistics(publishIdForTimer, "新浪发布");
                     console.log("[新浪发布] ✅ 定时发布统计上报成功");
                 } catch (e) {
                     console.error("[新浪发布] ❌ 统计上报失败:", e);
