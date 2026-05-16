@@ -1562,65 +1562,6 @@ async function tryRestoreLoginWithToken(preferredUrl) {
   }
 }
 
-async function navigateToLoginInternal(reason) {
-  if (!browserView || browserView.webContents.isDestroyed()) return;
-  console.log('[Main] 导航到登录页:', LOGIN_URL, reason ? `原因: ${reason}` : '');
-
-  // 🔑 退出登录时清除所有登录相关数据
-  console.log('[Main] 清除退出登录数据...');
-
-  // 1. 清除 globalStorage 中的登录数据
-  delete globalStorage.last_page_url;
-  delete globalStorage.login_token;
-  delete globalStorage.login_expires;
-  delete globalStorage.login_gcc;
-  delete globalStorage.company_id;
-  delete globalStorage.user_info;
-  delete globalStorage.siteInfo;
-  delete globalStorage.current_site;
-  delete globalStorage.current_site_id;
-  delete globalStorage.current_site_name;
-  saveGlobalStorage();
-  console.log('[Main] ✅ 已清除 globalStorage 数据');
-
-  // 2. 清除 Cookies（token, access_token, site_id 等）
-  try {
-    const ses = browserView.webContents.session;
-    const cookies = await ses.cookies.get({});
-    console.log(`[Main] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
-
-    // 需要清除的 cookie 名称列表
-    const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
-
-    let deletedCount = 0;
-    for (const cookie of cookies) {
-      if (cookiesToClear.includes(cookie.name)) {
-        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
-        try {
-          await ses.cookies.remove(cookieUrl, cookie.name);
-          deletedCount++;
-          console.log(`[Main] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
-        } catch (err) {
-          console.error(`[Main] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
-        }
-      }
-    }
-
-    // 也清除 localhost 的 cookies
-    await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
-    await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
-
-    await ses.flushStorageData();
-    console.log(`[Main] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
-  } catch (err) {
-    console.error('[Main] ❌ 清除 cookies 失败:', err);
-  }
-
-  loadLocalPage(browserView.webContents, 'login.html');
-}
-
 // 🔴 为 session 添加 Content-Type 修复拦截器（解决 CSS/JS 乱码问题）
 // 仅在响应头缺失或明显错误时修正，避免把真实 HTML/文档页误判成代码资源
 // ⚠️ 注意：不影响富文本编辑器，只处理脚本/样式静态资源
@@ -5054,6 +4995,57 @@ async function navigateToLoginInternal(source) {
     if (!browserView || browserView.webContents.isDestroyed()) {
       console.error('[navigateToLoginInternal] BrowserView 不可用');
       return;
+    }
+
+    // 🔑 退出登录时清除所有登录相关数据
+    console.log('[navigateToLoginInternal] 清除退出登录数据...');
+
+    // 1. 清除 globalStorage 中的登录数据
+    delete globalStorage.last_page_url;
+    delete globalStorage.login_token;
+    delete globalStorage.login_expires;
+    delete globalStorage.login_gcc;
+    delete globalStorage.company_id;
+    delete globalStorage.user_info;
+    delete globalStorage.siteInfo;
+    delete globalStorage.current_site;
+    delete globalStorage.current_site_id;
+    delete globalStorage.current_site_name;
+    saveGlobalStorage();
+    console.log('[navigateToLoginInternal] ✅ 已清除 globalStorage 数据');
+
+    // 2. 清除 Cookies（token, access_token, gcc, site_id 等）
+    try {
+      const ses = browserView.webContents.session;
+      const cookies = await ses.cookies.get({});
+      console.log(`[navigateToLoginInternal] 当前有 ${cookies.length} 个 cookies，开始清除登录相关 cookies...`);
+
+      const cookiesToClear = ['token', 'access_token', 'gcc', 'site_id'];
+
+      let deletedCount = 0;
+      for (const cookie of cookies) {
+        if (cookiesToClear.includes(cookie.name)) {
+          const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`;
+          try {
+            await ses.cookies.remove(cookieUrl, cookie.name);
+            deletedCount++;
+            console.log(`[navigateToLoginInternal] ✓ 删除 Cookie: ${cookie.name} @ ${cookie.domain}`);
+          } catch (err) {
+            console.error(`[navigateToLoginInternal] ✗ 删除 Cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+          }
+        }
+      }
+
+      // 也清除 localhost 的 cookies
+      await ses.cookies.remove('http://localhost:5173/', 'token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'access_token').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
+      await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
+
+      await ses.flushStorageData();
+      console.log(`[navigateToLoginInternal] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
+    } catch (err) {
+      console.error('[navigateToLoginInternal] ❌ 清除 cookies 失败:', err);
     }
 
     // 隐藏公共头部
