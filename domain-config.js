@@ -5,7 +5,7 @@
  * 可被主进程、渲染进程、注入脚本等多个地方使用
  *
  * 环境切换：只需修改 ENV 的值即可切换所有域名
- *   - 'dev'  → 所有 URL 指向开发环境（apidev.china9.cn / dev.china9.cn）
+ *   - 'dev'  → 所有 URL 指向开发环境（dev.china9.cn）
  *   - 'prod' → 所有 URL 指向生产环境（api.china9.cn / www.china9.cn）
  */
 
@@ -34,14 +34,14 @@ const DOMAINS = {
     geoPath:           '/aigc_browser/#/geo/dashboard',    // GEO 前端路径
 
     // API 接口
-    apiDomain:         'https://apidev.china9.cn',        // API 接口域名
+    apiDomain:         'https://dev.china9.cn',           // API 接口域名
 
     // Cookie 配置
     cookieUrl:         'https://dev.china9.cn',           // Cookie 设置用的 URL
     cookieDomain:      '.china9.cn',                      // Cookie 的 domain 属性
 
     // 版本检查
-    versionCheckUrl:   'https://apidev.china9.cn/api/newmedia/downloadyunexe',
+    versionCheckUrl:   'https://dev.china9.cn/api/newmedia/downloadyunexe',
 
     // 登录跳转检测
     authRedirect:      'account.china9.cn',
@@ -140,7 +140,6 @@ const DEV_HOSTS = [
   '127.0.0.1:8080',
   'dev.china9.cn',
   'www.dev.china9.cn',
-  'apidev.china9.cn',
   '172.16.6.17:8080',
   'jzt_dev_1.china9.cn',
 ];
@@ -167,7 +166,7 @@ function getGeoUrl() {
 
 /**
  * 获取 API 接口域名
- * @returns {string} 如 https://apidev.china9.cn
+ * @returns {string} 如 https://dev.china9.cn
  */
 function getApiDomainUrl() {
   return domains.apiDomain;

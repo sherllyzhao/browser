@@ -1498,7 +1498,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // ===========================
 
     // 根据主窗口域名获取 API 域名（用于授权等接口）
-    // 返回格式：https://apidev.china9.cn 或 https://api.china9.cn
+    // 返回格式：https://dev.china9.cn 或 https://api.china9.cn
     window.getApiDomain = async function () {
         // 开发环境域名列表
         const devHosts = [
@@ -1508,13 +1508,12 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             "127.0.0.1:8080",
             "dev.china9.cn",
             "www.dev.china9.cn",
-            "apidev.china9.cn",
             "172.16.6.17:8080",
             "jzt_dev_1.china9.cn",
         ];
 
         // 默认使用开发环境
-        let apiDomain = "https://apidev.china9.cn";
+        let apiDomain = "https://dev.china9.cn";
 
         try {
             if (window.browserAPI && window.browserAPI.getMainUrl) {
@@ -1526,7 +1525,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     const isDev = devHosts.some(devHost => host === devHost || host.endsWith('.' + devHost) || devHost === host);
 
                     if (isDev) {
-                        apiDomain = "https://apidev.china9.cn";
+                        apiDomain = "https://dev.china9.cn";
                         console.log("[getApiDomain] 检测到开发环境:", host, "→", apiDomain);
                     } else {
                         // 生产环境

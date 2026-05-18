@@ -21,7 +21,7 @@ const envConfig = {
   dev: {
     aigcPage: 'https://dev.china9.cn',
     geoPage: 'https://jzt_dev_1.china9.cn',
-    apiDomain: 'https://apidev.china9.cn',
+    apiDomain: 'https://dev.china9.cn',
   },
   prod: {
     aigcPage: 'https://www.china9.cn',
@@ -71,7 +71,7 @@ const fallbackConfig = env === 'prod'
         domains: {
           aigcPage: 'https://dev.china9.cn',
           geoPage: 'https://jzt_dev_1.china9.cn',
-          apiDomain: 'https://apidev.china9.cn'
+          apiDomain: 'https://dev.china9.cn'
         }
       };`;
 
