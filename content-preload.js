@@ -472,12 +472,27 @@ console.log('[content-preload] 环境检测:', {
   resourcesPath: process.resourcesPath
 });
 
-// 消息回调存储（单例模式 - 只保留最新的回调）
+// 消息回调存储（多订阅模式 - 同一通道可注册多个回调，避免后注册者覆盖前者）
 const messageCallbacks = {
-  fromHome: null,
-  fromOtherPage: null,
-  fromMain: null
+  fromHome: new Set(),
+  fromOtherPage: new Set(),
+  fromMain: new Set()
 };
+
+// 统一分发：遍历 Set 中所有回调，单个回调抛错不影响其他订阅者
+function dispatchCallbacks(set, payload, channelName) {
+  if (!set || set.size === 0) {
+    console.warn(`[BrowserAPI] ⚠️ ${channelName} 回调未注册！`);
+    return;
+  }
+  set.forEach((fn) => {
+    try {
+      fn(payload);
+    } catch (err) {
+      console.error(`[BrowserAPI] ${channelName} 回调执行异常:`, err);
+    }
+  });
+}
 
 // 防重复发布标志
 let isPublishing = false;
@@ -750,31 +765,16 @@ window.addEventListener('message', (event) => {
 
   switch (event.data.type) {
     case 'FROM_HOME':
-      console.log('[BrowserAPI] 检测到 FROM_HOME 消息');
-      if (messageCallbacks.fromHome) {
-        console.log('[BrowserAPI] 调用 fromHome 回调，数据:', event.data.data);
-        messageCallbacks.fromHome(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromHome 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_HOME 消息，订阅者数量:', messageCallbacks.fromHome.size);
+      dispatchCallbacks(messageCallbacks.fromHome, event.data.data, 'fromHome');
       break;
     case 'FROM_OTHER_PAGE':
-      console.log('[BrowserAPI] 检测到 FROM_OTHER_PAGE 消息');
-      if (messageCallbacks.fromOtherPage) {
-        console.log('[BrowserAPI] 调用 fromOtherPage 回调');
-        messageCallbacks.fromOtherPage(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromOtherPage 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_OTHER_PAGE 消息，订阅者数量:', messageCallbacks.fromOtherPage.size);
+      dispatchCallbacks(messageCallbacks.fromOtherPage, event.data.data, 'fromOtherPage');
       break;
     case 'FROM_MAIN':
-      console.log('[BrowserAPI] 检测到 FROM_MAIN 消息');
-      if (messageCallbacks.fromMain) {
-        console.log('[BrowserAPI] 调用 fromMain 回调');
-        messageCallbacks.fromMain(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromMain 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_MAIN 消息，订阅者数量:', messageCallbacks.fromMain.size);
+      dispatchCallbacks(messageCallbacks.fromMain, event.data.data, 'fromMain');
       break;
     default:
       console.log('[BrowserAPI] 未知消息类型:', event.data.type);
@@ -857,22 +857,46 @@ contextBridge.exposeInMainWorld('browserAPI', {
     ipcRenderer.send('home-to-content', message);
   },
 
-  // 监听来自首页的消息
+  // 监听来自首页的消息（多订阅，返回 unsubscribe 函数）
   onMessageFromHome: (callback) => {
-    messageCallbacks.fromHome = callback;
-    console.log('[BrowserAPI] onMessageFromHome 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromHome: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromHome.add(callback);
+    console.log('[BrowserAPI] onMessageFromHome 监听器已注册，当前订阅者数量:', messageCallbacks.fromHome.size);
+    return () => {
+      messageCallbacks.fromHome.delete(callback);
+      console.log('[BrowserAPI] onMessageFromHome 监听器已注销，剩余订阅者数量:', messageCallbacks.fromHome.size);
+    };
   },
 
-  // 监听来自其他页面的消息（首页使用）
+  // 监听来自其他页面的消息（首页使用，多订阅，返回 unsubscribe 函数）
   onMessageFromOtherPage: (callback) => {
-    messageCallbacks.fromOtherPage = callback;
-    console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromOtherPage: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromOtherPage.add(callback);
+    console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注册，当前订阅者数量:', messageCallbacks.fromOtherPage.size);
+    return () => {
+      messageCallbacks.fromOtherPage.delete(callback);
+      console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注销，剩余订阅者数量:', messageCallbacks.fromOtherPage.size);
+    };
   },
 
-  // 监听来自控制面板的消息
+  // 监听来自控制面板的消息（多订阅，返回 unsubscribe 函数）
   onMessageFromMain: (callback) => {
-    messageCallbacks.fromMain = callback;
-    console.log('[BrowserAPI] onMessageFromMain 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromMain: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromMain.add(callback);
+    console.log('[BrowserAPI] onMessageFromMain 监听器已注册，当前订阅者数量:', messageCallbacks.fromMain.size);
+    return () => {
+      messageCallbacks.fromMain.delete(callback);
+      console.log('[BrowserAPI] onMessageFromMain 监听器已注销，剩余订阅者数量:', messageCallbacks.fromMain.size);
+    };
   },
 
   // 监听 Cookies 清除事件（首页使用，用于清空授权列表）
@@ -903,12 +927,17 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
   },
 
-  // 清除所有监听器（用于组件卸载）
+  // 清除所有监听器（清空当前 webContents 内所有订阅；推荐改用 onMessage* 返回的 unsubscribe）
   clearMessageListeners: () => {
-    messageCallbacks.fromHome = null;
-    messageCallbacks.fromOtherPage = null;
-    messageCallbacks.fromMain = null;
-    console.log('[BrowserAPI] 所有消息监听器已清除');
+    const sizes = {
+      fromHome: messageCallbacks.fromHome.size,
+      fromOtherPage: messageCallbacks.fromOtherPage.size,
+      fromMain: messageCallbacks.fromMain.size
+    };
+    messageCallbacks.fromHome.clear();
+    messageCallbacks.fromOtherPage.clear();
+    messageCallbacks.fromMain.clear();
+    console.log('[BrowserAPI] 所有消息监听器已清除（清除前订阅者数量）:', sizes);
   },
 
   // 导航控制 API
