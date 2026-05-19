@@ -8941,6 +8941,12 @@ ipcMain.handle('get-full-session-data', async (event, domain) => {
       return cookieDomain.includes(domain) || domain.includes(cookieDomain);
     });
 
+    // 统一延长 cookie 过期时间为 7 天后（含 session cookie 与超长 cookie）
+    // 目的：1) 防止浏览器把无 expirationDate 的 session cookie 当会话级清理
+    //       2) 符合"最小必要存储期"原则，缩短超长 cookie，降低合规风险
+    const SEVEN_DAYS_SECONDS = 7 * 24 * 3600;
+    const targetExpiration = Math.floor(Date.now() / 1000) + SEVEN_DAYS_SECONDS;
+
     const cookiesArray = domainCookies.map(c => ({
       name: c.name,
       value: c.value,
@@ -8949,7 +8955,7 @@ ipcMain.handle('get-full-session-data', async (event, domain) => {
       secure: c.secure,
       httpOnly: c.httpOnly,
       sameSite: c.sameSite,
-      expirationDate: c.expirationDate
+      expirationDate: targetExpiration
     }));
 
     console.log(`[Session Data] Cookies: ${cookiesArray.length} 个`);
