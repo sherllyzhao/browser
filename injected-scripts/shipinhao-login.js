@@ -5,19 +5,88 @@
 
   // 检查是否是新打开的窗口（通过检查是否已经刷新过）
   const REFRESH_FLAG_KEY = '_shipinhao_login_refreshed';
+  const RESET_FLAG_KEYS = [
+    '_shipinhao_force_reset_login',
+    'SHIPINHAO_FORCE_RESET_LOGIN',
+    'SHIPINHAO_LOGIN_RESET_REQUESTED'
+  ];
+  const RESET_URL_PARAMS = [
+    'shipinhao_reset_login',
+    'shipinhao_force_reset',
+    'force_reset',
+    'reset_login',
+    'clear_login'
+  ];
   let hasRefreshed = false;
+
+  function isTruthyFlagValue(value) {
+    if (value === true) return true;
+    if (value === false || value == null) return false;
+    return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+  }
+
+  function safeGetStorageValue(storage, key, storageName) {
+    try {
+      return storage.getItem(key);
+    } catch (e) {
+      console.warn(`[Shipinhao Login] 读取 ${storageName}.${key} 失败:`, e);
+      return null;
+    }
+  }
+
+  function safeRemoveStorageValue(storage, key, storageName) {
+    try {
+      storage.removeItem(key);
+    } catch (e) {
+      console.warn(`[Shipinhao Login] 删除 ${storageName}.${key} 失败:`, e);
+    }
+  }
+
+  function hasExplicitLoginResetRequest() {
+    let resetFromUrl = false;
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      resetFromUrl = RESET_URL_PARAMS.some(key => isTruthyFlagValue(params.get(key)));
+    } catch (e) {
+      console.warn('[Shipinhao Login] 解析 URL 重置参数失败:', e);
+    }
+
+    const resetFromSession = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(safeGetStorageValue(sessionStorage, key, 'sessionStorage')));
+    const resetFromLocal = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(safeGetStorageValue(localStorage, key, 'localStorage')));
+
+    console.log('[Shipinhao Login] 重置标记检测:', {
+      resetFromUrl,
+      resetFromSession,
+      resetFromLocal
+    });
+
+    return resetFromUrl || resetFromSession || resetFromLocal;
+  }
+
+  function clearLoginResetRequestFlags() {
+    RESET_FLAG_KEYS.forEach(key => {
+      safeRemoveStorageValue(sessionStorage, key, 'sessionStorage');
+      safeRemoveStorageValue(localStorage, key, 'localStorage');
+    });
+  }
 
   // 检查是否需要刷新页面（仅对新窗口）
   function checkAndRefreshIfNeeded() {
     // 检查是否已经刷新过
-    const refreshed = sessionStorage.getItem(REFRESH_FLAG_KEY);
+    const refreshed = safeGetStorageValue(sessionStorage, REFRESH_FLAG_KEY, 'sessionStorage');
+
+    if (!refreshed && !hasExplicitLoginResetRequest()) {
+      console.log('[Shipinhao Login] 未检测到显式重置标记，跳过清缓存和强制刷新，避免打断扫码授权');
+      return false;
+    }
 
     if (!refreshed && !hasRefreshed) {
-      console.log('[Shipinhao Login] 检测到新窗口，准备清空缓存并刷新页面');
+      console.log('[Shipinhao Login] 检测到显式重置标记，准备清空缓存并刷新页面');
       hasRefreshed = true;
 
       // 标记已刷新，防止重复刷新
       sessionStorage.setItem(REFRESH_FLAG_KEY, 'true');
+      clearLoginResetRequestFlags();
 
       // 立即执行清空和刷新操作
       setTimeout(async () => {

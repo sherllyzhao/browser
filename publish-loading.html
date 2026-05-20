@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data:; img-src 'self' data:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>正在打开发布窗口</title>
+  <style>
+    :root {
+      --ink: #263238;
+      --muted: #7b8794;
+      --paper: #fffaf0;
+      --line: rgba(38, 50, 56, 0.12);
+      --accent: #ff8a3d;
+      --accent-deep: #c8521b;
+      --mint: #8ad7c1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 18%, rgba(255, 138, 61, 0.25), transparent 28%),
+        radial-gradient(circle at 82% 78%, rgba(138, 215, 193, 0.32), transparent 30%),
+        linear-gradient(135deg, #fffaf0 0%, #f7efe0 100%);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .card {
+      position: relative;
+      width: min(420px, calc(100vw - 48px));
+      padding: 34px 34px 30px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: rgba(255, 255, 255, 0.76);
+      box-shadow: 0 24px 70px rgba(94, 71, 44, 0.18);
+      backdrop-filter: blur(18px);
+      animation: cardIn 360ms ease-out both;
+    }
+
+    .orbit {
+      position: relative;
+      width: 84px;
+      height: 84px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      background: conic-gradient(from 120deg, var(--accent), #ffd39d, var(--mint), var(--accent));
+      animation: spin 1.15s linear infinite;
+    }
+
+    .orbit::before {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border-radius: 50%;
+      background: var(--paper);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+    }
+
+    .orbit::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 50%;
+      width: 14px;
+      height: 14px;
+      margin-left: -7px;
+      border-radius: 50%;
+      background: var(--accent-deep);
+      box-shadow: 0 0 0 8px rgba(255, 138, 61, 0.18);
+    }
+
+    h1 {
+      margin: 0;
+      text-align: center;
+      font-size: 23px;
+      line-height: 1.35;
+      letter-spacing: 0.02em;
+    }
+
+    .platform {
+      margin-top: 10px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .steps {
+      display: grid;
+      gap: 10px;
+      margin-top: 26px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(38, 50, 56, 0.08);
+      color: #46515c;
+      font-size: 13px;
+      animation: stepPulse 1.8s ease-in-out infinite;
+    }
+
+    .step:nth-child(2) {
+      animation-delay: 220ms;
+    }
+
+    .step:nth-child(3) {
+      animation-delay: 440ms;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(255, 138, 61, 0.14);
+      flex: 0 0 auto;
+    }
+
+    .hint {
+      margin-top: 20px;
+      text-align: center;
+      color: #8a744f;
+      font-size: 12px;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes cardIn {
+      from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.98);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes stepPulse {
+      0%,
+      100% {
+        transform: translateX(0);
+        opacity: 0.66;
+      }
+      45% {
+        transform: translateX(4px);
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="card" aria-live="polite">
+    <div class="orbit" aria-hidden="true"></div>
+    <h1>正在打开发布窗口</h1>
+    <div class="platform" id="platformText">正在准备发布环境</div>
+    <section class="steps">
+      <div class="step"><span class="dot"></span><span>恢复账号登录状态</span></div>
+      <div class="step"><span class="dot"></span><span>同步平台 Cookie 和 Storage</span></div>
+      <div class="step"><span class="dot"></span><span>加载目标发布页面</span></div>
+    </section>
+    <div class="hint">请稍等，完成后会自动切换到发布页面。</div>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const platform = params.get('platform') || '';
+    const contentType = params.get('contentType') || '';
+    const text = [platform, contentType].filter(Boolean).join(' · ');
+    if (text) {
+      document.getElementById('platformText').textContent = text;
+    }
+  </script>
+</body>
+</html>

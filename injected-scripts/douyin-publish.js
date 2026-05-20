@@ -308,12 +308,70 @@ let hasProcessed = false;
 // ===========================
 // 7. 发布视频到抖音
 // ===========================
+function isDouyinPublishSuccessMessage(message) {
+  const text = String(message || '').trim();
+  if (!text) {
+    return false;
+  }
+  const successKeywords = ['发布成功', '提交成功', '上传成功', '成功'];
+  const failureKeywords = ['失败', '错误', '异常', '不可用', '未找到', '超时', '审核未通过'];
+  return successKeywords.some(keyword => text.includes(keyword))
+    && !failureKeywords.some(keyword => text.includes(keyword));
+}
+
+async function clearDouyinPublishSuccessData(windowId) {
+  if (windowId) {
+    localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${windowId}`);
+    await window.browserAPI?.removeGlobalData?.(`publish_data_window_${windowId}`);
+  }
+  localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+}
+
+async function reportDouyinPublishSuccess(publishId, windowId, reason = 'success-toast') {
+  if (!publishId) {
+    console.error('[抖音发布] ❌ publishId 为空，无法上报成功统计');
+    return false;
+  }
+
+  console.log('[抖音发布] 📤 发送成功统计:', { publishId, reason });
+  let result = null;
+  if (typeof sendStatistics === 'function') {
+    result = await sendStatistics(publishId, '抖音发布');
+  } else if (typeof window.sendStatistics === 'function') {
+    result = await window.sendStatistics(publishId, '抖音发布');
+  } else {
+    const scanData = typeof window.buildStatisticsRequestData === 'function'
+      ? await window.buildStatisticsRequestData(publishId, '抖音发布')
+      : { data: JSON.stringify({ id: publishId }) };
+    const url = typeof getStatisticsUrl === 'function'
+      ? await getStatisticsUrl(false)
+      : await window.getStatisticsUrl(false);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scanData),
+      keepalive: true,
+    });
+    result = { success: response.ok, response };
+  }
+
+  if (result?.success) {
+    await clearDouyinPublishSuccessData(windowId);
+    console.log('[抖音发布] ✅ 成功统计已上报，发布标记已清理:', result);
+    return true;
+  }
+
+  console.error('[抖音发布] ❌ 成功统计上报失败:', result);
+  return false;
+}
+
 async function publishApi(dataObj) {
   console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
   // 防止重复执行
-  if (publishRunning) {
-    console.log('Publish is already running, skipping duplicate call');
+  if (publishRunning || hasProcessed) {
+    console.log('Publish is already running or processed, skipping duplicate call');
     return;
   }
 
@@ -331,6 +389,18 @@ async function publishApi(dataObj) {
   try {
     // 标记发布正在进行
     publishRunning = true;
+
+    const publishHelperStatus = {
+      isDouyinPublishSuccessMessage: typeof isDouyinPublishSuccessMessage,
+      clearDouyinPublishSuccessData: typeof clearDouyinPublishSuccessData,
+      reportDouyinPublishSuccess: typeof reportDouyinPublishSuccess,
+    };
+    const missingPublishHelpers = Object.entries(publishHelperStatus)
+      .filter(([, value]) => value !== 'function')
+      .map(([key]) => key);
+    if (missingPublishHelpers.length > 0) {
+      throw new Error(`publishApi 依赖缺失: ${missingPublishHelpers.join(', ')}`);
+    }
 
     // 等待页面稳定
     await delay(2000);
@@ -486,15 +556,12 @@ async function publishApi(dataObj) {
     console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
     await delay(1000);
 
-    const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+    const clickResult = await clickWithRetry(publishBtn, 3, 500, true, '点击完成'); // 启用消息捕获
 
     if (!clickResult.success) {
       console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
       // 清除提前保存的数据（使用窗口专属 key 和通用 key，确保兼容性）
-      if (windowId) {
-        localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-      }
-      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      await clearDouyinPublishSuccessData(windowId);
       // 发送失败统计
       await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '抖音发布');
       publishRunning = false;
@@ -519,7 +586,16 @@ async function publishApi(dataObj) {
 
     // 标记已完成
     hasProcessed = true;
-    publishRunning = false;
+
+    if (isDouyinPublishSuccessMessage(clickResult.message)) {
+      console.log('[抖音发布] ✅ 捕获到成功提示，直接上报成功统计:', clickResult.message);
+      const reported = await reportDouyinPublishSuccess(publishId, windowId, 'click-success-message');
+      publishRunning = false;
+      if (reported) {
+        await closeWindowWithMessage('发布成功，刷新数据', 1000);
+        return;
+      }
+    }
 
     // 等待页面跳转到成功页，超时 30 秒
     console.log('[抖音发布] ⏳ 等待跳转到成功页（30秒超时）...');
@@ -527,7 +603,7 @@ async function publishApi(dataObj) {
     const startTime = Date.now();
     const timeout = 30000; // 30秒
     // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
-    let lastToastMessage = clickResult.message || '';
+    let lastToastMessage = isDouyinPublishSuccessMessage(clickResult.message) ? '' : (clickResult.message || '');
 
     while (Date.now() - startTime < timeout) {
       await delay(2000); // 每 2 秒检查一次
@@ -549,17 +625,22 @@ async function publishApi(dataObj) {
 
       // 检测是否出现 toast 提示，记录消息内容
       // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
-      const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
       try {
         const toastEl = document.querySelector('.semi-toast-content-text');
         if (toastEl) {
           const text = (toastEl.textContent || '').trim();
-          const isSuccess = successKeywords.some(keyword => text.includes(keyword));
+          const isSuccess = isDouyinPublishSuccessMessage(text);
           if (text && !isSuccess) {
             lastToastMessage = text;
             console.log('[抖音发布] 📨 检测到提示:', text);
           } else if (isSuccess) {
-            console.log('[抖音发布] ✅ 检测到成功提示，忽略:', text);
+            console.log('[抖音发布] ✅ 检测到成功提示，直接上报:', text);
+            const reported = await reportDouyinPublishSuccess(publishId, windowId, 'poll-success-toast');
+            publishRunning = false;
+            if (reported) {
+              await closeWindowWithMessage('发布成功，刷新数据', 1000);
+              return;
+            }
           }
         }
       } catch (e) {
@@ -579,20 +660,15 @@ async function publishApi(dataObj) {
     // 真正的超时失败
     console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败');
     // 清除数据（窗口专属 key 和通用 key）
-    if (windowId) {
-      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-    }
-    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    await clearDouyinPublishSuccessData(windowId);
     await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '抖音发布');
+    publishRunning = false;
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
   } catch (error) {
     console.log("🚀 ~ publishApi ~ error: ", error);
     // 清除提前保存的数据（窗口专属 key 和通用 key）
-    if (windowId) {
-      localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-    }
-    localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+    await clearDouyinPublishSuccessData(windowId);
     // 发送失败统计
     await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
     publishRunning = false;

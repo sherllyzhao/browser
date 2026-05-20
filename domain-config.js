@@ -269,12 +269,33 @@ const platformDomains = {
   shipinhao: ['channels.weixin.qq.com'],
   wangyihao: ['163.com', 'mp.163.com'],
   sohuhao: ['sohu.com', 'mp.sohu.com'],
-  tengxunhao: ['qq.com', 'om.qq.com'],
+  tengxunhao: ['qq.com', 'om.qq.com', 'aqq.qq.com'],
   xinlang: ['sina.com.cn', 'weibo.com', 'sina.cn'],
   zhihu: ['zhihu.com', 'www.zhihu.com']
 };
 
+// 平台「账号身份」Cookie 名称（用于判断 sessionData 与本地是否同一个账号）
+// 与 platformLoginCookies 的区别：身份 cookie 只用于「账号匹配比对」，不会随 token 刷新而改变
+// 用法：本地 session 已有登录态时，再用这些字段对比 sessionData 中同名字段的值
+//   - 任一字段在双方都存在且值相同 → 同账号 → 本地优先（保留本地最新 cookies）
+//   - 字段都存在但值不同 → 换账号 → 走 sessionData 覆盖
+//   - 双方至少一方完全缺失 → 视为「无法验证」，保守按本地优先（避免误清）
+const platformIdentityCookies = {
+  douyin: ['uid_tt', 'uid_tt_ss'],
+  xiaohongshu: ['web_session'],
+  toutiao: ['uid_tt', 'uid_tt_ss'],
+  weixin: ['wxuin'],
+  baijiahao: ['BDUSS'],
+  shipinhao: ['wxuin'],
+  wangyihao: ['P_INFO'],
+  sohuhao: ['passport', 'ppinf'],
+  tengxunhao: ['uin', 'p_uin'],
+  xinlang: ['SUB'],
+  zhihu: ['d_c0']
+};
+
 // 平台登录凭证 Cookie 名称（用于判断登录状态）
+// 严格只列「服务端下发的会话凭证 / 用户 token」，不要混入访客埋点（如 pgv_pvid、SUV、IPLOC）
 const platformLoginCookies = {
   douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
   xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id'],
@@ -283,8 +304,8 @@ const platformLoginCookies = {
   baijiahao: ['BDUSS', 'STOKEN'],
   shipinhao: ['wxuin', 'pass_ticket'],
   wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
-  sohuhao: ['SUV', 'IPLOC', 'sct'],
-  tengxunhao: ['pgv_pvid', 'RK', 'ptcz'],
+  sohuhao: ['sct', 'passport', 'ppinf', 'pprdig'],
+  tengxunhao: ['uin', 'p_uin', 'skey', 'p_skey'],
   xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
   zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
@@ -368,6 +389,7 @@ if (typeof module !== 'undefined' && module.exports) {
     platformApis,
     platformDomains,
     platformLoginCookies,
+    platformIdentityCookies,
     platformNameMap,
     platformIdMap,
     platformPublishUrls,
@@ -397,6 +419,7 @@ if (typeof window !== 'undefined') {
     platformApis,
     platformDomains,
     platformLoginCookies,
+    platformIdentityCookies,
     platformNameMap,
     platformIdMap,
     platformPublishUrls,

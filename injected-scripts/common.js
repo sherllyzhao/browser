@@ -456,6 +456,31 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     /**
+     * 判断当前页面 URL 是否是登录页（覆盖所有平台变体）
+     * 用于 showOperationBanner / checkBlankPageAndReload 等场景：在登录页时跳过相关操作，避免打断用户登录流程
+     * @returns {boolean}
+     */
+    window.isPageOnLoginUrl = function () {
+        try {
+            const url = String(window.location.href || '').toLowerCase();
+            if (!url) return false;
+            // /login - 通用、小红书、视频号 login.html、搜狐 /mpfe/v4/login
+            // /userauth - 腾讯号 om.qq.com/userAuth/index
+            // /userlogin - 兜底通用
+            // /loginpage, /cgi-bin/login - 微信公众号
+            // passport. - 抖音、搜狐、网易、新浪等账号中心
+            // account.qq.com - 腾讯账号中心
+            const LOGIN_PATTERNS = [
+                '/login', '/userauth', '/userlogin', '/loginpage', '/cgi-bin/login',
+                'passport.', '/sso/', '/auth/', '/signin', 'account.qq.com', 'security.weibo.com'
+            ];
+            return LOGIN_PATTERNS.some(p => url.includes(p));
+        } catch (e) {
+            return false;
+        }
+    };
+
+    /**
      * 白屏检测和自动恢复（针对扫码登录后跳转的情况）
      * @param {string} platform - 平台名称（如 '视频号'、'小红书'）
      * @param {Array<string>} keySelectors - 关键元素选择器数组（用于判断页面是否正常加载）
@@ -464,6 +489,12 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
      */
     window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
         const __startTs__ = Date.now();
+        const startUrl = String(window.location.href || '');
+        // 🛡️ 登录页跳过白屏检测：登录页天然没有发布元素，触发刷新会打断用户扫码/登录
+        if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
+            console.log(`[${platform}][白屏检测] ⏭️ 当前为登录页，跳过白屏检测，避免打断登录流程`);
+            return;
+        }
         // 🔑 使用 localStorage 而不是 sessionStorage（登录跳转会清空 sessionStorage）
         const retryKey = `${platform.toUpperCase()}_RELOAD_RETRY_COUNT`;
         let retryCount = parseInt(localStorage.getItem(retryKey) || '0');
@@ -480,8 +511,19 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         // 延迟检测页面是否正常加载
         setTimeout(() => {
             const __checkTs__ = Date.now();
+            const currentUrl = String(window.location.href || '');
             console.log(`[${platform}][白屏检测] ⏰ 定时检测触发 @${new Date().toLocaleTimeString()}, 距启动 ${__checkTs__ - __startTs__}ms`);
             try {
+                if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
+                    console.log(`[${platform}][白屏检测] ⏭️ 当前已进入登录页，取消本次白屏检测，避免刷新扫码页`);
+                    return;
+                }
+
+                if (currentUrl !== startUrl) {
+                    console.log(`[${platform}][白屏检测] ⏭️ URL 已变化，取消过期检测: ${startUrl} -> ${currentUrl}`);
+                    return;
+                }
+
                 // 检测 1: body 是否为空或几乎为空
                 const bodyText = (document.body?.innerText || '').trim();
                 const bodyHtml = (document.body?.innerHTML || '').trim();
@@ -571,6 +613,10 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
                     // 延迟 1 秒后刷新
                     setTimeout(() => {
+                        if ((typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) || String(window.location.href || '') !== startUrl) {
+                            console.log(`[${platform}][白屏检测] ⏭️ 刷新前页面已变化或进入登录页，取消 reload`);
+                            return;
+                        }
                         console.log(`[${platform}][白屏检测] 🔁 执行 window.location.reload()`);
                         window.location.reload();
                     }, 1000);
@@ -1585,6 +1631,305 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
+    // ===========================
+    // 🔐 关闭前保存会话到后台（与 creator.js 走同一接口和 body 格式）
+    // 用于发布窗口关闭前主动上报最新登录信息，避免主进程的轻量 {id, cookies} 格式被后台拒绝
+    // 返回: { success, status, code, message, uid, nickname, cookiesLen, response, error }
+    // ===========================
+    window.__publishSaveSession__ = async function (platform) {
+        // 每平台配置：getUserInfo 返回 { nickname, avatar, uid }；domains 是要抓 cookies 的域；apiPath 是后台保存接口
+        const platformConfigs = {
+            tengxunhao: {
+                apiPath: '/api/mediaauth/txinfo',
+                domains: ['qq.com', 'om.qq.com', 'aqq.qq.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://om.qq.com/maccountsetting/basicinfo/?relogin=1', {
+                        method: 'GET',
+                        credentials: 'include'
+                    });
+                    const res = await r.json();
+                    const ui = res && res.data && res.data.cpInfo;
+                    if (!ui) throw new Error('腾讯 cpInfo 不存在');
+                    return { nickname: ui.mediaName, avatar: ui.header, uid: ui.mediaId };
+                }
+            },
+            sohuhao: {
+                apiPath: '/api/mediaauth/shinfo',
+                domains: ['mp.sohu.com', 'sohu.com'],
+                getUserInfo: async (publishData) => {
+                    // 1. 优先 localStorage.currentAccount（搜狐前端约定）
+                    let ca = null;
+                    try {
+                        const raw = localStorage.getItem('currentAccount');
+                        if (raw) ca = JSON.parse(raw);
+                    } catch (_) {}
+                    if (ca && ca.id) {
+                        return { nickname: ca.nickName, avatar: ca.avatar, uid: ca.id };
+                    }
+                    // 2. 兜底从 publishData 取 uid（发布页 localStorage 可能为空）
+                    const e = publishData && publishData.element || {};
+                    const uid = e.uid || e.platformUid || e.media_auth_id || e.account_info && e.account_info.uid;
+                    if (uid) {
+                        return { nickname: e.nickname || e.account_info && e.account_info.nickname || '', avatar: e.avatar || '', uid: uid };
+                    }
+                    throw new Error('搜狐 currentAccount/publishData 均无 uid');
+                }
+            },
+            douyin: {
+                apiPath: '/api/mediaauth/douyininfo',
+                domains: ['douyin.com', 'creator.douyin.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://creator.douyin.com/web/api/media/user/info/', { method: 'GET', credentials: 'include' });
+                    const res = await r.json();
+                    const u = res && res.user || res && res.data && res.data.user;
+                    if (!u) throw new Error('抖音 user 不存在');
+                    const avatar = u.avatar_thumb && u.avatar_thumb.url_list && u.avatar_thumb.url_list[0] || u.avatar || '';
+                    return { nickname: u.nickname, avatar: avatar, uid: u.uid || u.user_id || u.sec_uid };
+                }
+            },
+            baijiahao: {
+                apiPath: '/api/mediaauth/bjhinfo',
+                domains: ['baidu.com', 'baijiahao.baidu.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://baijiahao.baidu.com/builder/app/appinfo', { method: 'GET', credentials: 'include' });
+                    const res = await r.json();
+                    const u = res && res.data && res.data.user;
+                    if (!u) throw new Error('百家号 user 不存在');
+                    return { nickname: u.name, avatar: u.avatar, uid: u.id };
+                }
+            },
+            toutiao: {
+                apiPath: '/api/mediaauth/ttinfo',
+                domains: ['toutiao.com', 'www.toutiao.com', 'mp.toutiao.com', '.bytedance.com', 'xxbg.snssdk.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://mp.toutiao.com/mp/agw/media/get_media_info', { method: 'GET', credentials: 'include' });
+                    const res = await r.json();
+                    const u = res && res.data && res.data.user;
+                    if (!u) throw new Error('头条 user 不存在');
+                    return { nickname: u.screen_name, avatar: u.https_avatar_url || u.avatar_url, uid: u.id || u.user_id };
+                }
+            },
+            wangyihao: {
+                apiPath: '/api/mediaauth/wyinfo',
+                domains: ['163.com', 'mp.163.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://mp.163.com/wemedia/navinfo.do', { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+                    const res = await r.json();
+                    if (res.code !== 1) throw new Error('网易号 navinfo code != 1');
+                    const u = res.data;
+                    if (!u) throw new Error('网易号 data 不存在');
+                    return { nickname: u.tname, avatar: u.icon, uid: u.tid };
+                }
+            },
+            zhihu: {
+                apiPath: '/api/mediaauth/zhinfo',
+                domains: ['zhihu.com', 'www.zhihu.com', 'zhuanlan.zhihu.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+                    const u = await r.json();
+                    if (!u || !u.id) throw new Error('知乎 me 不存在');
+                    return { nickname: u.name, avatar: u.avatar_url, uid: u.id };
+                }
+            },
+            xinlang: {
+                apiPath: '/api/mediaauth/xlinfo',
+                domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com'],
+                getUserInfo: async () => {
+                    const r = await fetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', { method: 'GET', credentials: 'include' });
+                    const res = await r.json();
+                    const u = res && res.data && res.data.userInfo;
+                    if (!u || !u.uid) throw new Error('新浪 userInfo.uid 不存在');
+                    return { nickname: u.m_fname, avatar: u.m_logo, uid: u.uid };
+                }
+            },
+            xiaohongshu: {
+                apiPath: '/api/mediaauth/xhsinfo',
+                domains: ['xiaohongshu.com', 'creator.xiaohongshu.com'],
+                getUserInfo: async (publishData) => {
+                    // 优先 DOM 取（创作中心首页）
+                    try {
+                        const accountNameEle = document.querySelector('.account-name, [class*="account-name"], .name');
+                        const avatarEle = document.querySelector('.user-avatar img, .avatar img');
+                        const uidEle = Array.from(document.querySelectorAll('*')).find(e => /小红书账号/.test(e.textContent || ''));
+                        if (accountNameEle && uidEle) {
+                            return {
+                                nickname: (accountNameEle.innerText || '').trim(),
+                                avatar: avatarEle ? avatarEle.getAttribute('src') : '',
+                                uid: (uidEle.innerText || '').replace('小红书账号: ', '').replace('小红书账号：', '').trim()
+                            };
+                        }
+                    } catch (_) {}
+                    // 兜底从 publishData 取
+                    const e = publishData && publishData.element || {};
+                    if (e.uid || e.platformUid) {
+                        return { nickname: e.nickname || '', avatar: e.avatar || '', uid: e.uid || e.platformUid };
+                    }
+                    throw new Error('小红书 DOM/publishData 均无 uid');
+                }
+            },
+            shipinhao: {
+                apiPath: '/api/mediaauth/sphinfo',
+                domains: ['weixin.qq.com', 'channels.weixin.qq.com'],
+                getUserInfo: async (publishData) => {
+                    // 优先 DOM 取
+                    try {
+                        const nicknameEle = document.querySelector('.finder-nickname, .nickname, [class*="nickname"]');
+                        const avatarEle = document.querySelector('.finder-avatar img, .avatar img, img[class*="avatar"]');
+                        const uidEle = Array.from(document.querySelectorAll('*')).find(e => /视频号 ?ID/i.test(e.textContent || ''));
+                        if (nicknameEle) {
+                            return {
+                                nickname: (nicknameEle.innerText || '').trim(),
+                                avatar: avatarEle ? avatarEle.getAttribute('src') : '',
+                                uid: uidEle ? (uidEle.innerText || '').replace(/视频号 ?ID[:：]\s*/i, '').trim() : ''
+                            };
+                        }
+                    } catch (_) {}
+                    // 兜底从 publishData 取
+                    const e = publishData && publishData.element || {};
+                    if (e.uid || e.platformUid) {
+                        return { nickname: e.nickname || '', avatar: e.avatar || '', uid: e.uid || e.platformUid };
+                    }
+                    throw new Error('视频号 DOM/publishData 均无 uid');
+                }
+            }
+        };
+
+        const cfg = platformConfigs[platform];
+        if (!cfg) {
+            return { success: false, error: '未配置该平台: ' + platform };
+        }
+
+        try {
+            const companyId = await (window.browserAPI && window.browserAPI.getGlobalData
+                ? window.browserAPI.getGlobalData('company_id')
+                : Promise.resolve(''));
+
+            // 拿一份 publishData 给 getUserInfo 兜底使用
+            let publishDataForFallback = null;
+            try {
+                const wid = await (window.browserAPI && window.browserAPI.getWindowId ? window.browserAPI.getWindowId() : null);
+                if (wid && window.browserAPI && window.browserAPI.getGlobalData) {
+                    publishDataForFallback = await window.browserAPI.getGlobalData('publish_data_window_' + wid);
+                }
+            } catch (_) {}
+
+            // 1. 获取用户信息
+            const userInfo = await cfg.getUserInfo(publishDataForFallback);
+            if (!userInfo || !userInfo.uid) {
+                throw new Error('userInfo.uid 为空');
+            }
+
+            // 2. 抓多域完整 session
+            const mergedData = {
+                domains: cfg.domains,
+                timestamp: Date.now(),
+                cookies: [],
+                localStorage: {},
+                sessionStorage: {},
+                indexedDB: {}
+            };
+            const seen = new Set();
+            for (const d of cfg.domains) {
+                try {
+                    const sr = await window.browserAPI.getFullSessionData(d);
+                    if (sr && sr.success && sr.data) {
+                        if (Array.isArray(sr.data.cookies)) {
+                            sr.data.cookies.forEach(c => {
+                                const k = [c.name, c.domain, c.path || '/', c.secure ? '1' : '0'].join('|');
+                                if (!seen.has(k)) {
+                                    seen.add(k);
+                                    mergedData.cookies.push(c);
+                                }
+                            });
+                        }
+                        if (sr.data.localStorage && Object.keys(sr.data.localStorage).length > 0) {
+                            mergedData.localStorage[d] = sr.data.localStorage;
+                        }
+                        if (sr.data.sessionStorage && Object.keys(sr.data.sessionStorage).length > 0) {
+                            mergedData.sessionStorage[d] = sr.data.sessionStorage;
+                        }
+                        if (sr.data.indexedDB && Object.keys(sr.data.indexedDB).length > 0) {
+                            mergedData.indexedDB[d] = sr.data.indexedDB;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[publishSaveSession] 获取 ' + d + ' session 失败:', e && e.message);
+                }
+            }
+
+            if (mergedData.cookies.length === 0) {
+                throw new Error('未获取到任何 cookies');
+            }
+
+            const cookiesData = JSON.stringify(mergedData);
+
+            // 3. 构建 scanData（与 creator.js 一致）
+            const scanData = {
+                data: JSON.stringify({
+                    nickname: userInfo.nickname,
+                    avatar: userInfo.avatar,
+                    follow: 0,
+                    follower_count: 0,
+                    video: 0,
+                    uid: userInfo.uid,
+                    favoriting_count: 0,
+                    total_favorited: 0,
+                    company_id: companyId,
+                    auth_type: 1,
+                    cookies: cookiesData
+                })
+            };
+
+            // 4. 调后台接口
+            const apiDomain = await window.getApiDomain();
+            const apiResponse = await fetch(apiDomain + cfg.apiPath, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(scanData)
+            });
+            const apiResponseText = await apiResponse.text();
+            let apiResult = null;
+            try { apiResult = JSON.parse(apiResponseText); } catch (_) {}
+
+            const okFlag = apiResponse.ok && apiResult && apiResult.code === 200;
+            const result = {
+                success: okFlag,
+                status: apiResponse.status,
+                code: apiResult ? apiResult.code : undefined,
+                message: apiResult ? (apiResult.message || apiResult.msg) : undefined,
+                cookiesLen: cookiesData.length,
+                cookieCount: mergedData.cookies.length,
+                uid: userInfo.uid,
+                nickname: userInfo.nickname,
+                response: apiResponseText.slice(0, 300)
+            };
+
+            try {
+                const cookiesKB = Math.round(cookiesData.length / 1024);
+                const msg = okFlag
+                    ? '✅ 关闭前保存成功（' + platform + '）'
+                        + '\nuid: ' + userInfo.uid
+                        + '\nnickname: ' + userInfo.nickname
+                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
+                        + '\nHTTP: ' + apiResponse.status
+                        + '\n接口 code: ' + (apiResult && apiResult.code)
+                    : '❌ 关闭前保存失败（' + platform + '）'
+                        + '\nuid: ' + userInfo.uid
+                        + '\nnickname: ' + userInfo.nickname
+                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
+                        + '\nHTTP: ' + apiResponse.status
+                        + '\n接口 code: ' + (apiResult ? apiResult.code : '-')
+                        + '\n响应: ' + apiResponseText.slice(0, 200);
+                alert(msg);
+            } catch (_) {}
+
+            return result;
+        } catch (err) {
+            try { alert('❌ 关闭前保存异常（' + platform + '）: ' + (err && err.message)); } catch (_) {}
+            return { success: false, error: err && err.message };
+        }
+    };
+
     function getFirstMeaningfulValue(...values) {
         for (const value of values) {
             if (value === undefined || value === null) {
@@ -1748,6 +2093,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         const key = getStatisticsReportCacheKey(windowId, resultType);
 
         try {
+            if (resultType === "error") {
+                const successKey = getStatisticsReportCacheKey(windowId, "success");
+                const successCachedRaw = sessionStorage.getItem(successKey);
+                if (successCachedRaw) {
+                    const successCached = JSON.parse(successCachedRaw);
+                    if (String(successCached?.publishId || "") === String(publishId)) {
+                        console.warn(`[${platform || "发布"}][统计接口] ⚠️ 已存在成功上报，跳过失败上报`, successCached);
+                        return {
+                            acquired: false,
+                            key: successKey,
+                            windowId,
+                            cached: successCached,
+                            reason: "success-already-reported",
+                        };
+                    }
+                }
+            }
+
             const cachedRaw = sessionStorage.getItem(key);
             if (cachedRaw) {
                 const cached = JSON.parse(cachedRaw);
@@ -1794,7 +2157,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.sendStatistics = async function (publishId, platform = "") {
         const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
         if (!reportLock.acquired) {
-            return { success: true, skipped: true, reason: "duplicate-report" };
+            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform);
@@ -1821,7 +2184,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null) {
         const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
         if (!reportLock.acquired) {
-            return { success: true, skipped: true, reason: "duplicate-report" };
+            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
 
         // 使用 PublishLogger 记录错误
@@ -2586,13 +2949,22 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // ===========================
 
     /**
-     * 显示操作提示横幅（固定在页面顶部，推开页面内容）
+     * 显示操作提示横幅（顶部居中浮动卡片，可折叠为右上角圆点）
+     * - 不占据文档流，不挤压页面布局，对 SPA / 100vh 布局友好
      * - 橙黄色渐变背景 + 扫描线动画 + 呼吸脉冲指示灯
-     * - 用于发布/授权等自动化流程中提示用户不要手动操作
+     * - 点击右侧折叠按钮可收起到右上角小圆点；点击圆点可重新展开
+     * - 折叠状态用 sessionStorage 持久化，避免 SPA 跳转后又展开
      * @param {string} text - 横幅文案
      */
     window.showOperationBanner = function (text) {
         text = text || "自动操作进行中，请勿操作此页面...";
+        var COLLAPSED_KEY = "__operation_banner_collapsed__";
+
+        // 🛡️ 登录页不显示横幅：避免用户登录时看到"正在自动发布中"误导
+        if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
+            console.log("[横幅] ⏭️ 当前为登录页，跳过横幅显示");
+            return;
+        }
 
         // 防止重复创建（如果已存在则更新文案）
         if (document.getElementById("__operation_banner__")) {
@@ -2607,8 +2979,8 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         style.textContent = [
             "/* 呼吸脉冲动画（状态指示灯） */",
             "@keyframes __ob_breath__ {",
-            "  0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(255, 160, 0, 0.5); }",
-            "  50% { opacity: 0.45; box-shadow: 0 0 3px rgba(255, 160, 0, 0.2); }",
+            "  0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(255, 160, 0, 0.6); }",
+            "  50% { opacity: 0.5; box-shadow: 0 0 4px rgba(255, 160, 0, 0.25); }",
             "}",
             "/* 扫描线动画 */",
             "@keyframes __ob_scan__ {",
@@ -2617,31 +2989,40 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             "}",
             "/* 入场滑入动画 */",
             "@keyframes __ob_slide__ {",
-            "  0% { transform: translateY(-100%); opacity: 0; }",
-            "  100% { transform: translateY(0); opacity: 1; }",
+            "  0% { transform: translate(-50%, -120%); opacity: 0; }",
+            "  100% { transform: translate(-50%, 0); opacity: 1; }",
             "}",
-            "/* 横幅主体 */",
+            "/* 折叠态淡入 */",
+            "@keyframes __ob_fade__ {",
+            "  0% { opacity: 0; transform: scale(0.6); }",
+            "  100% { opacity: 1; transform: scale(1); }",
+            "}",
+            "/* 横幅主体（顶部居中浮动卡片，不占据文档流） */",
             "#__operation_banner__ {",
             "  position: fixed;",
-            "  top: 0; left: 0; right: 0;",
+            "  top: 10px;",
+            "  left: 50%;",
+            "  transform: translate(-50%, 0);",
             "  z-index: 2147483647;",
-            "  height: 40px;",
+            "  max-width: 90vw;",
+            "  padding: 8px 14px 8px 14px;",
+            "  border-radius: 20px;",
             "  background: linear-gradient(135deg, #e8870e 0%, #f5a623 40%, #f7c948 100%);",
-            "  border-bottom: 1px solid rgba(0, 0, 0, 0.08);",
+            "  border: 1px solid rgba(255, 255, 255, 0.4);",
             "  display: flex;",
             "  align-items: center;",
-            "  justify-content: center;",
-            "  gap: 10px;",
+            "  gap: 8px;",
             "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;",
-            "  font-size: 14px;",
+            "  font-size: 13px;",
             "  font-weight: 600;",
             "  color: #fff;",
             "  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);",
-            "  box-shadow: 0 2px 12px rgba(232, 135, 14, 0.3);",
+            "  box-shadow: 0 6px 24px rgba(232, 135, 14, 0.35), 0 2px 6px rgba(0,0,0,0.12);",
             "  overflow: hidden;",
             "  animation: __ob_slide__ 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;",
             "  user-select: none;",
             "  -webkit-user-select: none;",
+            "  pointer-events: auto;",
             "}",
             "/* 扫描线伪元素 */",
             "#__operation_banner__::before {",
@@ -2650,7 +3031,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             "  top: 0; left: 0;",
             "  width: 25%;",
             "  height: 100%;",
-            "  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);",
+            "  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);",
             "  animation: __ob_scan__ 3s ease-in-out infinite;",
             "  pointer-events: none;",
             "}",
@@ -2661,22 +3042,75 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             "  background: #fff;",
             "  flex-shrink: 0;",
             "  animation: __ob_breath__ 2s ease-in-out infinite;",
+            "  position: relative;",
+            "  z-index: 1;",
             "}",
             "/* 文案 */",
             ".__ob_text__ {",
             "  letter-spacing: 0.5px;",
             "  white-space: nowrap;",
+            "  overflow: hidden;",
+            "  text-overflow: ellipsis;",
+            "  position: relative;",
+            "  z-index: 1;",
             "}",
-            "/* 占位元素（推开页面内容） */",
-            "#__operation_banner_spacer__ {",
-            "  height: 40px;",
-            "  width: 100%;",
+            "/* 折叠按钮 */",
+            ".__ob_collapse_btn__ {",
+            "  width: 18px; height: 18px;",
+            "  border-radius: 50%;",
+            "  background: rgba(255, 255, 255, 0.22);",
+            "  border: none;",
+            "  color: #fff;",
+            "  cursor: pointer;",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  font-size: 14px;",
+            "  line-height: 1;",
+            "  padding: 0;",
+            "  margin-left: 4px;",
             "  flex-shrink: 0;",
+            "  transition: background 0.15s ease;",
+            "  position: relative;",
+            "  z-index: 1;",
+            "}",
+            ".__ob_collapse_btn__:hover {",
+            "  background: rgba(255, 255, 255, 0.35);",
+            "}",
+            "/* 折叠态小圆点（右上角） */",
+            "#__operation_banner_mini__ {",
+            "  position: fixed;",
+            "  top: 12px;",
+            "  right: 12px;",
+            "  z-index: 2147483647;",
+            "  width: 22px; height: 22px;",
+            "  border-radius: 50%;",
+            "  background: linear-gradient(135deg, #e8870e, #f7c948);",
+            "  box-shadow: 0 2px 8px rgba(232, 135, 14, 0.45);",
+            "  cursor: pointer;",
+            "  display: flex;",
+            "  align-items: center;",
+            "  justify-content: center;",
+            "  animation: __ob_fade__ 0.25s ease forwards, __ob_breath__ 2s ease-in-out infinite;",
+            "  user-select: none;",
+            "  -webkit-user-select: none;",
+            "}",
+            "#__operation_banner_mini__::after {",
+            "  content: '';",
+            "  width: 6px; height: 6px;",
+            "  border-radius: 50%;",
+            "  background: #fff;",
             "}",
         ].join("\n");
         (document.head || document.documentElement).appendChild(style);
 
-        // 创建横幅
+        // 检查折叠状态
+        var startCollapsed = false;
+        try {
+            startCollapsed = sessionStorage.getItem(COLLAPSED_KEY) === '1';
+        } catch (_) {}
+
+        // 创建横幅主体
         var banner = document.createElement("div");
         banner.id = "__operation_banner__";
 
@@ -2687,20 +3121,70 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         span.className = "__ob_text__";
         span.textContent = text;
 
+        var collapseBtn = document.createElement("button");
+        collapseBtn.className = "__ob_collapse_btn__";
+        collapseBtn.type = "button";
+        collapseBtn.title = "折叠";
+        collapseBtn.textContent = "−";
+
         banner.appendChild(dot);
         banner.appendChild(span);
+        banner.appendChild(collapseBtn);
 
-        // 创建占位元素（推开页面内容，防止横幅遮挡顶部区域）
-        var spacer = document.createElement("div");
-        spacer.id = "__operation_banner_spacer__";
+        // 创建折叠态小圆点（默认隐藏）
+        var miniDot = document.createElement("div");
+        miniDot.id = "__operation_banner_mini__";
+        miniDot.title = text;
+        miniDot.style.display = "none";
+
+        // 折叠 / 展开切换
+        function setCollapsed(collapsed) {
+            try {
+                sessionStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
+            } catch (_) {}
+            if (collapsed) {
+                banner.style.display = "none";
+                miniDot.style.display = "flex";
+            } else {
+                banner.style.display = "flex";
+                miniDot.style.display = "none";
+            }
+        }
+
+        collapseBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            setCollapsed(true);
+        });
+        miniDot.addEventListener('click', function (e) {
+            e.stopPropagation();
+            setCollapsed(false);
+        });
 
         // 插入到页面
         document.documentElement.appendChild(banner);
-        if (document.body) {
-            document.body.insertBefore(spacer, document.body.firstChild);
+        document.documentElement.appendChild(miniDot);
+
+        // 应用初始折叠状态
+        if (startCollapsed) {
+            setCollapsed(true);
         }
 
-        console.log("[横幅] ✅ 操作提示横幅已显示:", text);
+        // 🛡️ 启动 URL 监听器：如果页面 SPA 跳转到登录页，自动隐藏横幅
+        // 解决：发布脚本在发布页注入显示横幅后，页面 SPA 跳到登录页（如搜狐 /mpfe/v4/login）横幅未消失
+        if (!window.__operation_banner_watcher__) {
+            window.__operation_banner_watcher__ = setInterval(function () {
+                if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
+                    if (typeof window.hideOperationBanner === 'function') {
+                        window.hideOperationBanner();
+                    }
+                    clearInterval(window.__operation_banner_watcher__);
+                    window.__operation_banner_watcher__ = null;
+                    console.log("[横幅] 🛡️ 检测到页面跳转到登录页，已自动隐藏横幅");
+                }
+            }, 500);
+        }
+
+        console.log("[横幅] ✅ 操作提示浮动卡片已显示:", text);
     };
 
     /**
@@ -2708,12 +3192,20 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
      */
     window.hideOperationBanner = function () {
         var banner = document.getElementById("__operation_banner__");
+        var miniDot = document.getElementById("__operation_banner_mini__");
         var spacer = document.getElementById("__operation_banner_spacer__");
         var style = document.getElementById("__operation_banner_style__");
 
         if (banner) banner.remove();
+        if (miniDot) miniDot.remove();
         if (spacer) spacer.remove();
         if (style) style.remove();
+
+        // 清理 URL 监听器定时器
+        if (window.__operation_banner_watcher__) {
+            clearInterval(window.__operation_banner_watcher__);
+            window.__operation_banner_watcher__ = null;
+        }
 
         console.log("[横幅] 🗑️ 操作提示横幅已移除");
     };

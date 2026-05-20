@@ -78,7 +78,59 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
     const currentUrl = window.location.href;
     // 仅对视频号登录页生效
     if (currentUrl.includes('channels.weixin.qq.com/login.html')) {
-      console.log('[Shipinhao PreHide] 检测到视频号登录页，注入预隐藏样式');
+      const REFRESH_FLAG_KEY = '_shipinhao_login_refreshed';
+      const RESET_FLAG_KEYS = [
+        '_shipinhao_force_reset_login',
+        'SHIPINHAO_FORCE_RESET_LOGIN',
+        'SHIPINHAO_LOGIN_RESET_REQUESTED'
+      ];
+      const RESET_URL_PARAMS = [
+        'shipinhao_reset_login',
+        'shipinhao_force_reset',
+        'force_reset',
+        'reset_login',
+        'clear_login'
+      ];
+
+      const isTruthyFlagValue = (value) => {
+        if (value === true) return true;
+        if (value === false || value == null) return false;
+        return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+      };
+
+      const readStorage = (storage, key) => {
+        try {
+          return storage.getItem(key);
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const hasResetRequest = () => {
+        let resetFromUrl = false;
+        try {
+          const params = new URLSearchParams(window.location.search || '');
+          resetFromUrl = RESET_URL_PARAMS.some(key => isTruthyFlagValue(params.get(key)));
+        } catch (_) {}
+
+        const resetFromSession = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(readStorage(sessionStorage, key)));
+        const resetFromLocal = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(readStorage(localStorage, key)));
+        return resetFromUrl || resetFromSession || resetFromLocal;
+      };
+
+      const refreshed = readStorage(sessionStorage, REFRESH_FLAG_KEY);
+      const resetRequested = hasResetRequest();
+
+      // 默认扫码/授权流程不要预隐藏。只有显式重置登录时才短暂隐藏，避免隐藏样式造成白屏。
+      if (!resetRequested || refreshed) {
+        console.log('[Shipinhao PreHide] 正常登录/授权流程，跳过预隐藏:', {
+          resetRequested,
+          refreshed: !!refreshed
+        });
+        return;
+      }
+
+      console.log('[Shipinhao PreHide] 检测到视频号登录重置流程，注入短时预隐藏样式');
 
       // 使用 webFrame.insertCSS 在页面渲染前注入样式（比 DOM 操作更早）
       webFrame.insertCSS(`
@@ -86,30 +138,39 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
           visibility: hidden !important;
           background: #fff !important;
         }
-        /* 刷新后恢复显示（通过检测 sessionStorage 标记） */
-        html[data-shipinhao-refreshed] {
+        html[data-shipinhao-login-visible] {
           visibility: visible !important;
         }
       `);
 
-      // 在 DOM 准备好后检查是否已刷新过
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-          const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
-          if (refreshed) {
-            document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
-            console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
-          } else {
-            console.log('[Shipinhao PreHide] 首次加载，保持隐藏状态');
-          }
-        });
-      } else {
-        const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
-        if (refreshed) {
-          document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
-          console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
+      const revealLoginPage = (reason) => {
+        try {
+          document.documentElement.setAttribute('data-shipinhao-login-visible', 'true');
+          console.log(`[Shipinhao PreHide] 恢复页面显示: ${reason}`);
+        } catch (e) {
+          console.warn('[Shipinhao PreHide] 恢复页面显示失败:', e);
         }
+      };
+
+      const checkAndRevealIfNeeded = () => {
+        const refreshedNow = readStorage(sessionStorage, REFRESH_FLAG_KEY);
+        if (refreshedNow || !hasResetRequest()) {
+          revealLoginPage(refreshedNow ? '已完成重置刷新' : '重置标记已消失');
+        } else {
+          console.log('[Shipinhao PreHide] 首次重置加载，等待登录脚本清缓存并刷新');
+        }
+      };
+
+      // 在 DOM 准备好后检查是否已刷新过；再加兜底，避免注入脚本异常时永久隐藏。
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkAndRevealIfNeeded, { once: true });
+      } else {
+        checkAndRevealIfNeeded();
       }
+
+      setTimeout(() => {
+        revealLoginPage('5s 兜底，防止永久白屏');
+      }, 5000);
     }
   } catch (err) {
     console.error('[Shipinhao PreHide] 预隐藏失败:', err);
@@ -532,6 +593,13 @@ function resolveMaxConcurrentPublishWindows(platformConfig) {
 function buildPublishWindowJob(element, index, total, platformMap, platformFullNameMap, urlMap) {
   const platform = platformMap[element.account_info.media.id];
   const platformFullName = platformFullNameMap[platform];
+  const backendAccountId = String(
+    element?.account_info?.id
+    || element?.accountInfo?.id
+    || element?.media_auth_id
+    || element?.mediaAuthId
+    || ''
+  ).trim();
   const publishTarget = detectPublishContentType(element);
   const platformUrls = urlMap[platform] || {};
   const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
@@ -562,10 +630,11 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
 
   if (ENABLE_MULTI_ACCOUNT && element.cookies) {
     const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const sessionAccountId = backendAccountId || uniqueSessionId;
     if (platformFullName) {
       openOptions.platform = platformFullName;
-      openOptions.accountId = uniqueSessionId;
-      console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
+      openOptions.accountId = sessionAccountId;
+      console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${sessionAccountId}, backendAccountId=${backendAccountId || 'none'}`);
     }
     openOptions.sessionData = element.cookies;
     console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
@@ -669,12 +738,25 @@ async function launchQueuedPublishWindows() {
       });
       console.log(`✅ [${job.index + 1}] 窗口创建成功, windowId: ${windowId}`);
 
-      const publishData = {
+      const publishDataKey = `publish_data_window_${windowId}`;
+      const defaultPublishData = {
         ...job.basePublishData,
         windowId
       };
-      await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
-      console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
+      const existingPublishDataResult = await ipcRenderer.invoke('global-storage-get', publishDataKey);
+      let publishData = existingPublishDataResult?.success ? existingPublishDataResult.value : null;
+
+      if (publishData && typeof publishData === 'object') {
+        publishData = {
+          ...publishData,
+          windowId
+        };
+        console.log(`[BrowserAPI] ♻️ 保留主进程预写入的 ${publishDataKey}`);
+      } else {
+        publishData = defaultPublishData;
+        await ipcRenderer.invoke('global-storage-set', publishDataKey, publishData);
+        console.log(`[BrowserAPI] ✅ 已存储 ${publishDataKey}`);
+      }
 
       pendingMessages.set(windowId, {
         type: 'publish-data',
@@ -975,12 +1057,14 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+  clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
 
   // 迁移临时 Session 的 Cookies 到持久化 Session
   // 用于授权窗口（临时session）授权成功后，把登录状态复制到持久化session
   // 参数: domain - 要迁移的域名，如 'baidu.com'
   // 返回: { success: true, migratedCount: 10 } 或 { success: false, error: '错误信息' }
   migrateCookiesToPersistent: (domain) => ipcRenderer.invoke('migrate-cookies-to-persistent', domain),
+  migrateCookiesToAccountSession: (domain, platform, accountId) => ipcRenderer.invoke('migrate-cookies-to-account-session', domain, platform, accountId),
 
   // 检查 Session 状态（用于检测登录状态是否被清除）
   checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),
