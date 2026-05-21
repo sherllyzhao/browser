@@ -1681,8 +1681,9 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 getUserInfo: async () => {
                     const r = await fetch('https://creator.douyin.com/web/api/media/user/info/', { method: 'GET', credentials: 'include' });
                     const res = await r.json();
-                    const u = res && res.user || res && res.data && res.data.user;
-                    if (!u) throw new Error('抖音 user 不存在');
+                    // creator.js 中是 const {user} = apiData; 所以是 res.user，不是 res.data.user
+                    const u = res && res.user;
+                    if (!u || !u.nickname) throw new Error('抖音 user 不存在');
                     const avatar = u.avatar_thumb && u.avatar_thumb.url_list && u.avatar_thumb.url_list[0] || u.avatar || '';
                     return { nickname: u.nickname, avatar: avatar, uid: u.uid || u.user_id || u.sec_uid };
                 }
@@ -1733,7 +1734,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             },
             xinlang: {
                 apiPath: '/api/mediaauth/xlinfo',
-                domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com'],
+                domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com', 'sina.cn'],
                 getUserInfo: async () => {
                     const r = await fetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', { method: 'GET', credentials: 'include' });
                     const res = await r.json();
@@ -1744,32 +1745,41 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             },
             xiaohongshu: {
                 apiPath: '/api/mediaauth/xhsinfo',
-                domains: ['xiaohongshu.com', 'creator.xiaohongshu.com'],
+                domains: ['xiaohongshu.com', 'creator.xiaohongshu.com', 'edith.xiaohongshu.com'],
                 getUserInfo: async (publishData) => {
-                    // 优先 DOM 取（创作中心首页）
+                    // 优先接口取（main.js 守卫会保证发布窗口能访问 creator.xiaohongshu.com 域名 cookies）
                     try {
-                        const accountNameEle = document.querySelector('.account-name, [class*="account-name"], .name');
-                        const avatarEle = document.querySelector('.user-avatar img, .avatar img');
-                        const uidEle = Array.from(document.querySelectorAll('*')).find(e => /小红书账号/.test(e.textContent || ''));
-                        if (accountNameEle && uidEle) {
+                        const r = await fetch('https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info', {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                        const res = await r.json();
+                        const d = res && res.data;
+                        if (d && d.red_num) {
                             return {
-                                nickname: (accountNameEle.innerText || '').trim(),
-                                avatar: avatarEle ? avatarEle.getAttribute('src') : '',
-                                uid: (uidEle.innerText || '').replace('小红书账号: ', '').replace('小红书账号：', '').trim()
+                                nickname: d.name,
+                                avatar: d.avatar,
+                                uid: d.red_num,
+                                follower_count: d.fans_count,
+                                favoriting_count: d.follow_count,
+                                total_favorited: d.faved_count
                             };
                         }
-                    } catch (_) {}
+                    } catch (e) {
+                        console.warn('[xhs getUserInfo] 接口取失败:', e && e.message);
+                    }
                     // 兜底从 publishData 取
                     const e = publishData && publishData.element || {};
                     if (e.uid || e.platformUid) {
                         return { nickname: e.nickname || '', avatar: e.avatar || '', uid: e.uid || e.platformUid };
                     }
-                    throw new Error('小红书 DOM/publishData 均无 uid');
+                    throw new Error('小红书 接口/publishData 均无 uid');
                 }
             },
             shipinhao: {
                 apiPath: '/api/mediaauth/sphinfo',
-                domains: ['weixin.qq.com', 'channels.weixin.qq.com'],
+                domains: ['weixin.qq.com', 'channels.weixin.qq.com', 'mp.weixin.qq.com'],
                 getUserInfo: async (publishData) => {
                     // 优先 DOM 取
                     try {
@@ -1864,18 +1874,24 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             const cookiesData = JSON.stringify(mergedData);
 
             // 3. 构建 scanData（与 creator.js 一致）
+            // userInfo 中扩展字段（follower_count/favoriting_count/total_favorited/follow/video）若存在则覆盖默认 0
+            // auth_type 优先从 publishData.element.media_auth.auth_type 取（前端传入）
+            const elementForScan = publishDataForFallback && publishDataForFallback.element || {};
+            const resolvedAuthType = (elementForScan.media_auth && elementForScan.media_auth.auth_type != null)
+                ? elementForScan.media_auth.auth_type
+                : 1;
             const scanData = {
                 data: JSON.stringify({
                     nickname: userInfo.nickname,
                     avatar: userInfo.avatar,
-                    follow: 0,
-                    follower_count: 0,
-                    video: 0,
+                    follow: userInfo.follow != null ? userInfo.follow : 0,
+                    follower_count: userInfo.follower_count != null ? userInfo.follower_count : 0,
+                    video: userInfo.video != null ? userInfo.video : 0,
                     uid: userInfo.uid,
-                    favoriting_count: 0,
-                    total_favorited: 0,
+                    favoriting_count: userInfo.favoriting_count != null ? userInfo.favoriting_count : 0,
+                    total_favorited: userInfo.total_favorited != null ? userInfo.total_favorited : 0,
                     company_id: companyId,
-                    auth_type: 1,
+                    auth_type: resolvedAuthType,
                     cookies: cookiesData
                 })
             };
@@ -2682,8 +2698,8 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        // 开发环境下跳过关闭窗口，方便测试
-        if (!window.browserAPI.isProduction) {
+        // 开发环境下跳过关闭窗口，方便测试（旧版浏览器未暴露 isProduction，按生产环境处理）
+        if (window.browserAPI && window.browserAPI.isProduction === false) {
             console.log("[closeWindow] ⚠️ 开发环境，跳过关闭窗口");
             return true;
         }

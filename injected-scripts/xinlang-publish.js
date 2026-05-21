@@ -9,6 +9,35 @@
     "use strict";
 
     // ===========================
+    // 🛡️ 登录页守卫：脚本被错误注入到 weibo.com/newlogin 或其他登录页时直接 return
+    // 防止 fillFormData / 白屏检测 / 消息处理在登录页反复尝试
+    // ===========================
+    try {
+        const __pubUrl = String(window.location.href || '').toLowerCase();
+        const __pubHost = String(window.location.hostname || '').toLowerCase();
+        const __pubPath = String(window.location.pathname || '').toLowerCase();
+        const __isPublishHost = __pubHost === 'card.weibo.com';
+        const __isLoginishPath = (
+            __pubPath.includes('newlogin')
+            || __pubPath.includes('/login')
+            || __pubPath.includes('/signin')
+            || __pubPath.includes('/sso')
+            || __pubUrl.includes('passport.')
+            || __pubUrl.includes('security.weibo.com')
+        );
+        if (!__isPublishHost || __isLoginishPath) {
+            console.warn('[新浪发布] 🛡️ 当前不是 card.weibo.com 发布页（或处于登录页），脚本不执行', {
+                href: window.location.href,
+                host: __pubHost,
+                path: __pubPath,
+            });
+            return;
+        }
+    } catch (e) {
+        console.error('[新浪发布] ❌ 登录页守卫检测异常，继续执行:', e?.message);
+    }
+
+    // ===========================
     // 防止脚本重复注入（但消息监听器需要每次注册）
     // ===========================
     const isFirstLoad = !window.__XL_SCRIPT_LOADED__;
@@ -837,25 +866,67 @@
             editorEle.focus();
         }
 
-        const selection = window.getSelection?.();
-        if (selection && typeof document.createRange === 'function') {
-            const range = document.createRange();
-            range.selectNodeContents(editorEle);
-            selection.removeAllRanges();
-            selection.addRange(range);
-            try {
-                document.execCommand('delete', false);
-            } catch (e) {
-                editorEle.innerHTML = '';
-            }
-            selection.removeAllRanges();
-        } else {
-            editorEle.innerHTML = '';
+        // 🔴 步骤1：用 selectAll + 模拟删除键，触发 React/受控编辑器内部 state 同步
+        try {
+            document.execCommand('selectAll', false);
+        } catch (e) {}
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                inputType: 'deleteContentBackward',
+                data: null
+            }));
+        } catch (e) {}
+
+        try {
+            document.execCommand('delete', false);
+        } catch (e) {}
+
+        try {
+            editorEle.dispatchEvent(new InputEvent('input', {
+                bubbles: true,
+                cancelable: true,
+                inputType: 'deleteContentBackward',
+                data: null
+            }));
+        } catch (e) {
+            editorEle.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
         }
 
+        // 🔴 步骤2：用 Range 选区兜底删除（处理 execCommand 不生效的现代编辑器）
+        const selection = window.getSelection?.();
+        if (selection && typeof document.createRange === 'function') {
+            try {
+                const range = document.createRange();
+                range.selectNodeContents(editorEle);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand('delete', false);
+                selection.removeAllRanges();
+            } catch (e) {}
+        }
+
+        // 🔴 步骤3：兜底直接清空 DOM（确保至少视觉上是空的）
         if (getXinlangEditorText(editorEle)) {
             editorEle.innerHTML = '';
+            try {
+                editorEle.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: 'deleteContent',
+                    data: null
+                }));
+            } catch (e) {
+                editorEle.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
+            }
         }
+
+        // 🔴 步骤4：触发 change 让框架重新读取 value
+        try {
+            editorEle.dispatchEvent(new Event('change', {bubbles: true}));
+        } catch (e) {}
     }
 
     function prepareXinlangEditorContent(rawHtml) {
@@ -1005,12 +1076,8 @@
 
     async function fillXinlangEditorContent(rawHtml) {
         const editorEle = await waitForElement('.wb-editor', 20000);
-        const currentText = getXinlangEditorText(editorEle);
-        if (currentText) {
-            console.log(`[新浪发布] ⏭️ 编辑器已有内容（${currentText.length}字），跳过内容填写`);
-            return;
-        }
 
+        // 🔴 先 prepare 拿到期望的 plainText，便于和现有内容比对
         const prepared = prepareXinlangEditorContent(rawHtml);
         const htmlContent = prepared.html;
         const plainText = prepared.text;
@@ -1018,6 +1085,33 @@
 
         if (!htmlContent && !plainText) {
             throw new Error('正文内容为空，无法填写');
+        }
+
+        // 🔴 智能比对：期望内容 vs 编辑器现有内容
+        const currentText = getXinlangEditorText(editorEle);
+        if (currentText) {
+            const normalize = (s) => (s || '').replace(/\s+/g, '').replace(/\u200B/g, '');
+            const expectedNormalized = normalize(plainText);
+            const currentNormalized = normalize(currentText);
+
+            // 完全一致才跳过（已经填好了，避免脚本重复触发时再填一次）
+            if (expectedNormalized && currentNormalized === expectedNormalized) {
+                console.log(`[新浪发布] ⏭️ 编辑器内容已与期望一致（${currentText.length}字），跳过填写`);
+                return;
+            }
+
+            // 内容不一致说明是上一篇残留或脏数据，必须强制清空重填
+            console.warn(`[新浪发布] ⚠️ 检测到残留内容（${currentText.length}字），与期望（${plainText.length}字）不一致，强制清空重填`);
+            clearXinlangEditor(editorEle);
+            await delay(300);
+
+            // 二次确认清空成功（防止某些异步 React state 还原）
+            const afterClear = getXinlangEditorText(editorEle);
+            if (afterClear) {
+                console.warn(`[新浪发布] ⚠️ 首次清空后仍有残留（${afterClear.length}字），再清一次`);
+                clearXinlangEditor(editorEle);
+                await delay(300);
+            }
         }
 
         console.log('[新浪发布] 🧹 已清理开头所有空白内容');

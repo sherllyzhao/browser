@@ -1333,7 +1333,52 @@ function createPublishLoadingWindow(options = {}) {
     }
   }, 500);
 
+  // 🪄 步骤状态联动：在窗口对象上挂载 updateStep / finishStep / activateStep 工具
+  // 页面未加载完成时先入队，did-finish-load 后批量应用，再切换为直接执行模式
+  const stepQueue = [];
+  let pageReady = false;
+
+  const applyStep = (index, status) => {
+    if (!loadingWindow || loadingWindow.isDestroyed()) return;
+    const wc = loadingWindow.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const safeIndex = Number(index);
+    const safeStatus = JSON.stringify(String(status || 'active'));
+    wc.executeJavaScript(
+      `(typeof window.__setLoadingStep==='function')&&window.__setLoadingStep(${safeIndex}, ${safeStatus});`,
+      true
+    ).catch(() => {});
+  };
+
+  loadingWindow.webContents.once('did-finish-load', () => {
+    pageReady = true;
+    while (stepQueue.length) {
+      const { index, status } = stepQueue.shift();
+      applyStep(index, status);
+    }
+  });
+
+  loadingWindow.updateStep = (index, status) => {
+    if (!loadingWindow || loadingWindow.isDestroyed()) return;
+    if (!pageReady) {
+      stepQueue.push({ index, status });
+      return;
+    }
+    applyStep(index, status);
+  };
+  // 语义糖
+  loadingWindow.activateStep = (index) => loadingWindow.updateStep(index, 'active');
+  loadingWindow.finishStep = (index) => loadingWindow.updateStep(index, 'done');
+
   return loadingWindow;
+}
+
+// 安全调用 loading 窗口步骤更新，避免散落判空逻辑
+function safeUpdateLoadingStep(loadingWindow, index, status) {
+  if (!loadingWindow || loadingWindow.isDestroyed()) return;
+  if (typeof loadingWindow.updateStep === 'function') {
+    loadingWindow.updateStep(index, status);
+  }
 }
 
 function shouldShowPageErrorDialog() {
@@ -1963,9 +2008,28 @@ function addContentTypeFix(targetSession, label) {
     // 自动补上 SameSite=None; Secure 使 cookie 能正常存储到对应域名
     const cookieKey = Object.keys(responseHeaders).find(k => k.toLowerCase() === 'set-cookie');
     if (cookieKey) {
+      // 解析请求 URL 的 hostname，用于判断"自身域 .xxx" 应不应该去掉前导点
+      let requestHostname = '';
+      try {
+        requestHostname = new URL(details.url || '').hostname.toLowerCase();
+      } catch (_) {}
+
       responseHeaders[cookieKey] = responseHeaders[cookieKey].map(cookie => {
         if (!/SameSite/i.test(cookie)) {
           cookie += '; SameSite=None; Secure';
+        }
+        // 🔑 修复 cookie 重复存储：当 Set-Cookie 携带 Domain=.{当前请求主机} 时去掉整段 Domain 属性。
+        // WeChat 视频号登录会同时下发：
+        //   Set-Cookie: sessionid=A                              (无 Domain → host-only)
+        //   Set-Cookie: sessionid=B; Domain=.channels.weixin.qq.com (domain-cookie，与 host-only 是两个存储项)
+        // Chromium 以 (name, domain, host-only flag) 作为唯一键，两份并存，请求时同时发送，后端拿到旧的值 → "登录失败"。
+        // 去掉 dot-prefix 自身域 Domain 属性后，Set-Cookie 退化为 host-only，与无 Domain 的版本合并成同一存储项，新值覆盖旧值。
+        // 仅匹配 dot-domain 去点后等于当前请求 hostname 的情况，不影响真正的父域共享 cookie（如 Domain=.weixin.qq.com）。
+        if (requestHostname) {
+          cookie = cookie.replace(/;\s*Domain\s*=\s*\.([^;\s]+)/i, (match, dotDomain) => {
+            const normalizedDomain = String(dotDomain).toLowerCase();
+            return normalizedDomain === requestHostname ? '' : match;
+          });
         }
         return cookie;
       });
@@ -5040,9 +5104,62 @@ function createWindow() {
       }
 
       console.log(`[did-create-window] 🔐 [${eventName}] 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+
+      // 🛡️ 防误触发：SPA 跳一下登录页又立刻跳回（用户没真登录），cookies 是访客的不该保存
+      // 必须确认本地 session 有真实登录态才保存，避免空触发污染后台
+      const navPlatform = accountInfo?.platform || globalStorage[`publish_data_window_${windowId}`]?.platform || null;
+      let navHasLogin = false;
+      try {
+        if (navPlatform && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+          navHasLogin = await hasValidLoginCookies(newWindow.webContents.session, navPlatform);
+        }
+      } catch (loginCheckErr) {
+        console.warn('[did-create-window] ⚠️ did-navigate 登录态预检异常:', loginCheckErr.message);
+      }
+      if (navPlatform && !navHasLogin) {
+        console.log(`[did-create-window] 🚫 [${eventName}] 本地无真实登录态，跳过保存（可能是 SPA 跳一下登录页又跳回的误触发）`);
+        return;
+      }
+
       isSavingSession = true;
       try {
-        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        // 🆕 优先走脚本侧 __publishSaveSession__（与 close handler 同款），避免主进程轻量 {id, cookies} 格式被后台拒
+        const scriptSupportedPlatforms = ['tengxunhao', 'sohuhao', 'douyin', 'baijiahao', 'toutiao', 'wangyihao', 'zhihu', 'xinlang', 'xiaohongshu', 'shipinhao'];
+        let result = null;
+        let scriptResult = null;
+        if (navPlatform && scriptSupportedPlatforms.includes(navPlatform)) {
+          try {
+            const code = `(async () => {
+              if (typeof window.__publishSaveSession__ === 'function') {
+                try { return await window.__publishSaveSession__(${JSON.stringify(navPlatform)}); }
+                catch (e) { return { success: false, error: e && e.message }; }
+              }
+              return { success: false, error: '__publishSaveSession__ 未注册' };
+            })()`;
+            scriptResult = await Promise.race([
+              newWindow.webContents.executeJavaScript(code),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('脚本侧保存超时')), 30000))
+            ]);
+            if (scriptResult && scriptResult.success) {
+              console.log(`[did-create-window] 🔐 [${eventName}] ✅ 脚本保存成功`);
+              result = {
+                success: true,
+                accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || '' },
+                backendAccountId: scriptResult.uid,
+                cookieCount: scriptResult.cookieCount,
+                statusCode: scriptResult.status,
+                source: 'script'
+              };
+            }
+          } catch (scriptErr) {
+            console.warn(`[did-create-window] ⚠️ [${eventName}] 脚本侧保存异常: ${scriptErr.message}`);
+          }
+        }
+        // 脚本侧失败就直接跳过：重登录场景不走主进程轻量兜底，避免 400 授权失败
+        if (!result) {
+          console.log(`[did-create-window] 🚫 [${eventName}] 脚本路径未成功，跳过主进程兜底（避免轻量格式被拒）。scriptResult:`, scriptResult);
+          return;
+        }
         console.log(`[did-create-window] 🔐 [${eventName}] 重登录后保存结果:`, result);
         if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
           const publishDataKey = `publish_data_window_${windowId}`;
@@ -7075,6 +7192,27 @@ async function openManagedChildWindow(url, options = {}) {
     return { success: false, error: 'No URL provided' };
   }
 
+  // 🔑 视频号授权窗口兼容：任何打开 channels.weixin.qq.com/login.html 的窗口都自动追加 force_reset=1，
+  // 触发 shipinhao-login.js 内既有的清缓存+刷新流程，保证服务端新下发的 Set-Cookie 不会与旧 cookie 并存。
+  // 场景覆盖：
+  //   1. 临时 session（新增账号授权）—— 防止上一次失败遗留的 cookie 残留
+  //   2. account session 重新授权 —— 持久化 session 里有旧账号 cookie，必须先清掉，否则 WeChat 服务端把新旧 sessionid/wxuin 同名 cookie 并存，登录失败
+  // 仅匹配 channels.weixin.qq.com（视频号），不影响 mp.weixin.qq.com（公众号）等其他子域。
+  try {
+    const parsedUrl = new URL(url);
+    const hostname = String(parsedUrl.hostname || '').toLowerCase();
+    const pathname = String(parsedUrl.pathname || '').toLowerCase();
+    const isShipinhaoLogin = hostname === 'channels.weixin.qq.com'
+      && (pathname.includes('login.html') || pathname === '/' || pathname === '');
+    if (isShipinhaoLogin && !parsedUrl.searchParams.has('force_reset')) {
+      parsedUrl.searchParams.set('force_reset', '1');
+      url = parsedUrl.toString();
+      console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
+    }
+  } catch (urlErr) {
+    console.warn('[Window Manager] ⚠️ URL 解析失败，跳过 force_reset 注入:', urlErr.message);
+  }
+
   // ⏱ 全链路阶段性耗时基准时间
   const __WM_T0__ = Date.now();
   const __wmTs = () => `T+${Date.now() - __WM_T0__}ms`;
@@ -7111,6 +7249,8 @@ async function openManagedChildWindow(url, options = {}) {
     if (shouldShowPublishLoadingWindow) {
       publishLoadingWindow = createPublishLoadingWindow(options);
       console.log(`[Window Manager][${__wmTs()}] 🎬 已打开发布 loading 窗口，后台准备真实发布窗口`);
+      // 🪄 步骤联动：默认从「恢复账号登录状态」开始
+      publishLoadingWindow?.activateStep?.(0);
     }
 
     if (options.platform && options.accountId) {
@@ -7183,6 +7323,10 @@ async function openManagedChildWindow(url, options = {}) {
 
         if (shouldSkipSessionRestore) {
           console.log('[Window Manager] ⏭️ 已跳过 sessionData 清空恢复，沿用本地永久 session');
+          // 🪄 本地登录态有效，前两步视作已就绪，进入「加载目标发布页面」
+          publishLoadingWindow?.finishStep?.(0);
+          publishLoadingWindow?.finishStep?.(1);
+          publishLoadingWindow?.activateStep?.(2);
         } else {
         try {
           // 1. 清空该账号的所有 cookies
@@ -7406,6 +7550,9 @@ async function openManagedChildWindow(url, options = {}) {
               }
             }
             console.log(`[Window Manager][${__wmTs()}] ✅ 恢复完成，成功恢复 ${restoredCount} 个 cookies`);
+            // 🪄 cookies 已落盘：「恢复账号登录状态」完成，切换到「同步平台 Cookie 和 Storage」
+            publishLoadingWindow?.finishStep?.(0);
+            publishLoadingWindow?.activateStep?.(1);
             console.log(`[Window Manager][${__wmTs()}] 🗝 关键登录 cookie 命中:`, foundKeyCookies.length > 0 ? foundKeyCookies : '⚠️ 无（可能影响登录状态）');
 
             // 🔑 恢复后主动校验：重新读取实际写入的 cookies，判断是否与期望一致
@@ -7476,6 +7623,9 @@ async function openManagedChildWindow(url, options = {}) {
           await new Promise(resolve => setTimeout(resolve, 120));
 
           console.log(`[Window Manager][${__wmTs()}] ✅ 等待完成，准备创建窗口`);
+          // 🪄 Storage 已收敛：「同步平台 Cookie 和 Storage」完成，进入「加载目标发布页面」
+          publishLoadingWindow?.finishStep?.(1);
+          publishLoadingWindow?.activateStep?.(2);
 
           console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
         } catch (err) {
@@ -7556,7 +7706,9 @@ async function openManagedChildWindow(url, options = {}) {
         newWindow.show();
         console.log(`[Window Manager] 已显示窗口 (${reason})`);
       }
-      closePublishLoadingWindow(reason);
+      // 🪄 最后一步「加载目标发布页面」完成，留 220ms 让用户看到对勾再销毁 loading 窗口
+      publishLoadingWindow?.finishStep?.(2);
+      setTimeout(() => closePublishLoadingWindow(reason), 220);
     };
     const showFallbackTimer = setTimeout(() => showManagedWindow('fallback-timeout'), 12000);
     let targetShowFallbackTimer = null;
@@ -7661,9 +7813,62 @@ async function openManagedChildWindow(url, options = {}) {
       }
 
       console.log(`[Window Manager] 🔐 [${eventName}] 检测到从登录页跳回业务页 (windowId=${windowId})，触发 cookies 保存...`);
+
+      // 🛡️ 防误触发：SPA 跳一下登录页又立刻跳回（用户没真登录），cookies 是访客的不该保存
+      // 必须确认本地 session 有真实登录态才保存，避免空触发污染后台
+      const navPlatform = accountInfo?.platform || globalStorage[`publish_data_window_${windowId}`]?.platform || null;
+      let navHasLogin = false;
+      try {
+        if (navPlatform && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+          navHasLogin = await hasValidLoginCookies(newWindow.webContents.session, navPlatform);
+        }
+      } catch (loginCheckErr) {
+        console.warn('[Window Manager] ⚠️ did-navigate 登录态预检异常:', loginCheckErr.message);
+      }
+      if (navPlatform && !navHasLogin) {
+        console.log(`[Window Manager] 🚫 [${eventName}] 本地无真实登录态，跳过保存（可能是 SPA 跳一下登录页又跳回的误触发）`);
+        return;
+      }
+
       isSavingSession = true;
       try {
-        const result = await saveWindowSessionToBackend(newWindow, windowId);
+        // 🆕 优先走脚本侧 __publishSaveSession__（与 close handler 同款），避免主进程轻量 {id, cookies} 格式被后台拒
+        const scriptSupportedPlatforms = ['tengxunhao', 'sohuhao', 'douyin', 'baijiahao', 'toutiao', 'wangyihao', 'zhihu', 'xinlang', 'xiaohongshu', 'shipinhao'];
+        let result = null;
+        let scriptResult = null;
+        if (navPlatform && scriptSupportedPlatforms.includes(navPlatform)) {
+          try {
+            const code = `(async () => {
+              if (typeof window.__publishSaveSession__ === 'function') {
+                try { return await window.__publishSaveSession__(${JSON.stringify(navPlatform)}); }
+                catch (e) { return { success: false, error: e && e.message }; }
+              }
+              return { success: false, error: '__publishSaveSession__ 未注册' };
+            })()`;
+            scriptResult = await Promise.race([
+              newWindow.webContents.executeJavaScript(code),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('脚本侧保存超时')), 30000))
+            ]);
+            if (scriptResult && scriptResult.success) {
+              console.log(`[Window Manager] 🔐 [${eventName}] ✅ 脚本保存成功`);
+              result = {
+                success: true,
+                accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || '' },
+                backendAccountId: scriptResult.uid,
+                cookieCount: scriptResult.cookieCount,
+                statusCode: scriptResult.status,
+                source: 'script'
+              };
+            }
+          } catch (scriptErr) {
+            console.warn(`[Window Manager] ⚠️ [${eventName}] 脚本侧保存异常: ${scriptErr.message}`);
+          }
+        }
+        // 脚本侧失败就直接跳过：重登录场景不走主进程轻量兜底，避免 400 授权失败
+        if (!result) {
+          console.log(`[Window Manager] 🚫 [${eventName}] 脚本路径未成功，跳过主进程兜底（避免轻量格式被拒）。scriptResult:`, scriptResult);
+          return;
+        }
         console.log(`[Window Manager] 🔐 [${eventName}] 重登录后保存结果:`, result);
         if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
           const publishDataKey = `publish_data_window_${windowId}`;
@@ -7756,8 +7961,59 @@ async function openManagedChildWindow(url, options = {}) {
               source: 'script'
             };
           } else {
-            console.log('[Window Manager] 🛟 走主进程兜底 saveWindowSessionToBackend');
-            result = await saveWindowSessionToBackend(newWindow, windowId);
+            // 🛡️ 主进程兜底前先检查本地 session 是否有真实登录态 + publishData 是否存在
+            // 场景：发布页跳到登录页（cookies 是访客/失效的），或 publishData 已被清理
+            // 任一条件不满足都跳过保存，避免覆盖后台已有的好数据
+            let hasLogin = false;
+            let publishDataMissing = false;
+            try {
+              if (targetPlatform && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+                hasLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
+              }
+            } catch (loginCheckErr) {
+              console.warn('[Window Manager] ⚠️ 登录态预检异常:', loginCheckErr.message);
+            }
+            publishDataMissing = !globalStorage[`publish_data_window_${windowId}`];
+
+            const shouldSkip = targetPlatform && (!hasLogin || publishDataMissing);
+            console.log(`[Window Manager] 兜底前判断: targetPlatform=${targetPlatform}, hasLogin=${hasLogin}, publishDataMissing=${publishDataMissing}, shouldSkip=${shouldSkip}`);
+
+            if (shouldSkip) {
+              console.log('[Window Manager] 🚫 跳过保存避免覆盖后台数据');
+              result = {
+                success: false,
+                accountInfo: { platform: targetPlatform, accountId: accountInfo?.accountId || '' },
+                error: '跳过保存（' + (!hasLogin ? '无登录态' : '') + (publishDataMissing ? (!hasLogin ? '+' : '') + 'publishData缺失' : '') + '）',
+                source: 'skip-save',
+                scriptResult: scriptResult
+              };
+              // 弹个 alert 让主人知道为啥没保存
+              try {
+                if (browserView && !browserView.webContents.isDestroyed()) {
+                  const reasons = [];
+                  if (!hasLogin) reasons.push('本地 session 未检测到登录态 cookie（' + (config.platformLoginCookies?.[targetPlatform]?.join('/') || '无配置') + '）');
+                  if (publishDataMissing) reasons.push('publish_data_window_' + windowId + ' 已被清理');
+                  const msg = '⚠️ 跳过保存（' + targetPlatform + '）'
+                    + '\n窗口ID: ' + windowId
+                    + '\nhasLogin: ' + hasLogin
+                    + '\npublishDataMissing: ' + publishDataMissing
+                    + '\n原因:'
+                    + '\n  • ' + reasons.join('\n  • ')
+                    + '\n避免用过期/访客 cookies 覆盖后台已有好数据'
+                    + '\n脚本路径结果: ' + (scriptResult ? JSON.stringify(scriptResult).slice(0, 200) : '未尝试');
+                  browserView.webContents.executeJavaScript(`alert(${JSON.stringify(msg)});`).catch(() => {});
+                }
+              } catch (_) {}
+            } else {
+              console.log('[Window Manager] 🛟 走主进程兜底 saveWindowSessionToBackend');
+              let currentUrl = '';
+              try {
+                if (newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+                  currentUrl = newWindow.webContents.getURL();
+                }
+              } catch (_) {}
+              result = await saveWindowSessionToBackend(newWindow, windowId, { scriptResult, currentUrl });
+            }
           }
           console.log('[Window Manager] 保存结果:', result);
 
@@ -9579,7 +9835,7 @@ async function persistWindowSessionToBackend(targetWindow, windowId, source = 'w
  * @param {number} windowId - 窗口 ID
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-async function saveWindowSessionToBackend(targetWindow, windowId) {
+async function saveWindowSessionToBackend(targetWindow, windowId, extraDebugInfo) {
   console.log('[Save Session] ========== 窗口关闭前保存登录信息 ==========');
   console.log('[Save Session] windowId:', windowId);
   let result;
@@ -9686,6 +9942,18 @@ async function saveWindowSessionToBackend(targetWindow, windowId) {
             + '\n上传 cookies 数: ' + (result?.cookieCount || result?.cookies?.length || '失败时未记录')
             + '\n———— 后台响应 ————'
             + '\n' + respDump;
+
+          // 🆕 附加 close handler 传过来的 extraDebugInfo（含脚本路径结果 + 当前页面 URL）
+          if (extraDebugInfo) {
+            const scriptResultDesc = extraDebugInfo.scriptResult
+              ? JSON.stringify(extraDebugInfo.scriptResult).slice(0, 300)
+              : '未尝试脚本路径';
+            const currentUrlDesc = extraDebugInfo.currentUrl || '无';
+            diagnosticBlock += '\n———— 脚本路径结果 ————'
+              + '\n' + scriptResultDesc
+              + '\n———— 窗口当前 URL ————'
+              + '\n' + currentUrlDesc;
+          }
         } catch (diagErr) {
           diagnosticBlock = '\n———— 诊断信息收集失败: ' + diagErr.message + ' ————';
         }
@@ -9743,7 +10011,105 @@ function getAccountSession(platform, accountId) {
   console.log(`[Account Session] 创建新 session: ${partitionName}`);
   addContentTypeFix(accountSession, `账号 session ${partitionName}`);
 
+  // 🔑 视频号 cookie 去重监听器：每当有新 cookie 写入，立即删除同名同 path 但 domain 不同的旧版本
+  // WeChat 会用 Domain=channels.weixin.qq.com（host-only）和 Domain=.channels.weixin.qq.com（domain-cookie）
+  // 同时下发同名 sessionid/wxuin，导致请求时一并发送，后端拿到旧值 → "登录失败"。
+  // 通过监听 cookie 变化主动去重，无论 cookie 是 Set-Cookie 头还是 JS 设置都能覆盖。
+  if (platform === 'shipinhao') {
+    installShipinhaoCookieDedup(accountSession, partitionName);
+  }
+
   return accountSession;
+}
+
+// 标记当前正在执行去重，避免递归触发
+const shipinhaoDedupInProgress = new WeakSet();
+
+// 关注的同名 cookie：WeChat 登录态关键凭证
+const SHIPINHAO_DEDUP_COOKIE_NAMES = new Set(['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']);
+
+// 关注的域：channels.weixin.qq.com 及其父域 .weixin.qq.com / .qq.com
+function isShipinhaoCookieDomain(domain) {
+  const d = String(domain || '').toLowerCase().replace(/^\./, '');
+  return d === 'channels.weixin.qq.com'
+    || d === 'weixin.qq.com'
+    || d === 'qq.com';
+}
+
+// 执行一次视频号同名 cookie 去重。
+//   - 传 keepCookie（监听器场景）：仅处理该 name+path 一组，保留刚写入的那一条，删 domain 不同的其余；
+//   - 不传 keepCookie（初始扫描场景）：遍历全部关注 name，按 name+path 分组；
+//     每组保留 host-only 优先，否则保留过期最晚的，删其余。
+async function dedupShipinhaoCookiesOnce(targetSession, label, keepCookie = null) {
+  if (shipinhaoDedupInProgress.has(targetSession)) return 0;
+  shipinhaoDedupInProgress.add(targetSession);
+  let removed = 0;
+  try {
+    const names = keepCookie ? [keepCookie.name] : Array.from(SHIPINHAO_DEDUP_COOKIE_NAMES);
+    for (const name of names) {
+      const all = await targetSession.cookies.get({ name });
+      const cookies = all.filter(c => isShipinhaoCookieDomain(c.domain));
+      if (cookies.length <= 1) continue;
+
+      // 按 path 分组（监听器场景只关心 keepCookie.path 这一组）
+      const byPath = new Map();
+      for (const c of cookies) {
+        if (keepCookie && c.path !== keepCookie.path) continue;
+        const key = c.path || '/';
+        if (!byPath.has(key)) byPath.set(key, []);
+        byPath.get(key).push(c);
+      }
+
+      for (const group of byPath.values()) {
+        if (group.length <= 1) continue;
+        let keeper;
+        if (keepCookie) {
+          keeper = group.find(c => c.domain === keepCookie.domain) || group[0];
+        } else {
+          const hostOnly = group.find(c => !String(c.domain).startsWith('.'));
+          keeper = hostOnly || group.slice().sort((a, b) => (b.expirationDate || 0) - (a.expirationDate || 0))[0];
+        }
+
+        for (const old of group) {
+          if (old === keeper) continue;
+          const host = old.domain.startsWith('.') ? old.domain.substring(1) : old.domain;
+          const oldUrl = `${old.secure ? 'https' : 'http'}://${host}${old.path || '/'}`;
+          try {
+            await targetSession.cookies.remove(oldUrl, old.name);
+            removed++;
+            console.log(`[${label}] 🧹 去重同名 cookie: ${old.name} @ ${old.domain} (保留 @ ${keeper.domain})`);
+          } catch (rmErr) {
+            console.warn(`[${label}] ⚠️ 去重删除失败: ${old.name} @ ${old.domain}: ${rmErr.message}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[${label}] ⚠️ cookie 去重处理异常: ${err.message}`);
+  } finally {
+    shipinhaoDedupInProgress.delete(targetSession);
+  }
+  return removed;
+}
+
+function installShipinhaoCookieDedup(targetSession, label) {
+  targetSession.cookies.on('changed', async (_event, cookie, cause, removed) => {
+    // 只处理新增/覆盖事件，跳过 expired/evicted/我们自己删除产生的事件
+    if (removed) return;
+    if (cause !== 'explicit' && cause !== 'overwrite') return;
+    if (!SHIPINHAO_DEDUP_COOKIE_NAMES.has(cookie.name)) return;
+    if (!isShipinhaoCookieDomain(cookie.domain)) return;
+    await dedupShipinhaoCookiesOnce(targetSession, label, cookie);
+  });
+
+  console.log(`[${label}] ✅ 视频号 cookie 去重监听器已安装`);
+
+  // 启动时立即扫描一次历史遗留的重复 cookie（例如打开窗口时尚未登录就已有 2 条重复）
+  dedupShipinhaoCookiesOnce(targetSession, label).then(count => {
+    if (count > 0) {
+      console.log(`[${label}] ✅ 初始扫描去重完成，共清理 ${count} 个历史重复 cookie`);
+    }
+  });
 }
 
 // 删除账号的 Session 数据

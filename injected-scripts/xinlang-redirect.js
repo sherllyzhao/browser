@@ -132,19 +132,31 @@
         cookieLength: cookieString.length
     });
 
-    let targetUrl = creatorUrl;
-    let targetLabel = '新浪创作者入口';
-    let scenario = '未登录';
+    // 🔴🔴🔴 调试模式：临时注释掉所有跳转行为，验证刷新源头是否来自本脚本
+    // 如果注释后页面不再刷新，说明问题在 redirect 内；如果仍在刷，说明刷新源在其他地方
+    console.warn('[新浪重定向] ⛔ DEBUG: 已禁用所有跳转，仅打印日志，便于排查刷新源');
+    return;
 
-    if (hasWeiboLoginCookie && hasPublishContext) {
-        targetUrl = publishUrl;
-        targetLabel = '发布页';
-        scenario = '已登录且有发布恢复数据';
-    } else if (hasWeiboLoginCookie) {
-        scenario = '已登录但无发布恢复数据';
-    }
-
-    console.log(`[新浪重定向] 🚀 检测到${scenario}场景，重定向到${targetLabel}:`, targetUrl);
-    window.location.href = targetUrl;
+    // ---- 以下逻辑全部禁用（一个个放开测试时再启用）----
+    // // 🔴 未登录场景一律不主动跳转，避免登录页刷新死循环
+    // // 死循环路径：weibo.com/newlogin(未登录) -> 跳 mp.sina.com.cn -> 被新浪踢回 weibo.com/newlogin -> ...
+    // // 让用户停留在 weibo.com/newlogin 完成登录即可，登录成功后新浪自身会跳走
+    // if (!hasWeiboLoginCookie) {
+    //     console.log('[新浪重定向] ⛔ 未检测到微博登录态，停留在当前页让用户完成登录，避免登录页刷新循环');
+    //     return;
+    // }
+    //
+    // let targetUrl = creatorUrl;
+    // let targetLabel = '新浪创作者入口';
+    // let scenario = '已登录但无发布恢复数据';
+    //
+    // if (hasPublishContext) {
+    //     targetUrl = publishUrl;
+    //     targetLabel = '发布页';
+    //     scenario = '已登录且有发布恢复数据';
+    // }
+    //
+    // console.log(`[新浪重定向] 🚀 检测到${scenario}场景，重定向到${targetLabel}:`, targetUrl);
+    // window.location.href = targetUrl;
 
 })();

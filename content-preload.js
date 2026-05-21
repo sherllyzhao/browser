@@ -408,10 +408,27 @@ function getFileExtensionFromUrl(rawUrl) {
 }
 
 function detectPublishContentType(element) {
+  // 1. 优先看显式 type / contentType 字段（前端传字符串时直接用）
+  const explicitType = element?.contentType || element?.content_type || element?.type;
+  if (typeof explicitType === 'string') {
+    const lower = explicitType.toLowerCase();
+    if (lower.includes('video')) {
+      return { contentType: 'video', extension: '', sourceUrl: element?.video || element?.video_url || element?.videoUrl || element?.url || '' };
+    }
+    if (lower.includes('article') || lower.includes('image') || lower.includes('graphic')) {
+      return { contentType: 'article', extension: '', sourceUrl: element?.image || element?.image_url || element?.url || element?.cover || '' };
+    }
+  }
+
+  // 2. 文件扩展名判断（视频字段优先于通用 url，避免视频被 cover/bg_url 误判为图片）
   const candidateUrls = [
+    element?.video,
+    element?.video_url,
+    element?.videoUrl,
     element?.url,
     element?.image,
     element?.cover,
+    element?.bg_url,
     element?.image_url,
     element?.imageUrl
   ].filter(Boolean);

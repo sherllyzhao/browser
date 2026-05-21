@@ -1,3 +1,27 @@
+// 🔓 Shadow DOM 穿透：小红书新版把发布/暂存按钮放进 closed shadow root
+// 在脚本最顶端 hook attachShadow，保留所有 shadowRoot 的引用，供后续查找使用
+(function patchAttachShadowForXhs() {
+    if (window.__xhsShadowPatched) return;
+    window.__xhsShadowPatched = true;
+    window.__xhsShadowHosts = new WeakSet();
+    window.__xhsShadowRoots = [];
+    try {
+        const original = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function (init) {
+            const patchedInit = Object.assign({}, init || {}, { mode: "open" });
+            const root = original.call(this, patchedInit);
+            try {
+                window.__xhsShadowHosts.add(this);
+                window.__xhsShadowRoots.push(root);
+            } catch (e) { /* ignore */ }
+            return root;
+        };
+        console.log("[xhs-publish] attachShadow 已 hook → open mode");
+    } catch (e) {
+        console.warn("[xhs-publish] attachShadow hook 失败", e);
+    }
+})();
+
 // 发布成功页跳过本脚本，避免与 publish-success.js 冲突
 if (location.search.includes("published=true")) {
     console.log("[小红书发布] 跳过：当前为发布成功页");
@@ -387,28 +411,56 @@ if (location.search.includes("published=true")) {
             || button.getAttribute("aria-disabled") === "true";
     }
 
+    function queryAllDeep(selector) {
+        const results = [];
+        const seen = new Set();
+        const visit = (root) => {
+            try {
+                root.querySelectorAll(selector).forEach(el => {
+                    if (!seen.has(el)) {
+                        seen.add(el);
+                        results.push(el);
+                    }
+                });
+            } catch (e) { /* ignore */ }
+            try {
+                root.querySelectorAll("*").forEach(el => {
+                    if (el.shadowRoot) visit(el.shadowRoot);
+                });
+            } catch (e) { /* ignore */ }
+        };
+        visit(document);
+        if (window.__xhsShadowRoots) {
+            window.__xhsShadowRoots.forEach(r => {
+                if (r && r.querySelectorAll) visit(r);
+            });
+        }
+        return results;
+    }
+
     function findXhsPublishButton() {
         const primarySelectors = [
+            ".publish-page-publish-btn .ce-btn.bg-red",
             ".publish-page-publish-btn .custom-button.bg-red",
-            ".publish-page-publish-btn .custom-button",
-            ".publish-page-publish-btn button",
+            ".ce-btn.bg-red"
         ];
 
         for (const selector of primarySelectors) {
-            const element = Array.from(document.querySelectorAll(selector)).find(isVisibleElement);
+            const element = queryAllDeep(selector).find(isVisibleElement);
             if (element) {
                 return element;
             }
         }
 
         const fallbackSelectors = [
-            "button",
+            ".ce-btn",
             ".custom-button",
+            "button",
             "[role='button']",
         ];
         const candidates = [];
         fallbackSelectors.forEach(selector => {
-            document.querySelectorAll(selector).forEach(element => {
+            queryAllDeep(selector).forEach(element => {
                 if (!candidates.includes(element)) {
                     candidates.push(element);
                 }
@@ -418,11 +470,23 @@ if (location.search.includes("published=true")) {
         const visibleCandidates = candidates.filter(isVisibleElement);
         const textMatchedButton = visibleCandidates.find(element => {
             const text = (element.textContent || "").replace(/\s+/g, "");
-            return text.includes("发布")
-                && !text.includes("草稿")
-                && !text.includes("取消")
-                && !text.includes("预览");
+            return text === "发布"
+                || (text.includes("发布")
+                    && !text.includes("草稿")
+                    && !text.includes("取消")
+                    && !text.includes("预览")
+                    && !text.includes("暂存"));
         });
+
+        if (!textMatchedButton) {
+            console.warn("[xhs-publish] findXhsPublishButton 未匹配", {
+                publishWrap: queryAllDeep(".publish-page-publish-btn").length,
+                ceBtn: queryAllDeep(".ce-btn").length,
+                customBtn: queryAllDeep(".custom-button").length,
+                shadowRoots: (window.__xhsShadowRoots || []).length,
+                xhsHost: document.querySelectorAll("xhs-publish-btn").length,
+            });
+        }
 
         return textMatchedButton || null;
     }
@@ -475,6 +539,7 @@ if (location.search.includes("published=true")) {
             const publishBtn = await retryOperation(
                 async () => {
                     const btn = findXhsPublishButton();
+                    console.log("🚀 ~  ~ btn: ", btn);
                     if (!btn) {
                         throw new Error("发布按钮未找到");
                     }
