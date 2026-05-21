@@ -1920,28 +1920,18 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 response: apiResponseText.slice(0, 300)
             };
 
+            // 🔕 已移除关闭弹窗后的接口存储信息提示（保留控制台日志即可）
             try {
                 const cookiesKB = Math.round(cookiesData.length / 1024);
-                const msg = okFlag
-                    ? '✅ 关闭前保存成功（' + platform + '）'
-                        + '\nuid: ' + userInfo.uid
-                        + '\nnickname: ' + userInfo.nickname
-                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
-                        + '\nHTTP: ' + apiResponse.status
-                        + '\n接口 code: ' + (apiResult && apiResult.code)
-                    : '❌ 关闭前保存失败（' + platform + '）'
-                        + '\nuid: ' + userInfo.uid
-                        + '\nnickname: ' + userInfo.nickname
-                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
-                        + '\nHTTP: ' + apiResponse.status
-                        + '\n接口 code: ' + (apiResult ? apiResult.code : '-')
-                        + '\n响应: ' + apiResponseText.slice(0, 200);
-                alert(msg);
+                console.log('[publishSaveSession]', okFlag ? '✅ 保存成功' : '❌ 保存失败',
+                    { platform, uid: userInfo.uid, nickname: userInfo.nickname,
+                      cookieCount: mergedData.cookies.length, cookiesKB,
+                      status: apiResponse.status, code: apiResult && apiResult.code });
             } catch (_) {}
 
             return result;
         } catch (err) {
-            try { alert('❌ 关闭前保存异常（' + platform + '）: ' + (err && err.message)); } catch (_) {}
+            console.error('[publishSaveSession] ❌ 关闭前保存异常（' + platform + '）:', err && err.message);
             return { success: false, error: err && err.message };
         }
     };
