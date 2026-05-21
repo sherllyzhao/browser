@@ -8,6 +8,24 @@
 (async function () {
     'use strict';
 
+    const TENGXVNHAO_SESSION_DOMAINS = ['qq.com', 'om.qq.com', 'aqq.qq.com'];
+
+    const getPublishWindowData = async () => {
+        try {
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.getGlobalData) {
+                return null;
+            }
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                return null;
+            }
+            return await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+        } catch (err) {
+            console.warn('[腾讯号授权] ⚠️ 读取窗口发布数据失败:', err);
+            return null;
+        }
+    };
+
     // ===========================
     // 防止脚本重复注入
     // ===========================
@@ -67,6 +85,10 @@
         transferId,
         timestamp: Date.now()
     };
+    let cachedPublishWindowData = await getPublishWindowData();
+    if (cachedPublishWindowData) {
+        console.log('[腾讯号授权] 📦 已缓存发布窗口数据，后续将用于回写账号 session');
+    }
 
     // ===========================
     // 2. 发送消息到父窗口的辅助函数（使用 common.js）
@@ -188,16 +210,64 @@
                                 console.log('[腾讯号授权] 📦 正在获取完整会话数据...');
                                 let cookiesData = '';
                                 try {
-                                    const sessionResult = await window.browserAPI.getFullSessionData('om.qq.com');
-                                    if (sessionResult.success) {
-                                        cookiesData = JSON.stringify(sessionResult.data);
-                                        console.
+                                    const sessionResults = await Promise.all(
+                                        TENGXVNHAO_SESSION_DOMAINS.map(domain => window.browserAPI.getFullSessionData(domain).catch(err => {
+                                            console.warn(`[腾讯号授权] ⚠️ 获取 ${domain} 会话数据失败:`, err);
+                                            return { success: false, domain };
+                                        }))
+                                    );
 
-                                        log(`[腾讯号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
+                                    const mergedData = {
+                                        domains: TENGXVNHAO_SESSION_DOMAINS,
+                                        timestamp: Date.now(),
+                                        cookies: [],
+                                        localStorage: {},
+                                        sessionStorage: {},
+                                        indexedDB: {}
+                                    };
+                                    const seenCookieKeys = new Set();
+                                    let totalSize = 0;
+
+                                    sessionResults.forEach((sessionResult, index) => {
+                                        const domain = TENGXVNHAO_SESSION_DOMAINS[index];
+                                        if (!sessionResult.success || !sessionResult.data) {
+                                            return;
+                                        }
+
+                                        console.log(`[腾讯号授权] ✅ ${domain} 会话数据获取成功，大小: ${Math.round((sessionResult.size || 0) / 1024)} KB`);
+                                        totalSize += sessionResult.size || 0;
+
+                                        if (Array.isArray(sessionResult.data.cookies)) {
+                                            sessionResult.data.cookies.forEach(cookie => {
+                                                const dedupeKey = [
+                                                    cookie.name,
+                                                    cookie.domain,
+                                                    cookie.path || '/',
+                                                    cookie.secure ? '1' : '0'
+                                                ].join('|');
+                                                if (!seenCookieKeys.has(dedupeKey)) {
+                                                    seenCookieKeys.add(dedupeKey);
+                                                    mergedData.cookies.push(cookie);
+                                                }
+                                            });
+                                        }
+                                        if (sessionResult.data.localStorage && Object.keys(sessionResult.data.localStorage).length > 0) {
+                                            mergedData.localStorage[domain] = sessionResult.data.localStorage;
+                                        }
+                                        if (sessionResult.data.sessionStorage && Object.keys(sessionResult.data.sessionStorage).length > 0) {
+                                            mergedData.sessionStorage[domain] = sessionResult.data.sessionStorage;
+                                        }
+                                        if (sessionResult.data.indexedDB && Object.keys(sessionResult.data.indexedDB).length > 0) {
+                                            mergedData.indexedDB[domain] = sessionResult.data.indexedDB;
+                                        }
+                                    });
+
+                                    if (mergedData.cookies.length > 0) {
+                                        cookiesData = JSON.stringify(mergedData);
+                                        console.log(`[腾讯号授权] ✅ 多域名会话数据获取成功，共 ${mergedData.cookies.length} 个 cookies，总大小: ${Math.round(totalSize / 1024)} KB`);
                                     } else {
-                                        console.warn('[腾讯号授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
-                                        // 降级为简单 cookie 字符串
-                                        const cookieResult = await window.browserAPI.getDomainCookies('om.qq.com');
+                                        console.warn('[腾讯号授权] ⚠️ 未获取到有效会话数据，回退为简单 cookie 字符串');
+                                        const cookieResult = await window.browserAPI.getDomainCookies('qq.com');
                                         if (cookieResult.success && cookieResult.cookies) {
                                             cookiesData = cookieResult.cookies;
                                         }
@@ -278,12 +348,31 @@
                                         body: JSON.stringify(scanData)
                                     });
 
+                                    // 读取响应体（先 text 再尝试 JSON，便于 alert 完整 dump）
+                                    const apiResponseText = await apiResponse.text();
+                                    let apiResult = null;
+                                    try { apiResult = JSON.parse(apiResponseText); } catch (_) {}
+
+                                    // 🔔 调试 alert（与发布窗口关闭时的 alert 字段对齐，便于对比）
+                                    try {
+                                        const cookiesSizeKB = Math.round((cookiesData ? cookiesData.length : 0) / 1024);
+                                        const okFlag = apiResponse.ok && apiResult && apiResult.code === 200;
+                                        const debugMsg = okFlag
+                                            ? `✅ 授权保存成功（腾讯号）\n窗口: 授权窗口\n平台: tengxunhao\n后台账号ID(uid): ${userInfo.mediaId || '无'}\n账号昵称: ${userInfo.mediaName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code}`
+                                            : `❌ 授权保存失败（腾讯号）\n窗口: 授权窗口\n平台: tengxunhao\n后台账号ID(uid): ${userInfo.mediaId || '无'}\n账号昵称: ${userInfo.mediaName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code ?? '-'}\n响应: ${apiResponseText.slice(0, 200)}`;
+                                        alert(debugMsg);
+                                    } catch (alertErr) {
+                                        console.warn('[腾讯号授权] ⚠️ 弹 alert 失败:', alertErr.message);
+                                    }
+
                                     // 检查响应状态
                                     if (!apiResponse.ok) {
                                         throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
                                     }
+                                    if (!apiResult) {
+                                        throw new Error('授权接口响应不是 JSON: ' + apiResponseText.slice(0, 100));
+                                    }
 
-                                    const apiResult = await apiResponse.json();
                                     console.log('[腾讯号授权] 📥 接口响应:', apiResult);
 
                                     if (apiResult && 'code' in apiResult && apiResult.code === 200) {
@@ -296,12 +385,40 @@
                                         // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
                                         // 这样发布时才能用新授权的账号
                                         try {
-                                            console.log('[腾讯号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent('om.qq.com');
-                                            if (migrateResult.success) {
-                                                console.log(`[腾讯号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                                            const publishData = cachedPublishWindowData || await getPublishWindowData();
+                                            const publishAccountId = publishData?.element?.account_info?.id || publishData?.element?.accountInfo?.id || '';
+                                            const publishPlatform = publishData?.platform || 'tengxunhao';
+
+                                            if (publishAccountId && window.browserAPI?.migrateCookiesToAccountSession) {
+                                                console.log('[腾讯号授权] 🔄 迁移 Cookies 到当前发布账号 session...', {
+                                                    publishPlatform,
+                                                    publishAccountId,
+                                                    domains: TENGXVNHAO_SESSION_DOMAINS
+                                                });
+                                                let totalMigrated = 0;
+                                                for (const domain of TENGXVNHAO_SESSION_DOMAINS) {
+                                                    const migrateResult = await window.browserAPI.migrateCookiesToAccountSession(domain, publishPlatform, String(publishAccountId));
+                                                    if (migrateResult.success) {
+                                                        totalMigrated += migrateResult.migratedCount || 0;
+                                                        console.log(`[腾讯号授权] ✅ ${domain} 已写回当前发布账号 session，迁移 ${migrateResult.migratedCount || 0} 个 cookies`);
+                                                    } else {
+                                                        console.error(`[腾讯号授权] ⚠️ ${domain} 写回当前发布账号 session 失败:`, migrateResult.error);
+                                                    }
+                                                }
+                                                console.log(`[腾讯号授权] ✅ 当前发布账号 session 回写完成，共迁移 ${totalMigrated} 个 cookies`);
                                             } else {
-                                                console.error('[腾讯号授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                                                console.log('[腾讯号授权] ℹ️ 未获取到发布账号上下文，回退迁移到持久化 session');
+                                                let totalMigrated = 0;
+                                                for (const domain of TENGXVNHAO_SESSION_DOMAINS) {
+                                                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                                                    if (migrateResult.success) {
+                                                        totalMigrated += migrateResult.migratedCount || 0;
+                                                        console.log(`[腾讯号授权] ✅ ${domain} Cookies 迁移成功，迁移 ${migrateResult.migratedCount} 个`);
+                                                    } else {
+                                                        console.error(`[腾讯号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                                                    }
+                                                }
+                                                console.log(`[腾讯号授权] ✅ 多域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
                                             }
                                         } catch (migrateError) {
                                             console.error('[腾讯号授权] ⚠️ Cookies 迁移异常:', migrateError);
@@ -381,10 +498,10 @@
 
             const isAuthWindow = await window.browserAPI.getGlobalData(`auth_mode_window_${windowId}`);
             if (isAuthWindow) {
-                console.log('[腾讯号授权] ⚠️ 授权窗口中检测到残留的发布数据，清除它');
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log('[腾讯号授权] 🗑️ 已清除残留的 publish_data_window_' + windowId);
-                console.log('[腾讯号授权] ℹ️ 继续正常授权流程');
+                if (globalPublishData && !cachedPublishWindowData) {
+                    cachedPublishWindowData = globalPublishData;
+                }
+                console.log('[腾讯号授权] ℹ️ 授权窗口保留发布数据，继续正常授权流程');
                 return;
             }
 

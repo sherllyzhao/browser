@@ -1,5 +1,81 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🎭 SPA 加载白屏遮罩 - 盖住第三方页面 SPA 自然加载期（约 500ms）的白屏
+// 仅对第三方平台生效，跳过本地页和登录页（避免遮挡二维码）
+(function injectLoadingMask() {
+  try {
+    const url = String(window.location.href || '');
+    const isLocalPage = url.startsWith('file://')
+      || url.includes('localhost:5173')
+      || url.startsWith('about:')
+      || url.startsWith('data:');
+    if (isLocalPage) return;
+
+    // 跳过登录类页面，避免覆盖扫码二维码
+    const lowerUrl = url.toLowerCase();
+    const LOGIN_PATTERNS = ['/login', '/userauth', '/userlogin', '/loginpage', '/cgi-bin/login', 'passport.', '/sso/', '/auth/', '/signin'];
+    if (LOGIN_PATTERNS.some(p => lowerUrl.includes(p))) return;
+
+    const MASK_ID = '__yyzs_preload_loading_mask__';
+
+    function ensureMask() {
+      if (document.getElementById(MASK_ID)) return;
+      const root = document.documentElement;
+      if (!root) return;
+      const mask = document.createElement('div');
+      mask.id = MASK_ID;
+      mask.setAttribute('style', [
+        'position:fixed', 'inset:0', 'z-index:2147483647',
+        'background:#ffffff',
+        'display:flex', 'align-items:center', 'justify-content:center',
+        'font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif',
+        'color:#888', 'transition:opacity 200ms ease'
+      ].join(';') + ';');
+      mask.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:12px;">'
+        + '<div style="width:32px;height:32px;border:3px solid #e5e5e5;border-top-color:#1989fa;border-radius:50%;animation:__yyzs_spin__ .8s linear infinite;"></div>'
+        + '<span>页面加载中...</span>'
+        + '</div>'
+        + '<style>@keyframes __yyzs_spin__{to{transform:rotate(360deg)}}</style>';
+      root.appendChild(mask);
+    }
+
+    function removeMask() {
+      const mask = document.getElementById(MASK_ID);
+      if (!mask) return;
+      mask.style.opacity = '0';
+      setTimeout(() => { try { mask.remove(); } catch (_) {} }, 220);
+    }
+
+    ensureMask();
+
+    // 文档结构变化时再尝试插入（防止首次时 documentElement 尚未就绪）
+    let earlyObserver = null;
+    try {
+      if (document.documentElement && typeof MutationObserver === 'function') {
+        earlyObserver = new MutationObserver(ensureMask);
+        earlyObserver.observe(document.documentElement, { childList: true });
+      }
+    } catch (_) {}
+
+    function scheduleRemove() {
+      try { earlyObserver && earlyObserver.disconnect(); } catch (_) {}
+      // 给真实内容 400ms 渲染时间再移除
+      setTimeout(removeMask, 400);
+    }
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      scheduleRemove();
+    } else {
+      document.addEventListener('DOMContentLoaded', scheduleRemove, { once: true });
+    }
+
+    // 兜底：最长 5 秒后强制移除，防止异常情况遮罩不消失
+    setTimeout(removeMask, 5000);
+  } catch (e) {
+    try { console.error('[content-preload] loading mask 注入失败:', e); } catch (_) {}
+  }
+})();
+
 // 📊 页面生命周期日志 - 在 preload 中监听页面各个阶段的事件，便于排查白屏/加载异常
 // 仅对第三方发布/授权页面生效，不影响首页和本地页
 (function attachPageLifecycleLogger() {
@@ -78,7 +154,59 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
     const currentUrl = window.location.href;
     // 仅对视频号登录页生效
     if (currentUrl.includes('channels.weixin.qq.com/login.html')) {
-      console.log('[Shipinhao PreHide] 检测到视频号登录页，注入预隐藏样式');
+      const REFRESH_FLAG_KEY = '_shipinhao_login_refreshed';
+      const RESET_FLAG_KEYS = [
+        '_shipinhao_force_reset_login',
+        'SHIPINHAO_FORCE_RESET_LOGIN',
+        'SHIPINHAO_LOGIN_RESET_REQUESTED'
+      ];
+      const RESET_URL_PARAMS = [
+        'shipinhao_reset_login',
+        'shipinhao_force_reset',
+        'force_reset',
+        'reset_login',
+        'clear_login'
+      ];
+
+      const isTruthyFlagValue = (value) => {
+        if (value === true) return true;
+        if (value === false || value == null) return false;
+        return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+      };
+
+      const readStorage = (storage, key) => {
+        try {
+          return storage.getItem(key);
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const hasResetRequest = () => {
+        let resetFromUrl = false;
+        try {
+          const params = new URLSearchParams(window.location.search || '');
+          resetFromUrl = RESET_URL_PARAMS.some(key => isTruthyFlagValue(params.get(key)));
+        } catch (_) {}
+
+        const resetFromSession = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(readStorage(sessionStorage, key)));
+        const resetFromLocal = RESET_FLAG_KEYS.some(key => isTruthyFlagValue(readStorage(localStorage, key)));
+        return resetFromUrl || resetFromSession || resetFromLocal;
+      };
+
+      const refreshed = readStorage(sessionStorage, REFRESH_FLAG_KEY);
+      const resetRequested = hasResetRequest();
+
+      // 默认扫码/授权流程不要预隐藏。只有显式重置登录时才短暂隐藏，避免隐藏样式造成白屏。
+      if (!resetRequested || refreshed) {
+        console.log('[Shipinhao PreHide] 正常登录/授权流程，跳过预隐藏:', {
+          resetRequested,
+          refreshed: !!refreshed
+        });
+        return;
+      }
+
+      console.log('[Shipinhao PreHide] 检测到视频号登录重置流程，注入短时预隐藏样式');
 
       // 使用 webFrame.insertCSS 在页面渲染前注入样式（比 DOM 操作更早）
       webFrame.insertCSS(`
@@ -86,30 +214,39 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
           visibility: hidden !important;
           background: #fff !important;
         }
-        /* 刷新后恢复显示（通过检测 sessionStorage 标记） */
-        html[data-shipinhao-refreshed] {
+        html[data-shipinhao-login-visible] {
           visibility: visible !important;
         }
       `);
 
-      // 在 DOM 准备好后检查是否已刷新过
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-          const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
-          if (refreshed) {
-            document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
-            console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
-          } else {
-            console.log('[Shipinhao PreHide] 首次加载，保持隐藏状态');
-          }
-        });
-      } else {
-        const refreshed = sessionStorage.getItem('_shipinhao_login_refreshed');
-        if (refreshed) {
-          document.documentElement.setAttribute('data-shipinhao-refreshed', 'true');
-          console.log('[Shipinhao PreHide] 已刷新过，恢复页面显示');
+      const revealLoginPage = (reason) => {
+        try {
+          document.documentElement.setAttribute('data-shipinhao-login-visible', 'true');
+          console.log(`[Shipinhao PreHide] 恢复页面显示: ${reason}`);
+        } catch (e) {
+          console.warn('[Shipinhao PreHide] 恢复页面显示失败:', e);
         }
+      };
+
+      const checkAndRevealIfNeeded = () => {
+        const refreshedNow = readStorage(sessionStorage, REFRESH_FLAG_KEY);
+        if (refreshedNow || !hasResetRequest()) {
+          revealLoginPage(refreshedNow ? '已完成重置刷新' : '重置标记已消失');
+        } else {
+          console.log('[Shipinhao PreHide] 首次重置加载，等待登录脚本清缓存并刷新');
+        }
+      };
+
+      // 在 DOM 准备好后检查是否已刷新过；再加兜底，避免注入脚本异常时永久隐藏。
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkAndRevealIfNeeded, { once: true });
+      } else {
+        checkAndRevealIfNeeded();
       }
+
+      setTimeout(() => {
+        revealLoginPage('5s 兜底，防止永久白屏');
+      }, 5000);
     }
   } catch (err) {
     console.error('[Shipinhao PreHide] 预隐藏失败:', err);
@@ -235,8 +372,6 @@ const config = {
 };
 
 const PLATFORM_CONFIG_ALIASES = {
-  sohuhao: 'souhuhao',
-  souhuhao: 'sohuhao',
   tengxunhao: 'tengxvnhao',
   tengxvnhao: 'tengxunhao',
   sohuhao: 'souhuhao',
@@ -349,10 +484,27 @@ function getFileExtensionFromUrl(rawUrl) {
 }
 
 function detectPublishContentType(element) {
+  // 1. 优先看显式 type / contentType 字段（前端传字符串时直接用）
+  const explicitType = element?.contentType || element?.content_type || element?.type;
+  if (typeof explicitType === 'string') {
+    const lower = explicitType.toLowerCase();
+    if (lower.includes('video')) {
+      return { contentType: 'video', extension: '', sourceUrl: element?.video || element?.video_url || element?.videoUrl || element?.url || '' };
+    }
+    if (lower.includes('article') || lower.includes('image') || lower.includes('graphic')) {
+      return { contentType: 'article', extension: '', sourceUrl: element?.image || element?.image_url || element?.url || element?.cover || '' };
+    }
+  }
+
+  // 2. 文件扩展名判断（视频字段优先于通用 url，避免视频被 cover/bg_url 误判为图片）
   const candidateUrls = [
+    element?.video,
+    element?.video_url,
+    element?.videoUrl,
     element?.url,
     element?.image,
     element?.cover,
+    element?.bg_url,
     element?.image_url,
     element?.imageUrl
   ].filter(Boolean);
@@ -474,12 +626,27 @@ console.log('[content-preload] 环境检测:', {
   resourcesPath: process.resourcesPath
 });
 
-// 消息回调存储（单例模式 - 只保留最新的回调）
+// 消息回调存储（多订阅模式 - 同一通道可注册多个回调，避免后注册者覆盖前者）
 const messageCallbacks = {
-  fromHome: null,
-  fromOtherPage: null,
-  fromMain: null
+  fromHome: new Set(),
+  fromOtherPage: new Set(),
+  fromMain: new Set()
 };
+
+// 统一分发：遍历 Set 中所有回调，单个回调抛错不影响其他订阅者
+function dispatchCallbacks(set, payload, channelName) {
+  if (!set || set.size === 0) {
+    console.warn(`[BrowserAPI] ⚠️ ${channelName} 回调未注册！`);
+    return;
+  }
+  set.forEach((fn) => {
+    try {
+      fn(payload);
+    } catch (err) {
+      console.error(`[BrowserAPI] ${channelName} 回调执行异常:`, err);
+    }
+  });
+}
 
 // 防重复发布标志
 let isPublishing = false;
@@ -519,6 +686,13 @@ function resolveMaxConcurrentPublishWindows(platformConfig) {
 function buildPublishWindowJob(element, index, total, platformMap, platformFullNameMap, urlMap) {
   const platform = platformMap[element.account_info.media.id];
   const platformFullName = platformFullNameMap[platform];
+  const backendAccountId = String(
+    element?.account_info?.id
+    || element?.accountInfo?.id
+    || element?.media_auth_id
+    || element?.mediaAuthId
+    || ''
+  ).trim();
   const publishTarget = detectPublishContentType(element);
   const platformUrls = urlMap[platform] || {};
   const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
@@ -549,10 +723,11 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
 
   if (ENABLE_MULTI_ACCOUNT && element.cookies) {
     const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const sessionAccountId = backendAccountId || uniqueSessionId;
     if (platformFullName) {
       openOptions.platform = platformFullName;
-      openOptions.accountId = uniqueSessionId;
-      console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${uniqueSessionId}`);
+      openOptions.accountId = sessionAccountId;
+      console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${sessionAccountId}, backendAccountId=${backendAccountId || 'none'}`);
     }
     openOptions.sessionData = element.cookies;
     console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
@@ -561,19 +736,6 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
   } else {
     console.log('[BrowserAPI] 📋 普通模式（无 cookies 数据），使用共享 session（persist:browserview）');
   }
-
-  const publishSourceUrl = publishTarget.sourceUrl
-    || element.url
-    || element.image
-    || element.image_url
-    || element.imageUrl
-    || '';
-  const publishCoverUrl = element.cover
-    || element.image
-    || element.image_url
-    || element.imageUrl
-    || element.url
-    || publishSourceUrl;
 
   const basePublishData = {
     element,
@@ -669,12 +831,25 @@ async function launchQueuedPublishWindows() {
       });
       console.log(`✅ [${job.index + 1}] 窗口创建成功, windowId: ${windowId}`);
 
-      const publishData = {
+      const publishDataKey = `publish_data_window_${windowId}`;
+      const defaultPublishData = {
         ...job.basePublishData,
         windowId
       };
-      await ipcRenderer.invoke('global-storage-set', `publish_data_window_${windowId}`, publishData);
-      console.log(`[BrowserAPI] ✅ 已存储 publish_data_window_${windowId}`);
+      const existingPublishDataResult = await ipcRenderer.invoke('global-storage-get', publishDataKey);
+      let publishData = existingPublishDataResult?.success ? existingPublishDataResult.value : null;
+
+      if (publishData && typeof publishData === 'object') {
+        publishData = {
+          ...publishData,
+          windowId
+        };
+        console.log(`[BrowserAPI] ♻️ 保留主进程预写入的 ${publishDataKey}`);
+      } else {
+        publishData = defaultPublishData;
+        await ipcRenderer.invoke('global-storage-set', publishDataKey, publishData);
+        console.log(`[BrowserAPI] ✅ 已存储 ${publishDataKey}`);
+      }
 
       pendingMessages.set(windowId, {
         type: 'publish-data',
@@ -765,31 +940,16 @@ window.addEventListener('message', (event) => {
 
   switch (event.data.type) {
     case 'FROM_HOME':
-      console.log('[BrowserAPI] 检测到 FROM_HOME 消息');
-      if (messageCallbacks.fromHome) {
-        console.log('[BrowserAPI] 调用 fromHome 回调，数据:', event.data.data);
-        messageCallbacks.fromHome(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromHome 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_HOME 消息，订阅者数量:', messageCallbacks.fromHome.size);
+      dispatchCallbacks(messageCallbacks.fromHome, event.data.data, 'fromHome');
       break;
     case 'FROM_OTHER_PAGE':
-      console.log('[BrowserAPI] 检测到 FROM_OTHER_PAGE 消息');
-      if (messageCallbacks.fromOtherPage) {
-        console.log('[BrowserAPI] 调用 fromOtherPage 回调');
-        messageCallbacks.fromOtherPage(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromOtherPage 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_OTHER_PAGE 消息，订阅者数量:', messageCallbacks.fromOtherPage.size);
+      dispatchCallbacks(messageCallbacks.fromOtherPage, event.data.data, 'fromOtherPage');
       break;
     case 'FROM_MAIN':
-      console.log('[BrowserAPI] 检测到 FROM_MAIN 消息');
-      if (messageCallbacks.fromMain) {
-        console.log('[BrowserAPI] 调用 fromMain 回调');
-        messageCallbacks.fromMain(event.data.data);
-      } else {
-        console.warn('[BrowserAPI] ⚠️ fromMain 回调未注册！');
-      }
+      console.log('[BrowserAPI] 检测到 FROM_MAIN 消息，订阅者数量:', messageCallbacks.fromMain.size);
+      dispatchCallbacks(messageCallbacks.fromMain, event.data.data, 'fromMain');
       break;
     default:
       console.log('[BrowserAPI] 未知消息类型:', event.data.type);
@@ -872,22 +1032,46 @@ contextBridge.exposeInMainWorld('browserAPI', {
     ipcRenderer.send('home-to-content', message);
   },
 
-  // 监听来自首页的消息
+  // 监听来自首页的消息（多订阅，返回 unsubscribe 函数）
   onMessageFromHome: (callback) => {
-    messageCallbacks.fromHome = callback;
-    console.log('[BrowserAPI] onMessageFromHome 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromHome: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromHome.add(callback);
+    console.log('[BrowserAPI] onMessageFromHome 监听器已注册，当前订阅者数量:', messageCallbacks.fromHome.size);
+    return () => {
+      messageCallbacks.fromHome.delete(callback);
+      console.log('[BrowserAPI] onMessageFromHome 监听器已注销，剩余订阅者数量:', messageCallbacks.fromHome.size);
+    };
   },
 
-  // 监听来自其他页面的消息（首页使用）
+  // 监听来自其他页面的消息（首页使用，多订阅，返回 unsubscribe 函数）
   onMessageFromOtherPage: (callback) => {
-    messageCallbacks.fromOtherPage = callback;
-    console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromOtherPage: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromOtherPage.add(callback);
+    console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注册，当前订阅者数量:', messageCallbacks.fromOtherPage.size);
+    return () => {
+      messageCallbacks.fromOtherPage.delete(callback);
+      console.log('[BrowserAPI] onMessageFromOtherPage 监听器已注销，剩余订阅者数量:', messageCallbacks.fromOtherPage.size);
+    };
   },
 
-  // 监听来自控制面板的消息
+  // 监听来自控制面板的消息（多订阅，返回 unsubscribe 函数）
   onMessageFromMain: (callback) => {
-    messageCallbacks.fromMain = callback;
-    console.log('[BrowserAPI] onMessageFromMain 监听器已注册/更新');
+    if (typeof callback !== 'function') {
+      console.warn('[BrowserAPI] onMessageFromMain: callback 必须是函数，已忽略');
+      return () => {};
+    }
+    messageCallbacks.fromMain.add(callback);
+    console.log('[BrowserAPI] onMessageFromMain 监听器已注册，当前订阅者数量:', messageCallbacks.fromMain.size);
+    return () => {
+      messageCallbacks.fromMain.delete(callback);
+      console.log('[BrowserAPI] onMessageFromMain 监听器已注销，剩余订阅者数量:', messageCallbacks.fromMain.size);
+    };
   },
 
   // 监听 Cookies 清除事件（首页使用，用于清空授权列表）
@@ -918,12 +1102,17 @@ contextBridge.exposeInMainWorld('browserAPI', {
     console.log('[BrowserAPI] onSessionUpdated 监听器已注册');
   },
 
-  // 清除所有监听器（用于组件卸载）
+  // 清除所有监听器（清空当前 webContents 内所有订阅；推荐改用 onMessage* 返回的 unsubscribe）
   clearMessageListeners: () => {
-    messageCallbacks.fromHome = null;
-    messageCallbacks.fromOtherPage = null;
-    messageCallbacks.fromMain = null;
-    console.log('[BrowserAPI] 所有消息监听器已清除');
+    const sizes = {
+      fromHome: messageCallbacks.fromHome.size,
+      fromOtherPage: messageCallbacks.fromOtherPage.size,
+      fromMain: messageCallbacks.fromMain.size
+    };
+    messageCallbacks.fromHome.clear();
+    messageCallbacks.fromOtherPage.clear();
+    messageCallbacks.fromMain.clear();
+    console.log('[BrowserAPI] 所有消息监听器已清除（清除前订阅者数量）:', sizes);
   },
 
   // 导航控制 API
@@ -961,12 +1150,14 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+  clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
 
   // 迁移临时 Session 的 Cookies 到持久化 Session
   // 用于授权窗口（临时session）授权成功后，把登录状态复制到持久化session
   // 参数: domain - 要迁移的域名，如 'baidu.com'
   // 返回: { success: true, migratedCount: 10 } 或 { success: false, error: '错误信息' }
   migrateCookiesToPersistent: (domain) => ipcRenderer.invoke('migrate-cookies-to-persistent', domain),
+  migrateCookiesToAccountSession: (domain, platform, accountId) => ipcRenderer.invoke('migrate-cookies-to-account-session', domain, platform, accountId),
 
   // 检查 Session 状态（用于检测登录状态是否被清除）
   checkSessionStatus: () => ipcRenderer.invoke('check-session-status'),

@@ -7,6 +7,7 @@ if (location.search.includes("published=true")) {
     let introFilled = false; // 标记 intro 是否已填写
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
     let publishRunning = false; // 标记发布是否正在执行，防止重复点击
+    let hasProcessed = false; // 标记发布按钮已提交，防止提交后重复上报失败
 
     // 防重复标志：记录已处理的视频 ID
     let isProcessing = false;
@@ -767,12 +768,81 @@ if (location.search.includes("published=true")) {
     // ===========================
     // 7. 发布视频到小红书
     // ===========================
+    function isVisibleElement(element) {
+        if (!element) {
+            return false;
+        }
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none"
+            && style.visibility !== "hidden"
+            && style.opacity !== "0"
+            && rect.width > 0
+            && rect.height > 0;
+    }
+
+    function isDisabledButton(button) {
+        return button.disabled
+            || button.classList.contains("disabled")
+            || button.getAttribute("disabled") !== null
+            || button.getAttribute("aria-disabled") === "true";
+    }
+
+    function findXhsPublishButton() {
+        const primarySelectors = [
+            ".publish-page-publish-btn .custom-button.bg-red",
+            ".publish-page-publish-btn .custom-button",
+            ".publish-page-publish-btn button",
+        ];
+
+        for (const selector of primarySelectors) {
+            const element = Array.from(document.querySelectorAll(selector)).find(isVisibleElement);
+            if (element) {
+                return element;
+            }
+        }
+
+        const fallbackSelectors = [
+            "button",
+            ".custom-button",
+            "[role='button']",
+        ];
+
+        const candidates = [];
+        fallbackSelectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(element => {
+                if (!candidates.includes(element)) {
+                    candidates.push(element);
+                }
+            });
+        });
+
+        const visibleCandidates = candidates.filter(isVisibleElement);
+        const textMatchedButton = visibleCandidates.find(element => {
+            const text = (element.textContent || "").replace(/\s+/g, "");
+            return text.includes("发布")
+                && !text.includes("草稿")
+                && !text.includes("取消")
+                && !text.includes("预览");
+        });
+
+        return textMatchedButton || null;
+    }
+
+    async function clearPublishSuccessData(windowId) {
+        if (windowId) {
+            localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
+            await window.browserAPI?.removeGlobalData?.(`PUBLISH_SUCCESS_DATA_${windowId}`);
+        }
+        localStorage.removeItem("PUBLISH_SUCCESS_DATA");
+    }
+
     async function publishApi(dataObj) {
         console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
         // 防止重复执行
-        if (publishRunning) {
-            console.log("Publish is already running, skipping duplicate call");
+        if (publishRunning || hasProcessed) {
+            console.log("Publish is already running or processed, skipping duplicate call");
             return;
         }
 
@@ -791,15 +861,27 @@ if (location.search.includes("published=true")) {
             // 标记发布正在进行
             publishRunning = true;
 
+            const publishHelperStatus = {
+                findXhsPublishButton: typeof findXhsPublishButton,
+                isDisabledButton: typeof isDisabledButton,
+                clearPublishSuccessData: typeof clearPublishSuccessData,
+            };
+            const missingPublishHelpers = Object.entries(publishHelperStatus)
+                .filter(([, value]) => value !== "function")
+                .map(([key]) => key);
+            if (missingPublishHelpers.length > 0) {
+                throw new Error(`publishApi 依赖缺失: ${missingPublishHelpers.join(", ")}`);
+            }
+
             // 等待发布按钮可用
             const publishBtn = await retryOperation(
                 async () => {
-                    const btn = document.querySelector(".publish-page-publish-btn .custom-button.bg-red");
+                    const btn = findXhsPublishButton();
                     if (!btn) {
                         throw new Error("发布按钮未找到");
                     }
                     // 🔑 检查按钮是否 disabled
-                    if (btn.disabled || btn.classList.contains("disabled") || btn.getAttribute("disabled") !== null) {
+                    if (isDisabledButton(btn)) {
                         throw new Error("发布按钮当前不可用(disabled)，可能不符合发布要求");
                     }
                     return btn;
@@ -858,10 +940,7 @@ if (location.search.includes("published=true")) {
             if (!clickResult.success) {
                 console.error("[小红书发布] ❌ 所有点击尝试均失败:", clickResult.message);
                 // 清除提前保存的数据（使用窗口专属 key 和通用 key，确保兼容性）
-                if (windowId) {
-                    localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-                }
-                localStorage.removeItem("PUBLISH_SUCCESS_DATA");
+                await clearPublishSuccessData(windowId);
                 // 发送失败统计
                 await sendStatisticsError(publishId, clickResult.message || "点击发布按钮失败", "小红书发布");
                 publishRunning = false;
@@ -886,7 +965,6 @@ if (location.search.includes("published=true")) {
 
             // 标记已完成
             hasProcessed = true;
-            publishRunning = false;
 
             // 等待页面跳转到成功页，超时 30 秒
             console.log("[小红书发布] ⏳ 等待跳转到成功页（30秒超时）...");
@@ -946,19 +1024,14 @@ if (location.search.includes("published=true")) {
             // 真正的超时失败
             console.log("[小红书发布] ❌ 等待超时（30秒），判定发布失败");
             // 清除数据（窗口专属 key 和通用 key）
-            if (windowId) {
-                localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-            }
-            localStorage.removeItem("PUBLISH_SUCCESS_DATA");
+            await clearPublishSuccessData(windowId);
             await sendStatisticsError(publishId, lastToastMessage || "发布超时，未跳转到成功页", "小红书发布");
+            publishRunning = false;
             await closeWindowWithMessage("发布失败，刷新数据", 1000);
         } catch (error) {
             console.log("🚀 ~ publishApi ~ error: ", error);
             // 清除提前保存的数据（窗口专属 key 和通用 key）
-            if (windowId) {
-                localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
-            }
-            localStorage.removeItem("PUBLISH_SUCCESS_DATA");
+            await clearPublishSuccessData(windowId);
             // 发送失败统计
             await sendStatisticsError(publishId, error.message || "发布过程出错", "小红书发布");
             publishRunning = false;
@@ -1551,7 +1624,7 @@ if (location.search.includes("published=true")) {
             await delay(200);
 
             // 点击定时发布按钮（新版小红书没有单独的确认按钮，直接点击主发布按钮）
-            const publishBtn = document.querySelector(".publish-page-publish-btn .custom-button.bg-red");
+            const publishBtn = findXhsPublishButton();
             if (publishBtn) {
                 console.log("[小红书发布] ⏰ publishId:", publishId);
 

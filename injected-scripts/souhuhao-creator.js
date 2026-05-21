@@ -260,12 +260,31 @@
                                 body: JSON.stringify(scanData)
                             });
 
+                            // 读取响应体（先 text 再尝试 JSON，便于 alert 完整 dump）
+                            const apiResponseText = await apiResponse.text();
+                            let apiResult = null;
+                            try { apiResult = JSON.parse(apiResponseText); } catch (_) {}
+
+                            // 🔔 调试 alert（与发布窗口关闭时的 alert 字段对齐，便于对比）
+                            try {
+                                const cookiesSizeKB = Math.round((cookiesData ? cookiesData.length : 0) / 1024);
+                                const okFlag = apiResponse.ok && apiResult && apiResult.code === 200;
+                                const debugMsg = okFlag
+                                    ? `✅ 授权保存成功（搜狐号）\n窗口: 授权窗口\n平台: sohuhao\n后台账号ID(uid): ${currentAccount?.id || '无'}\n账号昵称: ${currentAccount?.nickName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code}`
+                                    : `❌ 授权保存失败（搜狐号）\n窗口: 授权窗口\n平台: sohuhao\n后台账号ID(uid): ${currentAccount?.id || '无'}\n账号昵称: ${currentAccount?.nickName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code ?? '-'}\n响应: ${apiResponseText.slice(0, 200)}`;
+                                alert(debugMsg);
+                            } catch (alertErr) {
+                                console.warn('[搜狐号授权] ⚠️ 弹 alert 失败:', alertErr.message);
+                            }
+
                             // 检查响应状态
                             if (!apiResponse.ok) {
                                 throw new Error(`Statistics API failed with status: ${apiResponse.status}`);
                             }
+                            if (!apiResult) {
+                                throw new Error('授权接口响应不是 JSON: ' + apiResponseText.slice(0, 100));
+                            }
 
-                            const apiResult = await apiResponse.json();
                             console.log('[搜狐号授权] 📥 接口响应:', apiResult);
 
                             if (apiResult && 'code' in apiResult && apiResult.code === 200) {

@@ -25,11 +25,17 @@
     async function handleXinlangUnauthPage() {
         if (window.__XINLANG_UNAUTH_HANDLED__) return;
         window.__XINLANG_UNAUTH_HANDLED__ = true;
-        console.warn('[新浪授权] ⚠️ 检测到未认证账号页面 (/#/type)，提示用户并关闭窗口');
+        console.warn('[新浪授权] ⚠️ 检测到未认证账号页面 (/#/type)，通知父页面并关闭窗口');
         try {
-            alert('该账号尚未完成新浪认证，请先在新浪官方完成认证后再来授权');
+            if (typeof sendMessageToParent === 'function') {
+                sendMessageToParent({
+                    type: 'auth-failed',
+                    reason: 'unauth-account',
+                    message: '该账号尚未完成新浪认证，请先在新浪官方完成认证后再来授权',
+                });
+            }
         } catch (e) {
-            console.error('[新浪授权] ❌ alert 调用失败:', e);
+            console.error('[新浪授权] ❌ 通知父页面失败:', e);
         }
         try {
             await window.browserAPI.closeCurrentWindow();
@@ -160,6 +166,33 @@
 
         const { messageData = null, storedCompanyId = null, source = 'unknown' } = options;
 
+        // 🔴 先读取上下文，判断是否真的有授权/发布意图，避免在无意图场景误点登录形成循环
+        let windowId = null;
+        let publishData = null;
+        let windowContext = null;
+        let isAuthModeWindow = false;
+
+        try {
+            windowId = await window.browserAPI?.getWindowId?.();
+            if (windowId) {
+                publishData = await window.browserAPI?.getGlobalData?.(`publish_data_window_${windowId}`);
+                isAuthModeWindow = !!(await window.browserAPI?.getGlobalData?.(`auth_mode_window_${windowId}`));
+            }
+            windowContext = await window.browserAPI?.getWindowContext?.();
+        } catch (e) {
+            console.warn('[新浪授权] ⚠️ 读取登录公告页上下文失败:', e.message);
+        }
+
+        const hasAuthIntent = !!messageData || !!publishData || isAuthModeWindow;
+
+        if (!hasAuthIntent) {
+            console.log('[新浪授权] ⏭️ 检测到登录公告页但无授权/发布上下文，不主动点击登录按钮，避免循环', {
+                source,
+                windowId,
+            });
+            return { handled: false, skipped: 'no-auth-intent' };
+        }
+
         if (messageData && window.browserAPI?.setGlobalData) {
             try {
                 await window.browserAPI.setGlobalData('xinlang_auth_data', {
@@ -180,22 +213,6 @@
         }
 
         hasHandledLoginGate = true;
-
-        let windowId = null;
-        let publishData = null;
-        let windowContext = null;
-        let isAuthModeWindow = false;
-
-        try {
-            windowId = await window.browserAPI?.getWindowId?.();
-            if (windowId) {
-                publishData = await window.browserAPI?.getGlobalData?.(`publish_data_window_${windowId}`);
-                isAuthModeWindow = !!(await window.browserAPI?.getGlobalData?.(`auth_mode_window_${windowId}`));
-            }
-            windowContext = await window.browserAPI?.getWindowContext?.();
-        } catch (e) {
-            console.warn('[新浪授权] ⚠️ 读取登录公告页上下文失败:', e.message);
-        }
 
         console.warn('[新浪授权] ⚠️ 检测到新浪登录公告页，暂停授权处理并触发登录', {
             source,

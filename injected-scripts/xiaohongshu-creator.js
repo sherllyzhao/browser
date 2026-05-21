@@ -125,22 +125,29 @@
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
 
-                    const accountNameEle = await waitForElement('.account-name', 5000);
-                    const avatarEle = await waitForElement('.avatar img', 5000);
-                    const followerCountEle = await waitForElement('.static.description-text >div:nth-of-type(2) .numerical', 5000);
-                    const favoritingCountEle = await waitForElement('.static.description-text >div:nth-of-type(1) .numerical', 5000);
-                    const totalFavoritedEle = await waitForElement('.static.description-text >div:nth-of-type(3) .numerical', 5000);
-                    const uidEle = await waitForElement('.others.description-text > div:nth-of-type(1)', 5000);
+                    // 🆕 改为接口取（与 publish 关闭时保存逻辑一致，避免 DOM 选择器失效）
+                    const personalInfoRes = await fetch('https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info', {
+                        method: 'GET',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    if (!personalInfoRes.ok) throw new Error(`personal_info 接口失败: ${personalInfoRes.status}`);
+                    const personalInfo = await personalInfoRes.json();
+                    const userData = personalInfo && personalInfo.data;
+                    if (!userData || !userData.red_num) {
+                        throw new Error('小红书 personal_info 接口返回缺少 red_num');
+                    }
 
                     const scanData = {
                         data: JSON.stringify({
-                            nickname: accountNameEle.innerText,
-                            avatar: avatarEle.getAttribute('src'),
-                            follower_count: followerCountEle.innerText,
+                            nickname: userData.name,
+                            avatar: userData.avatar,
+                            follow: userData.follow_count,
+                            follower_count: userData.fans_count,
                             video: 0,
-                            uid: uidEle.innerText.replace('小红书账号: ', ''),
-                            favoriting_count: favoritingCountEle.innerText,
-                            total_favorited: totalFavoritedEle.innerText,
+                            uid: userData.red_num,
+                            favoriting_count: userData.follow_count,
+                            total_favorited: userData.faved_count,
                             company_id: await window.browserAPI.getGlobalData('company_id'),
                             auth_type: messageData.auth_type
                         })

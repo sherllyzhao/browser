@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCookies: () => ipcRenderer.invoke('get-cookies'),
   setCookie: (cookieDetails) => ipcRenderer.invoke('set-cookie', cookieDetails),
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+  clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
   flushSession: () => ipcRenderer.invoke('flush-session'),
   getSessionPath: () => ipcRenderer.invoke('get-session-path'),
 
