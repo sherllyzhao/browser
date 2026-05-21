@@ -1,5 +1,81 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🎭 SPA 加载白屏遮罩 - 盖住第三方页面 SPA 自然加载期（约 500ms）的白屏
+// 仅对第三方平台生效，跳过本地页和登录页（避免遮挡二维码）
+(function injectLoadingMask() {
+  try {
+    const url = String(window.location.href || '');
+    const isLocalPage = url.startsWith('file://')
+      || url.includes('localhost:5173')
+      || url.startsWith('about:')
+      || url.startsWith('data:');
+    if (isLocalPage) return;
+
+    // 跳过登录类页面，避免覆盖扫码二维码
+    const lowerUrl = url.toLowerCase();
+    const LOGIN_PATTERNS = ['/login', '/userauth', '/userlogin', '/loginpage', '/cgi-bin/login', 'passport.', '/sso/', '/auth/', '/signin'];
+    if (LOGIN_PATTERNS.some(p => lowerUrl.includes(p))) return;
+
+    const MASK_ID = '__yyzs_preload_loading_mask__';
+
+    function ensureMask() {
+      if (document.getElementById(MASK_ID)) return;
+      const root = document.documentElement;
+      if (!root) return;
+      const mask = document.createElement('div');
+      mask.id = MASK_ID;
+      mask.setAttribute('style', [
+        'position:fixed', 'inset:0', 'z-index:2147483647',
+        'background:#ffffff',
+        'display:flex', 'align-items:center', 'justify-content:center',
+        'font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif',
+        'color:#888', 'transition:opacity 200ms ease'
+      ].join(';') + ';');
+      mask.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:12px;">'
+        + '<div style="width:32px;height:32px;border:3px solid #e5e5e5;border-top-color:#1989fa;border-radius:50%;animation:__yyzs_spin__ .8s linear infinite;"></div>'
+        + '<span>页面加载中...</span>'
+        + '</div>'
+        + '<style>@keyframes __yyzs_spin__{to{transform:rotate(360deg)}}</style>';
+      root.appendChild(mask);
+    }
+
+    function removeMask() {
+      const mask = document.getElementById(MASK_ID);
+      if (!mask) return;
+      mask.style.opacity = '0';
+      setTimeout(() => { try { mask.remove(); } catch (_) {} }, 220);
+    }
+
+    ensureMask();
+
+    // 文档结构变化时再尝试插入（防止首次时 documentElement 尚未就绪）
+    let earlyObserver = null;
+    try {
+      if (document.documentElement && typeof MutationObserver === 'function') {
+        earlyObserver = new MutationObserver(ensureMask);
+        earlyObserver.observe(document.documentElement, { childList: true });
+      }
+    } catch (_) {}
+
+    function scheduleRemove() {
+      try { earlyObserver && earlyObserver.disconnect(); } catch (_) {}
+      // 给真实内容 400ms 渲染时间再移除
+      setTimeout(removeMask, 400);
+    }
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      scheduleRemove();
+    } else {
+      document.addEventListener('DOMContentLoaded', scheduleRemove, { once: true });
+    }
+
+    // 兜底：最长 5 秒后强制移除，防止异常情况遮罩不消失
+    setTimeout(removeMask, 5000);
+  } catch (e) {
+    try { console.error('[content-preload] loading mask 注入失败:', e); } catch (_) {}
+  }
+})();
+
 // 📊 页面生命周期日志 - 在 preload 中监听页面各个阶段的事件，便于排查白屏/加载异常
 // 仅对第三方发布/授权页面生效，不影响首页和本地页
 (function attachPageLifecycleLogger() {
