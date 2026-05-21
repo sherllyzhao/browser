@@ -27,6 +27,19 @@
 
   window.__DOUYIN_SCRIPT_LOADED__ = true;
 
+  // ===========================
+  // 🔑 视频号白屏检测和自动恢复（兜底 Win7 等旧系统 GPU 渲染失败的情况）
+  // ===========================
+  if (typeof window.checkBlankPageAndReload === 'function') {
+    window.checkBlankPageAndReload('视频号', [
+      '.weui-desktop-account__nickname',
+      '.weui-desktop-account__info',
+      '.weui-desktop-menu',
+      '.account-info',
+      '.menu-item'
+    ], 3000, 3);
+  }
+
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
     showOperationBanner('正在自动授权中，请勿操作此页面...');
