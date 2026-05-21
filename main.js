@@ -3,11 +3,29 @@ const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
+const os = require('os');
 const ScriptManager = require('./script-manager');
 const config = require('./domain-config');
 
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
+
+// Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
+// 在这些旧系统上禁用硬件加速，避免 GPU 渲染失败导致的白屏
+// Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
+if (process.platform === 'win32') {
+  try {
+    const release = os.release();
+    const major = parseInt(release.split('.')[0], 10);
+    if (major < 10) {
+      console.log(`[启动] 检测到旧版 Windows (${release})，禁用硬件加速以规避白屏问题`);
+      app.disableHardwareAcceleration();
+      app.commandLine.appendSwitch('disable-gpu-compositing');
+    }
+  } catch (e) {
+    console.error('[启动] Windows 版本检测失败:', e);
+  }
+}
 
 let mainWindow;
 let browserView;

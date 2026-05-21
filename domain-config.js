@@ -13,7 +13,7 @@
 // 🔑 唯一环境开关 — 改这一个值，全部切换
 // ===========================
 // 打包时会被 build-scripts/set-env.js 自动替换为 'dev' 或 'prod'
-const ENV = 'dev'; // 'dev' | 'prod'
+const ENV = 'prod'; // 'dev' | 'prod'
 let CURRENT_ENV = ENV;
 // 可选：开发时通过 USE_REMOTE_AIGC_PAGE=1 强制走远端页面（不走 localhost）
 const useRemoteAigcPage = typeof process !== 'undefined'
