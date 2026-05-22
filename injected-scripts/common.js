@@ -1735,12 +1735,55 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             xinlang: {
                 apiPath: '/api/mediaauth/xlinfo',
                 domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com', 'sina.cn'],
-                getUserInfo: async () => {
-                    const r = await fetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', { method: 'GET', credentials: 'include' });
-                    const res = await r.json();
-                    const u = res && res.data && res.data.userInfo;
-                    if (!u || !u.uid) throw new Error('新浪 userInfo.uid 不存在');
-                    return { nickname: u.m_fname, avatar: u.m_logo, uid: u.uid };
+                getUserInfo: async (publishData) => {
+                    const API = 'https://mp.sina.com.cn/aj/media/info/getbaseinfo';
+                    // 1) 先尝试浏览器 fetch（mp.sina.com.cn 同源时有效）
+                    try {
+                        const r = await fetch(API, { method: 'GET', credentials: 'include' });
+                        const res = await r.json();
+                        const u = res && res.data && res.data.userInfo;
+                        if (u && u.uid) return { nickname: u.m_fname, avatar: u.m_logo, uid: u.uid };
+                    } catch (e) {
+                        console.warn('[xinlang getUserInfo] 浏览器 fetch 跨域失败:', e && e.message);
+                    }
+                    // 2) 主进程代理 fetch 绕 CORS（card.weibo.com 跨域 mp.sina.com.cn 时用）
+                    try {
+                        if (window.browserAPI && window.browserAPI.proxyFetch) {
+                            const pr = await window.browserAPI.proxyFetch(API, { method: 'GET' });
+                            if (pr && pr.success && pr.ok) {
+                                const res = typeof pr.data === 'object' ? pr.data : null;
+                                const u = res && res.data && res.data.userInfo;
+                                if (u && u.uid) return { nickname: u.m_fname, avatar: u.m_logo, uid: u.uid };
+                            } else {
+                                console.warn('[xinlang getUserInfo] proxyFetch 失败:', pr && (pr.error || pr.status));
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[xinlang getUserInfo] proxyFetch 异常:', e && e.message);
+                    }
+                    // 3) 兜底：当前窗口绑定账号 → account.platformUid
+                    try {
+                        if (window.browserAPI && window.browserAPI.getCurrentAccount) {
+                            const ar = await window.browserAPI.getCurrentAccount();
+                            const acc = ar && ar.success && ar.account;
+                            if (acc && acc.platformUid) {
+                                return { nickname: acc.nickname || '', avatar: acc.avatar || '', uid: acc.platformUid };
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[xinlang getUserInfo] getCurrentAccount 兜底失败:', e && e.message);
+                    }
+                    // 4) 兜底：publishData.element
+                    const e = publishData && publishData.element || {};
+                    const uid = e.uid || e.platformUid || (e.account_info && (e.account_info.uid || e.account_info.platformUid));
+                    if (uid) {
+                        return {
+                            nickname: e.nickname || (e.account_info && e.account_info.nickname) || '',
+                            avatar: e.avatar || (e.account_info && e.account_info.avatar) || '',
+                            uid: uid
+                        };
+                    }
+                    throw new Error('新浪 fetch/proxyFetch/getCurrentAccount/publishData 均无 uid');
                 }
             },
             xiaohongshu: {
@@ -1923,25 +1966,25 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             try {
                 const cookiesKB = Math.round(cookiesData.length / 1024);
                 const msg = okFlag
-                    ? '✅ 关闭前保存成功（' + platform + '）'
-                        + '\nuid: ' + userInfo.uid
-                        + '\nnickname: ' + userInfo.nickname
-                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
-                        + '\nHTTP: ' + apiResponse.status
-                        + '\n接口 code: ' + (apiResult && apiResult.code)
-                    : '❌ 关闭前保存失败（' + platform + '）'
-                        + '\nuid: ' + userInfo.uid
-                        + '\nnickname: ' + userInfo.nickname
-                        + '\nCookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
-                        + '\nHTTP: ' + apiResponse.status
-                        + '\n接口 code: ' + (apiResult ? apiResult.code : '-')
-                        + '\n响应: ' + apiResponseText.slice(0, 200);
-                alert(msg);
+                    ? '[__publishSaveSession__ ✅] 关闭前保存成功（' + platform + '）'
+                        + ' | uid: ' + userInfo.uid
+                        + ' | nickname: ' + userInfo.nickname
+                        + ' | Cookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
+                        + ' | HTTP: ' + apiResponse.status
+                        + ' | 接口 code: ' + (apiResult && apiResult.code)
+                    : '[__publishSaveSession__ ❌] 关闭前保存失败（' + platform + '）'
+                        + ' | uid: ' + userInfo.uid
+                        + ' | nickname: ' + userInfo.nickname
+                        + ' | Cookies: ' + mergedData.cookies.length + ' 个 / ' + cookiesKB + ' KB'
+                        + ' | HTTP: ' + apiResponse.status
+                        + ' | 接口 code: ' + (apiResult ? apiResult.code : '-')
+                        + ' | 响应: ' + apiResponseText.slice(0, 200);
+                console[okFlag ? 'log' : 'warn'](msg);
             } catch (_) {}
 
             return result;
         } catch (err) {
-            try { alert('❌ 关闭前保存异常（' + platform + '）: ' + (err && err.message)); } catch (_) {}
+            try { console.warn('[__publishSaveSession__ ❌] 关闭前保存异常（' + platform + '）:', err && err.message); } catch (_) {}
             return { success: false, error: err && err.message };
         }
     };
