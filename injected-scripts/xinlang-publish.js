@@ -1574,20 +1574,29 @@
 
                             // 上传图片（带重试）
                             let input;
-                            // 🔴 重新获取 uploadModal，防止引用失效
-                            const currentModal = document.querySelector(".n-dialog");
-                            if (!currentModal) {
-                                console.error("[新浪发布] ❌ 上传弹窗已关闭或消失");
+                            // 🔴 重新获取 uploadModal 与文件输入框（带重试，防止引用失效或DOM未渲染）
+                            const maxFindRetries = 5;
+                            for (let findAttempt = 1; findAttempt <= maxFindRetries; findAttempt++) {
+                                const currentModal = document.querySelector(".n-dialog");
+                                if (currentModal) {
+                                    input = currentModal.querySelector("input[type='file']");
+                                    if (input) {
+                                        console.log(`[新浪发布] ✅ 找到文件输入框 (第${findAttempt}次尝试)`);
+                                        break;
+                                    }
+                                    console.log(`[新浪发布] ⚠️ 未找到文件输入框，等待后重试 (${findAttempt}/${maxFindRetries})...`);
+                                } else {
+                                    console.log(`[新浪发布] ⚠️ 未找到上传弹窗，等待后重试 (${findAttempt}/${maxFindRetries})...`);
+                                }
+                                await delay(1500);
                             }
-                            input = currentModal.querySelector("input[type='file']");
-                            console.log("[新浪发布] ⚠️ 未找到文件输入框，等待后重试...");
-                            await delay(5000);
 
                             if (!input) {
                                 console.error("[新浪发布] ❌ 找不到文件输入框，可能是：");
                                 console.error("[新浪发布]    1. 上传弹窗已关闭");
                                 console.error("[新浪发布]    2. 弹窗结构改变");
                                 console.error("[新浪发布]    3. 图片库标签未激活");
+                                throw new Error('找不到图片上传输入框（input[type="file"]）');
                             }
 
                             // 方法1：清空 value（对某些浏览器有效）

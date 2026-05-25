@@ -2033,6 +2033,21 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                         console.log(`${logPrefix} ✅ 从 publish_data_window_${windowId} 读取到发布数据`);
                         return publishData;
                     }
+                    console.log(`${logPrefix} ⚠️ windowId=${windowId} 对应的 publish_data 不存在，尝试遍历全部 window 数据`);
+                }
+            }
+
+            // 回退：遍历所有 global data，找任意可用的 publish_data_window_*
+            if (window.browserAPI?.getAllGlobalData) {
+                const allData = await window.browserAPI.getAllGlobalData();
+                if (allData && typeof allData === "object") {
+                    const candidates = Object.keys(allData).filter((k) => k.startsWith("publish_data_window_"));
+                    for (const key of candidates) {
+                        if (allData[key]) {
+                            console.log(`${logPrefix} ✅ 回退命中 ${key}`);
+                            return allData[key];
+                        }
+                    }
                 }
             }
         } catch (e) {

@@ -459,7 +459,7 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
   };
 }
 
-const SESSION_SNAPSHOT_TTL_SECONDS = 7 * 24 * 3600;
+const SESSION_SNAPSHOT_TTL_SECONDS = 30 * 24 * 3600;
 const SESSION_SNAPSHOT_TTL_MS = SESSION_SNAPSHOT_TTL_SECONDS * 1000;
 
 function getSessionSnapshotExpirationDate(nowSeconds = Math.floor(Date.now() / 1000)) {
