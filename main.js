@@ -459,7 +459,7 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
   };
 }
 
-const SESSION_SNAPSHOT_TTL_SECONDS = 7 * 24 * 3600;
+const SESSION_SNAPSHOT_TTL_SECONDS = 30 * 24 * 3600;
 const SESSION_SNAPSHOT_TTL_MS = SESSION_SNAPSHOT_TTL_SECONDS * 1000;
 
 function getSessionSnapshotExpirationDate(nowSeconds = Math.floor(Date.now() / 1000)) {
@@ -6381,6 +6381,71 @@ ipcMain.handle('proxy-fetch', async (event, url, options = {}) => {
   }
 });
 
+// 🔁 跨域代理 fetch（使用调用方 webContents 自己的 session）
+// 用于发布脚本跨域请求平台接口（如 card.weibo.com 跨域调 mp.sina.com.cn）
+// 与 proxy-fetch（BrowserView session）的区别：这里用调用方窗口的 session，适合发布窗口
+ipcMain.handle('proxy-fetch-window-session', async (event, url, options = {}) => {
+  try {
+    const senderWC = event.sender;
+    if (!senderWC || senderWC.isDestroyed()) {
+      return { success: false, error: 'webContents 不存在或已销毁' };
+    }
+    const ses = senderWC.session;
+    const urlObj = new URL(url);
+
+    // 取该 URL 域名对应的 cookies
+    let cookieString = '';
+    if (options.withCookies !== false) {
+      const allCookies = await ses.cookies.get({});
+      const domain = urlObj.hostname;
+      const domainCookies = allCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
+        return cookieDomain.includes(domain) || domain.includes(cookieDomain);
+      });
+      cookieString = domainCookies.map(c => {
+        const value = /[^\x00-\xff]/.test(c.value) ? encodeURIComponent(c.value) : c.value;
+        return `${c.name}=${value}`;
+      }).join('; ');
+      console.log(`[Proxy Fetch WindowSession] ${options.method || 'GET'} ${url}, cookies: ${domainCookies.length} 个`);
+    }
+
+    const headers = { ...(options.headers || {}) };
+    if (cookieString) headers['Cookie'] = cookieString;
+    if (!headers['User-Agent']) headers['User-Agent'] = senderWC.userAgent || 'zh.Cloud-browse';
+    if (!headers['Referer']) headers['Referer'] = `${urlObj.protocol}//${urlObj.hostname}/`;
+
+    const result = await new Promise((resolve, reject) => {
+      const mod = urlObj.protocol === 'https:' ? https : http;
+      const req = mod.request(url, {
+        method: options.method || 'GET',
+        headers: headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let jsonData;
+          try { jsonData = JSON.parse(data); } catch (e) { jsonData = data; }
+          resolve({
+            success: true,
+            status: res.statusCode,
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            data: jsonData
+          });
+        });
+      });
+      req.on('error', (err) => reject(err));
+      if (options.body) req.write(options.body);
+      req.end();
+    });
+
+    console.log(`[Proxy Fetch WindowSession] 响应状态: ${result.status}`);
+    return result;
+  } catch (err) {
+    console.error('[Proxy Fetch WindowSession] 请求失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // 刷新页面
 ipcMain.handle('refresh-page', async () => {
   if (browserView) {
@@ -7324,13 +7389,23 @@ async function openManagedChildWindow(url, options = {}) {
         try {
           const localHasLogin = await hasValidLoginCookies(windowSession, options.platform);
           if (localHasLogin) {
-            const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
-            if (identityMatch !== false) {
+            // 多账号模式：persist:<platform>_<accountId> 是该账号专属空间
+            // 该 session 内一旦存在有效登录态，必然是该账号最新的登录信息
+            // （重新授权时已通过 migrate-cookies-to-account-session 写入新 cookies）
+            // 所以无需再比对 element.cookies 里可能过期的身份 cookie 字面值
+            const isMultiAccountMode = !!(options.platform && options.accountId);
+            if (isMultiAccountMode) {
               shouldSkipSessionRestore = true;
-              const matchDesc = identityMatch === true ? '匹配' : '无法验证（保守保留本地）';
-              console.log(`[Window Manager] 🛡️ 本地登录态有效且账号${matchDesc}，跳过 sessionData 清空恢复`);
+              console.log(`[Window Manager] 🛡️ 多账号模式且本地登录态有效，信任本地 session，跳过 sessionData 清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
             } else {
-              console.log('[Window Manager] 🔄 检测到换账号（身份 cookie 不匹配），走 sessionData 清空恢复');
+              const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
+              if (identityMatch !== false) {
+                shouldSkipSessionRestore = true;
+                const matchDesc = identityMatch === true ? '匹配' : '无法验证（保守保留本地）';
+                console.log(`[Window Manager] 🛡️ 本地登录态有效且账号${matchDesc}，跳过 sessionData 清空恢复`);
+              } else {
+                console.log('[Window Manager] 🔄 检测到换账号（身份 cookie 不匹配），走 sessionData 清空恢复');
+              }
             }
           } else {
             console.log('[Window Manager] ℹ️ 本地无登录态，走 sessionData 清空恢复');
@@ -7959,6 +8034,24 @@ async function openManagedChildWindow(url, options = {}) {
                 new Promise((_, rej) => setTimeout(() => rej(new Error('脚本侧保存超时')), 30000))
               ]);
               console.log('[Window Manager] 🔐 脚本侧保存结果:', scriptResult);
+
+              // 🛟 如果 __publishSaveSession__ 未注册，强制注入 common.js 后重试一次
+              if (scriptResult && !scriptResult.success && /未注册/.test(scriptResult.error || '')) {
+                console.log('[Window Manager] 🔁 __publishSaveSession__ 未注册，强制注入 common.js 后重试');
+                try {
+                  const commonPath = path.join(__dirname, 'injected-scripts', 'common.js');
+                  const commonCode = fs.readFileSync(commonPath, 'utf-8');
+                  await newWindow.webContents.executeJavaScript(commonCode);
+                  console.log('[Window Manager] 🔁 common.js 已强制注入，重试调用');
+                  scriptResult = await Promise.race([
+                    newWindow.webContents.executeJavaScript(code),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('脚本侧保存超时')), 30000))
+                  ]);
+                  console.log('[Window Manager] 🔁 重试结果:', scriptResult);
+                } catch (retryErr) {
+                  console.warn('[Window Manager] ⚠️ 强制注入重试失败:', retryErr.message);
+                }
+              }
             } catch (scriptErr) {
               console.warn('[Window Manager] ⚠️ 脚本侧保存异常，兜底走主进程:', scriptErr.message);
               scriptResult = null;
@@ -8017,6 +8110,29 @@ async function openManagedChildWindow(url, options = {}) {
             }
           }
           console.log('[Window Manager] 保存结果:', result);
+
+          // 🔍 转发保存结果到首页 DevTools 控制台（覆盖所有路径：script/skip-save/main-fallback）
+          try {
+            if (browserView && !browserView.webContents.isDestroyed()) {
+              const diagPayload = {
+                windowId,
+                source: result?.source || 'unknown',
+                success: !!result?.success,
+                platform: result?.accountInfo?.platform || accountInfo?.platform || '未知',
+                accountId: result?.accountInfo?.accountId || accountInfo?.accountId || '无',
+                backendAccountId: result?.backendAccountId || '无',
+                cookieCount: result?.cookieCount != null ? String(result.cookieCount) : '0',
+                statusCode: result?.statusCode != null ? String(result.statusCode) : '-',
+                error: result?.error || '无',
+                response: result?.response,
+                scriptResult: scriptResult || null,
+                currentUrl: (() => { try { return newWindow.webContents.getURL(); } catch (_) { return ''; } })()
+              };
+              const tag = result?.success ? '[Save Session ✅]' : '[Save Session ❌]';
+              const logCode = `console.${result?.success ? 'log' : 'warn'}(${JSON.stringify(tag)}, ${JSON.stringify(diagPayload)});`;
+              browserView.webContents.executeJavaScript(logCode).catch(() => {});
+            }
+          } catch (_) {}
 
           // 通知首页：会话数据已更新
           if (browserView && !browserView.webContents.isDestroyed() && result.success) {
@@ -9848,7 +9964,37 @@ async function saveWindowSessionToBackend(targetWindow, windowId, extraDebugInfo
     result = { success: false, error: err.message };
   }
 
-  // 🔕 已移除关闭弹窗后的接口存储信息提示（保留控制台日志即可）
+  // 🔍 把保存结果转发到首页 BrowserView 的 DevTools 控制台（F12 可见，打包后也能看）
+  try {
+    if (browserView && !browserView.webContents.isDestroyed()) {
+      const platformDesc = result?.accountInfo?.platform || '未知';
+      const backendIdDesc = result?.backendAccountId || '无';
+      const cookieCountDesc = result?.cookieCount != null ? String(result.cookieCount) : '0';
+      const errDesc = result?.error || '无';
+      const statusCodeDesc = result?.statusCode != null ? String(result.statusCode) : '-';
+
+      const diagPayload = {
+        windowId,
+        platform: platformDesc,
+        backendAccountId: backendIdDesc,
+        cookieCount: cookieCountDesc,
+        statusCode: statusCodeDesc,
+        success: !!result?.success,
+        error: errDesc,
+        response: result?.response,
+        source: result?.source,
+        publishData: globalStorage[`publish_data_window_${windowId}`] || null,
+        windowAccountMap: windowAccountMap.get(windowId) || null,
+        extraDebugInfo: extraDebugInfo || null
+      };
+
+      const tag = result?.success ? '[Save Session ✅]' : '[Save Session ❌]';
+      const code = `console.${result?.success ? 'log' : 'warn'}(${JSON.stringify(tag)}, ${JSON.stringify(diagPayload)});`;
+      browserView.webContents.executeJavaScript(code).catch(() => {});
+    }
+  } catch (logErr) {
+    console.warn('[Save Session] ⚠️ 转发日志失败:', logErr.message);
+  }
 
   return result;
 }

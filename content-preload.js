@@ -1182,6 +1182,14 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 返回: { success: true, data: { cookies, localStorage, sessionStorage, indexedDB }, size: 数据大小 }
   getFullSessionData: (domain) => ipcRenderer.invoke('get-full-session-data', domain),
 
+  // 🔁 跨域代理 fetch（用当前窗口 session 在主进程发请求，绕过浏览器 CORS）
+  // 用于发布窗口跨域调平台 API（如 card.weibo.com 跨域调 mp.sina.com.cn/aj/...）
+  // 参数:
+  //   url - 完整 URL
+  //   options - { method, headers, body, withCookies }
+  // 返回: { success, status, ok, data } 或 { success: false, error }
+  proxyFetch: (url, options) => ipcRenderer.invoke('proxy-fetch-window-session', url, options || {}),
+
   // 恢复完整会话数据（Cookies + localStorage + sessionStorage + IndexedDB）
   // 用于发布时从后台获取的会话数据恢复到当前窗口
   // 参数: sessionData - 会话数据对象或 JSON 字符串（与 getFullSessionData 返回的 data 格式相同）

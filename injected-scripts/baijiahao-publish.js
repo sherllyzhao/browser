@@ -358,12 +358,14 @@
       }
 
       setTimeout(async () => {
-        await retryOperation (async () => {
-          const tourBtn = await waitForElement('.cheetah-tour-close', 5000, 1000);
+        try {
+          const tourBtn = document.querySelector('.cheetah-tour-close');
           if (tourBtn) {
-            tourBtn.click()
+            tourBtn.click();
           }
-        }, 5, 1000)
+        } catch (e) {
+          console.log('[baijiahao-publish] 无引导弹窗，跳过');
+        }
         // 标题（带重试和验证）
         await retryOperation(async () => {
           const titleEle = await waitForElement(".client_components_titleInput .input-container .input-box textarea", 5000);
@@ -411,70 +413,6 @@
               setNativeValue(singleRadioEle, true);
               setNativeValue(threeRadioEle, false);
             }
-          }
-
-          //设置简介（带重试）
-          try {
-            await retryOperation(async () => {
-              // 首先检查是否已经填写过（通过全局标记）
-              if (introFilled) {
-                console.log('[百家号发布] 简介已填写过，跳过');
-                return; // 跳过重试
-              }
-
-              console.log('[百家号发布] 开始填写简介...');
-              const introEle = await waitForElement(".news_abstract_form_item textarea", 5000);
-              console.log('[百家号发布] 简介输入框元素:', introEle);
-
-              const targetIntro = dataObj.video.video.intro || '';
-              const targetContent = targetIntro.trim();
-              console.log('[百家号发布] 目标简介内容:', targetContent);
-
-              // 检查实际内容
-              const currentContent = (introEle?.value || '').trim();
-              console.log('[百家号发布] 当前简介内容:', currentContent);
-
-              // 只有在标记未设置且内容不同时才填写
-              if (introEle && currentContent !== targetContent) {
-                // 立即标记为已填写（在任何操作之前，防止并发）
-                introFilled = true;
-                console.log('[百家号发布] 正在填写简介...');
-
-                // 先触发focus事件
-                if (typeof introEle.focus === 'function') {
-                  introEle.focus();
-                } else {
-                  introEle.dispatchEvent(new Event('focus', { bubbles: true }));
-                }
-
-                // 延迟执行，让React状态稳定
-                await new Promise(resolve => setTimeout(resolve, 300));
-
-                setNativeValue(introEle, dataObj.video.video.intro);
-
-                // 额外触发input事件
-                introEle.dispatchEvent(new Event('input', { bubbles: true }));
-
-                // 等待 React 更新
-                await new Promise(resolve => setTimeout(resolve, 200));
-
-                // 🔑 验证是否成功设置
-                const updatedValue = (introEle.value || '').trim();
-                if (updatedValue !== targetContent) {
-                  throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedValue.substring(0, 50)}..."`);
-                }
-
-                console.log('[百家号发布] ✅ 简介填写完成');
-              } else if (!introEle) {
-                throw new Error('简介输入框元素为空');
-              } else {
-                // 内容已经正确，也标记为已填写
-                introFilled = true;
-                console.log('[百家号发布] 简介内容已正确，无需修改');
-              }
-            }, 5, 1000);
-          } catch (error) {
-            console.log('[百家号发布] ❌ 简介填写失败:', error.message);
           }
 
           // 内容（带重试）
@@ -562,11 +500,26 @@
                 // 获取处理后的 HTML
                 htmlContent = tempDiv.innerHTML;
 
-                // 使用 innerHTML 赋值
+                // 🔑 直接 innerHTML 赋值（最稳，paste 事件会被编辑器拦截清洗导致内容丢失）
+                editorEle.focus();
+                await new Promise(resolve => setTimeout(resolve, 100));
                 editorEle.innerHTML = htmlContent;
 
-                // 触发 input 事件
-                editorEle.dispatchEvent(new iframeWin.Event("input", { bubbles: true }));
+                // 把光标移到末尾，让编辑器认为是用户操作完成
+                try {
+                  const sel = iframeWin.getSelection();
+                  const range = iframeDoc.createRange();
+                  range.selectNodeContents(editorEle);
+                  range.collapse(false);
+                  sel.removeAllRanges();
+                  sel.addRange(range);
+                } catch (e) {}
+
+                // 触发完整的事件链通知编辑器状态更新
+                editorEle.dispatchEvent(new iframeWin.Event('input', { bubbles: true }));
+                editorEle.dispatchEvent(new iframeWin.Event('change', { bubbles: true }));
+                editorEle.dispatchEvent(new iframeWin.KeyboardEvent('keyup', { bubbles: true }));
+                editorEle.dispatchEvent(new iframeWin.Event('blur', { bubbles: true }));
 
                 console.log('[百家号发布] ✅ 内容填写完成');
               }, 3, 1000);
