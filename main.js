@@ -2061,14 +2061,29 @@ function addContentTypeFix(targetSession, label) {
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
 // 所有可能的首页地址（用于消息路由判断，从 config 集中配置构建）
-const HOME_URLS = [
+const configuredHomeUrls = [];
+if (config.DOMAINS) {
+  ['dev', 'prod'].forEach((env) => {
+    const envDomains = config.DOMAINS[env];
+    if (!envDomains) return;
+    if (envDomains.aigcPage && envDomains.aigcPath) {
+      configuredHomeUrls.push(envDomains.aigcPage + envDomains.aigcPath);
+    }
+    if (envDomains.geoPage && envDomains.geoPath) {
+      configuredHomeUrls.push(envDomains.geoPage + envDomains.geoPath);
+    }
+  });
+}
+
+const HOME_URLS = Array.from(new Set([
   'http://localhost:5173/',
   config.getAigcUrl(),             // AIGC 首页
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   config.getGeoUrl(),              // GEO 首页
-  LOGIN_URL  // 登录页也作为首页处理
-];
+  LOGIN_URL,  // 登录页也作为首页处理
+  ...configuredHomeUrls
+].filter(Boolean)));
 
 // 判断 URL 是否为首页
 function isHomeUrl(url) {
@@ -6736,7 +6751,8 @@ ipcMain.on('home-to-content', (event, message) => {
   if (browserView) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const isHome = window.location.href.startsWith('${HOME_URL}');
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
+        const isHome = homeUrls.some(url => window.location.href.startsWith(url));
         console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
         if (!isHome) {
           const messageData = ${messageStr};

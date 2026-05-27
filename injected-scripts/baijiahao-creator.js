@@ -291,6 +291,45 @@
   console.log('[百家号授权] 页面加载完成，发送 页面加载完成 消息');
   sendMessageToParent('页面加载完成');
 
+  // 兜底：如果首页没有回传 auth-data，已登录的百家号首页也要能主动进入上报流程
+  setTimeout(async () => {
+    try {
+      if (hasProcessed || isProcessing) {
+        console.log('[百家号授权] ⏭️ 已在处理或已完成，跳过本页兜底上报');
+        return;
+      }
+
+      const isBjhHome = window.location.hostname === 'baijiahao.baidu.com'
+        && window.location.pathname.includes('/builder/rc/home');
+      if (!isBjhHome) {
+        console.log('[百家号授权] ℹ️ 当前不是百家号首页，跳过本页兜底上报:', window.location.href);
+        return;
+      }
+
+      if (!companyId) {
+        console.error('[百家号授权] ❌ 缺少 companyId，无法执行本页兜底上报');
+        return;
+      }
+
+      const windowId = window.browserAPI?.getWindowId ? await window.browserAPI.getWindowId() : null;
+      const fallbackMessage = {
+        type: 'auth-data',
+        windowId,
+        data: {
+          auth_type: authType,
+          company_id: companyId,
+          transfer_id: transferId,
+          source: 'baijiahao-auto-fallback'
+        }
+      };
+
+      console.warn('[百家号授权] ⚠️ 未收到父窗口 auth-data，触发本页兜底上报:', fallbackMessage);
+      window.postMessage({ type: 'FROM_HOME', data: fallbackMessage }, '*');
+    } catch (fallbackError) {
+      console.error('[百家号授权] ❌ 本页兜底上报触发失败:', fallbackError);
+    }
+  }, 8000);
+
   console.log('═══════════════════════════════════════');
   console.log('✅ 百家号授权脚本初始化完成');
   console.log('📝 全局方法: window.__BAIJIAHAO_AUTH__');
