@@ -7832,6 +7832,16 @@ async function openManagedChildWindow(url, options = {}) {
     console.warn('[Window Manager] ⚠️ URL 解析失败，跳过 force_reset 注入:', urlErr.message);
   }
 
+  const isShipinhaoPublishUrl = (() => {
+    try {
+      const parsedUrl = new URL(url);
+      return String(parsedUrl.hostname || '').toLowerCase() === 'channels.weixin.qq.com'
+        && String(parsedUrl.pathname || '').toLowerCase().includes('/platform/post/create');
+    } catch (_) {
+      return String(url || '').toLowerCase().includes('channels.weixin.qq.com/platform/post/create');
+    }
+  })();
+
   // ⏱ 全链路阶段性耗时基准时间
   const __WM_T0__ = Date.now();
   const __wmTs = () => `T+${Date.now() - __WM_T0__}ms`;
@@ -8014,6 +8024,8 @@ async function openManagedChildWindow(url, options = {}) {
           }
 
           const hasStoragePayload =
+            !isShipinhaoPublishUrl
+            &&
             !!(sessionData
               && typeof sessionData === 'object'
               && !Array.isArray(sessionData)
@@ -8024,7 +8036,9 @@ async function openManagedChildWindow(url, options = {}) {
               ));
 
           // 1.5 🔑 只有快照里真的带了 storage 数据，才值得做一次重清理
-          if (hasStoragePayload) {
+          if (isShipinhaoPublishUrl) {
+            console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号发布页跳过 storage 清理，仅恢复 cookies，避免目标页加载阶段崩溃`);
+          } else if (hasStoragePayload) {
             try {
               await windowSession.clearStorageData({
                 storages: ['appcache', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
@@ -8906,7 +8920,9 @@ async function openManagedChildWindow(url, options = {}) {
     let localStorageData = null;
     let sessionStorageData = null;
 
-    if (options.sessionData) {
+    if (options.sessionData && isShipinhaoPublishUrl) {
+      console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号发布页跳过 localStorage/sessionStorage 预设，仅使用 cookies`);
+    } else if (options.sessionData) {
       let sessionData = options.sessionData;
       // 解析 sessionData
       if (typeof sessionData === 'string') {
