@@ -106,7 +106,11 @@ let hasProcessed = false;
       '.input-editor',
       '.form-btns',
       '.weui-desktop-btn',  // 发布按钮
-      '.post-time-wrap'     // 发布时间设置区域
+      '.post-time-wrap',    // 发布时间设置区域
+      '.ant-progress-text', // 视频上传进度
+      '.ant-progress',
+      '.upload-wrapper',
+      '#fullScreenVideo'
     ], 8000, 5);
 
     // 二检：18s 后再复查一次，仅检测发布页真实 UI 元素
@@ -120,9 +124,19 @@ let hasProcessed = false;
           '.input-editor',
           '.form-btns',
           '.weui-desktop-btn',
-          '.post-time-wrap'
+          '.post-time-wrap',
+          '.ant-progress-text',
+          '.ant-progress',
+          '.upload-wrapper',
+          '#fullScreenVideo'
         ];
-        const hit = realSelectors.find(s => document.querySelector(s));
+        const hit = realSelectors.find(s => {
+          if (document.querySelector(s)) return true;
+          if (typeof window.findElementInPageOrShadow === 'function') {
+            return !!window.findElementInPageOrShadow(s);
+          }
+          return false;
+        });
         console.log(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 发布 UI 真实元素命中: ${hit || '无'}`);
         if (!hit) {
           console.warn(`${__LOG_PREFIX__} 🛡 [二检] 未发现发布 UI 真实元素，触发白屏兜底检测...`);

@@ -10,21 +10,35 @@ const config = require('./domain-config');
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
 
-// Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-// 在这些旧系统上禁用硬件加速，避免 GPU 渲染失败导致的白屏
-// Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
-if (process.platform === 'win32') {
+function getLegacyWindowsGpuWorkaroundInfo() {
+  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
+  // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
+  if (process.platform !== 'win32') {
+    return { shouldDisableHardwareAcceleration: false, release: '' };
+  }
+
   try {
     const release = os.release();
-    const major = parseInt(release.split('.')[0], 10);
-    if (major < 10) {
-      console.log(`[启动] 检测到旧版 Windows (${release})，禁用硬件加速以规避白屏问题`);
-      app.disableHardwareAcceleration();
-      app.commandLine.appendSwitch('disable-gpu-compositing');
-    }
+    const major = Number.parseInt(release.split('.')[0], 10);
+    return {
+      shouldDisableHardwareAcceleration: Number.isInteger(major) && major < 10,
+      release
+    };
   } catch (e) {
     console.error('[启动] Windows 版本检测失败:', e);
+    return { shouldDisableHardwareAcceleration: false, release: '' };
   }
+}
+
+const legacyWindowsGpuWorkaround = getLegacyWindowsGpuWorkaroundInfo();
+const shouldDisableHardwareAcceleration = legacyWindowsGpuWorkaround.shouldDisableHardwareAcceleration;
+
+if (shouldDisableHardwareAcceleration) {
+  console.log(`[启动] 检测到旧版 Windows (${legacyWindowsGpuWorkaround.release})，禁用硬件加速以规避白屏问题`);
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+} else {
+  console.log('[启动] 当前系统保留 GPU 硬件加速');
 }
 
 let mainWindow;
@@ -85,6 +99,482 @@ function installBrokenPipeGuard(stream, streamName) {
 
 installBrokenPipeGuard(process.stdout, 'stdout');
 installBrokenPipeGuard(process.stderr, 'stderr');
+
+const SESSION_DIAGNOSTIC_LOG_NAME = '运营助手-本次报错.log';
+const SESSION_DIAGNOSTIC_MAX_LINE_LENGTH = 6000;
+const SESSION_DIAGNOSTIC_MAX_HEADER_KEYS = 40;
+const SESSION_DIAGNOSTIC_SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-csrf-token',
+  'x-xsrf-token',
+  'x-token',
+  'token'
+]);
+let sessionDiagnosticLogPath = '';
+let sessionDiagnosticLogReady = false;
+let sessionDiagnosticLogDisabled = false;
+let sessionDiagnosticConsoleWrapped = false;
+const sessionDiagnosticNetworkRequests = new WeakMap();
+const sessionDiagnosticNetworkInstalled = new WeakSet();
+
+function truncateDiagnosticText(text) {
+  if (text.length <= SESSION_DIAGNOSTIC_MAX_LINE_LENGTH) {
+    return text;
+  }
+  return `${text.slice(0, SESSION_DIAGNOSTIC_MAX_LINE_LENGTH)}... [truncated length=${text.length}]`;
+}
+
+function redactDiagnosticText(value) {
+  return truncateDiagnosticText(String(value || '')
+    .replace(/([?&](?:token|access_token|refresh_token|authorization|password|passwd|secret|sessionData)=)[^&\s]+/gi, '$1[已脱敏]')
+    .replace(/((?:cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}\]]+)/gi, '$1[已脱敏]')
+    .replace(/("(?:cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData)"\s*:\s*)"[^"]*"/gi, '$1"[已脱敏]"')
+    .replace(/\r?\n/g, '\\n'));
+}
+
+function createDiagnosticJsonReplacer() {
+  const seen = new WeakSet();
+  return (key, value) => {
+    if (/cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData/i.test(key)) {
+      return '[已脱敏]';
+    }
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        stack: value.stack
+      };
+    }
+    if (value && typeof value === 'object') {
+      if (seen.has(value)) {
+        return '[Circular]';
+      }
+      seen.add(value);
+    }
+    if (typeof value === 'string' && value.length > 1000) {
+      return `${value.slice(0, 1000)}... [length=${value.length}]`;
+    }
+    return value;
+  };
+}
+
+function formatDiagnosticArg(arg) {
+  if (arg instanceof Error) {
+    return redactDiagnosticText(arg.stack || arg.message || String(arg));
+  }
+  if (typeof arg === 'string') {
+    return redactDiagnosticText(arg);
+  }
+  try {
+    return redactDiagnosticText(JSON.stringify(arg, createDiagnosticJsonReplacer()));
+  } catch (_) {
+    return redactDiagnosticText(String(arg));
+  }
+}
+
+function getSessionNetworkRequestMap(targetSession) {
+  let requestMap = sessionDiagnosticNetworkRequests.get(targetSession);
+  if (!requestMap) {
+    requestMap = new Map();
+    sessionDiagnosticNetworkRequests.set(targetSession, requestMap);
+  }
+  return requestMap;
+}
+
+function getPortableExecutableDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return process.env.PORTABLE_EXECUTABLE_DIR;
+  }
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE);
+  }
+  return '';
+}
+
+function getDiagnosticHeaderValue(headers, headerName) {
+  if (!headers || !headerName) {
+    return undefined;
+  }
+  const key = Object.keys(headers).find(item => item.toLowerCase() === headerName.toLowerCase());
+  if (!key) {
+    return undefined;
+  }
+  return headers[key];
+}
+
+function sanitizeDiagnosticHeaders(headers = {}) {
+  const output = {};
+  let count = 0;
+
+  for (const key of Object.keys(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (count >= SESSION_DIAGNOSTIC_MAX_HEADER_KEYS) {
+      output.__truncated__ = `只展示前 ${SESSION_DIAGNOSTIC_MAX_HEADER_KEYS} 个 header`;
+      break;
+    }
+    if (SESSION_DIAGNOSTIC_SENSITIVE_HEADER_NAMES.has(normalizedKey)) {
+      output[key] = '[已脱敏]';
+    } else {
+      const value = headers[key];
+      output[key] = Array.isArray(value)
+        ? value.map(item => redactDiagnosticText(item)).slice(0, 8)
+        : redactDiagnosticText(value);
+    }
+    count++;
+  }
+
+  return output;
+}
+
+function summarizeDiagnosticUploadData(uploadData = []) {
+  if (!Array.isArray(uploadData) || uploadData.length === 0) {
+    return null;
+  }
+
+  let bytes = 0;
+  let rawParts = 0;
+  let fileParts = 0;
+  let blobParts = 0;
+
+  for (const item of uploadData) {
+    if (!item) continue;
+    if (item.bytes) {
+      rawParts++;
+      bytes += Buffer.isBuffer(item.bytes) ? item.bytes.length : Buffer.byteLength(String(item.bytes));
+    }
+    if (item.file) {
+      fileParts++;
+    }
+    if (item.blobUUID) {
+      blobParts++;
+    }
+  }
+
+  return {
+    parts: uploadData.length,
+    rawParts,
+    fileParts,
+    blobParts,
+    bytes
+  };
+}
+
+function getNetworkRequestScope(targetSession) {
+  const configForSession = sessionRequestGuardConfig.get(targetSession);
+  return `network ${configForSession?.label || 'session'}`;
+}
+
+function buildNetworkRequestBase(details = {}) {
+  return {
+    requestId: details.id,
+    method: details.method,
+    resourceType: details.resourceType,
+    url: details.url,
+    webContentsId: details.webContentsId || 0,
+    frameId: details.frameId,
+    parentFrameId: details.parentFrameId,
+    referrer: details.referrer || '',
+    upload: summarizeDiagnosticUploadData(details.uploadData)
+  };
+}
+
+function getNetworkDurationMs(targetSession, requestId) {
+  const requestMap = getSessionNetworkRequestMap(targetSession);
+  const started = requestMap.get(requestId);
+  return started ? Date.now() - started.startedAt : null;
+}
+
+function appendNetworkDiagnosticLog(targetSession, level, eventName, details = {}, extra = {}) {
+  appendSessionDiagnosticLog(level, getNetworkRequestScope(targetSession), [{
+    event: eventName,
+    ...buildNetworkRequestBase(details),
+    ...extra
+  }]);
+}
+
+function installSessionNetworkDiagnostics(targetSession) {
+  if (!targetSession?.webRequest || sessionDiagnosticNetworkInstalled.has(targetSession)) {
+    return;
+  }
+  sessionDiagnosticNetworkInstalled.add(targetSession);
+
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'send-headers', details, {
+      requestHeaders: sanitizeDiagnosticHeaders(details.requestHeaders || {})
+    });
+    callback({ requestHeaders: details.requestHeaders || {} });
+  });
+
+  targetSession.webRequest.onBeforeRedirect((details) => {
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'redirect', details, {
+      statusCode: details.statusCode,
+      statusLine: details.statusLine,
+      redirectURL: details.redirectURL,
+      ip: details.ip || '',
+      fromCache: !!details.fromCache,
+      durationMs: getNetworkDurationMs(targetSession, details.id),
+      responseHeaders: sanitizeDiagnosticHeaders(details.responseHeaders || {})
+    });
+  });
+
+  targetSession.webRequest.onCompleted((details) => {
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    const durationMs = getNetworkDurationMs(targetSession, details.id);
+    requestMap.delete(details.id);
+
+    const level = details.statusCode >= 400 ? 'WARN' : 'INFO';
+    appendNetworkDiagnosticLog(targetSession, level, 'completed', details, {
+      statusCode: details.statusCode,
+      statusLine: details.statusLine,
+      ip: details.ip || '',
+      fromCache: !!details.fromCache,
+      durationMs,
+      contentType: getDiagnosticHeaderValue(details.responseHeaders, 'content-type') || '',
+      contentLength: getDiagnosticHeaderValue(details.responseHeaders, 'content-length') || '',
+      responseHeaders: sanitizeDiagnosticHeaders(details.responseHeaders || {})
+    });
+  });
+
+  targetSession.webRequest.onErrorOccurred((details) => {
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    const durationMs = getNetworkDurationMs(targetSession, details.id);
+    requestMap.delete(details.id);
+
+    appendNetworkDiagnosticLog(targetSession, 'ERROR', 'error', details, {
+      error: details.error || '',
+      fromCache: !!details.fromCache,
+      durationMs
+    });
+  });
+}
+
+function getSessionDiagnosticCandidateDirs() {
+  const preferredDir = getPortableExecutableDir() || (app.isPackaged ? path.dirname(process.execPath) : __dirname);
+  const fallbackDir = app.getPath('userData');
+  return Array.from(new Set([preferredDir, fallbackDir].filter(Boolean)));
+}
+
+function initializeSessionDiagnosticLog() {
+  if (sessionDiagnosticLogReady || sessionDiagnosticLogDisabled) {
+    return sessionDiagnosticLogReady;
+  }
+
+  const failures = [];
+  for (const dir of getSessionDiagnosticCandidateDirs()) {
+    const logPath = path.join(dir, SESSION_DIAGNOSTIC_LOG_NAME);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const header = [
+        '资海云运营助手 - 本次运行报错日志',
+        '说明: 只记录当前这次打开程序期间的诊断信息；正常退出时会自动删除。',
+        '范围: 主进程错误、页面错误、加载失败、渲染进程异常、网络请求开始/请求头/重定向/完成/失败。',
+        '隐私: cookie、authorization、token、password、sessionData、上传内容等敏感信息会脱敏或只记录大小。',
+        `启动时间: ${new Date().toLocaleString()}`,
+        `应用版本: ${APP_VERSION}`,
+        `Electron: ${process.versions.electron || ''}`,
+        `Chrome: ${process.versions.chrome || ''}`,
+        `Node: ${process.versions.node || ''}`,
+        `系统: ${process.platform} ${os.release()}`,
+        `执行文件: ${process.execPath}`,
+        `便携版外层目录: ${getPortableExecutableDir() || '-'}`,
+        `日志路径: ${logPath}`,
+        '========================================',
+        ''
+      ].join('\n');
+      fs.writeFileSync(logPath, header, 'utf8');
+      sessionDiagnosticLogPath = logPath;
+      sessionDiagnosticLogReady = true;
+      if (failures.length > 0) {
+        appendSessionDiagnosticLog('WARN', 'diagnostic', [
+          `首选日志目录不可写，已切换备用目录: ${failures.map(item => `${item.dir} (${item.error})`).join('; ')}`
+        ]);
+      }
+      return true;
+    } catch (err) {
+      failures.push({ dir, error: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  sessionDiagnosticLogDisabled = true;
+  return false;
+}
+
+function appendSessionDiagnosticLog(level, scope, args = []) {
+  if (!initializeSessionDiagnosticLog()) {
+    return;
+  }
+  try {
+    const message = args.map(formatDiagnosticArg).join(' ');
+    const line = `[${new Date().toISOString()}] [${level}] [${scope}] ${message}\n`;
+    fs.appendFileSync(sessionDiagnosticLogPath, line, 'utf8');
+  } catch (_) {
+    // 日志不能影响主流程
+  }
+}
+
+function removeSessionDiagnosticLog() {
+  if (!sessionDiagnosticLogPath) {
+    return;
+  }
+  try {
+    if (fs.existsSync(sessionDiagnosticLogPath)) {
+      fs.unlinkSync(sessionDiagnosticLogPath);
+    }
+  } catch (_) {
+    // 退出清理失败不阻塞应用退出
+  }
+}
+
+function wrapConsoleForSessionDiagnostics() {
+  if (sessionDiagnosticConsoleWrapped) {
+    return;
+  }
+  sessionDiagnosticConsoleWrapped = true;
+
+  const wrapMethod = (method, level) => {
+    const original = console[method];
+    console[method] = function(...args) {
+      appendSessionDiagnosticLog(level, 'main-process', args);
+      return original.apply(console, args);
+    };
+  };
+
+  wrapMethod('warn', 'WARN');
+  wrapMethod('error', 'ERROR');
+}
+
+function safeGetWebContentsUrl(webContents) {
+  try {
+    if (!webContents || webContents.isDestroyed()) {
+      return '';
+    }
+    return webContents.getURL();
+  } catch (_) {
+    return '';
+  }
+}
+
+function describeWebContentsForDiagnostics(webContents, label) {
+  const parts = [label || 'webContents'];
+  try {
+    parts.push(`#${webContents.id}`);
+  } catch (_) {}
+  try {
+    if (typeof webContents.getType === 'function') {
+      parts.push(`type=${webContents.getType()}`);
+    }
+  } catch (_) {}
+  return parts.join(' ');
+}
+
+function getConsoleMessageLevel(level) {
+  if (typeof level === 'number') {
+    if (level >= 3) return 'ERROR';
+    if (level >= 2) return 'WARN';
+    return 'INFO';
+  }
+  const normalized = String(level || '').toUpperCase();
+  if (normalized.includes('ERROR')) return 'ERROR';
+  if (normalized.includes('WARN')) return 'WARN';
+  return 'INFO';
+}
+
+function attachSessionDiagnosticWebContents(webContents, label = 'webContents') {
+  if (!webContents || webContents.__sessionDiagnosticAttached) {
+    return;
+  }
+
+  try {
+    Object.defineProperty(webContents, '__sessionDiagnosticAttached', {
+      value: true,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (_) {
+    webContents.__sessionDiagnosticAttached = true;
+  }
+
+  const scope = () => describeWebContentsForDiagnostics(webContents, label);
+
+  webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const levelName = getConsoleMessageLevel(level);
+    if (levelName !== 'WARN' && levelName !== 'ERROR') {
+      return;
+    }
+    appendSessionDiagnosticLog(levelName, scope(), [
+      message,
+      `source=${sourceId || '-'}`,
+      `line=${line || 0}`,
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+
+  webContents.on('preload-error', (_event, preloadPath, error) => {
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'preload-error',
+      `preload=${preloadPath || '-'}`,
+      error
+    ]);
+  });
+
+  webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (errorCode === -3) {
+      return;
+    }
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'did-fail-load',
+      `code=${errorCode}`,
+      `description=${errorDescription || '-'}`,
+      `url=${validatedURL || safeGetWebContentsUrl(webContents) || '-'}`,
+      `mainFrame=${isMainFrame !== false}`
+    ]);
+  });
+
+  webContents.on('render-process-gone', (_event, details) => {
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'render-process-gone',
+      details,
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+
+  webContents.on('unresponsive', () => {
+    appendSessionDiagnosticLog('WARN', scope(), [
+      'unresponsive',
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+}
+
+function installSessionDiagnosticLogger() {
+  initializeSessionDiagnosticLog();
+  wrapConsoleForSessionDiagnostics();
+
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    appendSessionDiagnosticLog('ERROR', 'process', ['uncaughtExceptionMonitor', `origin=${origin || '-'}`, error]);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    appendSessionDiagnosticLog('ERROR', 'process', ['unhandledRejection', reason]);
+  });
+
+  process.on('warning', (warning) => {
+    appendSessionDiagnosticLog('WARN', 'process', [warning]);
+  });
+
+  app.on('before-quit', () => {
+    appendSessionDiagnosticLog('INFO', 'app', ['before-quit']);
+  });
+
+  app.on('quit', () => {
+    removeSessionDiagnosticLog();
+  });
+}
+
+installSessionDiagnosticLogger();
 
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
@@ -667,12 +1157,26 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
     label
   };
   sessionRequestGuardConfig.set(targetSession, merged);
+  installSessionNetworkDiagnostics(targetSession);
 
   targetSession.webRequest.onBeforeRequest((details, callback) => {
     const configForSession = sessionRequestGuardConfig.get(targetSession) || merged;
     const requestUrl = details.url || '';
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    requestMap.set(details.id, {
+      startedAt: Date.now(),
+      method: details.method,
+      url: requestUrl,
+      resourceType: details.resourceType
+    });
+
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'start', details);
 
     if (configForSession.blockBitbrowser && requestUrl.toLowerCase().startsWith('bitbrowser:')) {
+      appendNetworkDiagnosticLog(targetSession, 'WARN', 'cancelled', details, {
+        reason: 'blocked-bitbrowser-protocol'
+      });
+      requestMap.delete(details.id);
       console.log(`[${configForSession.label} WebRequest] ❌ Blocked bitbrowser protocol:`, requestUrl);
       callback({ cancel: true });
       return;
@@ -681,6 +1185,10 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
     if (configForSession.blockMainFrameResources) {
       const redirectUrl = resolveMainFrameResourceRedirect(details);
       if (redirectUrl && redirectUrl !== requestUrl) {
+        appendNetworkDiagnosticLog(targetSession, 'WARN', 'redirect-by-guard', details, {
+          reason: 'main-frame-static-resource',
+          redirectURL: redirectUrl
+        });
         console.warn(`[${configForSession.label} WebRequest] ⚠️ 主框架静态资源导航已改回页面: ${requestUrl} → ${redirectUrl}`);
         callback({ redirectURL: redirectUrl });
         return;
@@ -689,6 +1197,10 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
 
     if (configForSession.upgradeMp163 && requestUrl.startsWith('http://mp.163.com/')) {
       const httpsUrl = requestUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+      appendNetworkDiagnosticLog(targetSession, 'INFO', 'redirect-by-guard', details, {
+        reason: 'upgrade-mp163-http-to-https',
+        redirectURL: httpsUrl
+      });
       console.log(`[${configForSession.label} WebRequest] 🔒 HTTP→HTTPS: ${requestUrl}`);
       callback({ redirectURL: httpsUrl });
       return;
@@ -3784,6 +4296,7 @@ function createWindow() {
       backgroundThrottling: false // 禁用后台节流，防止长时间不操作页面空白
     }
   });
+  attachSessionDiagnosticWebContents(mainWindow.webContents, 'main-window');
 
   // 窗口准备好后立即显示
   let windowShown = false;
@@ -3996,6 +4509,7 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
     }
   });
+  attachSessionDiagnosticWebContents(browserView.webContents, 'browser-view');
 
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
@@ -5002,6 +5516,7 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
+    attachSessionDiagnosticWebContents(newWindow.webContents, 'child-window');
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -5587,10 +6102,11 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
-// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
-// 必须在 app.whenReady() 之前调用
-app.disableHardwareAcceleration();
-console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+if (shouldDisableHardwareAcceleration) {
+  console.log('[GPU] ✅ 已仅对旧版 Windows 禁用 GPU 硬件加速（防止白屏）');
+} else {
+  console.log('[GPU] ✅ 已保留 GPU 硬件加速（避免动画噪点/渲染降级）');
+}
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
@@ -5604,14 +6120,16 @@ app.commandLine.appendSwitch('no-sandbox');
 // 🛡️ 安全软件兼容性优化（电脑管家/360等）
 // 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
 app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-app.commandLine.appendSwitch('in-process-gpu');
+if (shouldDisableHardwareAcceleration) {
+  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+  app.commandLine.appendSwitch('in-process-gpu');
+}
 // 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
+console.log(`[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/${shouldDisableHardwareAcceleration ? 'GPU合并/' : ''}防后台节流）`);
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -5633,6 +6151,8 @@ app.whenReady().then(async () => {
 
   // 全局拦截所有 webContents 的协议导航
   app.on('web-contents-created', (event, webContents) => {
+    attachSessionDiagnosticWebContents(webContents, 'global-webContents');
+
     // 为每个 webContents 添加协议拦截
     webContents.on('will-navigate', (event, url) => {
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {

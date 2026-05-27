@@ -1,5 +1,202 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+function isChina9Host(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'china9.cn' || host.endsWith('.china9.cn');
+}
+
+function injectMainWorldScript(scriptSource, logTag) {
+  try {
+    webFrame.executeJavaScript(scriptSource, true).catch((err) => {
+      console.warn(`${logTag} 注入失败:`, err && err.message ? err.message : err);
+    });
+  } catch (err) {
+    console.warn(`${logTag} 初始化失败:`, err && err.message ? err.message : err);
+  }
+}
+
+// 修复授权回调脚本写死 dev.china9.cn，但父页面实际在 www.china9.cn 时的 postMessage targetOrigin 报错。
+// 补丁安装在 china9 父页面，子窗口调用 opener.postMessage 时会优先命中父页面的 postMessage 方法。
+(function installChina9PostMessageTargetOriginShim() {
+  try {
+    const currentUrl = new URL(window.location.href);
+    if (!isChina9Host(currentUrl.hostname)) {
+      return;
+    }
+
+    injectMainWorldScript(`
+      (function() {
+        if (window.__china9PostMessageTargetOriginShimInstalled) return;
+        window.__china9PostMessageTargetOriginShimInstalled = true;
+
+        const currentOrigin = window.location.origin;
+        const isChina9Origin = (origin) => {
+          try {
+            const parsed = new URL(origin);
+            const host = String(parsed.hostname || '').toLowerCase();
+            return parsed.protocol === 'https:' && (host === 'china9.cn' || host.endsWith('.china9.cn'));
+          } catch (_) {
+            return false;
+          }
+        };
+
+        if (!isChina9Origin(currentOrigin)) {
+          return;
+        }
+
+        const nativePostMessage = Window.prototype.postMessage;
+        if (typeof nativePostMessage !== 'function') {
+          return;
+        }
+
+        const getTargetOrigin = (targetOriginOrOptions) => {
+          if (typeof targetOriginOrOptions === 'string') return targetOriginOrOptions;
+          if (targetOriginOrOptions && typeof targetOriginOrOptions === 'object') {
+            return typeof targetOriginOrOptions.targetOrigin === 'string'
+              ? targetOriginOrOptions.targetOrigin
+              : '';
+          }
+          return '';
+        };
+
+        const withTargetOrigin = (args, origin) => {
+          const nextArgs = Array.prototype.slice.call(args);
+          if (nextArgs[1] && typeof nextArgs[1] === 'object' && typeof nextArgs[1].targetOrigin === 'string') {
+            nextArgs[1] = { ...nextArgs[1], targetOrigin: origin };
+          } else {
+            nextArgs[1] = origin;
+          }
+          return nextArgs;
+        };
+
+        const extractRecipientOrigin = (message) => {
+          const match = String(message || '').match(/recipient window's origin \\('([^']+)'\\)/);
+          return match ? match[1] : '';
+        };
+
+        Window.prototype.postMessage = function() {
+          try {
+            return nativePostMessage.apply(this, arguments);
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error || '');
+            const requestedOrigin = getTargetOrigin(arguments[1]);
+            const recipientOrigin = extractRecipientOrigin(message);
+            const canRetry = message.includes("Failed to execute 'postMessage'")
+              && message.includes('target origin')
+              && isChina9Origin(requestedOrigin)
+              && isChina9Origin(recipientOrigin);
+
+            if (!canRetry) {
+              throw error;
+            }
+
+            console.warn('[China9 postMessage shim] targetOrigin 已按 recipient origin 修正:', {
+              from: requestedOrigin,
+              to: recipientOrigin
+            });
+            return nativePostMessage.apply(this, withTargetOrigin(arguments, recipientOrigin));
+          }
+        };
+
+        console.log('[China9 postMessage shim] 已启用');
+      })();
+    `, '[China9 postMessage shim]');
+  } catch (err) {
+    console.warn('[China9 postMessage shim] 初始化失败:', err && err.message ? err.message : err);
+  }
+})();
+
+// 授权回调页兜底：即使第三方页面自己的 opener.postMessage 失败，也通过 Electron IPC 通知首页刷新。
+(function notifyHomeOnMediaAuthCallback() {
+  try {
+    const currentUrl = new URL(window.location.href);
+    if (!isChina9Host(currentUrl.hostname)
+      || !currentUrl.pathname.toLowerCase().startsWith('/api/mediaauth/')) {
+      return;
+    }
+
+    const isTargetOriginError = (value) => {
+      const text = value && value.message ? value.message : String(value || '');
+      return text.includes("Failed to execute 'postMessage'")
+        && text.includes('target origin')
+        && text.includes('china9.cn');
+    };
+
+    window.addEventListener('error', (event) => {
+      if (isTargetOriginError(event.error) || isTargetOriginError(event.message)) {
+        event.preventDefault();
+        console.warn('[MediaAuth callback] preload 已阻止 postMessage targetOrigin 报错冒泡');
+      }
+    }, true);
+
+    window.addEventListener('unhandledrejection', (event) => {
+      if (isTargetOriginError(event.reason)) {
+        event.preventDefault();
+        console.warn('[MediaAuth callback] preload 已阻止 postMessage targetOrigin Promise 报错冒泡');
+      }
+    }, true);
+
+    injectMainWorldScript(`
+      (function() {
+        if (window.__mediaAuthPostMessageErrorSilencerInstalled) return;
+        window.__mediaAuthPostMessageErrorSilencerInstalled = true;
+
+        const isTargetOriginError = (value) => {
+          const text = value && value.message ? value.message : String(value || '');
+          return text.includes("Failed to execute 'postMessage'")
+            && text.includes('target origin')
+            && text.includes('china9.cn');
+        };
+
+        const previousOnError = window.onerror;
+        window.onerror = function(message, source, lineno, colno, error) {
+          if (isTargetOriginError(error) || isTargetOriginError(message)) {
+            console.warn('[MediaAuth callback] 已忽略已兜底处理的 postMessage targetOrigin 报错');
+            return true;
+          }
+
+          if (typeof previousOnError === 'function') {
+            return previousOnError.apply(this, arguments);
+          }
+
+          return false;
+        };
+
+        window.addEventListener('error', function(event) {
+          if (isTargetOriginError(event.error) || isTargetOriginError(event.message)) {
+            event.preventDefault();
+            console.warn('[MediaAuth callback] 已阻止 postMessage targetOrigin 报错冒泡');
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          if (isTargetOriginError(event.reason)) {
+            event.preventDefault();
+            console.warn('[MediaAuth callback] 已阻止 postMessage targetOrigin Promise 报错冒泡');
+          }
+        }, true);
+      })();
+    `, '[MediaAuth callback]');
+
+    const hasSuccessMarker = currentUrl.searchParams.has('code')
+      || currentUrl.searchParams.get('response_type') === 'code';
+    if (!hasSuccessMarker) {
+      return;
+    }
+
+    setTimeout(() => {
+      try {
+        ipcRenderer.send('content-to-home', '授权成功，刷新数据');
+        console.log('[MediaAuth callback] 已通过 IPC 通知首页刷新');
+      } catch (err) {
+        console.warn('[MediaAuth callback] IPC 通知失败:', err && err.message ? err.message : err);
+      }
+    }, 0);
+  } catch (err) {
+    console.warn('[MediaAuth callback] 初始化失败:', err && err.message ? err.message : err);
+  }
+})();
+
 // 🎭 SPA 加载白屏遮罩 - 盖住第三方页面 SPA 自然加载期（约 500ms）的白屏
 // 仅对第三方平台生效，跳过本地页和登录页（避免遮挡二维码）
 (function injectLoadingMask() {
