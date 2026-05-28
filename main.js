@@ -94,6 +94,17 @@ function applyScopedWindowUserAgent(targetWebContents, rawUrl, label = 'Window')
   console.log(`[${label}] User-Agent 已设置为${useStandardUserAgent ? '标准 UA' : '带标识 UA'}:`, rawUrl || '-');
 }
 
+function shouldUseStandardUserAgentForRequest(details = {}) {
+  if (!shouldUseStandardUserAgentForUrl(details.url || '')) {
+    return false;
+  }
+  const requestWebContents = getWebContentsByRequest(details);
+  if (browserView?.webContents && requestWebContents && requestWebContents.id === browserView.webContents.id) {
+    return false;
+  }
+  return true;
+}
+
 function installBrokenPipeGuard(stream, streamName) {
   if (!stream || typeof stream.on !== 'function') return;
 
@@ -319,10 +330,14 @@ function installSessionNetworkDiagnostics(targetSession) {
   sessionDiagnosticNetworkInstalled.add(targetSession);
 
   targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const requestHeaders = { ...(details.requestHeaders || {}) };
+    if (shouldUseStandardUserAgentForRequest(details)) {
+      requestHeaders['User-Agent'] = STANDARD_USER_AGENT;
+    }
     appendNetworkDiagnosticLog(targetSession, 'INFO', 'send-headers', details, {
-      requestHeaders: sanitizeDiagnosticHeaders(details.requestHeaders || {})
+      requestHeaders: sanitizeDiagnosticHeaders(requestHeaders)
     });
-    callback({ requestHeaders: details.requestHeaders || {} });
+    callback({ requestHeaders });
   });
 
   targetSession.webRequest.onBeforeRedirect((details) => {
