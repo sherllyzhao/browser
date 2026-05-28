@@ -422,6 +422,137 @@
                 userInfo = userInfoRes.data;
             }
 
+            const isWangyiUploadedImage = (src = '') => {
+                const value = String(src || '');
+                return value.includes('dingyue.ws') || value.includes('mp.163.com');
+            };
+
+            const escapeHtmlAttr = (value = '') => String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+
+            const getEditorContainer = () => document.querySelector("#editor_wyh");
+            const getEditorContentElement = () => getEditorContainer()?.querySelector('.public-DraftEditor-content > div');
+            const getEditorImageSources = () => Array.from(getEditorContainer()?.querySelectorAll('img') || [])
+                .map(img => img.getAttribute('src') || '')
+                .filter(Boolean);
+
+            const hasUploadedEditorBodyImage = () => getEditorImageSources().some(isWangyiUploadedImage);
+
+            const waitForUploadedEditorBodyImage = async (timeout = 30000) => {
+                const startTime = Date.now();
+                while (Date.now() - startTime < timeout) {
+                    if (hasUploadedEditorBodyImage()) {
+                        return true;
+                    }
+                    await delay(500);
+                }
+                return hasUploadedEditorBodyImage();
+            };
+
+            const pasteHtmlIntoWangyiEditor = async (html, plainText = '') => {
+                await waitForElement("#editor_wyh", 10000);
+                const editorEle = getEditorContentElement();
+                if (!editorEle) {
+                    throw new Error('编辑器元素未找到');
+                }
+
+                editorEle.focus();
+                await delay(300);
+
+                const clipboardData = new DataTransfer();
+                clipboardData.setData('text/html', html);
+                clipboardData.setData('text/plain', plainText);
+
+                const pasteEvent = new ClipboardEvent('paste', {
+                    clipboardData,
+                    bubbles: true,
+                    cancelable: true
+                });
+
+                editorEle.dispatchEvent(pasteEvent);
+                await delay(1000);
+                return editorEle;
+            };
+
+            const uploadImageUrlToWangyi = async (imageUrl, fileNameSeed = 'image') => {
+                if (!imageUrl) {
+                    return null;
+                }
+
+                try {
+                    console.log('[网易号发布] 📤 上传正文图片到网易:', String(imageUrl).substring(0, 200));
+                    const {blob, contentType} = await downloadFile(imageUrl, 'image/png');
+                    const imageType = getImageType(imageUrl, contentType);
+                    const safeName = String(fileNameSeed || 'image').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'image';
+                    const file = new File([blob], `${safeName}.${imageType}`, {type: contentType || `image/${imageType}`});
+
+                    const formData = new FormData();
+                    formData.append('from', 'neteasecode_mp');
+                    formData.append('file', file);
+
+                    const url = new URL('https://mp.163.com/api/v3/upload/picupload');
+                    url.searchParams.append('wemediaId', userInfo.wemediaId);
+                    url.searchParams.append('realUserId', userInfo.loginUser);
+
+                    const response = await fetch(url.toString(), {
+                        method: 'POST',
+                        body: formData,
+                        credentials: 'include'
+                    });
+
+                    const result = await response.json();
+                    console.log('[网易号发布] 📥 正文图片上传结果:', result);
+
+                    if (result.code === 200 && result.data && result.data.url) {
+                        return result.data.url;
+                    }
+
+                    console.warn('[网易号发布] ⚠️ 正文图片上传未返回有效 URL');
+                    return null;
+                } catch (error) {
+                    console.warn('[网易号发布] ⚠️ 正文图片上传异常:', error?.message || error);
+                    return null;
+                }
+            };
+
+            const ensureEditorBodyImage = async (imageUrl, options = {}) => {
+                const timeout = options.timeout || 45000;
+                const force = options.force === true;
+
+                if (!force && hasUploadedEditorBodyImage()) {
+                    console.log('[网易号发布] ✅ 正文已存在网易已上传图片');
+                    return true;
+                }
+
+                if (!imageUrl) {
+                    console.warn('[网易号发布] ⚠️ 无封面图片，无法补正文图片');
+                    return false;
+                }
+
+                const uploadedUrl = await uploadImageUrlToWangyi(imageUrl, 'body-cover');
+                const imageForEditor = uploadedUrl || imageUrl;
+                const imgHtml = `<p><img src="${escapeHtmlAttr(imageForEditor)}" style="max-width: 100%; height: auto; margin-bottom: 16px;" /></p>`;
+
+                try {
+                    await pasteHtmlIntoWangyiEditor(imgHtml, '[图片]');
+                    console.log('[网易号发布] ✅ 已向正文补充封面图片');
+                } catch (error) {
+                    console.error('[网易号发布] ❌ 向正文补充封面图片失败:', error?.message || error);
+                    return false;
+                }
+
+                if (uploadedUrl) {
+                    const ready = await waitForUploadedEditorBodyImage(timeout);
+                    console.log('[网易号发布] 🔍 正文网易图片确认结果:', ready);
+                    return ready;
+                }
+
+                return getEditorImageSources().length > 0;
+            };
+
             setTimeout(async () => {
                 // 标题（带重试和验证）
                 try{
@@ -460,11 +591,14 @@
                     console.log('[网易号发布] ❌ 标题设置失败:', e);
                 }
 
+                let contentFillPromise = Promise.resolve(false);
                 try {
                     // 内容（带重试）
-                    setTimeout(async () => {
-                        try {
-                            await retryOperation(async () => {
+                    contentFillPromise = new Promise(resolve => {
+                        setTimeout(async () => {
+                            let contentFilled = false;
+                            try {
+                                await retryOperation(async () => {
                                 const editorIframeEle = await waitForElement("#editor_wyh", 10000);
                                 const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div')
                                 let htmlContent = dataObj.video.video.content;
@@ -472,6 +606,17 @@
                                 // 解析 HTML 中的图片，通过网易号 dumpproxy 接口上传
                                 const tempDiv = document.createElement('div');
                                 tempDiv.innerHTML = htmlContent;
+                                if (!tempDiv.querySelector('img') && pathImage) {
+                                    const coverParagraph = document.createElement('p');
+                                    const coverImg = document.createElement('img');
+                                    coverImg.src = pathImage;
+                                    coverImg.style.maxWidth = '100%';
+                                    coverImg.style.height = 'auto';
+                                    coverImg.style.marginBottom = '16px';
+                                    coverParagraph.appendChild(coverImg);
+                                    tempDiv.appendChild(coverParagraph);
+                                    console.log('[网易号发布] 📝 正文无图片，已预置封面作为正文图片');
+                                }
                                 const images = tempDiv.querySelectorAll('img');
 
                                 console.log('[网易号发布] 🖼️ 发现', images.length, '张图片需要处理');
@@ -489,51 +634,11 @@
                                     }
 
                                     try {
-                                        console.log('[网易号发布] 📤 上传图片:', originalSrc.substring(0, 200));
-                                        // 下载图片到本地转为二进制格式
-                                        const imgRes = await window.browserAPI.downloadImage(originalSrc);
-                                        console.log("🚀 ~  ~ imgRes: ", imgRes);
-                                        if (!imgRes.success) {
-                                            console.error('[网易号发布] ❌ 图片下载失败:', imgRes.error);
-                                            continue;
-                                        }
-                                        // 将 base64 转换为二进制 File 对象
-                                        const byteString = atob(imgRes.data);
-                                        const ab = new ArrayBuffer(byteString.length);
-                                        const ia = new Uint8Array(ab);
-                                        for (let i = 0; i < byteString.length; i++) {
-                                            ia[i] = byteString.charCodeAt(i);
-                                        }
-
-                                        // 创建 File 对象（直接用 ArrayBuffer，不用 Blob 包装）
-                                        const imageType = getImageType(originalSrc);
-                                        const fileName = `image.${imageType}`;
-                                        const file = new File([ab], fileName, { type: imgRes.contentType });
-                                        console.log("🚀 ~  ~ 文件信息 - 名称:", fileName, "类型:", imgRes.contentType, "大小:", file.size);
-
-                                        // 调用网易号图片代理接口
-                                        const formData = new FormData();
-                                        formData.append('from', 'neteasecode_mp');
-                                        formData.append('file', file);
-
-                                        // 使用 URL 和 URLSearchParams 自动处理编码
-                                        const url = new URL('https://mp.163.com/api/v3/upload/picupload');
-                                        url.searchParams.append('wemediaId', userInfo.wemediaId);
-                                        url.searchParams.append('realUserId', userInfo.loginUser);
-
-                                        const response = await fetch(url.toString(), {
-                                            method: 'POST',
-                                            body: formData,
-                                            credentials: 'include' // 带上 cookies
-                                        });
-
-                                        const result = await response.json();
-                                        console.log('[网易号发布] 📥 上传结果:', result);
-
-                                        if (result.code === 200 && result.data && result.data.url) {
+                                        const uploadedUrl = await uploadImageUrlToWangyi(originalSrc, 'content-image');
+                                        if (uploadedUrl) {
                                             // 替换为网易号服务器的图片地址
-                                            img.src = result.data.url;
-                                            console.log('[网易号发布] ✅ 图片替换成功:', result.data.url.substring(0, 200));
+                                            img.src = uploadedUrl;
+                                            console.log('[网易号发布] ✅ 图片替换成功:', uploadedUrl.substring(0, 200));
                                         } else {
                                             console.log('[网易号发布] ⚠️ 图片上传失败，保留原地址');
                                         }
@@ -588,6 +693,10 @@
                                                 node.removeChild(child);
                                             }
                                         } else if (child.nodeType === 1) { // 元素节点
+                                            // 图片本身也算正文内容，不能按“无文本空节点”删除
+                                            if (child.matches?.('img') || child.querySelector?.('img')) {
+                                                return true;
+                                            }
                                             // 先检查这个节点是否有非空文本
                                             if (child.textContent.trim()) {
                                                 // 有内容，递归处理这个节点
@@ -655,13 +764,24 @@
                                 await new Promise(resolve => setTimeout(resolve, 1000));
 
                                 console.log('[网易号发布] ✅ 内容填写完成');
-                            }, 3, 1000);
-                        } catch (e) {
-                            console.log('[网易号发布] ❌ 内容填写失败:', e.message);
-                        }
-                    }, 200);
+                                contentFilled = true;
+                                }, 3, 1000);
+                            } catch (e) {
+                                console.log('[网易号发布] ❌ 内容填写失败:', e.message);
+                            } finally {
+                                resolve(contentFilled);
+                            }
+                        }, 200);
+                    });
                 } catch (e) {
                     console.log('[网易号发布] ❌ 内容填写失败:', e.message)
+                }
+
+                const contentFilled = await contentFillPromise;
+                console.log(`[网易号发布] 📝 正文填写任务完成，结果: ${contentFilled ? '成功' : '失败'}`);
+                const bodyImageReadyAfterContent = await ensureEditorBodyImage(pathImage, {timeout: 45000});
+                if (!bodyImageReadyAfterContent) {
+                    console.warn('[网易号发布] ⚠️ 发布前正文图片保障未确认成功，后续仍保留平台错误兜底');
                 }
 
                 // 设置封面为单图模式
@@ -688,8 +808,11 @@
                         '正在上传', '加载中', '处理中', '成功', '发布成功', '提交成功', '上传成功',
                         '设置区', '内容区', '封面区', '发文前检测'
                     ];
+                    let suppressBodyImageErrorUntil = 0;
+                    const isBodyImageRequiredError = (text = '') => String(text).includes('正文中至少上传一张图片');
                     const shouldIgnoreText = (text) => {
                         if (!text) return true;
+                        if (isBodyImageRequiredError(text) && Date.now() < suppressBodyImageErrorUntil) return true;
                         return ignoredTexts.some(ignored => text.includes(ignored));
                     };
 
@@ -812,42 +935,8 @@
                                                 if (dialogTextEle) {
                                                     const dialogText = dialogTextEle.textContent.trim();
                                                     if (dialogText.includes('正文中至少上传一张图片')) {
-                                                        // 需要在正文中插入图片
-                                                        console.log('[网易号发布] 📝 检测到需要在正文中插入图片');
-
-                                                        try {
-                                                            // 等待编辑器加载
-                                                            const editorIframeEle = await waitForElement("#editor_wyh", 5000);
-                                                            if (editorIframeEle) {
-                                                                const editorEle = editorIframeEle.querySelector('.public-DraftEditor-content > div');
-                                                                if (editorEle && pathImage) {
-                                                                    // 使用和内容插入相同的粘贴事件方式
-                                                                    const imgHtml = `<img src="${pathImage}" style="max-width: 100%; height: auto; margin-bottom: 16px;" />`;
-
-                                                                    // 让编辑器获得焦点
-                                                                    editorEle.focus();
-
-                                                                    // 通过粘贴事件插入图片HTML
-                                                                    const pasteEvent = new ClipboardEvent('paste', {
-                                                                        clipboardData: new DataTransfer(),
-                                                                        bubbles: true,
-                                                                        cancelable: true
-                                                                    });
-
-                                                                    pasteEvent.clipboardData.setData('text/html', imgHtml);
-                                                                    pasteEvent.clipboardData.setData('text/plain', '[图片]');
-
-                                                                    editorEle.dispatchEvent(pasteEvent);
-
-                                                                    // 等待编辑器处理
-                                                                    await new Promise(resolve => setTimeout(resolve, 500));
-
-                                                                    console.log('[网易号发布] ✅ 已在正文中插入封面图片');
-                                                                }
-                                                            }
-                                                        } catch (e) {
-                                                            console.error('[网易号发布] ❌ 在正文中插入图片失败:', e);
-                                                        }
+                                                        console.log('[网易号发布] 📝 检测到正文图片要求，强制补充封面图片');
+                                                        await ensureEditorBodyImage(pathImage, {force: true, timeout: 60000});
                                                     }
                                                 }
                                                 const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, tipDialogEle);
@@ -1086,6 +1175,10 @@
                                             console.log('[网易号发布] ✅ 图片上传成功');
 
                                             await delay(5000); // 等待渲染完成
+                                            const bodyImageReadyBeforePublish = await ensureEditorBodyImage(pathImage, {timeout: 45000});
+                                            if (!bodyImageReadyBeforePublish) {
+                                                console.warn('[网易号发布] ⚠️ 点击发布前仍未确认正文图片，继续依赖平台错误兜底');
+                                            }
 
                                             const publishBtns = document.querySelectorAll(".post-footer__container-right .ne-button");
                                             let publishBtn = null;
@@ -1220,7 +1313,7 @@
                                                         const errorDialogEle = await waitForElement('.ne-modal-body', 5000, 1000);
                                                         console.log("🚀 ~  ~ errorDialogEle: ", errorDialogEle);
                                                         if (errorDialogEle) {
-                                                            publishDialogErrorMsg = errorDialogEle.querySelector('.custom-confirm-content').textContent.trim();
+                                                            publishDialogErrorMsg = errorDialogEle.querySelector('.custom-confirm-content')?.textContent?.trim() || '';
                                                             const tipBtnEle = await waitForElement('.ne-button-color-primary', 5000, 1000, errorDialogEle);
                                                             tipBtnEle.click()
                                                         }
@@ -1232,8 +1325,46 @@
                                                 // 检查是否有错误信息
                                                 const publishErrorMsg = getLatestError();
                                                 if (publishErrorMsg || publishDialogErrorMsg) {
-                                                    const errorMsg = publishErrorMsg || publishDialogErrorMsg;
+                                                    let errorMsg = publishErrorMsg || publishDialogErrorMsg;
                                                     console.log('[网易号发布] ❌ 检测到发布错误:', errorMsg);
+
+                                                    if (isBodyImageRequiredError(errorMsg)) {
+                                                        console.log('[网易号发布] 🛠️ 发布阶段仍提示正文无图，补图后重试发布一次');
+                                                        const repaired = await ensureEditorBodyImage(pathImage, {force: true, timeout: 60000});
+                                                        if (repaired) {
+                                                            capturedErrors.length = 0;
+                                                            publishDialogErrorMsg = null;
+                                                            suppressBodyImageErrorUntil = Date.now() + 8000;
+                                                            await delay(1500);
+                                                            publishBtn.dispatchEvent(clickEvent);
+                                                            console.log('[网易号发布] 🖱️ 正文补图后已重试点击发布按钮');
+                                                            await delay(9000);
+                                                            suppressBodyImageErrorUntil = 0;
+
+                                                            let retryDialogErrorMsg = null;
+                                                            try {
+                                                                const retryErrorDialogEle = await waitForElement('.ne-modal-body', 3000, 500);
+                                                                retryDialogErrorMsg = retryErrorDialogEle.querySelector('.custom-confirm-content')?.textContent?.trim() || '';
+                                                                const retryTipBtnEle = await waitForElement('.ne-button-color-primary', 3000, 500, retryErrorDialogEle);
+                                                                retryTipBtnEle.click();
+                                                            } catch (retryDialogError) {
+                                                                console.log('[网易号发布] ℹ️ 重试发布后未检测到弹窗错误');
+                                                            }
+
+                                                            const retryErrorMsg = getLatestError();
+                                                            if (!retryErrorMsg && !retryDialogErrorMsg) {
+                                                                console.log('[网易号发布] ✅ 正文补图重试后未检测到错误，等待页面跳转');
+                                                                stopErrorListener();
+                                                                return;
+                                                            }
+
+                                                            errorMsg = retryErrorMsg || retryDialogErrorMsg;
+                                                            console.log('[网易号发布] ❌ 正文补图重试后仍检测到错误:', errorMsg);
+                                                        } else {
+                                                            console.warn('[网易号发布] ⚠️ 正文补图失败，按原错误上报');
+                                                        }
+                                                    }
+
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
@@ -1380,9 +1511,36 @@
     }
 })(); // IIFE 结束
 
-function getImageType(src){
-    const imageType = src.split(';')[0].split('/')[1];
-    return imageType;
+function getImageType(src, fallbackType = 'image/png'){
+    const value = String(src || '');
+    const fallback = String(fallbackType || 'image/png').split(';')[0];
+    let imageType = '';
+
+    if (value.startsWith('data:')) {
+        imageType = value.split(';')[0].split('/')[1] || '';
+    }
+
+    if (!imageType) {
+        try {
+            const pathname = new URL(value, window.location.href).pathname;
+            const match = pathname.match(/\.([a-zA-Z0-9]+)$/);
+            if (match) {
+                imageType = match[1];
+            }
+        } catch (error) {
+            const match = value.match(/\.([a-zA-Z0-9]+)(?:[?#].*)?$/);
+            if (match) {
+                imageType = match[1];
+            }
+        }
+    }
+
+    if (!imageType && fallback.includes('/')) {
+        imageType = fallback.split('/')[1] || '';
+    }
+
+    imageType = imageType.toLowerCase().replace('jpeg', 'jpg').replace(/[^a-z0-9]/g, '');
+    return imageType || 'png';
 }
 
 /**

@@ -480,6 +480,63 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
         }
     };
 
+    // 在普通 DOM、open Shadow DOM 和同源 iframe 中查找元素。
+    // 视频号发布页把真实表单放在 wujie-app.shadowRoot 内，普通 querySelector 会误判为空。
+    window.findElementInPageOrShadow = function (selector, root = document, maxDepth = 5) {
+        if (!selector || !root || maxDepth < 0) return null;
+
+        const visited = new Set();
+        const elementNodeType = typeof Node !== 'undefined' ? Node.ELEMENT_NODE : 1;
+
+        function safeQuery(scope) {
+            try {
+                return scope && typeof scope.querySelector === 'function' ? scope.querySelector(selector) : null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function getAllElements(scope) {
+            try {
+                return scope && typeof scope.querySelectorAll === 'function' ? Array.from(scope.querySelectorAll('*')) : [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        function search(scope, depth) {
+            if (!scope || depth > maxDepth || visited.has(scope)) return null;
+            visited.add(scope);
+
+            const directHit = safeQuery(scope);
+            if (directHit) return directHit;
+
+            const elements = getAllElements(scope);
+            for (const element of elements) {
+                if (!element || element.nodeType !== elementNodeType) continue;
+
+                if (element.shadowRoot) {
+                    const shadowHit = search(element.shadowRoot, depth + 1);
+                    if (shadowHit) return shadowHit;
+                }
+
+                if (String(element.tagName || '').toUpperCase() === 'IFRAME') {
+                    try {
+                        const iframeDoc = element.contentDocument || element.contentWindow?.document;
+                        const iframeHit = search(iframeDoc, depth + 1);
+                        if (iframeHit) return iframeHit;
+                    } catch (_) {
+                        // 跨域 iframe 无法访问，跳过。
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        return search(root, 0);
+    };
+
     /**
      * 白屏检测和自动恢复（针对扫码登录后跳转的情况）
      * @param {string} platform - 平台名称（如 '视频号'、'小红书'）
@@ -543,26 +600,11 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                 const selectorResults = {};
                 if (keySelectors.length > 0) {
                     for (const selector of keySelectors) {
-                        // 先在普通 DOM 中查找
-                        const directHit = document.querySelector(selector);
-                        if (directHit) {
-                            selectorResults[selector] = 'direct-match';
-                            if (!hasKeyElement) {
-                                hasKeyElement = true;
-                                hitSelector = selector;
-                            }
-                            continue;
-                        }
-
-                        // 🔑 如果是 wujie-app，检查 shadowRoot 是否真正有内容
-                        // 原问题：wujie-app 元素存在 + shadowRoot 存在就认为正常，但微前端子应用加载中/失败时
-                        // shadowRoot 存在但内部为空（或仅有 loading 骨架），导致"白屏但检测不触发 reload"
-                        // 修复：同时要求 shadowRoot.innerHTML 长度 > 300 或内部有可见元素
+                        // wujie-app 只是微前端容器，必须先验证 shadowRoot 内部是否有真实内容。
                         if (selector === 'wujie-app') {
                             const wujieApp = document.querySelector('wujie-app');
                             if (wujieApp && wujieApp.shadowRoot) {
                                 const shadowHtml = wujieApp.shadowRoot.innerHTML || '';
-                                // 内部是否有实际渲染的子节点（body/div/form 等常见容器）
                                 const hasRealContent = !!(
                                     wujieApp.shadowRoot.querySelector('body') ||
                                     wujieApp.shadowRoot.querySelector('div') ||
@@ -574,8 +616,34 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                                     hasKeyElement = true;
                                     hitSelector = selector;
                                 }
-                                continue;
+                            } else {
+                                selectorResults[selector] = wujieApp ? 'host-without-shadow-root' : 'miss';
                             }
+                            continue;
+                        }
+
+                        // 先在普通 DOM 中查找
+                        const directHit = document.querySelector(selector);
+                        if (directHit) {
+                            selectorResults[selector] = 'direct-match';
+                            if (!hasKeyElement) {
+                                hasKeyElement = true;
+                                hitSelector = selector;
+                            }
+                            continue;
+                        }
+
+                        // 再查 open Shadow DOM / 同源 iframe，避免视频号 wujie 子应用被误判为空白页。
+                        const nestedHit = typeof window.findElementInPageOrShadow === 'function'
+                            ? window.findElementInPageOrShadow(selector)
+                            : null;
+                        if (nestedHit) {
+                            selectorResults[selector] = 'nested-match';
+                            if (!hasKeyElement) {
+                                hasKeyElement = true;
+                                hitSelector = selector;
+                            }
+                            continue;
                         }
                         selectorResults[selector] = 'miss';
                     }
@@ -3286,7 +3354,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     };
 
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, findElementInPageOrShadow, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -3351,6 +3419,7 @@ if (typeof uploadImage === "undefined") window.uploadImage && (uploadImage = win
 if (typeof setNativeValue === "undefined") window.setNativeValue && (setNativeValue = window.setNativeValue);
 if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);
 if (typeof deepShadowSearch === "undefined") window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
+if (typeof findElementInPageOrShadow === "undefined") window.findElementInPageOrShadow && (findElementInPageOrShadow = window.findElementInPageOrShadow);
 if (typeof sendStatistics === "undefined") window.sendStatistics && (sendStatistics = window.sendStatistics);
 if (typeof sendStatisticsError === "undefined") window.sendStatisticsError && (sendStatisticsError = window.sendStatisticsError);
 if (typeof buildStatisticsPayload === "undefined") window.buildStatisticsPayload && (buildStatisticsPayload = window.buildStatisticsPayload);

@@ -25,18 +25,91 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
     console.log('═══════════════════════════════════════');
 
     // 🔑 【最优先】检测是否是发布成功后的跳转
-    // 通过 localStorage 中的标志来区分：发布页点击发布按钮前会设置这个标志
+    // 发布页点击发布按钮前会写入：
+    // 1. globalData: PUBLISH_SUCCESS_DATA_${windowId}（更可靠，不受页面 storage 清理影响）
+    // 2. localStorage: sohu_publish_success_data（兼容旧版本）
     const PUBLISH_SUCCESS_KEY = 'sohu_publish_success_data';
+    let currentWindowId = null;
+    let publishSuccessData = null;
+    let publishSuccessSource = '';
+
+    const readLocalPublishSuccessData = (keys) => {
+        for (const key of keys.filter(Boolean)) {
+            const localData = localStorage.getItem(key);
+            if (!localData) {
+                continue;
+            }
+
+            try {
+                publishSuccessData = JSON.parse(localData);
+                publishSuccessSource = `localStorage:${key}`;
+                console.log('[搜狐号重定向] 📦 从 localStorage 读取到发布成功标志:', key);
+                return true;
+            } catch (parseError) {
+                console.warn('[搜狐号重定向] ⚠️ 发布成功标志解析失败:', key, parseError.message);
+            }
+        }
+
+        return false;
+    };
+
     try {
-        const publishSuccessData = localStorage.getItem(PUBLISH_SUCCESS_KEY);
+        readLocalPublishSuccessData(['PUBLISH_SUCCESS_DATA', PUBLISH_SUCCESS_KEY]);
+
+        if (!publishSuccessData) {
+            try {
+                if (window.browserAPI && window.browserAPI.getWindowId) {
+                    currentWindowId = await window.browserAPI.getWindowId();
+                    console.log('[搜狐号重定向] 当前窗口 ID:', currentWindowId);
+                }
+            } catch (e) {
+                console.warn('[搜狐号重定向] ⚠️ 获取窗口 ID 失败:', e.message);
+            }
+        }
+
+        if (currentWindowId && window.browserAPI && window.browserAPI.getGlobalData) {
+            const globalDataKey = `PUBLISH_SUCCESS_DATA_${currentWindowId}`;
+            publishSuccessData = await window.browserAPI.getGlobalData(globalDataKey);
+            if (publishSuccessData) {
+                publishSuccessSource = `globalData:${globalDataKey}`;
+                console.log('[搜狐号重定向] 📦 从 globalData 读取到发布成功标志');
+            }
+        }
+
+        if (!publishSuccessData) {
+            readLocalPublishSuccessData([currentWindowId ? `PUBLISH_SUCCESS_DATA_${currentWindowId}` : '']);
+        }
+
         if (publishSuccessData) {
             console.log('[搜狐号重定向] 🎉 检测到发布成功标志，准备上报成功...');
-            const data = JSON.parse(publishSuccessData);
+            const data = typeof publishSuccessData === 'string' ? JSON.parse(publishSuccessData) : publishSuccessData;
             const publishId = data.publishId;
+            console.log('[搜狐号重定向] 📋 成功标志来源:', publishSuccessSource);
+            console.log('[搜狐号重定向] 📋 publishId:', publishId || '无');
 
-            // 立即清除标志，防止重复上报
-            localStorage.removeItem(PUBLISH_SUCCESS_KEY);
-            console.log('[搜狐号重定向] 🧹 已清除发布成功标志');
+            if (!currentWindowId && window.browserAPI && window.browserAPI.getWindowId) {
+                try {
+                    currentWindowId = await window.browserAPI.getWindowId();
+                    console.log('[搜狐号重定向] 当前窗口 ID（成功清理前补取）:', currentWindowId);
+                } catch (e) {
+                    console.warn('[搜狐号重定向] ⚠️ 成功清理前补取窗口 ID 失败:', e.message);
+                }
+            }
+
+            // 立即清除标志，防止重复上报；清理失败不应阻断成功上报和关闭窗口
+            try {
+                localStorage.removeItem(PUBLISH_SUCCESS_KEY);
+                localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+                if (currentWindowId) {
+                    localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                    if (window.browserAPI && window.browserAPI.removeGlobalData) {
+                        await window.browserAPI.removeGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`);
+                    }
+                }
+                console.log('[搜狐号重定向] 🧹 已清除发布成功标志');
+            } catch (cleanupError) {
+                console.warn('[搜狐号重定向] ⚠️ 清除发布成功标志失败，继续上报成功:', cleanupError.message);
+            }
 
             if (publishId && typeof sendStatistics === 'function') {
                 console.log('[搜狐号重定向] 📤 调用 sendStatistics, publishId:', publishId);
@@ -68,7 +141,13 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
 
             // 上报完成后关闭窗口
             console.log('[搜狐号重定向] 🚪 准备关闭窗口...');
-            await closeWindowWithMessage('发布成功，刷新数据', 1000);
+            if (typeof closeWindowWithMessage === 'function') {
+                await closeWindowWithMessage('发布成功，刷新数据', 1000);
+            } else if (typeof sendMessageToParent === 'function') {
+                sendMessageToParent('发布成功，刷新数据');
+            } else {
+                console.error('[搜狐号重定向] ❌ closeWindowWithMessage/sendMessageToParent 均不可用，无法通知首页发布成功');
+            }
             return; // 不再执行后续逻辑
         } else {
             console.log('[搜狐号重定向] ℹ️ 没有发布成功标志，继续正常流程');

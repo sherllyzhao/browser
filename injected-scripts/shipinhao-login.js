@@ -19,6 +19,15 @@
   ];
   let hasRefreshed = false;
 
+  function isShipinhaoLoginPage() {
+    try {
+      return window.location.hostname === 'channels.weixin.qq.com'
+        && window.location.pathname.includes('/login.html');
+    } catch (e) {
+      return window.location.href.includes('channels.weixin.qq.com/login.html');
+    }
+  }
+
   function isTruthyFlagValue(value) {
     if (value === true) return true;
     if (value === false || value == null) return false;
@@ -74,14 +83,21 @@
   function checkAndRefreshIfNeeded() {
     // 检查是否已经刷新过
     const refreshed = safeGetStorageValue(sessionStorage, REFRESH_FLAG_KEY, 'sessionStorage');
+    const explicitReset = hasExplicitLoginResetRequest();
+    // 线上止血：旧浏览器没有主进程登录页拦截能力，掉登录后会把旧 wxuin/sessionid
+    // 带进扫码页，导致新旧 cookie 并存后扫码失败。登录页首次进入时自动清一次。
+    const autoResetOnLoginPage = isShipinhaoLoginPage() && !refreshed;
 
-    if (!refreshed && !hasExplicitLoginResetRequest()) {
+    if (!refreshed && !explicitReset && !autoResetOnLoginPage) {
       console.log('[Shipinhao Login] 未检测到显式重置标记，跳过清缓存和强制刷新，避免打断扫码授权');
       return false;
     }
 
     if (!refreshed && !hasRefreshed) {
-      console.log('[Shipinhao Login] 检测到显式重置标记，准备清空缓存并刷新页面');
+      console.log('[Shipinhao Login] 检测到登录重置需求，准备清空缓存并刷新页面', {
+        explicitReset,
+        autoResetOnLoginPage
+      });
       hasRefreshed = true;
 
       // 标记已刷新，防止重复刷新

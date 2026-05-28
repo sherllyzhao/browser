@@ -56,17 +56,15 @@ let hasProcessed = false;
   console.log(`${__LOG_PREFIX__}   - window.retryOperation: ${typeof window.retryOperation === 'function' ? '✅' : '❌'}`);
 
   // ===========================
-  // 🔑 立即显示 loading，防止白屏
+  // 视频号发布页不主动盖遮罩
   // ===========================
-  if (typeof window.hidePageAndShowMask === 'function') {
-    try {
-      window.hidePageAndShowMask();
-      console.log(`${__LOG_PREFIX__} 📍 [step 1/4] hidePageAndShowMask 已调用，显示 loading 防白屏`);
-    } catch (e) {
-      console.error(`${__LOG_PREFIX__} ❌ [step 1/4] hidePageAndShowMask 调用失败:`, e);
+  try {
+    if (typeof window.showPageAndHideMask === 'function') {
+      window.showPageAndHideMask();
     }
-  } else {
-    console.warn(`${__LOG_PREFIX__} ⚠️ [step 1/4] hidePageAndShowMask 不可用，跳过 loading 显示`);
+    console.log(`${__LOG_PREFIX__} 📍 [step 1/4] 视频号发布页保持可见，避免上传中被白色遮罩盖住`);
+  } catch (e) {
+    console.error(`${__LOG_PREFIX__} ❌ [step 1/4] 清理遮罩失败:`, e);
   }
 
   // ===========================
@@ -85,57 +83,69 @@ let hasProcessed = false;
   window.__SHIPINHAO_SCRIPT_LOADED__ = true;
   window.__SHIPINHAO_SCRIPT_LOAD_TIME__ = new Date().toLocaleString();
 
-  // ===========================
-  // 🔑 视频号白屏检测和自动恢复（使用公共函数）
-  // ===========================
-  if (typeof window.checkBlankPageAndReload === 'function') {
-    console.log(`${__LOG_PREFIX__} 🛡 [step 3/4] 启动白屏检测`);
-    // 快速快照 wujie-app 当前状态
+  const logShipinhaoPublishSnapshot = (tag) => {
     const currentWujie = document.querySelector('wujie-app');
-    console.log(`${__LOG_PREFIX__}   - 当前 wujie-app 存在: ${!!currentWujie}`);
-    if (currentWujie) {
-      console.log(`${__LOG_PREFIX__}   - 当前 wujie-app.shadowRoot: ${!!currentWujie.shadowRoot}`);
-      if (currentWujie.shadowRoot) {
-        console.log(`${__LOG_PREFIX__}   - 当前 shadowRoot.innerHTML 长度: ${currentWujie.shadowRoot.innerHTML.length}`);
-      }
-    }
-    // 首检：延迟 8s（给 wujie 微前端 + 网络预留更多时间，原 5s 对慢网络不够），最多 5 次重试
-    window.checkBlankPageAndReload('视频号发布', [
-      'wujie-app',
+    const shadowRoot = currentWujie && currentWujie.shadowRoot ? currentWujie.shadowRoot : null;
+    const realSelectors = [
       '.post-short-title-wrap',
       '.input-editor',
       '.form-btns',
-      '.weui-desktop-btn',  // 发布按钮
-      '.post-time-wrap'     // 发布时间设置区域
-    ], 8000, 5);
+      '.weui-desktop-btn',
+      '.post-time-wrap',
+      '.ant-progress-text',
+      '.ant-progress',
+      '.upload-wrapper',
+      '#fullScreenVideo'
+    ];
+    const hit = realSelectors.find(s => {
+      if (document.querySelector(s)) return true;
+      if (shadowRoot && shadowRoot.querySelector(s)) return true;
+      return false;
+    });
 
-    // 二检：18s 后再复查一次，仅检测发布页真实 UI 元素
-    // 场景：首检时 wujie-app 已有容器让首检通过，但 18s 后子应用仍未加载出真实表单 UI
-    // 此时进入「视觉白屏但检测认为正常」的陷阱，需要二检兜底
-    setTimeout(() => {
-      try {
-        if (typeof window.checkBlankPageAndReload !== 'function') return;
-        const realSelectors = [
-          '.post-short-title-wrap',
-          '.input-editor',
-          '.form-btns',
-          '.weui-desktop-btn',
-          '.post-time-wrap'
-        ];
-        const hit = realSelectors.find(s => document.querySelector(s));
-        console.log(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 发布 UI 真实元素命中: ${hit || '无'}`);
-        if (!hit) {
-          console.warn(`${__LOG_PREFIX__} 🛡 [二检] 未发现发布 UI 真实元素，触发白屏兜底检测...`);
-          // 传 realSelectors，不再信任 wujie-app 作为依据；checkDelay=0 立即检查
-          window.checkBlankPageAndReload('视频号发布二检', realSelectors, 0, 5);
-        }
-      } catch (e) {
-        console.error(`${__LOG_PREFIX__} 🛡 [二检] 执行异常:`, e);
+    console.log(`${__LOG_PREFIX__} 🛡 [${tag}] 发布页快照:`, {
+      url: window.location.href,
+      readyState: document.readyState,
+      wujieApp: !!currentWujie,
+      shadowRoot: !!shadowRoot,
+      shadowChildren: shadowRoot ? shadowRoot.childElementCount : 0,
+      hit: hit || '无'
+    });
+  };
+
+  // ===========================
+  // 🔑 视频号白屏诊断（只记录，不自动刷新）
+  // ===========================
+  console.log(`${__LOG_PREFIX__} 🛡 [step 3/4] 启动白屏诊断（禁用自动刷新）`);
+  try {
+    // 快速快照 wujie-app 当前状态
+    const currentWujie = document.querySelector('wujie-app');
+    if (currentWujie) {
+      console.log(`${__LOG_PREFIX__}   - 当前 wujie-app.shadowRoot: ${!!currentWujie.shadowRoot}`);
+      if (currentWujie.shadowRoot) {
+        console.log(`${__LOG_PREFIX__}   - 当前 shadowRoot 子元素数量: ${currentWujie.shadowRoot.childElementCount || 0}`);
       }
-    }, 18000);
-  } else {
-    console.warn(`${__LOG_PREFIX__} ⚠️ [step 3/4] checkBlankPageAndReload 不可用，跳过白屏检测`);
+    }
+    logShipinhaoPublishSnapshot('首检 T+0s');
+  } catch (e) {
+    console.error(`${__LOG_PREFIX__} 🛡 [首检] 执行异常:`, e);
   }
+
+  setTimeout(() => {
+    try {
+      logShipinhaoPublishSnapshot('复检 T+8s');
+    } catch (e) {
+      console.error(`${__LOG_PREFIX__} 🛡 [复检 T+8s] 执行异常:`, e);
+    }
+  }, 8000);
+
+  setTimeout(() => {
+    try {
+      logShipinhaoPublishSnapshot('二检 T+18s');
+    } catch (e) {
+      console.error(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 执行异常:`, e);
+    }
+  }, 18000);
 
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
@@ -182,6 +192,73 @@ let hasProcessed = false;
   // 获取窗口专属的 localStorage key
   const getPublishDataKey = () => `SHIPINHAO_PUBLISH_DATA_${currentWindowId || 'default'}`;
   const getPublishUrlKey = () => `SHIPINHAO_PUBLISH_URL_${currentWindowId || 'default'}`;
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  async function waitForUploadCompleteBeforeForm(tag = '上传后填表前') {
+    const timeoutMs = 5 * 60 * 1000;
+    const startedAt = Date.now();
+    let lastProgress = '';
+    let emptySnapshotCount = 0;
+
+    console.log(`[视频号发布] ⏳ ${tag}: 等待视频上传完成后再填写表单，避免上传中操作导致页面白屏`);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const wujieApp = document.querySelector('wujie-app');
+      const shadowRoot = wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
+      const searchRoot = shadowRoot || (!wujieApp ? document : null);
+
+      if (!searchRoot) {
+        console.log(`[视频号发布] ⏳ ${tag}: wujie shadowRoot 未就绪，继续等待`);
+        await sleep(2000);
+        continue;
+      }
+
+      const errorTip = searchRoot.querySelector(".upload-error, .error-tip, [class*='error']");
+      const errorText = (errorTip && errorTip.textContent || '').trim();
+      if (errorText && (errorText.includes('失败') || errorText.includes('错误') || errorText.toLowerCase().includes('error'))) {
+        throw new Error('视频上传失败: ' + errorText.substring(0, 80));
+      }
+
+      const progressText = searchRoot.querySelector('.ant-progress-text');
+      const progress = (progressText && progressText.textContent || '').trim();
+      const video = searchRoot.querySelector('#fullScreenVideo');
+      const hasVideo = !!(video && video.src);
+
+      if (progress && progress !== lastProgress) {
+        lastProgress = progress;
+        emptySnapshotCount = 0;
+        console.log(`[视频号发布] 📊 ${tag}: 当前上传进度 ${progress}`);
+      }
+
+      if (progress === '100%' || progress === '100') {
+        console.log(`[视频号发布] ✅ ${tag}: 上传进度 100%，继续填写表单`);
+        await sleep(1000);
+        return true;
+      }
+
+      if (!progress && hasVideo) {
+        console.log(`[视频号发布] ✅ ${tag}: 进度条已消失且视频元素存在，继续填写表单`);
+        await sleep(1000);
+        return true;
+      }
+
+      if (!progress && !hasVideo) {
+        emptySnapshotCount++;
+        if (emptySnapshotCount === 1 || emptySnapshotCount % 10 === 0) {
+          console.log(`[视频号发布] ⏳ ${tag}: 暂未看到进度/视频，继续等待`, {
+            shadowChildren: shadowRoot ? shadowRoot.childElementCount || 0 : 0,
+            root: shadowRoot ? 'shadowRoot' : 'document',
+            elapsed: Date.now() - startedAt
+          });
+        }
+      }
+
+      await sleep(2000);
+    }
+
+    throw new Error(`${tag}: 等待视频上传完成超时`);
+  }
 
   console.log('[视频号发布] URL 参数:', {
     companyId,
@@ -421,6 +498,7 @@ let hasProcessed = false;
                     } else {
                       // 执行文件上传
                       await uploadVideo(messageData, wujieApp.shadowRoot);
+                      await waitForUploadCompleteBeforeForm('消息发布流程');
                     }
                   }
                 } catch (error) {
@@ -438,6 +516,7 @@ let hasProcessed = false;
                 // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
                 try {
                   await uploadVideo(messageData);
+                  await waitForUploadCompleteBeforeForm('消息发布流程');
                 } catch (error) {
                   console.log('[视频号发布] ❌ 视频上传失败:', error);
                   const publishId = messageData?.video?.dyPlatform?.id;
@@ -561,6 +640,7 @@ let hasProcessed = false;
             }
             if (!videoAlreadyUploaded) {
               await uploadVideo(publishData, wujieApp.shadowRoot);
+              await waitForUploadCompleteBeforeForm('全局数据恢复流程');
             }
           } catch (error) {
             console.log('[视频号发布] ❌ 视频上传失败:', error);
@@ -575,6 +655,7 @@ let hasProcessed = false;
         } else {
           try {
             await uploadVideo(publishData);
+            await waitForUploadCompleteBeforeForm('全局数据恢复流程');
           } catch (error) {
             console.log('[视频号发布] ❌ 视频上传失败:', error);
             const publishId = publishData?.video?.dyPlatform?.id;
@@ -658,6 +739,7 @@ let hasProcessed = false;
             }
             if (!videoAlreadyUploaded) {
               await uploadVideo(messageData, wujieApp.shadowRoot);
+              await waitForUploadCompleteBeforeForm('localStorage恢复流程');
             }
           } catch (error) {
             // 视频下载/上传失败，调用失败接口
@@ -674,6 +756,7 @@ let hasProcessed = false;
           // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
           try {
             await uploadVideo(messageData);
+            await waitForUploadCompleteBeforeForm('localStorage恢复流程');
           } catch (error) {
             console.log('[视频号发布] ❌ 视频上传失败:', error);
             const publishId = messageData?.video?.dyPlatform?.id;

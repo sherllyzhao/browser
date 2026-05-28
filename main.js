@@ -10,21 +10,35 @@ const config = require('./domain-config');
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
 
-// Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-// 在这些旧系统上禁用硬件加速，避免 GPU 渲染失败导致的白屏
-// Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
-if (process.platform === 'win32') {
+function getLegacyWindowsGpuWorkaroundInfo() {
+  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
+  // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
+  if (process.platform !== 'win32') {
+    return { shouldDisableHardwareAcceleration: false, release: '' };
+  }
+
   try {
     const release = os.release();
-    const major = parseInt(release.split('.')[0], 10);
-    if (major < 10) {
-      console.log(`[启动] 检测到旧版 Windows (${release})，禁用硬件加速以规避白屏问题`);
-      app.disableHardwareAcceleration();
-      app.commandLine.appendSwitch('disable-gpu-compositing');
-    }
+    const major = Number.parseInt(release.split('.')[0], 10);
+    return {
+      shouldDisableHardwareAcceleration: Number.isInteger(major) && major < 10,
+      release
+    };
   } catch (e) {
     console.error('[启动] Windows 版本检测失败:', e);
+    return { shouldDisableHardwareAcceleration: false, release: '' };
   }
+}
+
+const legacyWindowsGpuWorkaround = getLegacyWindowsGpuWorkaroundInfo();
+const shouldDisableHardwareAcceleration = legacyWindowsGpuWorkaround.shouldDisableHardwareAcceleration;
+
+if (shouldDisableHardwareAcceleration) {
+  console.log(`[启动] 检测到旧版 Windows (${legacyWindowsGpuWorkaround.release})，禁用硬件加速以规避白屏问题`);
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+} else {
+  console.log('[启动] 当前系统保留 GPU 硬件加速');
 }
 
 let mainWindow;
@@ -85,6 +99,482 @@ function installBrokenPipeGuard(stream, streamName) {
 
 installBrokenPipeGuard(process.stdout, 'stdout');
 installBrokenPipeGuard(process.stderr, 'stderr');
+
+const SESSION_DIAGNOSTIC_LOG_NAME = '运营助手-本次报错.log';
+const SESSION_DIAGNOSTIC_MAX_LINE_LENGTH = 6000;
+const SESSION_DIAGNOSTIC_MAX_HEADER_KEYS = 40;
+const SESSION_DIAGNOSTIC_SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-csrf-token',
+  'x-xsrf-token',
+  'x-token',
+  'token'
+]);
+let sessionDiagnosticLogPath = '';
+let sessionDiagnosticLogReady = false;
+let sessionDiagnosticLogDisabled = false;
+let sessionDiagnosticConsoleWrapped = false;
+const sessionDiagnosticNetworkRequests = new WeakMap();
+const sessionDiagnosticNetworkInstalled = new WeakSet();
+
+function truncateDiagnosticText(text) {
+  if (text.length <= SESSION_DIAGNOSTIC_MAX_LINE_LENGTH) {
+    return text;
+  }
+  return `${text.slice(0, SESSION_DIAGNOSTIC_MAX_LINE_LENGTH)}... [truncated length=${text.length}]`;
+}
+
+function redactDiagnosticText(value) {
+  return truncateDiagnosticText(String(value || '')
+    .replace(/([?&](?:token|access_token|refresh_token|authorization|password|passwd|secret|sessionData)=)[^&\s]+/gi, '$1[已脱敏]')
+    .replace(/((?:cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}\]]+)/gi, '$1[已脱敏]')
+    .replace(/("(?:cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData)"\s*:\s*)"[^"]*"/gi, '$1"[已脱敏]"')
+    .replace(/\r?\n/g, '\\n'));
+}
+
+function createDiagnosticJsonReplacer() {
+  const seen = new WeakSet();
+  return (key, value) => {
+    if (/cookieString|authorization|access_token|refresh_token|token|password|passwd|secret|sessionData/i.test(key)) {
+      return '[已脱敏]';
+    }
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        stack: value.stack
+      };
+    }
+    if (value && typeof value === 'object') {
+      if (seen.has(value)) {
+        return '[Circular]';
+      }
+      seen.add(value);
+    }
+    if (typeof value === 'string' && value.length > 1000) {
+      return `${value.slice(0, 1000)}... [length=${value.length}]`;
+    }
+    return value;
+  };
+}
+
+function formatDiagnosticArg(arg) {
+  if (arg instanceof Error) {
+    return redactDiagnosticText(arg.stack || arg.message || String(arg));
+  }
+  if (typeof arg === 'string') {
+    return redactDiagnosticText(arg);
+  }
+  try {
+    return redactDiagnosticText(JSON.stringify(arg, createDiagnosticJsonReplacer()));
+  } catch (_) {
+    return redactDiagnosticText(String(arg));
+  }
+}
+
+function getSessionNetworkRequestMap(targetSession) {
+  let requestMap = sessionDiagnosticNetworkRequests.get(targetSession);
+  if (!requestMap) {
+    requestMap = new Map();
+    sessionDiagnosticNetworkRequests.set(targetSession, requestMap);
+  }
+  return requestMap;
+}
+
+function getPortableExecutableDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return process.env.PORTABLE_EXECUTABLE_DIR;
+  }
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE);
+  }
+  return '';
+}
+
+function getDiagnosticHeaderValue(headers, headerName) {
+  if (!headers || !headerName) {
+    return undefined;
+  }
+  const key = Object.keys(headers).find(item => item.toLowerCase() === headerName.toLowerCase());
+  if (!key) {
+    return undefined;
+  }
+  return headers[key];
+}
+
+function sanitizeDiagnosticHeaders(headers = {}) {
+  const output = {};
+  let count = 0;
+
+  for (const key of Object.keys(headers)) {
+    const normalizedKey = key.toLowerCase();
+    if (count >= SESSION_DIAGNOSTIC_MAX_HEADER_KEYS) {
+      output.__truncated__ = `只展示前 ${SESSION_DIAGNOSTIC_MAX_HEADER_KEYS} 个 header`;
+      break;
+    }
+    if (SESSION_DIAGNOSTIC_SENSITIVE_HEADER_NAMES.has(normalizedKey)) {
+      output[key] = '[已脱敏]';
+    } else {
+      const value = headers[key];
+      output[key] = Array.isArray(value)
+        ? value.map(item => redactDiagnosticText(item)).slice(0, 8)
+        : redactDiagnosticText(value);
+    }
+    count++;
+  }
+
+  return output;
+}
+
+function summarizeDiagnosticUploadData(uploadData = []) {
+  if (!Array.isArray(uploadData) || uploadData.length === 0) {
+    return null;
+  }
+
+  let bytes = 0;
+  let rawParts = 0;
+  let fileParts = 0;
+  let blobParts = 0;
+
+  for (const item of uploadData) {
+    if (!item) continue;
+    if (item.bytes) {
+      rawParts++;
+      bytes += Buffer.isBuffer(item.bytes) ? item.bytes.length : Buffer.byteLength(String(item.bytes));
+    }
+    if (item.file) {
+      fileParts++;
+    }
+    if (item.blobUUID) {
+      blobParts++;
+    }
+  }
+
+  return {
+    parts: uploadData.length,
+    rawParts,
+    fileParts,
+    blobParts,
+    bytes
+  };
+}
+
+function getNetworkRequestScope(targetSession) {
+  const configForSession = sessionRequestGuardConfig.get(targetSession);
+  return `network ${configForSession?.label || 'session'}`;
+}
+
+function buildNetworkRequestBase(details = {}) {
+  return {
+    requestId: details.id,
+    method: details.method,
+    resourceType: details.resourceType,
+    url: details.url,
+    webContentsId: details.webContentsId || 0,
+    frameId: details.frameId,
+    parentFrameId: details.parentFrameId,
+    referrer: details.referrer || '',
+    upload: summarizeDiagnosticUploadData(details.uploadData)
+  };
+}
+
+function getNetworkDurationMs(targetSession, requestId) {
+  const requestMap = getSessionNetworkRequestMap(targetSession);
+  const started = requestMap.get(requestId);
+  return started ? Date.now() - started.startedAt : null;
+}
+
+function appendNetworkDiagnosticLog(targetSession, level, eventName, details = {}, extra = {}) {
+  appendSessionDiagnosticLog(level, getNetworkRequestScope(targetSession), [{
+    event: eventName,
+    ...buildNetworkRequestBase(details),
+    ...extra
+  }]);
+}
+
+function installSessionNetworkDiagnostics(targetSession) {
+  if (!targetSession?.webRequest || sessionDiagnosticNetworkInstalled.has(targetSession)) {
+    return;
+  }
+  sessionDiagnosticNetworkInstalled.add(targetSession);
+
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'send-headers', details, {
+      requestHeaders: sanitizeDiagnosticHeaders(details.requestHeaders || {})
+    });
+    callback({ requestHeaders: details.requestHeaders || {} });
+  });
+
+  targetSession.webRequest.onBeforeRedirect((details) => {
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'redirect', details, {
+      statusCode: details.statusCode,
+      statusLine: details.statusLine,
+      redirectURL: details.redirectURL,
+      ip: details.ip || '',
+      fromCache: !!details.fromCache,
+      durationMs: getNetworkDurationMs(targetSession, details.id),
+      responseHeaders: sanitizeDiagnosticHeaders(details.responseHeaders || {})
+    });
+  });
+
+  targetSession.webRequest.onCompleted((details) => {
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    const durationMs = getNetworkDurationMs(targetSession, details.id);
+    requestMap.delete(details.id);
+
+    const level = details.statusCode >= 400 ? 'WARN' : 'INFO';
+    appendNetworkDiagnosticLog(targetSession, level, 'completed', details, {
+      statusCode: details.statusCode,
+      statusLine: details.statusLine,
+      ip: details.ip || '',
+      fromCache: !!details.fromCache,
+      durationMs,
+      contentType: getDiagnosticHeaderValue(details.responseHeaders, 'content-type') || '',
+      contentLength: getDiagnosticHeaderValue(details.responseHeaders, 'content-length') || '',
+      responseHeaders: sanitizeDiagnosticHeaders(details.responseHeaders || {})
+    });
+  });
+
+  targetSession.webRequest.onErrorOccurred((details) => {
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    const durationMs = getNetworkDurationMs(targetSession, details.id);
+    requestMap.delete(details.id);
+
+    appendNetworkDiagnosticLog(targetSession, 'ERROR', 'error', details, {
+      error: details.error || '',
+      fromCache: !!details.fromCache,
+      durationMs
+    });
+  });
+}
+
+function getSessionDiagnosticCandidateDirs() {
+  const preferredDir = getPortableExecutableDir() || (app.isPackaged ? path.dirname(process.execPath) : __dirname);
+  const fallbackDir = app.getPath('userData');
+  return Array.from(new Set([preferredDir, fallbackDir].filter(Boolean)));
+}
+
+function initializeSessionDiagnosticLog() {
+  if (sessionDiagnosticLogReady || sessionDiagnosticLogDisabled) {
+    return sessionDiagnosticLogReady;
+  }
+
+  const failures = [];
+  for (const dir of getSessionDiagnosticCandidateDirs()) {
+    const logPath = path.join(dir, SESSION_DIAGNOSTIC_LOG_NAME);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const header = [
+        '资海云运营助手 - 本次运行报错日志',
+        '说明: 只记录当前这次打开程序期间的诊断信息；正常退出时会自动删除。',
+        '范围: 主进程错误、页面错误、加载失败、渲染进程异常、网络请求开始/请求头/重定向/完成/失败。',
+        '隐私: cookie、authorization、token、password、sessionData、上传内容等敏感信息会脱敏或只记录大小。',
+        `启动时间: ${new Date().toLocaleString()}`,
+        `应用版本: ${APP_VERSION}`,
+        `Electron: ${process.versions.electron || ''}`,
+        `Chrome: ${process.versions.chrome || ''}`,
+        `Node: ${process.versions.node || ''}`,
+        `系统: ${process.platform} ${os.release()}`,
+        `执行文件: ${process.execPath}`,
+        `便携版外层目录: ${getPortableExecutableDir() || '-'}`,
+        `日志路径: ${logPath}`,
+        '========================================',
+        ''
+      ].join('\n');
+      fs.writeFileSync(logPath, header, 'utf8');
+      sessionDiagnosticLogPath = logPath;
+      sessionDiagnosticLogReady = true;
+      if (failures.length > 0) {
+        appendSessionDiagnosticLog('WARN', 'diagnostic', [
+          `首选日志目录不可写，已切换备用目录: ${failures.map(item => `${item.dir} (${item.error})`).join('; ')}`
+        ]);
+      }
+      return true;
+    } catch (err) {
+      failures.push({ dir, error: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  sessionDiagnosticLogDisabled = true;
+  return false;
+}
+
+function appendSessionDiagnosticLog(level, scope, args = []) {
+  if (!initializeSessionDiagnosticLog()) {
+    return;
+  }
+  try {
+    const message = args.map(formatDiagnosticArg).join(' ');
+    const line = `[${new Date().toISOString()}] [${level}] [${scope}] ${message}\n`;
+    fs.appendFileSync(sessionDiagnosticLogPath, line, 'utf8');
+  } catch (_) {
+    // 日志不能影响主流程
+  }
+}
+
+function removeSessionDiagnosticLog() {
+  if (!sessionDiagnosticLogPath) {
+    return;
+  }
+  try {
+    if (fs.existsSync(sessionDiagnosticLogPath)) {
+      fs.unlinkSync(sessionDiagnosticLogPath);
+    }
+  } catch (_) {
+    // 退出清理失败不阻塞应用退出
+  }
+}
+
+function wrapConsoleForSessionDiagnostics() {
+  if (sessionDiagnosticConsoleWrapped) {
+    return;
+  }
+  sessionDiagnosticConsoleWrapped = true;
+
+  const wrapMethod = (method, level) => {
+    const original = console[method];
+    console[method] = function(...args) {
+      appendSessionDiagnosticLog(level, 'main-process', args);
+      return original.apply(console, args);
+    };
+  };
+
+  wrapMethod('warn', 'WARN');
+  wrapMethod('error', 'ERROR');
+}
+
+function safeGetWebContentsUrl(webContents) {
+  try {
+    if (!webContents || webContents.isDestroyed()) {
+      return '';
+    }
+    return webContents.getURL();
+  } catch (_) {
+    return '';
+  }
+}
+
+function describeWebContentsForDiagnostics(webContents, label) {
+  const parts = [label || 'webContents'];
+  try {
+    parts.push(`#${webContents.id}`);
+  } catch (_) {}
+  try {
+    if (typeof webContents.getType === 'function') {
+      parts.push(`type=${webContents.getType()}`);
+    }
+  } catch (_) {}
+  return parts.join(' ');
+}
+
+function getConsoleMessageLevel(level) {
+  if (typeof level === 'number') {
+    if (level >= 3) return 'ERROR';
+    if (level >= 2) return 'WARN';
+    return 'INFO';
+  }
+  const normalized = String(level || '').toUpperCase();
+  if (normalized.includes('ERROR')) return 'ERROR';
+  if (normalized.includes('WARN')) return 'WARN';
+  return 'INFO';
+}
+
+function attachSessionDiagnosticWebContents(webContents, label = 'webContents') {
+  if (!webContents || webContents.__sessionDiagnosticAttached) {
+    return;
+  }
+
+  try {
+    Object.defineProperty(webContents, '__sessionDiagnosticAttached', {
+      value: true,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (_) {
+    webContents.__sessionDiagnosticAttached = true;
+  }
+
+  const scope = () => describeWebContentsForDiagnostics(webContents, label);
+
+  webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const levelName = getConsoleMessageLevel(level);
+    if (levelName !== 'WARN' && levelName !== 'ERROR') {
+      return;
+    }
+    appendSessionDiagnosticLog(levelName, scope(), [
+      message,
+      `source=${sourceId || '-'}`,
+      `line=${line || 0}`,
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+
+  webContents.on('preload-error', (_event, preloadPath, error) => {
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'preload-error',
+      `preload=${preloadPath || '-'}`,
+      error
+    ]);
+  });
+
+  webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (errorCode === -3) {
+      return;
+    }
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'did-fail-load',
+      `code=${errorCode}`,
+      `description=${errorDescription || '-'}`,
+      `url=${validatedURL || safeGetWebContentsUrl(webContents) || '-'}`,
+      `mainFrame=${isMainFrame !== false}`
+    ]);
+  });
+
+  webContents.on('render-process-gone', (_event, details) => {
+    appendSessionDiagnosticLog('ERROR', scope(), [
+      'render-process-gone',
+      details,
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+
+  webContents.on('unresponsive', () => {
+    appendSessionDiagnosticLog('WARN', scope(), [
+      'unresponsive',
+      `url=${safeGetWebContentsUrl(webContents) || '-'}`
+    ]);
+  });
+}
+
+function installSessionDiagnosticLogger() {
+  initializeSessionDiagnosticLog();
+  wrapConsoleForSessionDiagnostics();
+
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    appendSessionDiagnosticLog('ERROR', 'process', ['uncaughtExceptionMonitor', `origin=${origin || '-'}`, error]);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    appendSessionDiagnosticLog('ERROR', 'process', ['unhandledRejection', reason]);
+  });
+
+  process.on('warning', (warning) => {
+    appendSessionDiagnosticLog('WARN', 'process', [warning]);
+  });
+
+  app.on('before-quit', () => {
+    appendSessionDiagnosticLog('INFO', 'app', ['before-quit']);
+  });
+
+  app.on('quit', () => {
+    removeSessionDiagnosticLog();
+  });
+}
+
+installSessionDiagnosticLogger();
 
 function isFirstPartyHost(hostname = '') {
   const host = String(hostname || '').toLowerCase();
@@ -198,6 +688,159 @@ function extractSessionCookiesArray(sessionData) {
   }
 
   return [];
+}
+
+const SHIPINHAO_LOGIN_HOST = 'channels.weixin.qq.com';
+const SHIPINHAO_LOGIN_COOKIE_DOMAINS = new Set([
+  'channels.weixin.qq.com',
+  'weixin.qq.com',
+  'wx.qq.com',
+  'mp.weixin.qq.com'
+]);
+const SHIPINHAO_PARENT_COOKIE_DOMAINS = new Set(['qq.com']);
+const SHIPINHAO_LOGIN_COOKIE_NAMES = new Set([
+  'sessionid',
+  'wxuin',
+  'pass_ticket',
+  'wxsid',
+  'wxload'
+]);
+
+function isShipinhaoLoginUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const hostname = String(parsedUrl.hostname || '').toLowerCase();
+    const pathname = String(parsedUrl.pathname || '').toLowerCase();
+    return hostname === SHIPINHAO_LOGIN_HOST
+      && (pathname.includes('login.html') || pathname === '/' || pathname === '');
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildShipinhaoLoginForceResetUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    if (!isShipinhaoLoginUrl(parsedUrl.toString()) || parsedUrl.searchParams.has('force_reset')) {
+      return null;
+    }
+    parsedUrl.searchParams.set('force_reset', '1');
+    return parsedUrl.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function shouldClearShipinhaoLoginCookie(cookie) {
+  const normalizedDomain = String(cookie?.domain || '').toLowerCase().replace(/^\./, '');
+  const cookieName = String(cookie?.name || '').toLowerCase();
+  if (!normalizedDomain || !cookieName) {
+    return false;
+  }
+
+  for (const domain of SHIPINHAO_LOGIN_COOKIE_DOMAINS) {
+    if (normalizedDomain === domain || normalizedDomain.endsWith(`.${domain}`)) {
+      return true;
+    }
+  }
+
+  for (const domain of SHIPINHAO_PARENT_COOKIE_DOMAINS) {
+    if ((normalizedDomain === domain || normalizedDomain.endsWith(`.${domain}`))
+      && SHIPINHAO_LOGIN_COOKIE_NAMES.has(cookieName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function clearShipinhaoLoginCookiesFromSession(targetSession, eventName) {
+  if (!targetSession || !targetSession.cookies) {
+    return 0;
+  }
+
+  const cookies = await targetSession.cookies.get({});
+  let deletedCount = 0;
+
+  for (const cookie of cookies) {
+    if (!shouldClearShipinhaoLoginCookie(cookie)) {
+      continue;
+    }
+
+    const host = String(cookie.domain || '').toLowerCase().replace(/^\./, '');
+    const pathName = cookie.path && String(cookie.path).startsWith('/') ? cookie.path : '/';
+    const protocol = cookie.secure ? 'https' : 'http';
+    const urlsToTry = Array.from(new Set([
+      `${protocol}://${host}${pathName}`,
+      `https://${host}${pathName}`,
+      `http://${host}${pathName}`,
+      `${protocol}://${host}/`,
+      `https://${host}/`,
+      `http://${host}/`
+    ]));
+
+    for (const cookieUrl of urlsToTry) {
+      try {
+        await targetSession.cookies.remove(cookieUrl, cookie.name);
+        deletedCount++;
+        console.log(`[Window Manager] 🧹 [${eventName}] 已清理视频号旧 cookie: ${cookie.name} @ ${cookie.domain}`);
+        break;
+      } catch (_) {
+        // 尝试下一种 URL 形式。
+      }
+    }
+  }
+
+  try {
+    await targetSession.flushStorageData();
+  } catch (flushErr) {
+    console.warn(`[Window Manager] ⚠️ [${eventName}] flushStorageData 失败: ${flushErr.message}`);
+  }
+
+  console.log(`[Window Manager] 🧹 [${eventName}] 视频号登录前 cookie 清理完成，共删除 ${deletedCount} 个`);
+  return deletedCount;
+}
+
+function createShipinhaoLoginResetGuard(targetWindow, windowLabel) {
+  let shipinhaoLoginResetInFlight = false;
+
+  return (navUrl, eventName, event = null) => {
+    const resetUrl = buildShipinhaoLoginForceResetUrl(navUrl);
+    if (!resetUrl) {
+      return false;
+    }
+
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    if (shipinhaoLoginResetInFlight) {
+      console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录 reset 已在处理，忽略重复导航: ${navUrl}`);
+      return true;
+    }
+
+    shipinhaoLoginResetInFlight = true;
+    console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录页自动清理旧 cookie 并追加 force_reset=1: ${resetUrl}`);
+
+    (async () => {
+      try {
+        if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+          return;
+        }
+
+        await clearShipinhaoLoginCookiesFromSession(targetWindow.webContents.session, `${windowLabel}:${eventName}`);
+        if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+          await targetWindow.webContents.loadURL(resetUrl);
+        }
+      } catch (resetErr) {
+        console.error(`[Window Manager] ❌ [${eventName}] 视频号登录 reset 处理失败:`, resetErr);
+      } finally {
+        shipinhaoLoginResetInFlight = false;
+      }
+    })();
+
+    return true;
+  };
 }
 
 // 🛡️ 检查 windowSession 中是否已有「有效登录态 cookie」
@@ -667,12 +1310,26 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
     label
   };
   sessionRequestGuardConfig.set(targetSession, merged);
+  installSessionNetworkDiagnostics(targetSession);
 
   targetSession.webRequest.onBeforeRequest((details, callback) => {
     const configForSession = sessionRequestGuardConfig.get(targetSession) || merged;
     const requestUrl = details.url || '';
+    const requestMap = getSessionNetworkRequestMap(targetSession);
+    requestMap.set(details.id, {
+      startedAt: Date.now(),
+      method: details.method,
+      url: requestUrl,
+      resourceType: details.resourceType
+    });
+
+    appendNetworkDiagnosticLog(targetSession, 'INFO', 'start', details);
 
     if (configForSession.blockBitbrowser && requestUrl.toLowerCase().startsWith('bitbrowser:')) {
+      appendNetworkDiagnosticLog(targetSession, 'WARN', 'cancelled', details, {
+        reason: 'blocked-bitbrowser-protocol'
+      });
+      requestMap.delete(details.id);
       console.log(`[${configForSession.label} WebRequest] ❌ Blocked bitbrowser protocol:`, requestUrl);
       callback({ cancel: true });
       return;
@@ -681,6 +1338,10 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
     if (configForSession.blockMainFrameResources) {
       const redirectUrl = resolveMainFrameResourceRedirect(details);
       if (redirectUrl && redirectUrl !== requestUrl) {
+        appendNetworkDiagnosticLog(targetSession, 'WARN', 'redirect-by-guard', details, {
+          reason: 'main-frame-static-resource',
+          redirectURL: redirectUrl
+        });
         console.warn(`[${configForSession.label} WebRequest] ⚠️ 主框架静态资源导航已改回页面: ${requestUrl} → ${redirectUrl}`);
         callback({ redirectURL: redirectUrl });
         return;
@@ -689,6 +1350,10 @@ function installSessionRequestGuard(targetSession, label, options = {}) {
 
     if (configForSession.upgradeMp163 && requestUrl.startsWith('http://mp.163.com/')) {
       const httpsUrl = requestUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
+      appendNetworkDiagnosticLog(targetSession, 'INFO', 'redirect-by-guard', details, {
+        reason: 'upgrade-mp163-http-to-https',
+        redirectURL: httpsUrl
+      });
       console.log(`[${configForSession.label} WebRequest] 🔒 HTTP→HTTPS: ${requestUrl}`);
       callback({ redirectURL: httpsUrl });
       return;
@@ -2061,14 +2726,29 @@ function addContentTypeFix(targetSession, label) {
 console.log('[Config] LOGIN_URL:', LOGIN_URL);
 
 // 所有可能的首页地址（用于消息路由判断，从 config 集中配置构建）
-const HOME_URLS = [
+const configuredHomeUrls = [];
+if (config.DOMAINS) {
+  ['dev', 'prod'].forEach((env) => {
+    const envDomains = config.DOMAINS[env];
+    if (!envDomains) return;
+    if (envDomains.aigcPage && envDomains.aigcPath) {
+      configuredHomeUrls.push(envDomains.aigcPage + envDomains.aigcPath);
+    }
+    if (envDomains.geoPage && envDomains.geoPath) {
+      configuredHomeUrls.push(envDomains.geoPage + envDomains.geoPath);
+    }
+  });
+}
+
+const HOME_URLS = Array.from(new Set([
   'http://localhost:5173/',
   config.getAigcUrl(),             // AIGC 首页
   'http://172.16.6.17:8080/',
   'http://localhost:8080/',
   config.getGeoUrl(),              // GEO 首页
-  LOGIN_URL  // 登录页也作为首页处理
-];
+  LOGIN_URL,  // 登录页也作为首页处理
+  ...configuredHomeUrls
+].filter(Boolean)));
 
 // 判断 URL 是否为首页
 function isHomeUrl(url) {
@@ -3769,6 +4449,7 @@ function createWindow() {
       backgroundThrottling: false // 禁用后台节流，防止长时间不操作页面空白
     }
   });
+  attachSessionDiagnosticWebContents(mainWindow.webContents, 'main-window');
 
   // 窗口准备好后立即显示
   let windowShown = false;
@@ -3981,6 +4662,7 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
     }
   });
+  attachSessionDiagnosticWebContents(browserView.webContents, 'browser-view');
 
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
@@ -4987,12 +5669,15 @@ function createWindow() {
   // 监听新窗口创建完成（用于添加脚本注入等功能）
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
+    attachSessionDiagnosticWebContents(newWindow.webContents, 'child-window');
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
+    const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'did-create-window');
 
     // 拦截子窗口的导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
     newWindow.webContents.on('will-navigate', (event, url) => {
+      if (ensureShipinhaoLoginForceReset(url, 'will-navigate-login-reset', event)) return;
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
         console.log('[New Window] ❌ Blocked non-http protocol:', url);
         event.preventDefault();
@@ -5020,6 +5705,7 @@ function createWindow() {
     // 监听子窗口导航开始（用于调试）
     newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
       console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
+      if (isMainFrame && ensureShipinhaoLoginForceReset(url, 'did-start-navigation-login-reset')) return;
       if (url && url.toLowerCase().startsWith('bitbrowser:')) {
         console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
       }
@@ -5202,6 +5888,7 @@ function createWindow() {
 
     // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
     newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-login-reset')) return;
       await tryPersistAfterLoginNavigate(navUrl, 'did-navigate');
     });
 
@@ -5572,10 +6259,11 @@ function createTray() {
   tray.setContextMenu(contextMenu)
 }
 
-// 🖥️ 禁用 GPU 硬件加速 - 解决某些电脑因显卡驱动不兼容导致的白屏问题
-// 必须在 app.whenReady() 之前调用
-app.disableHardwareAcceleration();
-console.log('[GPU] ✅ 已禁用 GPU 硬件加速（防止白屏）');
+if (shouldDisableHardwareAcceleration) {
+  console.log('[GPU] ✅ 已仅对旧版 Windows 禁用 GPU 硬件加速（防止白屏）');
+} else {
+  console.log('[GPU] ✅ 已保留 GPU 硬件加速（避免动画噪点/渲染降级）');
+}
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
@@ -5589,14 +6277,16 @@ app.commandLine.appendSwitch('no-sandbox');
 // 🛡️ 安全软件兼容性优化（电脑管家/360等）
 // 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
 app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-// GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-app.commandLine.appendSwitch('in-process-gpu');
+if (shouldDisableHardwareAcceleration) {
+  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
+  app.commandLine.appendSwitch('in-process-gpu');
+}
 // 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log('[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/GPU合并/防后台节流）');
+console.log(`[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/${shouldDisableHardwareAcceleration ? 'GPU合并/' : ''}防后台节流）`);
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -5618,6 +6308,8 @@ app.whenReady().then(async () => {
 
   // 全局拦截所有 webContents 的协议导航
   app.on('web-contents-created', (event, webContents) => {
+    attachSessionDiagnosticWebContents(webContents, 'global-webContents');
+
     // 为每个 webContents 添加协议拦截
     webContents.on('will-navigate', (event, url) => {
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:') && !url.startsWith('blob:') && !url.startsWith('file:')) {
@@ -6736,7 +7428,8 @@ ipcMain.on('home-to-content', (event, message) => {
   if (browserView) {
     browserView.webContents.executeJavaScript(`
       (function() {
-        const isHome = window.location.href.startsWith('${HOME_URL}');
+        const homeUrls = ${JSON.stringify(HOME_URLS)};
+        const isHome = homeUrls.some(url => window.location.href.startsWith(url));
         console.log('[Main] 检查是否为首页:', window.location.href, 'isHome:', isHome);
         if (!isHome) {
           const messageData = ${messageStr};
@@ -7281,20 +7974,21 @@ async function openManagedChildWindow(url, options = {}) {
   //   1. 临时 session（新增账号授权）—— 防止上一次失败遗留的 cookie 残留
   //   2. account session 重新授权 —— 持久化 session 里有旧账号 cookie，必须先清掉，否则 WeChat 服务端把新旧 sessionid/wxuin 同名 cookie 并存，登录失败
   // 仅匹配 channels.weixin.qq.com（视频号），不影响 mp.weixin.qq.com（公众号）等其他子域。
-  try {
-    const parsedUrl = new URL(url);
-    const hostname = String(parsedUrl.hostname || '').toLowerCase();
-    const pathname = String(parsedUrl.pathname || '').toLowerCase();
-    const isShipinhaoLogin = hostname === 'channels.weixin.qq.com'
-      && (pathname.includes('login.html') || pathname === '/' || pathname === '');
-    if (isShipinhaoLogin && !parsedUrl.searchParams.has('force_reset')) {
-      parsedUrl.searchParams.set('force_reset', '1');
-      url = parsedUrl.toString();
-      console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
-    }
-  } catch (urlErr) {
-    console.warn('[Window Manager] ⚠️ URL 解析失败，跳过 force_reset 注入:', urlErr.message);
+  const shipinhaoLoginResetUrl = buildShipinhaoLoginForceResetUrl(url);
+  if (shipinhaoLoginResetUrl) {
+    url = shipinhaoLoginResetUrl;
+    console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
   }
+
+  const isShipinhaoPublishUrl = (() => {
+    try {
+      const parsedUrl = new URL(url);
+      return String(parsedUrl.hostname || '').toLowerCase() === 'channels.weixin.qq.com'
+        && String(parsedUrl.pathname || '').toLowerCase().includes('/platform/post/create');
+    } catch (_) {
+      return String(url || '').toLowerCase().includes('channels.weixin.qq.com/platform/post/create');
+    }
+  })();
 
   // ⏱ 全链路阶段性耗时基准时间
   const __WM_T0__ = Date.now();
@@ -7478,6 +8172,8 @@ async function openManagedChildWindow(url, options = {}) {
           }
 
           const hasStoragePayload =
+            !isShipinhaoPublishUrl
+            &&
             !!(sessionData
               && typeof sessionData === 'object'
               && !Array.isArray(sessionData)
@@ -7488,7 +8184,9 @@ async function openManagedChildWindow(url, options = {}) {
               ));
 
           // 1.5 🔑 只有快照里真的带了 storage 数据，才值得做一次重清理
-          if (hasStoragePayload) {
+          if (isShipinhaoPublishUrl) {
+            console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号发布页跳过 storage 清理，仅恢复 cookies，避免目标页加载阶段崩溃`);
+          } else if (hasStoragePayload) {
             try {
               await windowSession.clearStorageData({
                 storages: ['appcache', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
@@ -7753,6 +8451,11 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用持久化 session');
     }
 
+    if (isShipinhaoLoginUrl(url)) {
+      console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页首包前清理旧 cookie`);
+      await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
+    }
+
     const windowWebPreferences = {
       contextIsolation: true,
       nodeIntegration: false,
@@ -7771,6 +8474,7 @@ async function openManagedChildWindow(url, options = {}) {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
+    const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'managed-window');
     // 账号/发布窗口必须等 cookie/storage 恢复和目标页加载完成后再显示。
     // 否则用户可能先看到登录扫码页，随后被后续 bootstrap/loadURL 导航刷新打断。
     const shouldDelayInitialShow = sessionType === 'account' || !!options.sessionData || !!options.publishData;
@@ -8211,7 +8915,13 @@ async function openManagedChildWindow(url, options = {}) {
     //   1. will-navigate：拦截页面 JS 发起的 HTTP 导航
     //   2. did-navigate：拦截服务端 302 重定向落地的 HTTP 页面（will-navigate 抓不到 302）
     //   3. onBeforeRequest：网络层拦截所有 HTTP 子请求（API 调用等），解决 Mixed Content
+    newWindow.webContents.on('did-start-navigation', (_event, navUrl, _isInPlace, isMainFrame) => {
+      if (isMainFrame) {
+        ensureShipinhaoLoginForceReset(navUrl, 'did-start-navigation-login-reset');
+      }
+    });
     newWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'will-navigate', event)) return;
       if (navUrl.startsWith('http://mp.163.com/')) {
         const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
         console.log(`[Window Nav] 🔒 HTTP→HTTPS (will-navigate): ${navUrl} → ${httpsUrl}`);
@@ -8220,6 +8930,7 @@ async function openManagedChildWindow(url, options = {}) {
       }
     });
     newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-nav-reset')) return;
       // 302 重定向落地后立刻跳 HTTPS，防止页面 JS 在 HTTP 下执行并触发登录循环
       if (navUrl.startsWith('http://mp.163.com/')) {
         const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
@@ -8328,6 +9039,7 @@ async function openManagedChildWindow(url, options = {}) {
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-in-page-reset')) return;
       // 🔐 SPA 路由也触发登录回跳保存（覆盖腾讯号 userAuth、搜狐 mpfe/v4/login 等单页应用登录路径）
       // 加存活守卫，避免窗口销毁后访问已释放对象导致 crash (0xC0000005)
       try {
@@ -8370,7 +9082,9 @@ async function openManagedChildWindow(url, options = {}) {
     let localStorageData = null;
     let sessionStorageData = null;
 
-    if (options.sessionData) {
+    if (options.sessionData && isShipinhaoPublishUrl) {
+      console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号发布页跳过 localStorage/sessionStorage 预设，仅使用 cookies`);
+    } else if (options.sessionData) {
       let sessionData = options.sessionData;
       // 解析 sessionData
       if (typeof sessionData === 'string') {
