@@ -75,7 +75,6 @@ function buildStandardUserAgent() {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 const STANDARD_USER_AGENT = buildStandardUserAgent();
-const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
 function installBrokenPipeGuard(stream, streamName) {
   if (!stream || typeof stream.on !== 'function') return;
@@ -3063,7 +3062,7 @@ function downloadImageAsBase64(downloadUrl, redirectCount = 0) {
     const protocol = downloadUrl.startsWith('https') ? https : http;
     const request = protocol.get(downloadUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': STANDARD_USER_AGENT
       }
     }, (response) => {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
@@ -4585,8 +4584,8 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 设置自定义 User-Agent（保持标准格式，避免某些网站解析错误）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  // 使用与 Electron 实际 Chromium 版本一致的标准 UA，避免 UA 与 sec-ch-ua 不一致触发平台风控。
+  const customUA = STANDARD_USER_AGENT;
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
 
@@ -8434,7 +8433,7 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+      const customUA = STANDARD_USER_AGENT;
       windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
@@ -9922,7 +9921,7 @@ ipcMain.handle('download-video', async (event, url) => {
 
       const request = protocol.get(downloadUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          'User-Agent': STANDARD_USER_AGENT
         }
       }, (response) => {
         // 处理重定向
@@ -10738,7 +10737,7 @@ function getAccountSession(platform, accountId) {
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
-  const customUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 zh.Cloud-browse/1.0';
+  const customUA = STANDARD_USER_AGENT;
   accountSession.setUserAgent(customUA);
 
   // 添加统一请求守卫（阻止 bitbrowser://、主框架静态资源误导航，并兼容网易号 HTTP）
