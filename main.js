@@ -690,6 +690,159 @@ function extractSessionCookiesArray(sessionData) {
   return [];
 }
 
+const SHIPINHAO_LOGIN_HOST = 'channels.weixin.qq.com';
+const SHIPINHAO_LOGIN_COOKIE_DOMAINS = new Set([
+  'channels.weixin.qq.com',
+  'weixin.qq.com',
+  'wx.qq.com',
+  'mp.weixin.qq.com'
+]);
+const SHIPINHAO_PARENT_COOKIE_DOMAINS = new Set(['qq.com']);
+const SHIPINHAO_LOGIN_COOKIE_NAMES = new Set([
+  'sessionid',
+  'wxuin',
+  'pass_ticket',
+  'wxsid',
+  'wxload'
+]);
+
+function isShipinhaoLoginUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const hostname = String(parsedUrl.hostname || '').toLowerCase();
+    const pathname = String(parsedUrl.pathname || '').toLowerCase();
+    return hostname === SHIPINHAO_LOGIN_HOST
+      && (pathname.includes('login.html') || pathname === '/' || pathname === '');
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildShipinhaoLoginForceResetUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    if (!isShipinhaoLoginUrl(parsedUrl.toString()) || parsedUrl.searchParams.has('force_reset')) {
+      return null;
+    }
+    parsedUrl.searchParams.set('force_reset', '1');
+    return parsedUrl.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function shouldClearShipinhaoLoginCookie(cookie) {
+  const normalizedDomain = String(cookie?.domain || '').toLowerCase().replace(/^\./, '');
+  const cookieName = String(cookie?.name || '').toLowerCase();
+  if (!normalizedDomain || !cookieName) {
+    return false;
+  }
+
+  for (const domain of SHIPINHAO_LOGIN_COOKIE_DOMAINS) {
+    if (normalizedDomain === domain || normalizedDomain.endsWith(`.${domain}`)) {
+      return true;
+    }
+  }
+
+  for (const domain of SHIPINHAO_PARENT_COOKIE_DOMAINS) {
+    if ((normalizedDomain === domain || normalizedDomain.endsWith(`.${domain}`))
+      && SHIPINHAO_LOGIN_COOKIE_NAMES.has(cookieName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function clearShipinhaoLoginCookiesFromSession(targetSession, eventName) {
+  if (!targetSession || !targetSession.cookies) {
+    return 0;
+  }
+
+  const cookies = await targetSession.cookies.get({});
+  let deletedCount = 0;
+
+  for (const cookie of cookies) {
+    if (!shouldClearShipinhaoLoginCookie(cookie)) {
+      continue;
+    }
+
+    const host = String(cookie.domain || '').toLowerCase().replace(/^\./, '');
+    const pathName = cookie.path && String(cookie.path).startsWith('/') ? cookie.path : '/';
+    const protocol = cookie.secure ? 'https' : 'http';
+    const urlsToTry = Array.from(new Set([
+      `${protocol}://${host}${pathName}`,
+      `https://${host}${pathName}`,
+      `http://${host}${pathName}`,
+      `${protocol}://${host}/`,
+      `https://${host}/`,
+      `http://${host}/`
+    ]));
+
+    for (const cookieUrl of urlsToTry) {
+      try {
+        await targetSession.cookies.remove(cookieUrl, cookie.name);
+        deletedCount++;
+        console.log(`[Window Manager] 🧹 [${eventName}] 已清理视频号旧 cookie: ${cookie.name} @ ${cookie.domain}`);
+        break;
+      } catch (_) {
+        // 尝试下一种 URL 形式。
+      }
+    }
+  }
+
+  try {
+    await targetSession.flushStorageData();
+  } catch (flushErr) {
+    console.warn(`[Window Manager] ⚠️ [${eventName}] flushStorageData 失败: ${flushErr.message}`);
+  }
+
+  console.log(`[Window Manager] 🧹 [${eventName}] 视频号登录前 cookie 清理完成，共删除 ${deletedCount} 个`);
+  return deletedCount;
+}
+
+function createShipinhaoLoginResetGuard(targetWindow, windowLabel) {
+  let shipinhaoLoginResetInFlight = false;
+
+  return (navUrl, eventName, event = null) => {
+    const resetUrl = buildShipinhaoLoginForceResetUrl(navUrl);
+    if (!resetUrl) {
+      return false;
+    }
+
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    if (shipinhaoLoginResetInFlight) {
+      console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录 reset 已在处理，忽略重复导航: ${navUrl}`);
+      return true;
+    }
+
+    shipinhaoLoginResetInFlight = true;
+    console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录页自动清理旧 cookie 并追加 force_reset=1: ${resetUrl}`);
+
+    (async () => {
+      try {
+        if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+          return;
+        }
+
+        await clearShipinhaoLoginCookiesFromSession(targetWindow.webContents.session, `${windowLabel}:${eventName}`);
+        if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+          await targetWindow.webContents.loadURL(resetUrl);
+        }
+      } catch (resetErr) {
+        console.error(`[Window Manager] ❌ [${eventName}] 视频号登录 reset 处理失败:`, resetErr);
+      } finally {
+        shipinhaoLoginResetInFlight = false;
+      }
+    })();
+
+    return true;
+  };
+}
+
 // 🛡️ 检查 windowSession 中是否已有「有效登录态 cookie」
 // 任一 platformLoginCookies 配置项存在即视为已登录
 async function hasValidLoginCookies(windowSession, platform) {
@@ -5520,9 +5673,11 @@ function createWindow() {
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
+    const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'did-create-window');
 
     // 拦截子窗口的导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
     newWindow.webContents.on('will-navigate', (event, url) => {
+      if (ensureShipinhaoLoginForceReset(url, 'will-navigate-login-reset', event)) return;
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
         console.log('[New Window] ❌ Blocked non-http protocol:', url);
         event.preventDefault();
@@ -5550,6 +5705,7 @@ function createWindow() {
     // 监听子窗口导航开始（用于调试）
     newWindow.webContents.on('did-start-navigation', (event, url, isInPlace, isMainFrame) => {
       console.log('[New Window Navigation] 导航开始:', url, 'isMainFrame:', isMainFrame);
+      if (isMainFrame && ensureShipinhaoLoginForceReset(url, 'did-start-navigation-login-reset')) return;
       if (url && url.toLowerCase().startsWith('bitbrowser:')) {
         console.log('[New Window Navigation] ⚠️ 检测到 bitbrowser 协议导航!');
       }
@@ -5732,6 +5888,7 @@ function createWindow() {
 
     // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
     newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-login-reset')) return;
       await tryPersistAfterLoginNavigate(navUrl, 'did-navigate');
     });
 
@@ -7817,19 +7974,10 @@ async function openManagedChildWindow(url, options = {}) {
   //   1. 临时 session（新增账号授权）—— 防止上一次失败遗留的 cookie 残留
   //   2. account session 重新授权 —— 持久化 session 里有旧账号 cookie，必须先清掉，否则 WeChat 服务端把新旧 sessionid/wxuin 同名 cookie 并存，登录失败
   // 仅匹配 channels.weixin.qq.com（视频号），不影响 mp.weixin.qq.com（公众号）等其他子域。
-  try {
-    const parsedUrl = new URL(url);
-    const hostname = String(parsedUrl.hostname || '').toLowerCase();
-    const pathname = String(parsedUrl.pathname || '').toLowerCase();
-    const isShipinhaoLogin = hostname === 'channels.weixin.qq.com'
-      && (pathname.includes('login.html') || pathname === '/' || pathname === '');
-    if (isShipinhaoLogin && !parsedUrl.searchParams.has('force_reset')) {
-      parsedUrl.searchParams.set('force_reset', '1');
-      url = parsedUrl.toString();
-      console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
-    }
-  } catch (urlErr) {
-    console.warn('[Window Manager] ⚠️ URL 解析失败，跳过 force_reset 注入:', urlErr.message);
+  const shipinhaoLoginResetUrl = buildShipinhaoLoginForceResetUrl(url);
+  if (shipinhaoLoginResetUrl) {
+    url = shipinhaoLoginResetUrl;
+    console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
   }
 
   const isShipinhaoPublishUrl = (() => {
@@ -8303,6 +8451,11 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用持久化 session');
     }
 
+    if (isShipinhaoLoginUrl(url)) {
+      console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页首包前清理旧 cookie`);
+      await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
+    }
+
     const windowWebPreferences = {
       contextIsolation: true,
       nodeIntegration: false,
@@ -8321,6 +8474,7 @@ async function openManagedChildWindow(url, options = {}) {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
+    const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'managed-window');
     // 账号/发布窗口必须等 cookie/storage 恢复和目标页加载完成后再显示。
     // 否则用户可能先看到登录扫码页，随后被后续 bootstrap/loadURL 导航刷新打断。
     const shouldDelayInitialShow = sessionType === 'account' || !!options.sessionData || !!options.publishData;
@@ -8761,7 +8915,13 @@ async function openManagedChildWindow(url, options = {}) {
     //   1. will-navigate：拦截页面 JS 发起的 HTTP 导航
     //   2. did-navigate：拦截服务端 302 重定向落地的 HTTP 页面（will-navigate 抓不到 302）
     //   3. onBeforeRequest：网络层拦截所有 HTTP 子请求（API 调用等），解决 Mixed Content
+    newWindow.webContents.on('did-start-navigation', (_event, navUrl, _isInPlace, isMainFrame) => {
+      if (isMainFrame) {
+        ensureShipinhaoLoginForceReset(navUrl, 'did-start-navigation-login-reset');
+      }
+    });
     newWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'will-navigate', event)) return;
       if (navUrl.startsWith('http://mp.163.com/')) {
         const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
         console.log(`[Window Nav] 🔒 HTTP→HTTPS (will-navigate): ${navUrl} → ${httpsUrl}`);
@@ -8770,6 +8930,7 @@ async function openManagedChildWindow(url, options = {}) {
       }
     });
     newWindow.webContents.on('did-navigate', (event, navUrl) => {
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-nav-reset')) return;
       // 302 重定向落地后立刻跳 HTTPS，防止页面 JS 在 HTTP 下执行并触发登录循环
       if (navUrl.startsWith('http://mp.163.com/')) {
         const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
@@ -8878,6 +9039,7 @@ async function openManagedChildWindow(url, options = {}) {
     // 监听新窗口内的导航（SPA 路由）
     newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
+      if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-in-page-reset')) return;
       // 🔐 SPA 路由也触发登录回跳保存（覆盖腾讯号 userAuth、搜狐 mpfe/v4/login 等单页应用登录路径）
       // 加存活守卫，避免窗口销毁后访问已释放对象导致 crash (0xC0000005)
       try {
