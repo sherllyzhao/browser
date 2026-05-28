@@ -48,3 +48,7 @@
 - Do not commit real cookies/tokens or production account data.
 - Review `config.js` and `injected-scripts/scripts-config.json` before release.
 - Treat session/cookie handling changes as high risk; document rollback steps in PR.
+
+## User-Agent Rules
+- Do not change the main window / parent page User-Agent. The host page depends on its application marker to identify the browser environment.
+- If a third-party platform requires User-Agent risk-control handling, scope the change to that exact platform child window or request only. Do not change the global session, main `BrowserView`, or unrelated platform windows.
