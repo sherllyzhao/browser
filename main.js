@@ -75,6 +75,7 @@ function buildStandardUserAgent() {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 const STANDARD_USER_AGENT = buildStandardUserAgent();
+const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
 function installBrokenPipeGuard(stream, streamName) {
   if (!stream || typeof stream.on !== 'function') return;
@@ -4584,7 +4585,7 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // 使用与 Electron 实际 Chromium 版本一致的标准 UA，避免 UA 与 sec-ch-ua 不一致触发平台风控。
+  // session 默认使用标准 UA；父页面 BrowserView 会单独加应用标识，第三方窗口避免继承该标识。
   const customUA = STANDARD_USER_AGENT;
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
@@ -4662,6 +4663,8 @@ function createWindow() {
     }
   });
   attachSessionDiagnosticWebContents(browserView.webContents, 'browser-view');
+  browserView.webContents.setUserAgent(TAGGED_USER_AGENT);
+  console.log('BrowserView User-Agent set to:', TAGGED_USER_AGENT);
 
   // 设置背景色避免白屏
   browserView.setBackgroundColor('#f2f7fa');
@@ -5669,6 +5672,8 @@ function createWindow() {
   browserView.webContents.on('did-create-window', (newWindow) => {
     console.log('[Window Created] New window created');
     attachSessionDiagnosticWebContents(newWindow.webContents, 'child-window');
+    newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+    console.log('[Window Created] 子窗口 User-Agent 已切换为标准 UA');
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -8473,6 +8478,8 @@ async function openManagedChildWindow(url, options = {}) {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
+    newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
+    console.log('[Window Manager] 子窗口 User-Agent 已切换为标准 UA');
     const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'managed-window');
     // 账号/发布窗口必须等 cookie/storage 恢复和目标页加载完成后再显示。
     // 否则用户可能先看到登录扫码页，随后被后续 bootstrap/loadURL 导航刷新打断。
