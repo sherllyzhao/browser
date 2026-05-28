@@ -77,6 +77,23 @@ function buildStandardUserAgent() {
 const STANDARD_USER_AGENT = buildStandardUserAgent();
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
 
+function shouldUseStandardUserAgentForUrl(rawUrl = '') {
+  try {
+    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    return hostname === 'douyin.com' || hostname.endsWith('.douyin.com');
+  } catch (_) {
+    return String(rawUrl || '').toLowerCase().includes('douyin.com');
+  }
+}
+
+function applyScopedWindowUserAgent(targetWebContents, rawUrl, label = 'Window') {
+  if (!targetWebContents || targetWebContents.isDestroyed()) return;
+  const useStandardUserAgent = shouldUseStandardUserAgentForUrl(rawUrl);
+  const userAgent = useStandardUserAgent ? STANDARD_USER_AGENT : TAGGED_USER_AGENT;
+  targetWebContents.setUserAgent(userAgent);
+  console.log(`[${label}] User-Agent 已设置为${useStandardUserAgent ? '标准 UA' : '带标识 UA'}:`, rawUrl || '-');
+}
+
 function installBrokenPipeGuard(stream, streamName) {
   if (!stream || typeof stream.on !== 'function') return;
 
@@ -4585,8 +4602,8 @@ function createWindow() {
   }
   console.log('========================================');
 
-  // session 默认使用标准 UA；父页面 BrowserView 会单独加应用标识，第三方窗口避免继承该标识。
-  const customUA = STANDARD_USER_AGENT;
+  // 默认浏览器 UA 保持应用标识；只在命中抖音窗口时临时切标准 UA。
+  const customUA = TAGGED_USER_AGENT;
   persistentSession.setUserAgent(customUA);
   console.log('User-Agent set to:', customUA);
 
@@ -5669,11 +5686,10 @@ function createWindow() {
   });
 
   // 监听新窗口创建完成（用于添加脚本注入等功能）
-  browserView.webContents.on('did-create-window', (newWindow) => {
+  browserView.webContents.on('did-create-window', (newWindow, details = {}) => {
     console.log('[Window Created] New window created');
     attachSessionDiagnosticWebContents(newWindow.webContents, 'child-window');
-    newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-    console.log('[Window Created] 子窗口 User-Agent 已切换为标准 UA');
+    applyScopedWindowUserAgent(newWindow.webContents, details?.url || '', 'Window Created');
 
     // 添加到子窗口列表
     childWindows.push(newWindow);
@@ -5681,6 +5697,7 @@ function createWindow() {
 
     // 拦截子窗口的导航请求，阻止自定义协议（如 bitbrowser://）触发系统对话框
     newWindow.webContents.on('will-navigate', (event, url) => {
+      applyScopedWindowUserAgent(newWindow.webContents, url, 'Window Created Navigate');
       if (ensureShipinhaoLoginForceReset(url, 'will-navigate-login-reset', event)) return;
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:')) {
         console.log('[New Window] ❌ Blocked non-http protocol:', url);
@@ -8438,7 +8455,7 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用临时 session:', tempSessionId);
 
       // 为临时 session 配置相同的 User-Agent（与持久化 session 保持一致）
-      const customUA = STANDARD_USER_AGENT;
+      const customUA = TAGGED_USER_AGENT;
       windowSession.setUserAgent(customUA);
       console.log('[Window Manager] 临时 session User-Agent 已设置');
 
@@ -8478,8 +8495,7 @@ async function openManagedChildWindow(url, options = {}) {
       icon: appIcon, // 使用 nativeImage 加载的图标
       webPreferences: windowWebPreferences
     });
-    newWindow.webContents.setUserAgent(STANDARD_USER_AGENT);
-    console.log('[Window Manager] 子窗口 User-Agent 已切换为标准 UA');
+    applyScopedWindowUserAgent(newWindow.webContents, url, 'Window Manager');
     const ensureShipinhaoLoginForceReset = createShipinhaoLoginResetGuard(newWindow, 'managed-window');
     // 账号/发布窗口必须等 cookie/storage 恢复和目标页加载完成后再显示。
     // 否则用户可能先看到登录扫码页，随后被后续 bootstrap/loadURL 导航刷新打断。
@@ -10744,7 +10760,7 @@ function getAccountSession(platform, accountId) {
   const accountSession = session.fromPartition(partitionName, { cache: false });
 
   // 配置 User-Agent（与主 session 保持一致）
-  const customUA = STANDARD_USER_AGENT;
+  const customUA = TAGGED_USER_AGENT;
   accountSession.setUserAgent(customUA);
 
   // 添加统一请求守卫（阻止 bitbrowser://、主框架静态资源误导航，并兼容网易号 HTTP）
