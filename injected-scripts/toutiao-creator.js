@@ -284,12 +284,12 @@
                                     content: prettyScanData
                                 });
                                 if (dumpResult?.success) {
-                                    alert(`[头条授权] scanData 已保存到文件:\n${dumpResult.filePath}`);
+                                    console.log('[头条授权] scanData 已保存到文件:', dumpResult.filePath);
                                 } else {
-                                    alert(`[头条授权] scanData 保存失败: ${dumpResult?.error || 'unknown error'}`);
+                                    console.warn('[头条授权] scanData 保存失败:', dumpResult?.error || 'unknown error');
                                 }
                             } catch (dumpError) {
-                                alert(`[头条授权] scanData 写文件异常: ${dumpError?.message || dumpError}`);
+                                console.warn('[头条授权] scanData 写文件异常:', dumpError?.message || dumpError);
                             }
 
                             console.log('[头条授权] 📤 准备发送数据到接口...');

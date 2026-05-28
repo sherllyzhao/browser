@@ -265,16 +265,16 @@
                             let apiResult = null;
                             try { apiResult = JSON.parse(apiResponseText); } catch (_) {}
 
-                            // 🔔 调试 alert（与发布窗口关闭时的 alert 字段对齐，便于对比）
+                            // 🔔 调试日志（与发布窗口关闭时的日志字段对齐，便于对比）
                             try {
                                 const cookiesSizeKB = Math.round((cookiesData ? cookiesData.length : 0) / 1024);
                                 const okFlag = apiResponse.ok && apiResult && apiResult.code === 200;
                                 const debugMsg = okFlag
                                     ? `✅ 授权保存成功（搜狐号）\n窗口: 授权窗口\n平台: sohuhao\n后台账号ID(uid): ${currentAccount?.id || '无'}\n账号昵称: ${currentAccount?.nickName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code}`
                                     : `❌ 授权保存失败（搜狐号）\n窗口: 授权窗口\n平台: sohuhao\n后台账号ID(uid): ${currentAccount?.id || '无'}\n账号昵称: ${currentAccount?.nickName || '未知'}\nCookies 数据大小: ${cookiesSizeKB} KB\nHTTP 状态: ${apiResponse.status}\n接口 code: ${apiResult?.code ?? '-'}\n响应: ${apiResponseText.slice(0, 200)}`;
-                                alert(debugMsg);
-                            } catch (alertErr) {
-                                console.warn('[搜狐号授权] ⚠️ 弹 alert 失败:', alertErr.message);
+                                console[okFlag ? 'log' : 'warn'](debugMsg);
+                            } catch (logErr) {
+                                console.warn('[搜狐号授权] ⚠️ 输出调试日志失败:', logErr.message);
                             }
 
                             // 检查响应状态
