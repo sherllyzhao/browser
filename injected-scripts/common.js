@@ -3,12 +3,23 @@
 // ===========================
 // 防止重复加载（检查关键函数是否已存在）
 
-if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "function" && typeof window.waitForElement === "function" && typeof window.setNativeValue === "function") {
+if (typeof window.uploadVideo === "function"
+    && typeof window.uploadImage === "function"
+    && typeof window.waitForElement === "function"
+    && typeof window.setNativeValue === "function"
+    && typeof window.__publishSaveSession__ === "function") {
     console.log("[common.js] ⚠️ common.js 已加载，跳过重复定义");
     console.log("[common.js] 当前窗口:", window.location.href);
 } else {
     console.log("[common.js] ✅ common.js 开始加载...");
     console.log("[common.js] 当前窗口:", window.location.href);
+    if (typeof window.uploadVideo === "function"
+        && typeof window.uploadImage === "function"
+        && typeof window.waitForElement === "function"
+        && typeof window.setNativeValue === "function"
+        && typeof window.__publishSaveSession__ !== "function") {
+        console.log("[common.js] 🔁 公共函数已存在，补注册关闭前会话保存函数");
+    }
 
     // 标记为已加载
     window.__COMMON_JS_LOADED__ = true;
@@ -1704,6 +1715,110 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
     // 用于发布窗口关闭前主动上报最新登录信息，避免主进程的轻量 {id, cookies} 格式被后台拒绝
     // 返回: { success, status, code, message, uid, nickname, cookiesLen, response, error }
     // ===========================
+    const SHIPINHAO_SAVE_DEDUP_COOKIE_NAMES = new Set(['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']);
+
+    function normalizeCookieDomainForPublishSave(domain) {
+        return String(domain || '').toLowerCase().replace(/^\./, '');
+    }
+
+    function buildPublishSaveCookieKey(cookie) {
+        return [
+            String(cookie && cookie.name || ''),
+            String(cookie && cookie.domain || '').toLowerCase(),
+            cookie && cookie.path || '/',
+            cookie && cookie.secure ? '1' : '0'
+        ].join('|');
+    }
+
+    function shouldPreferPublishSaveCookie(currentEntry, candidateEntry) {
+        const current = currentEntry.cookie;
+        const candidate = candidateEntry.cookie;
+        const currentHasValue = current.value !== undefined && current.value !== null && String(current.value) !== '';
+        const candidateHasValue = candidate.value !== undefined && candidate.value !== null && String(candidate.value) !== '';
+        if (currentHasValue !== candidateHasValue) {
+            return candidateHasValue;
+        }
+        const currentExpires = Number(current.expirationDate || 0);
+        const candidateExpires = Number(candidate.expirationDate || 0);
+        if (currentExpires !== candidateExpires) {
+            return candidateExpires > currentExpires;
+        }
+        return candidateEntry.index > currentEntry.index;
+    }
+
+    function getShipinhaoPublishSaveDomainPriority(cookie) {
+        const rawDomain = String(cookie && cookie.domain || '').toLowerCase();
+        const domain = rawDomain.replace(/^\./, '');
+        const hostOnlyBoost = rawDomain && !rawDomain.startsWith('.') ? 5 : 0;
+        if (domain === 'channels.weixin.qq.com') return 60 + hostOnlyBoost;
+        if (domain === 'weixin.qq.com') return 45 + hostOnlyBoost;
+        if (domain === 'mp.weixin.qq.com') return 35 + hostOnlyBoost;
+        if (domain === 'wx.qq.com') return 30 + hostOnlyBoost;
+        if (domain === 'qq.com') return 20 + hostOnlyBoost;
+        return hostOnlyBoost;
+    }
+
+    function shouldPreferShipinhaoPublishSaveCookie(currentEntry, candidateEntry) {
+        const currentPriority = getShipinhaoPublishSaveDomainPriority(currentEntry.cookie);
+        const candidatePriority = getShipinhaoPublishSaveDomainPriority(candidateEntry.cookie);
+        if (currentPriority !== candidatePriority) {
+            return candidatePriority > currentPriority;
+        }
+        return shouldPreferPublishSaveCookie(currentEntry, candidateEntry);
+    }
+
+    function dedupePublishSaveCookies(platform, cookies) {
+        if (!Array.isArray(cookies) || cookies.length === 0) {
+            return [];
+        }
+
+        const exactMap = new Map();
+        cookies.forEach((cookie, index) => {
+            if (!cookie || !cookie.name || !cookie.domain) {
+                return;
+            }
+            const entry = { cookie: { ...cookie }, index };
+            const key = buildPublishSaveCookieKey(entry.cookie);
+            const current = exactMap.get(key);
+            if (!current || shouldPreferPublishSaveCookie(current, entry)) {
+                exactMap.set(key, entry);
+            }
+        });
+
+        let entries = Array.from(exactMap.values());
+        if (platform === 'shipinhao') {
+            const grouped = new Map();
+            const passthrough = [];
+            entries.forEach(entry => {
+                const cookie = entry.cookie;
+                const name = String(cookie.name || '');
+                const domain = normalizeCookieDomainForPublishSave(cookie.domain);
+                if (SHIPINHAO_SAVE_DEDUP_COOKIE_NAMES.has(name)
+                    && (domain === 'channels.weixin.qq.com'
+                        || domain === 'weixin.qq.com'
+                        || domain === 'mp.weixin.qq.com'
+                        || domain === 'wx.qq.com'
+                        || domain === 'qq.com')) {
+                    const groupKey = `${name}|${cookie.path || '/'}`;
+                    const current = grouped.get(groupKey);
+                    if (!current || shouldPreferShipinhaoPublishSaveCookie(current, entry)) {
+                        grouped.set(groupKey, entry);
+                    }
+                } else {
+                    passthrough.push(entry);
+                }
+            });
+            entries = passthrough.concat(Array.from(grouped.values()));
+        }
+
+        entries.sort((a, b) => a.index - b.index);
+        const result = entries.map(entry => entry.cookie);
+        if (result.length !== cookies.length) {
+            console.log('[publishSaveSession] cookies 去重:', cookies.length, '->', result.length, 'platform=', platform);
+        }
+        return result;
+    }
+
     window.__publishSaveSession__ = async function (platform) {
         // 每平台配置：getUserInfo 返回 { nickname, avatar, uid }；domains 是要抓 cookies 的域；apiPath 是后台保存接口
         const platformConfigs = {
@@ -1890,7 +2005,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
             },
             shipinhao: {
                 apiPath: '/api/mediaauth/sphinfo',
-                domains: ['weixin.qq.com', 'channels.weixin.qq.com', 'mp.weixin.qq.com'],
+                domains: ['weixin.qq.com', 'channels.weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
                 getUserInfo: async (publishData) => {
                     // 优先 DOM 取
                     try {
@@ -1905,10 +2020,46 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                             };
                         }
                     } catch (_) {}
+                    // 当前窗口绑定账号兜底：发布成功页/列表页可能没有昵称 DOM，但主进程仍知道窗口账号。
+                    try {
+                        if (window.browserAPI && window.browserAPI.getCurrentAccount) {
+                            const ar = await window.browserAPI.getCurrentAccount();
+                            const acc = ar && ar.success && ar.account;
+                            if (acc && acc.platformUid) {
+                                return {
+                                    nickname: acc.nickname || '',
+                                    avatar: acc.avatar || '',
+                                    uid: acc.platformUid
+                                };
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[shipinhao getUserInfo] getCurrentAccount 兜底失败:', e && e.message);
+                    }
                     // 兜底从 publishData 取
                     const e = publishData && publishData.element || {};
-                    if (e.uid || e.platformUid) {
-                        return { nickname: e.nickname || '', avatar: e.avatar || '', uid: e.uid || e.platformUid };
+                    const accountInfo = e.account_info || e.accountInfo || {};
+                    const mediaAuth = e.media_auth || e.mediaAuth || {};
+                    const uid = e.uid
+                        || e.platformUid
+                        || accountInfo.uid
+                        || accountInfo.platformUid
+                        || accountInfo.open_id
+                        || accountInfo.origin_id
+                        || mediaAuth.uid
+                        || mediaAuth.platformUid
+                        || mediaAuth.open_id
+                        || mediaAuth.origin_id
+                        || e.media_auth_id
+                        || e.mediaAuthId
+                        || accountInfo.id
+                        || mediaAuth.id;
+                    if (uid) {
+                        return {
+                            nickname: e.nickname || accountInfo.nickname || mediaAuth.nickname || '',
+                            avatar: e.avatar || accountInfo.avatar || mediaAuth.avatar || '',
+                            uid: uid
+                        };
                     }
                     throw new Error('视频号 DOM/publishData 均无 uid');
                 }
@@ -1977,6 +2128,7 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
                     console.warn('[publishSaveSession] 获取 ' + d + ' session 失败:', e && e.message);
                 }
             }
+            mergedData.cookies = dedupePublishSaveCookies(platform, mergedData.cookies);
 
             if (mergedData.cookies.length === 0) {
                 throw new Error('未获取到任何 cookies');
@@ -2800,24 +2952,14 @@ if (typeof window.uploadVideo === "function" && typeof window.uploadImage === "f
 
     // 发送成功消息并关闭窗口
     // 🔑 增加默认延迟到 2500ms，确保消息有足够时间到达 Vue 应用
-    // 🔑 关闭窗口前自动清除 publish_data_window 数据
+    // 🔑 publish_data_window 由主进程在窗口 closed 后统一清理。
+    // 提前删除会让 close handler 拿不到账号上下文，导致登录态保存被跳过。
     window.closeWindowWithMessage = async function (message = "发布成功，刷新数据", delay = 10000) {
         console.log(`[closeWindow] 发送消息: ${message}`);
         window.sendMessageToParent(message);
 
         // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
         await new Promise(resolve => setTimeout(resolve, 500));
-
-        // 🔑 在关闭窗口前清除发布数据（防止数据残留）
-        try {
-            const windowId = await window.browserAPI.getWindowId();
-            if (windowId) {
-                await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-                console.log(`[closeWindow] 🗑️ 已清除 publish_data_window_${windowId}`);
-            }
-        } catch (e) {
-            console.log(`[closeWindow] ⚠️ 清除发布数据失败:`, e.message);
-        }
 
         if (delay > 0) {
             console.log(`[closeWindow] 等待 ${delay}ms 确保消息到达...`);

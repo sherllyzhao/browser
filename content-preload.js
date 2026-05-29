@@ -15,6 +15,16 @@ function injectMainWorldScript(scriptSource, logTag) {
   }
 }
 
+function isShipinhaoPublishUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return String(parsed.hostname || '').toLowerCase() === 'channels.weixin.qq.com'
+      && String(parsed.pathname || '').toLowerCase().includes('/platform/post/create');
+  } catch (_) {
+    return String(rawUrl || '').toLowerCase().includes('channels.weixin.qq.com/platform/post/create');
+  }
+}
+
 // 修复授权回调脚本写死 dev.china9.cn，但父页面实际在 www.china9.cn 时的 postMessage targetOrigin 报错。
 // 补丁安装在 china9 父页面，子窗口调用 opener.postMessage 时会优先命中父页面的 postMessage 方法。
 (function installChina9PostMessageTargetOriginShim() {
@@ -210,6 +220,10 @@ function injectMainWorldScript(scriptSource, logTag) {
 
     // 跳过登录类页面，避免覆盖扫码二维码
     const lowerUrl = url.toLowerCase();
+    if (isShipinhaoPublishUrl(url)) {
+      return;
+    }
+
     const LOGIN_PATTERNS = ['/login', '/userauth', '/userlogin', '/loginpage', '/cgi-bin/login', 'passport.', '/sso/', '/auth/', '/signin'];
     if (LOGIN_PATTERNS.some(p => lowerUrl.includes(p))) return;
 
@@ -339,6 +353,115 @@ function injectMainWorldScript(scriptSource, logTag) {
     window.addEventListener('unhandledrejection', (evt) => {
       console.error(`${__LC_TAG__}[${__LC_TS__()}] ❌ unhandledrejection:`, evt.reason && (evt.reason.message || evt.reason));
     });
+
+    if (isShipinhaoPublishUrl(currentUrl)) {
+      const PRELOAD_MASK_ID = '__yyzs_preload_loading_mask__';
+      const BLANK_RELOAD_KEY = '__yyzs_shipinhao_publish_blank_reloaded__';
+      const publishSelectors = [
+        '.post-short-title-wrap',
+        '.input-editor',
+        '.form-btns',
+        '.weui-desktop-btn',
+        '.post-time-wrap',
+        '.ant-progress-text',
+        '.ant-progress',
+        '.upload-wrapper',
+        '#fullScreenVideo',
+        'input[type="file"]'
+      ];
+
+      const removePreloadMaskIfAny = () => {
+        try {
+          const mask = document.getElementById(PRELOAD_MASK_ID);
+          if (mask) {
+            mask.remove();
+            console.warn('[PageLifecycle][视频号白屏巡检] 已移除 preload 白色遮罩');
+          }
+        } catch (_) {}
+      };
+
+      const hasVisibleElement = (el) => {
+        try {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || '1') !== 0
+            && rect.width >= 8
+            && rect.height >= 8;
+        } catch (_) {
+          return false;
+        }
+      };
+
+      const inspectShipinhaoPublishVisualState = (tag) => {
+        try {
+          removePreloadMaskIfAny();
+          const wujieApp = document.querySelector('wujie-app');
+          const shadowRoot = wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
+          const roots = shadowRoot ? [document, shadowRoot] : [document];
+          let hitSelector = '';
+          for (const selector of publishSelectors) {
+            if (roots.some(root => root.querySelector(selector))) {
+              hitSelector = selector;
+              break;
+            }
+          }
+
+          let visibleElementCount = 0;
+          roots.forEach(root => {
+            Array.from(root.querySelectorAll('*')).slice(0, 160).forEach(el => {
+              if (hasVisibleElement(el)) {
+                visibleElementCount += 1;
+              }
+            });
+          });
+
+          const bodyTextLength = document.body ? (document.body.innerText || '').trim().length : 0;
+          const bodyHtmlLength = document.body ? document.body.innerHTML.length : 0;
+          const blankSuspected = !hitSelector && visibleElementCount <= 2 && bodyTextLength < 20;
+          const snapshot = {
+            tag,
+            href: window.location.href,
+            readyState: document.readyState,
+            bodyHtmlLength,
+            bodyTextLength,
+            visibleElementCount,
+            wujieApp: !!wujieApp,
+            shadowRoot: !!shadowRoot,
+            shadowChildren: shadowRoot ? shadowRoot.childElementCount : 0,
+            hitSelector: hitSelector || '无',
+            blankSuspected
+          };
+          console.warn('[PageLifecycle][视频号白屏巡检]', snapshot);
+
+          if (blankSuspected && tag === 'T+15s') {
+            let alreadyReloaded = false;
+            try {
+              alreadyReloaded = sessionStorage.getItem(BLANK_RELOAD_KEY) === '1';
+            } catch (_) {}
+            if (!alreadyReloaded) {
+              try {
+                sessionStorage.setItem(BLANK_RELOAD_KEY, '1');
+              } catch (_) {}
+              console.warn('[PageLifecycle][视频号白屏巡检] 15s 后仍疑似白屏，执行一次刷新兜底');
+              setTimeout(() => {
+                try {
+                  window.location.reload();
+                } catch (reloadErr) {
+                  console.warn('[PageLifecycle][视频号白屏巡检] 刷新兜底失败:', reloadErr && reloadErr.message ? reloadErr.message : reloadErr);
+                }
+              }, 300);
+            }
+          }
+        } catch (inspectErr) {
+          console.warn('[PageLifecycle][视频号白屏巡检] 巡检异常:', inspectErr && inspectErr.message ? inspectErr.message : inspectErr);
+        }
+      };
+
+      setTimeout(() => inspectShipinhaoPublishVisualState('T+6s'), 6000);
+      setTimeout(() => inspectShipinhaoPublishVisualState('T+15s'), 15000);
+    }
   } catch (err) {
     console.error('[PageLifecycle] 注册页面生命周期日志失败:', err);
   }

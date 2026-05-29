@@ -62,6 +62,79 @@
   // 1. 从 URL 获取授权数据
   // ===========================
 
+  function dedupeShipinhaoSessionCookies(cookies) {
+    if (!Array.isArray(cookies) || cookies.length === 0) {
+      return [];
+    }
+
+    const criticalNames = new Set(['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']);
+    const normalizeDomain = (domain) => String(domain || '').toLowerCase().replace(/^\./, '');
+    const exactKey = (cookie) => [
+      String(cookie?.name || ''),
+      String(cookie?.domain || '').toLowerCase(),
+      cookie?.path || '/',
+      cookie?.secure ? '1' : '0'
+    ].join('|');
+    const preferByFreshness = (current, candidate) => {
+      const currentHasValue = current.cookie.value !== undefined && current.cookie.value !== null && String(current.cookie.value) !== '';
+      const candidateHasValue = candidate.cookie.value !== undefined && candidate.cookie.value !== null && String(candidate.cookie.value) !== '';
+      if (currentHasValue !== candidateHasValue) return candidateHasValue;
+      const currentExpires = Number(current.cookie.expirationDate || 0);
+      const candidateExpires = Number(candidate.cookie.expirationDate || 0);
+      if (currentExpires !== candidateExpires) return candidateExpires > currentExpires;
+      return candidate.index > current.index;
+    };
+    const domainPriority = (cookie) => {
+      const rawDomain = String(cookie?.domain || '').toLowerCase();
+      const domain = rawDomain.replace(/^\./, '');
+      const hostOnlyBoost = rawDomain && !rawDomain.startsWith('.') ? 5 : 0;
+      if (domain === 'channels.weixin.qq.com') return 60 + hostOnlyBoost;
+      if (domain === 'weixin.qq.com') return 45 + hostOnlyBoost;
+      if (domain === 'mp.weixin.qq.com') return 35 + hostOnlyBoost;
+      if (domain === 'wx.qq.com') return 30 + hostOnlyBoost;
+      if (domain === 'qq.com') return 20 + hostOnlyBoost;
+      return hostOnlyBoost;
+    };
+
+    const exactMap = new Map();
+    cookies.forEach((cookie, index) => {
+      if (!cookie || !cookie.name || !cookie.domain) return;
+      const entry = { cookie: { ...cookie }, index };
+      const key = exactKey(entry.cookie);
+      const current = exactMap.get(key);
+      if (!current || preferByFreshness(current, entry)) {
+        exactMap.set(key, entry);
+      }
+    });
+
+    const grouped = new Map();
+    const passthrough = [];
+    Array.from(exactMap.values()).forEach(entry => {
+      const cookie = entry.cookie;
+      const domain = normalizeDomain(cookie.domain);
+      if (criticalNames.has(cookie.name)
+        && ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'].includes(domain)) {
+        const groupKey = `${cookie.name}|${cookie.path || '/'}`;
+        const current = grouped.get(groupKey);
+        if (!current
+          || domainPriority(entry.cookie) > domainPriority(current.cookie)
+          || (domainPriority(entry.cookie) === domainPriority(current.cookie) && preferByFreshness(current, entry))) {
+          grouped.set(groupKey, entry);
+        }
+      } else {
+        passthrough.push(entry);
+      }
+    });
+
+    const result = passthrough.concat(Array.from(grouped.values()))
+      .sort((a, b) => a.index - b.index)
+      .map(entry => entry.cookie);
+    if (result.length !== cookies.length) {
+      console.log(`[视频号授权] 🧹 cookies 去重: ${cookies.length} -> ${result.length}`);
+    }
+    return result;
+  }
+
   const urlParams = new URLSearchParams(window.location.search);
   const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
@@ -186,7 +259,7 @@
             // 视频号登录链路会跨 weixin.qq.com / channels.weixin.qq.com，单域名会漏掉扫码后的关键会话
             console.log('[视频号授权] 📦 正在获取多域名完整会话数据...');
             try {
-              const sessionDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com'];
+              const sessionDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'];
               const sessionResults = await Promise.all(
                 sessionDomains.map(domain => window.browserAPI.getFullSessionData(domain).catch(err => {
                   console.warn(`[视频号授权] ⚠️ 获取 ${domain} 会话数据失败:`, err);
@@ -226,6 +299,8 @@
                   console.warn(`[视频号授权] ⚠️ ${domain} 会话数据获取失败`);
                 }
               });
+
+              mergedData.cookies = dedupeShipinhaoSessionCookies(mergedData.cookies);
 
               if (mergedData.cookies.length > 0) {
                 const dataObj = JSON.parse(scanData.data);

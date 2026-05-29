@@ -185,9 +185,8 @@
           await window.browserAPI.removeGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`);
           console.log('[发布成功] 🗑️ 已清除 globalData: PUBLISH_SUCCESS_DATA_' + windowId);
 
-          // 🔑 清除发布页数据（登录跳转场景下保留的数据）
-          await window.browserAPI.removeGlobalData(`publish_data_window_${windowId}`);
-          console.log('[发布成功] 🗑️ 已清除 globalData: publish_data_window_' + windowId);
+          // publish_data_window 需要保留到窗口真正关闭，供主进程 close handler 保存最新登录态。
+          console.log('[发布成功] ⏳ 保留 globalData: publish_data_window_' + windowId + '，交给主进程关闭后清理');
         } catch (e) {
           console.log('[发布成功] ⚠️ 清除 globalData 失败:', e.message);
         }

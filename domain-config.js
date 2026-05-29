@@ -266,7 +266,7 @@ const platformDomains = {
   baijiahao: ['baidu.com'],
   toutiao: ['toutiao.com', 'mp.toutiao.com', 'snssdk.com', 'bytedance.com'],
   weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
-  shipinhao: ['channels.weixin.qq.com'],
+  shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
   wangyihao: ['163.com', 'mp.163.com'],
   sohuhao: ['sohu.com', 'mp.sohu.com'],
   tengxunhao: ['qq.com', 'om.qq.com', 'aqq.qq.com'],
