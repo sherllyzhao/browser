@@ -1,5 +1,15 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// 🩹 旧版 Windows（Win7/8）标志：由主进程通过 webPreferences.additionalArguments 注入。
+// 仅旧系统才启用视频号发布页白屏巡检兜底，Win10/11 不注入此标志、不执行巡检（满足"仅旧系统生效"）。
+const __IS_LEGACY_WINDOWS__ = (() => {
+  try {
+    return Array.isArray(process.argv) && process.argv.some(arg => String(arg).includes('--yyzs-legacy-windows'));
+  } catch (_) {
+    return false;
+  }
+})();
+
 function isChina9Host(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   return host === 'china9.cn' || host.endsWith('.china9.cn');
@@ -354,9 +364,12 @@ function isShipinhaoPublishUrl(rawUrl = '') {
       console.error(`${__LC_TAG__}[${__LC_TS__()}] ❌ unhandledrejection:`, evt.reason && (evt.reason.message || evt.reason));
     });
 
-    if (isShipinhaoPublishUrl(currentUrl)) {
+    if (isShipinhaoPublishUrl(currentUrl) && __IS_LEGACY_WINDOWS__) {
       const PRELOAD_MASK_ID = '__yyzs_preload_loading_mask__';
-      const BLANK_RELOAD_KEY = '__yyzs_shipinhao_publish_blank_reloaded__';
+      const BLANK_RELOAD_COUNT_KEY = '__yyzs_shipinhao_publish_blank_reload_count__';
+      const MAX_BLANK_RELOAD = 3; // 最多自动刷新次数（计数器跨 reload 累积），防止无限刷新
+      const RELOAD_ALLOW_TAGS = ['T+8s', 'T+15s']; // 允许触发刷新的巡检点（T+3s/T+6s 仅观测，不刷新）
+      let reloadScheduled = false; // 本页面生命周期内是否已排定刷新，防止 T+8s/T+15s 同周期重复消耗配额
       const publishSelectors = [
         '.post-short-title-wrap',
         '.input-editor',
@@ -435,16 +448,17 @@ function isShipinhaoPublishUrl(rawUrl = '') {
           };
           console.warn('[PageLifecycle][视频号白屏巡检]', snapshot);
 
-          if (blankSuspected && tag === 'T+15s') {
-            let alreadyReloaded = false;
+          if (blankSuspected && RELOAD_ALLOW_TAGS.includes(tag) && !reloadScheduled) {
+            let reloadCount = 0;
             try {
-              alreadyReloaded = sessionStorage.getItem(BLANK_RELOAD_KEY) === '1';
+              reloadCount = parseInt(sessionStorage.getItem(BLANK_RELOAD_COUNT_KEY) || '0', 10) || 0;
             } catch (_) {}
-            if (!alreadyReloaded) {
+            if (reloadCount < MAX_BLANK_RELOAD) {
+              reloadScheduled = true;
               try {
-                sessionStorage.setItem(BLANK_RELOAD_KEY, '1');
+                sessionStorage.setItem(BLANK_RELOAD_COUNT_KEY, String(reloadCount + 1));
               } catch (_) {}
-              console.warn('[PageLifecycle][视频号白屏巡检] 15s 后仍疑似白屏，执行一次刷新兜底');
+              console.warn(`[PageLifecycle][视频号白屏巡检] ${tag} 仍疑似白屏，执行刷新兜底（第 ${reloadCount + 1}/${MAX_BLANK_RELOAD} 次）`);
               setTimeout(() => {
                 try {
                   window.location.reload();
@@ -452,6 +466,8 @@ function isShipinhaoPublishUrl(rawUrl = '') {
                   console.warn('[PageLifecycle][视频号白屏巡检] 刷新兜底失败:', reloadErr && reloadErr.message ? reloadErr.message : reloadErr);
                 }
               }, 300);
+            } else {
+              console.warn(`[PageLifecycle][视频号白屏巡检] 已达刷新上限 ${MAX_BLANK_RELOAD} 次，停止自动刷新`);
             }
           }
         } catch (inspectErr) {
@@ -459,7 +475,9 @@ function isShipinhaoPublishUrl(rawUrl = '') {
         }
       };
 
+      setTimeout(() => inspectShipinhaoPublishVisualState('T+3s'), 3000);
       setTimeout(() => inspectShipinhaoPublishVisualState('T+6s'), 6000);
+      setTimeout(() => inspectShipinhaoPublishVisualState('T+8s'), 8000);
       setTimeout(() => inspectShipinhaoPublishVisualState('T+15s'), 15000);
     }
   } catch (err) {

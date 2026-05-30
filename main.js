@@ -37,6 +37,10 @@ if (shouldDisableHardwareAcceleration) {
   console.log(`[启动] 检测到旧版 Windows (${legacyWindowsGpuWorkaround.release})，禁用硬件加速以规避白屏问题`);
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu-compositing');
+  // 🩹 裸开关：彻底禁用 GPU，强制纯软件渲染。disableHardwareAcceleration() 仅为软禁用，
+  // GPU 进程仍会尝试初始化；旧版 Windows（尤其 32 位 Electron 跑 64 位 Win7）下合成器
+  // 常出图失败导致白屏（典型如视频号发布页），--disable-gpu 比软禁用更彻底。
+  app.commandLine.appendSwitch('disable-gpu');
 } else {
   console.log('[启动] 当前系统保留 GPU 硬件加速');
 }
@@ -8681,6 +8685,11 @@ async function openManagedChildWindow(url, options = {}) {
     };
     if (!isBareToutiao) {
       windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
+      // 🩹 把"旧版 Windows"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
+      // 仅 Win7/8 注入；content-preload 据此决定是否启用视频号白屏巡检兜底，确保 Win10/11 完全不执行该巡检。
+      if (shouldDisableHardwareAcceleration) {
+        windowWebPreferences.additionalArguments = ['--yyzs-legacy-windows=1'];
+      }
     }
 
     const newWindow = new BrowserWindow({
@@ -8719,6 +8728,22 @@ async function openManagedChildWindow(url, options = {}) {
       if (!newWindow.isDestroyed() && !newWindow.isVisible()) {
         newWindow.show();
         console.log(`[Window Manager] 已显示窗口 (${reason})`);
+        // 🩹 旧版 Windows 软件渲染下，show() 后常出现「DOM 已就绪但合成器不出图」的白屏
+        //（Electron 已知问题：show:false 窗口显示后需触发一次重绘才贴图）。
+        // 仅 Win7/8 执行：微调窗口高度 +1px 再还原，强制合成器重绘一帧。Win10/11 不执行。
+        if (shouldDisableHardwareAcceleration) {
+          try {
+            const __redrawBounds = newWindow.getBounds();
+            newWindow.setBounds({ ...__redrawBounds, height: __redrawBounds.height + 1 });
+            setTimeout(() => {
+              try {
+                if (!newWindow.isDestroyed()) newWindow.setBounds(__redrawBounds);
+              } catch (_) {}
+            }, 60);
+          } catch (redrawErr) {
+            console.warn('[Window Manager] 强制重绘失败:', redrawErr && redrawErr.message ? redrawErr.message : redrawErr);
+          }
+        }
       }
       // 🪄 最后一步「加载目标发布页面」完成，留 220ms 让用户看到对勾再销毁 loading 窗口
       publishLoadingWindow?.finishStep?.(2);
@@ -9451,7 +9476,15 @@ async function openManagedChildWindow(url, options = {}) {
         clearShowTimers();
         if (isShipinhaoPublishUrl) {
           try {
-            await waitForShipinhaoPublishVisualReady(newWindow);
+            const visualResult = await waitForShipinhaoPublishVisualReady(newWindow);
+            // 🩹 主进程级白屏兜底：轮询超时仍未就绪（疑似白屏）时，用 reloadIgnoringCache 清缓存重载一次。
+            // 比页面侧 location.reload 更彻底（绕过可能缓存的坏资源）。finally 仅执行一次，故主进程最多重载 1 次，
+            // 之后交给页面侧 content-preload 巡检计数器继续兜底，不会叠加成无限循环。仅旧版 Windows 触发。
+            if (visualResult && visualResult.ready === false && shouldDisableHardwareAcceleration
+                && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
+              console.warn('[Shipinhao BlankGuard] 主进程检测发布页疑似白屏，执行 reloadIgnoringCache 清缓存重载');
+              newWindow.webContents.reloadIgnoringCache();
+            }
           } catch (waitErr) {
             console.warn('[Shipinhao BlankGuard] 等待发布页可见内容异常:', waitErr && waitErr.message ? waitErr.message : waitErr);
           }
