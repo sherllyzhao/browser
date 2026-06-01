@@ -1482,6 +1482,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
   dedupeShipinhaoCookies: () => ipcRenderer.invoke('dedupe-shipinhao-cookies'),
+  clearShipinhaoLoginIdentityCookies: () => ipcRenderer.invoke('clear-shipinhao-login-identity-cookies'),
   clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
 
   // 迁移临时 Session 的 Cookies 到持久化 Session

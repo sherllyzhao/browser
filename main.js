@@ -8697,9 +8697,14 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用持久化 session');
     }
 
-    if (isShipinhaoLoginUrl(url) && hasShipinhaoLoginResetRequest(url)) {
-      console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页显式重置，首包前清理旧 cookie`);
-      await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
+    if (isShipinhaoLoginUrl(url)) {
+      if (hasShipinhaoLoginResetRequest(url)) {
+        console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页显式重置，首包前清理旧 cookie`);
+        await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
+      } else {
+        console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页加载前清理旧身份 cookie`);
+        await clearShipinhaoIdentityCookiesFromSession(windowSession, 'initial-shipinhao-login-identity');
+      }
     }
 
     if (options.platform === 'shipinhao' || isShipinhaoCookieUrl(url)) {
@@ -10170,6 +10175,35 @@ ipcMain.handle('dedupe-shipinhao-cookies', async (event) => {
   }
 });
 
+ipcMain.handle('clear-shipinhao-login-identity-cookies', async (event) => {
+  try {
+    let targetSession = null;
+    let sessionSource = '';
+
+    if (browserView && event.sender === browserView.webContents) {
+      targetSession = browserView.webContents.session;
+      sessionSource = 'BrowserView';
+    } else {
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      if (senderWindow) {
+        targetSession = senderWindow.webContents.session;
+        sessionSource = `子窗口 (ID: ${senderWindow.id})`;
+      }
+    }
+
+    if (!targetSession) {
+      return { success: false, error: '无法获取当前 session' };
+    }
+
+    const deletedCount = await clearShipinhaoIdentityCookiesFromSession(targetSession, `视频号登录页清理 ${sessionSource}`);
+    installShipinhaoCookieDedup(targetSession, `视频号登录页清理 ${sessionSource}`);
+    return { success: true, deletedCount };
+  } catch (err) {
+    console.error('[Shipinhao Cookie Clear] 登录页身份 cookie 清理失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 全局数据存储（用于跨页面数据传递） ==========
 
 // 存储数据
@@ -10504,7 +10538,22 @@ function shouldPreferShipinhaoCookie(currentEntry, candidateEntry) {
   if (currentPriority !== candidatePriority) {
     return candidatePriority > currentPriority;
   }
-  return shouldPreferCookieCandidate(currentEntry, candidateEntry);
+
+  const current = currentEntry.cookie;
+  const candidate = candidateEntry.cookie;
+  const currentHasValue = current.value !== undefined && current.value !== null && String(current.value) !== '';
+  const candidateHasValue = candidate.value !== undefined && candidate.value !== null && String(candidate.value) !== '';
+  if (currentHasValue !== candidateHasValue) {
+    return candidateHasValue;
+  }
+
+  if (candidateEntry.index !== currentEntry.index) {
+    return candidateEntry.index > currentEntry.index;
+  }
+
+  const currentExpires = Number(current.expirationDate || 0);
+  const candidateExpires = Number(candidate.expirationDate || 0);
+  return candidateExpires > currentExpires;
 }
 
 function dedupeCookiesForSessionSave(platform, cookiesArray, source = 'session-save') {
@@ -10523,7 +10572,13 @@ function dedupeCookiesForSessionSave(platform, cookiesArray, source = 'session-s
     };
     const key = buildCookieStorageKey(entry.cookie);
     const current = exactMap.get(key);
-    if (!current || shouldPreferCookieCandidate(current, entry)) {
+    const useShipinhaoPreference = platform === 'shipinhao'
+      && SHIPINHAO_SAVE_DEDUP_COOKIE_NAMES.has(String(entry.cookie.name || ''))
+      && isShipinhaoCookieDomain(entry.cookie.domain);
+    const shouldPrefer = useShipinhaoPreference
+      ? shouldPreferShipinhaoCookie
+      : shouldPreferCookieCandidate;
+    if (!current || shouldPrefer(current, entry)) {
       exactMap.set(key, entry);
     }
   });
@@ -11238,6 +11293,7 @@ function getAccountSession(platform, accountId) {
 // 标记视频号 cookie 去重状态，避免重复监听和递归触发
 const shipinhaoDedupInstalledSessions = new WeakSet();
 const shipinhaoDedupInProgress = new WeakSet();
+const shipinhaoPreferredCookieBySession = new WeakMap();
 
 // 关注的同名 cookie：WeChat 登录态关键凭证
 const SHIPINHAO_DEDUP_COOKIE_NAMES = new Set(['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']);
@@ -11259,6 +11315,33 @@ function isShipinhaoCookieUrl(rawUrl = '') {
   } catch (_) {
     return false;
   }
+}
+
+function buildShipinhaoCookieGroupKey(cookie) {
+  return `${String(cookie?.name || '')}|${cookie?.path || '/'}`;
+}
+
+function rememberShipinhaoPreferredCookie(targetSession, cookie) {
+  if (!targetSession || !cookie || !SHIPINHAO_DEDUP_COOKIE_NAMES.has(cookie.name) || !isShipinhaoCookieDomain(cookie.domain)) {
+    return;
+  }
+
+  let preferredByGroup = shipinhaoPreferredCookieBySession.get(targetSession);
+  if (!preferredByGroup) {
+    preferredByGroup = new Map();
+    shipinhaoPreferredCookieBySession.set(targetSession, preferredByGroup);
+  }
+
+  preferredByGroup.set(buildShipinhaoCookieGroupKey(cookie), {
+    name: cookie.name,
+    value: cookie.value || '',
+    domain: cookie.domain,
+    path: cookie.path || '/',
+    secure: !!cookie.secure,
+    httpOnly: !!cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    expirationDate: cookie.expirationDate
+  });
 }
 
 function buildShipinhaoCookieUrl(cookie) {
@@ -11306,6 +11389,50 @@ async function expireExactShipinhaoCookie(targetSession, cookie, label) {
   }
 }
 
+async function clearShipinhaoIdentityCookiesFromSession(targetSession, label) {
+  if (!targetSession || !targetSession.cookies) return 0;
+
+  let deletedCount = 0;
+  try {
+    const allCookies = await targetSession.cookies.get({});
+    const identityCookies = allCookies.filter(cookie => SHIPINHAO_DEDUP_COOKIE_NAMES.has(cookie.name)
+      && isShipinhaoCookieDomain(cookie.domain));
+
+    for (const cookie of identityCookies) {
+      const deleted = await expireExactShipinhaoCookie(targetSession, cookie, label);
+      if (deleted) {
+        deletedCount++;
+        console.log(`[${label}] 登录页清理旧身份 cookie: ${cookie.name} @ ${cookie.domain}`);
+      }
+    }
+
+    if (deletedCount > 0 && typeof targetSession.flushStorageData === 'function') {
+      await targetSession.flushStorageData();
+    }
+  } catch (err) {
+    console.warn(`[${label}] 登录页身份 cookie 清理异常: ${err.message}`);
+  }
+
+  return deletedCount;
+}
+
+function findRememberedShipinhaoKeeper(targetSession, group) {
+  const preferredByGroup = shipinhaoPreferredCookieBySession.get(targetSession);
+  if (!preferredByGroup || !group || group.length === 0) {
+    return null;
+  }
+
+  const remembered = preferredByGroup.get(buildShipinhaoCookieGroupKey(group[0]));
+  if (!remembered) {
+    return null;
+  }
+
+  return group.find(cookie => cookie.name === remembered.name
+    && String(cookie.domain || '').toLowerCase() === String(remembered.domain || '').toLowerCase()
+    && (cookie.path || '/') === (remembered.path || '/')
+    && String(cookie.value || '') === String(remembered.value || '')) || null;
+}
+
 // 执行一次视频号同名 cookie 去重。
 //   - 传 keepCookie（监听器场景）：仅处理该 name+path 一组，保留刚写入的那一条，删 domain 不同的其余；
 //   - 不传 keepCookie（初始扫描场景）：遍历全部关注 name，按 name+path 分组；
@@ -11334,10 +11461,16 @@ async function dedupShipinhaoCookiesOnce(targetSession, label, keepCookie = null
         if (group.length <= 1) continue;
         let keeper;
         if (keepCookie) {
-          keeper = group.find(c => c.domain === keepCookie.domain) || group[0];
+          keeper = group.find(c => c.domain === keepCookie.domain
+            && (c.path || '/') === (keepCookie.path || '/')
+            && String(c.value || '') === String(keepCookie.value || ''))
+            || group.find(c => c.domain === keepCookie.domain
+              && (c.path || '/') === (keepCookie.path || '/'))
+            || group[0];
         } else {
+          const rememberedKeeper = findRememberedShipinhaoKeeper(targetSession, group);
           const hostOnly = group.find(c => !String(c.domain).startsWith('.'));
-          keeper = hostOnly || group.slice().sort((a, b) => (b.expirationDate || 0) - (a.expirationDate || 0))[0];
+          keeper = rememberedKeeper || hostOnly || group[group.length - 1];
         }
 
         const removedInGroup = [];
@@ -11388,6 +11521,7 @@ function installShipinhaoCookieDedup(targetSession, label) {
     if (cause !== 'explicit' && cause !== 'overwrite') return;
     if (!SHIPINHAO_DEDUP_COOKIE_NAMES.has(cookie.name)) return;
     if (!isShipinhaoCookieDomain(cookie.domain)) return;
+    rememberShipinhaoPreferredCookie(targetSession, cookie);
     await dedupShipinhaoCookiesOnce(targetSession, label, cookie);
   });
 

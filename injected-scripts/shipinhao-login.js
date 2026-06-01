@@ -5,6 +5,7 @@
 
   // 检查是否是新打开的窗口（通过检查是否已经刷新过）
   const REFRESH_FLAG_KEY = '_shipinhao_login_refreshed';
+  const IDENTITY_CLEAR_FLAG_KEY = '_shipinhao_login_identity_cookies_cleared';
   const RESET_FLAG_KEYS = [
     '_shipinhao_force_reset_login',
     'SHIPINHAO_FORCE_RESET_LOGIN',
@@ -142,6 +143,47 @@
 
   let shipinhaoCookieDedupePending = false;
   let lastShipinhaoCookieDedupeAt = 0;
+
+  function isShipinhaoLoginPage() {
+    try {
+      return window.location.hostname === 'channels.weixin.qq.com'
+        && window.location.pathname.includes('/login.html');
+    } catch (_) {
+      return window.location.href.includes('channels.weixin.qq.com/login.html');
+    }
+  }
+
+  async function clearLoginIdentityCookiesOnce() {
+    if (!isShipinhaoLoginPage()) {
+      return null;
+    }
+    if (!window.browserAPI || typeof window.browserAPI.clearShipinhaoLoginIdentityCookies !== 'function') {
+      console.warn('[Shipinhao Login] clearShipinhaoLoginIdentityCookies API 不可用，跳过旧身份 cookie 清理');
+      return null;
+    }
+
+    try {
+      if (sessionStorage.getItem(IDENTITY_CLEAR_FLAG_KEY) === 'true') {
+        return null;
+      }
+      sessionStorage.setItem(IDENTITY_CLEAR_FLAG_KEY, 'true');
+    } catch (e) {
+      console.warn('[Shipinhao Login] 读取/写入身份 cookie 清理标记失败:', e);
+    }
+
+    try {
+      const result = await window.browserAPI.clearShipinhaoLoginIdentityCookies();
+      if (result && result.success) {
+        console.log(`[Shipinhao Login] ✅ 登录页旧身份 cookie 已清理 ${result.deletedCount || 0} 个，不刷新页面`);
+      } else {
+        console.warn('[Shipinhao Login] 登录页旧身份 cookie 清理失败:', result && result.error);
+      }
+      return result;
+    } catch (e) {
+      console.warn('[Shipinhao Login] 登录页旧身份 cookie 清理异常:', e);
+      return null;
+    }
+  }
 
   async function dedupeShipinhaoCookies(reason) {
     if (!window.browserAPI || typeof window.browserAPI.dedupeShipinhaoCookies !== 'function') {
@@ -353,6 +395,8 @@
     }
 
     console.log('[Shipinhao Login] 页面已刷新过或不需要刷新，继续初始化');
+
+    await clearLoginIdentityCookiesOnce();
 
     // 先尝试恢复会话数据
     const restored = await restoreSessionData();
