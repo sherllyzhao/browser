@@ -558,6 +558,8 @@ if (typeof window.uploadVideo === "function"
     window.checkBlankPageAndReload = function (platform = '发布', keySelectors = [], checkDelay = 3000, maxRetries = 3) {
         const __startTs__ = Date.now();
         const startUrl = String(window.location.href || '');
+        const suppressShipinhaoAutoReload = String(platform || '').includes('视频号')
+            || startUrl.toLowerCase().includes('channels.weixin.qq.com');
         // 🛡️ 登录页跳过白屏检测：登录页天然没有发布元素，触发刷新会打断用户扫码/登录
         if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
             console.log(`[${platform}][白屏检测] ⏭️ 当前为登录页，跳过白屏检测，避免打断登录流程`);
@@ -680,6 +682,11 @@ if (typeof window.uploadVideo === "function"
                         keySelectors,
                         url: window.location.href
                     });
+
+                    if (suppressShipinhaoAutoReload) {
+                        console.log(`[${platform}][白屏检测] ⏭️ 视频号链路已禁用自动 reload，仅保留白屏诊断，避免打断扫码/登录态保存`);
+                        return;
+                    }
 
                     // 增加重试计数
                     localStorage.setItem(retryKey, String(retryCount + 1));

@@ -333,9 +333,18 @@ let hasProcessed = false;
             const messageData = parseMessageData(message.data, '[视频号发布]');
             if (!messageData) return;
 
-            // 使用公共方法恢复会话数据
-            const needReload = await restoreSessionAndReload(messageData, '[视频号发布]');
-            if (needReload) return; // 已触发刷新，脚本会重新注入
+            // 视频号发布窗口的账号 session 已在主进程打开窗口前恢复。
+            // 这里如果再 restoreSessionAndReload，会在收到 publish-data 后立刻刷新页面，打断扫码/重登流程。
+            if (typeof savePublishDataToGlobalStorage === 'function') {
+              await savePublishDataToGlobalStorage(messageData, '[视频号发布]');
+            } else if (window.browserAPI?.getWindowId && window.browserAPI?.setGlobalData) {
+              const windowId = await window.browserAPI.getWindowId();
+              if (windowId) {
+                await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+                console.log('[视频号发布] 💾 已用兜底方式保存发布数据到 globalData, windowId:', windowId);
+              }
+            }
+            console.log('[视频号发布] ⏭️ 跳过页面侧 restoreSessionAndReload，避免发布页二次刷新');
 
             // 防重复检查
             if (isProcessing) {

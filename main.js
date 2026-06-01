@@ -758,6 +758,13 @@ const SHIPINHAO_LOGIN_COOKIE_NAMES = new Set([
   'wxsid',
   'wxload'
 ]);
+const SHIPINHAO_LOGIN_RESET_PARAMS = [
+  'shipinhao_reset_login',
+  'shipinhao_force_reset',
+  'force_reset',
+  'reset_login',
+  'clear_login'
+];
 
 function isShipinhaoLoginUrl(rawUrl) {
   try {
@@ -771,10 +778,31 @@ function isShipinhaoLoginUrl(rawUrl) {
   }
 }
 
+function isTruthyResetParamValue(value) {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  return ['1', 'true', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+}
+
+function hasShipinhaoLoginResetRequest(rawUrl) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    if (!isShipinhaoLoginUrl(parsedUrl.toString())) {
+      return false;
+    }
+    return SHIPINHAO_LOGIN_RESET_PARAMS.some(key => isTruthyResetParamValue(parsedUrl.searchParams.get(key)));
+  } catch (_) {
+    return false;
+  }
+}
+
 function buildShipinhaoLoginForceResetUrl(rawUrl) {
   try {
     const parsedUrl = new URL(rawUrl);
     if (!isShipinhaoLoginUrl(parsedUrl.toString()) || parsedUrl.searchParams.has('force_reset')) {
+      return null;
+    }
+    if (!hasShipinhaoLoginResetRequest(parsedUrl.toString())) {
       return null;
     }
     parsedUrl.searchParams.set('force_reset', '1');
@@ -873,7 +901,7 @@ function createShipinhaoLoginResetGuard(targetWindow, windowLabel) {
     }
 
     shipinhaoLoginResetInFlight = true;
-    console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录页自动清理旧 cookie 并追加 force_reset=1: ${resetUrl}`);
+    console.log(`[Window Manager] 🔧 [${eventName}] 视频号登录页显式重置，清理旧 cookie 并追加 force_reset=1: ${resetUrl}`);
 
     (async () => {
       try {
@@ -8188,16 +8216,14 @@ async function openManagedChildWindow(url, options = {}) {
     return { success: false, error: 'No URL provided' };
   }
 
-  // 🔑 视频号授权窗口兼容：任何打开 channels.weixin.qq.com/login.html 的窗口都自动追加 force_reset=1，
-  // 触发 shipinhao-login.js 内既有的清缓存+刷新流程，保证服务端新下发的 Set-Cookie 不会与旧 cookie 并存。
-  // 场景覆盖：
-  //   1. 临时 session（新增账号授权）—— 防止上一次失败遗留的 cookie 残留
-  //   2. account session 重新授权 —— 持久化 session 里有旧账号 cookie，必须先清掉，否则 WeChat 服务端把新旧 sessionid/wxuin 同名 cookie 并存，登录失败
+  // 🔑 视频号登录重置只在显式 reset 参数下执行。
+  // 普通发布窗口掉到 channels.weixin.qq.com/login.html 时不能自动追加 force_reset，
+  // 否则会清掉刚恢复的账号 session，并触发登录页 reload 打断扫码。
   // 仅匹配 channels.weixin.qq.com（视频号），不影响 mp.weixin.qq.com（公众号）等其他子域。
   const shipinhaoLoginResetUrl = buildShipinhaoLoginForceResetUrl(url);
   if (shipinhaoLoginResetUrl) {
     url = shipinhaoLoginResetUrl;
-    console.log('[Window Manager] 🔧 视频号授权 URL 自动追加 force_reset=1:', url);
+    console.log('[Window Manager] 🔧 视频号登录显式重置 URL 追加 force_reset=1:', url);
   }
 
   const isShipinhaoPublishUrl = isShipinhaoPublishPageUrl(url);
@@ -8671,9 +8697,13 @@ async function openManagedChildWindow(url, options = {}) {
       console.log('[Window Manager] 使用持久化 session');
     }
 
-    if (isShipinhaoLoginUrl(url)) {
-      console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页首包前清理旧 cookie`);
+    if (isShipinhaoLoginUrl(url) && hasShipinhaoLoginResetRequest(url)) {
+      console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页显式重置，首包前清理旧 cookie`);
       await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
+    }
+
+    if (options.platform === 'shipinhao' || isShipinhaoCookieUrl(url)) {
+      installShipinhaoCookieDedup(windowSession, `视频号窗口 ${sessionType}`);
     }
 
     const windowWebPreferences = {
@@ -8804,6 +8834,17 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
+    const shouldBlockShipinhaoLoginSelfReload = (navUrl) => {
+      if (!isShipinhaoLoginUrl(navUrl)) return false;
+      if (newWindow.isDestroyed() || newWindow.webContents.isDestroyed()) return false;
+
+      const currentUrl = newWindow.webContents.getURL();
+      if (!isShipinhaoLoginUrl(currentUrl)) return false;
+
+      const currentContext = windowContextMap.get(windowId);
+      const hasPublishData = !!getWindowPublishData(windowId);
+      return currentContext?.purpose === 'publish' || hasPublishData;
+    };
 
     // 标记是否正在保存中（防止重复触发）
     let isSavingSession = false;
@@ -9162,10 +9203,19 @@ async function openManagedChildWindow(url, options = {}) {
     //   3. onBeforeRequest：网络层拦截所有 HTTP 子请求（API 调用等），解决 Mixed Content
     newWindow.webContents.on('did-start-navigation', (_event, navUrl, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
+        if (shouldBlockShipinhaoLoginSelfReload(navUrl)) {
+          console.warn('[Shipinhao LoginGuard] 检测到发布窗口登录页同页重载请求，等待 will-navigate 拦截:', navUrl);
+          return;
+        }
         ensureShipinhaoLoginForceReset(navUrl, 'did-start-navigation-login-reset');
       }
     });
     newWindow.webContents.on('will-navigate', (event, navUrl) => {
+      if (shouldBlockShipinhaoLoginSelfReload(navUrl)) {
+        console.warn('[Shipinhao LoginGuard] 已阻止发布窗口视频号登录页同页 reload:', navUrl);
+        event.preventDefault();
+        return;
+      }
       if (ensureShipinhaoLoginForceReset(navUrl, 'will-navigate', event)) return;
       if (navUrl.startsWith('http://mp.163.com/')) {
         const httpsUrl = navUrl.replace('http://mp.163.com/', 'https://mp.163.com/');
@@ -9477,13 +9527,11 @@ async function openManagedChildWindow(url, options = {}) {
         if (isShipinhaoPublishUrl) {
           try {
             const visualResult = await waitForShipinhaoPublishVisualReady(newWindow);
-            // 🩹 主进程级白屏兜底：轮询超时仍未就绪（疑似白屏）时，用 reloadIgnoringCache 清缓存重载一次。
-            // 比页面侧 location.reload 更彻底（绕过可能缓存的坏资源）。finally 仅执行一次，故主进程最多重载 1 次，
-            // 之后交给页面侧 content-preload 巡检计数器继续兜底，不会叠加成无限循环。仅旧版 Windows 触发。
+            // 🩹 主进程级白屏巡检：这里只记录，不再自动 reload。
+            // 视频号扫码/重登时任何自动刷新都会打断二维码确认和 session 落盘，导致“刚扫就刷新、登录保存不上”。
             if (visualResult && visualResult.ready === false && shouldDisableHardwareAcceleration
                 && !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()) {
-              console.warn('[Shipinhao BlankGuard] 主进程检测发布页疑似白屏，执行 reloadIgnoringCache 清缓存重载');
-              newWindow.webContents.reloadIgnoringCache();
+              console.warn('[Shipinhao BlankGuard] 主进程检测发布页疑似白屏，已禁用自动 reloadIgnoringCache，仅记录诊断');
             }
           } catch (waitErr) {
             console.warn('[Shipinhao BlankGuard] 等待发布页可见内容异常:', waitErr && waitErr.message ? waitErr.message : waitErr);
@@ -10088,6 +10136,36 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
     return { success: true, deletedCount };
   } catch (err) {
     console.error('[Clear Cookies] 清除失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// ========== 视频号同名 Cookie 去重 ==========
+ipcMain.handle('dedupe-shipinhao-cookies', async (event) => {
+  try {
+    let targetSession = null;
+    let sessionSource = '';
+
+    if (browserView && event.sender === browserView.webContents) {
+      targetSession = browserView.webContents.session;
+      sessionSource = 'BrowserView';
+    } else {
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
+      if (senderWindow) {
+        targetSession = senderWindow.webContents.session;
+        sessionSource = `子窗口 (ID: ${senderWindow.id})`;
+      }
+    }
+
+    if (!targetSession) {
+      return { success: false, error: '无法获取当前 session' };
+    }
+
+    const removedCount = await dedupShipinhaoCookiesOnce(targetSession, `视频号手动去重 ${sessionSource}`);
+    installShipinhaoCookieDedup(targetSession, `视频号手动去重 ${sessionSource}`);
+    return { success: true, removedCount };
+  } catch (err) {
+    console.error('[Shipinhao Cookie Dedupe] 手动去重失败:', err);
     return { success: false, error: err.message };
   }
 });
@@ -11157,7 +11235,8 @@ function getAccountSession(platform, accountId) {
   return accountSession;
 }
 
-// 标记当前正在执行去重，避免递归触发
+// 标记视频号 cookie 去重状态，避免重复监听和递归触发
+const shipinhaoDedupInstalledSessions = new WeakSet();
 const shipinhaoDedupInProgress = new WeakSet();
 
 // 关注的同名 cookie：WeChat 登录态关键凭证
@@ -11171,6 +11250,60 @@ function isShipinhaoCookieDomain(domain) {
     || d === 'mp.weixin.qq.com'
     || d === 'wx.qq.com'
     || d === 'qq.com';
+}
+
+function isShipinhaoCookieUrl(rawUrl = '') {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    return isShipinhaoCookieDomain(parsedUrl.hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function buildShipinhaoCookieUrl(cookie) {
+  const host = String(cookie?.domain || '').toLowerCase().replace(/^\./, '');
+  const pathName = cookie?.path && String(cookie.path).startsWith('/') ? cookie.path : '/';
+  return `${cookie?.secure ? 'https' : 'http'}://${host}${pathName}`;
+}
+
+function buildShipinhaoCookieSetDetails(cookie, expirationDate = undefined) {
+  const cookieDetails = {
+    url: buildShipinhaoCookieUrl(cookie),
+    name: cookie.name,
+    value: cookie.value || '',
+    domain: cookie.domain,
+    path: cookie.path || '/',
+    secure: !!cookie.secure,
+    httpOnly: !!cookie.httpOnly
+  };
+  assignCookieSameSite(cookieDetails, cookie.sameSite);
+  if (expirationDate !== undefined) {
+    cookieDetails.expirationDate = expirationDate;
+  } else if (cookie.expirationDate) {
+    cookieDetails.expirationDate = cookie.expirationDate;
+  }
+  return cookieDetails;
+}
+
+async function expireExactShipinhaoCookie(targetSession, cookie, label) {
+  const expiredDetails = buildShipinhaoCookieSetDetails(cookie, 1);
+  expiredDetails.value = '';
+
+  try {
+    await targetSession.cookies.set(expiredDetails);
+    return true;
+  } catch (setErr) {
+    console.warn(`[${label}] ⚠️ 精确过期 cookie 失败，尝试 remove: ${cookie.name} @ ${cookie.domain}: ${setErr.message}`);
+  }
+
+  try {
+    await targetSession.cookies.remove(buildShipinhaoCookieUrl(cookie), cookie.name);
+    return true;
+  } catch (rmErr) {
+    console.warn(`[${label}] ⚠️ 去重删除失败: ${cookie.name} @ ${cookie.domain}: ${rmErr.message}`);
+    return false;
+  }
 }
 
 // 执行一次视频号同名 cookie 去重。
@@ -11207,19 +11340,34 @@ async function dedupShipinhaoCookiesOnce(targetSession, label, keepCookie = null
           keeper = hostOnly || group.slice().sort((a, b) => (b.expirationDate || 0) - (a.expirationDate || 0))[0];
         }
 
+        const removedInGroup = [];
         for (const old of group) {
-          if (old === keeper) continue;
-          const host = old.domain.startsWith('.') ? old.domain.substring(1) : old.domain;
-          const oldUrl = `${old.secure ? 'https' : 'http'}://${host}${old.path || '/'}`;
-          try {
-            await targetSession.cookies.remove(oldUrl, old.name);
+          if (old.name === keeper.name
+            && old.domain === keeper.domain
+            && (old.path || '/') === (keeper.path || '/')
+            && String(old.value || '') === String(keeper.value || '')) {
+            continue;
+          }
+
+          const success = await expireExactShipinhaoCookie(targetSession, old, label);
+          if (success) {
             removed++;
+            removedInGroup.push(old);
             console.log(`[${label}] 🧹 去重同名 cookie: ${old.name} @ ${old.domain} (保留 @ ${keeper.domain})`);
-          } catch (rmErr) {
-            console.warn(`[${label}] ⚠️ 去重删除失败: ${old.name} @ ${old.domain}: ${rmErr.message}`);
+          }
+        }
+
+        if (removedInGroup.length > 0) {
+          try {
+            await targetSession.cookies.set(buildShipinhaoCookieSetDetails(keeper));
+          } catch (keepErr) {
+            console.warn(`[${label}] ⚠️ 重新确认保留 cookie 失败: ${keeper.name} @ ${keeper.domain}: ${keepErr.message}`);
           }
         }
       }
+    }
+    if (removed > 0 && typeof targetSession.flushStorageData === 'function') {
+      await targetSession.flushStorageData();
     }
   } catch (err) {
     console.warn(`[${label}] ⚠️ cookie 去重处理异常: ${err.message}`);
@@ -11230,6 +11378,10 @@ async function dedupShipinhaoCookiesOnce(targetSession, label, keepCookie = null
 }
 
 function installShipinhaoCookieDedup(targetSession, label) {
+  if (!targetSession || !targetSession.cookies) return;
+  if (shipinhaoDedupInstalledSessions.has(targetSession)) return;
+  shipinhaoDedupInstalledSessions.add(targetSession);
+
   targetSession.cookies.on('changed', async (_event, cookie, cause, removed) => {
     // 只处理新增/覆盖事件，跳过 expired/evicted/我们自己删除产生的事件
     if (removed) return;

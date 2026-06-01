@@ -458,14 +458,7 @@ function isShipinhaoPublishUrl(rawUrl = '') {
               try {
                 sessionStorage.setItem(BLANK_RELOAD_COUNT_KEY, String(reloadCount + 1));
               } catch (_) {}
-              console.warn(`[PageLifecycle][视频号白屏巡检] ${tag} 仍疑似白屏，执行刷新兜底（第 ${reloadCount + 1}/${MAX_BLANK_RELOAD} 次）`);
-              setTimeout(() => {
-                try {
-                  window.location.reload();
-                } catch (reloadErr) {
-                  console.warn('[PageLifecycle][视频号白屏巡检] 刷新兜底失败:', reloadErr && reloadErr.message ? reloadErr.message : reloadErr);
-                }
-              }, 300);
+              console.warn(`[PageLifecycle][视频号白屏巡检] ${tag} 仍疑似白屏，自动刷新已禁用（原计划第 ${reloadCount + 1}/${MAX_BLANK_RELOAD} 次），仅记录诊断`);
             } else {
               console.warn(`[PageLifecycle][视频号白屏巡检] 已达刷新上限 ${MAX_BLANK_RELOAD} 次，停止自动刷新`);
             }
@@ -1488,6 +1481,7 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 清除指定域名的 Cookies（用于退出登录）
   clearDomainCookies: (domain) => ipcRenderer.invoke('clear-domain-cookies', domain),
+  dedupeShipinhaoCookies: () => ipcRenderer.invoke('dedupe-shipinhao-cookies'),
   clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
 
   // 迁移临时 Session 的 Cookies 到持久化 Session

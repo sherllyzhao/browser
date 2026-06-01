@@ -8,6 +8,20 @@
 (async function () {
   'use strict';
 
+  function isShipinhaoPublishPage() {
+    try {
+      return window.location.hostname === 'channels.weixin.qq.com'
+        && window.location.pathname.includes('/platform/post/create');
+    } catch (_) {
+      return String(window.location.href || '').includes('channels.weixin.qq.com/platform/post/create');
+    }
+  }
+
+  if (isShipinhaoPublishPage()) {
+    console.log('[视频号授权] 当前为发布页，跳过授权脚本，避免误触发白屏检测或跳转');
+    return;
+  }
+
   // ===========================
   // 防止脚本重复注入
   // ===========================
