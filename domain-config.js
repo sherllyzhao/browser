@@ -302,7 +302,7 @@ const platformLoginCookies = {
   toutiao: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'uid_tt', 'uid_tt_ss'],
   weixin: ['wxuin', 'pass_ticket'],
   baijiahao: ['BDUSS', 'STOKEN'],
-  shipinhao: ['wxuin', 'pass_ticket'],
+  shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload'],
   wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
   sohuhao: ['sct', 'passport', 'ppinf', 'pprdig'],
   tengxunhao: ['uin', 'p_uin', 'skey', 'p_skey'],

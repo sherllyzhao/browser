@@ -1022,6 +1022,8 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
     || element?.accountInfo?.id
     || element?.media_auth_id
     || element?.mediaAuthId
+    || element?.dyPlatform?.id
+    || element?.id
     || ''
   ).trim();
   const publishTarget = detectPublishContentType(element);

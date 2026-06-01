@@ -678,6 +678,37 @@ function assignCookieSameSite(cookieDetails, rawSameSite) {
   }
 }
 
+function isHostOnlyCookie(cookie) {
+  return !!cookie?.domain && !String(cookie.domain).startsWith('.');
+}
+
+function buildCookieUrlForSet(cookie) {
+  const host = String(cookie?.domain || '').replace(/^\./, '');
+  const pathName = cookie?.path && String(cookie.path).startsWith('/') ? cookie.path : '/';
+  return `${cookie?.secure ? 'https' : 'http'}://${host}${pathName}`;
+}
+
+function buildCookieSetDetails(cookie, expirationDate = undefined) {
+  const cookieDetails = {
+    url: buildCookieUrlForSet(cookie),
+    name: cookie.name,
+    value: cookie.value || '',
+    path: cookie.path || '/',
+    secure: !!cookie.secure,
+    httpOnly: !!cookie.httpOnly
+  };
+  if (!isHostOnlyCookie(cookie) && cookie.domain) {
+    cookieDetails.domain = cookie.domain;
+  }
+  assignCookieSameSite(cookieDetails, cookie.sameSite);
+  if (expirationDate !== undefined) {
+    cookieDetails.expirationDate = expirationDate;
+  } else if (cookie.expirationDate) {
+    cookieDetails.expirationDate = cookie.expirationDate;
+  }
+  return cookieDetails;
+}
+
 function cloneSerializable(value) {
   if (value === undefined) {
     return undefined;
@@ -4642,18 +4673,7 @@ function createWindow() {
           for (const cookie of cookies) {
             if (cookie.session) {
               // 会话 Cookie，需要转换为持久化 Cookie
-              const persistentCookie = {
-                url: `${cookie.secure ? 'https' : 'http'}://${cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain}${cookie.path}`,
-                name: cookie.name,
-                value: cookie.value,
-                domain: cookie.domain,
-                path: cookie.path,
-                secure: cookie.secure,
-                httpOnly: cookie.httpOnly,
-                expirationDate: oneYearFromNow,
-                sameSite: cookie.sameSite
-              };
-
+              const persistentCookie = buildCookieSetDetails(cookie, oneYearFromNow);
               await ses.cookies.set(persistentCookie);
               convertedCount++;
             }
@@ -8555,28 +8575,10 @@ async function openManagedChildWindow(url, options = {}) {
                   continue;
                 }
 
-                const protocol = cookie.secure ? 'https' : 'http';
-                const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-                const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
-
-                const cookieDetails = {
-                  url: cookieUrl,
-                  name: cookie.name,
-                  value: cookie.value || '',
-                  domain: cookie.domain,
-                  path: cookie.path || '/',
-                  secure: cookie.secure || false,
-                  httpOnly: cookie.httpOnly || false
-                };
-                assignCookieSameSite(cookieDetails, cookie.sameSite);
-
-                // 设置过期时间
-                if (cookie.expirationDate) {
-                  cookieDetails.expirationDate = cookie.expirationDate;
-                } else {
-                  cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
-                }
-
+                const cookieDetails = buildCookieSetDetails(
+                  cookie,
+                  cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                );
                 await windowSession.cookies.set(cookieDetails);
                 restoredCount++;
                 if (keyCookieNames.includes(cookie.name)) {
@@ -8621,20 +8623,10 @@ async function openManagedChildWindow(url, options = {}) {
                                 try { cookie = JSON.parse(cookieItem); } catch (_) { continue; }
                             }
                             if (!cookie.name || !cookie.domain) continue;
-                            const protocol = cookie.secure ? 'https' : 'http';
-                            const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-                            const cookieUrl = `${protocol}://${domain}${cookie.path || '/'}`;
-                            const cookieDetails = {
-                                url: cookieUrl,
-                                name: cookie.name,
-                                value: cookie.value || '',
-                                domain: cookie.domain,
-                                path: cookie.path || '/',
-                                secure: cookie.secure || false,
-                                httpOnly: cookie.httpOnly || false,
-                                expirationDate: cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60)
-                            };
-                            assignCookieSameSite(cookieDetails, cookie.sameSite);
+                            const cookieDetails = buildCookieSetDetails(
+                                cookie,
+                                cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60)
+                            );
                             await windowSession.cookies.set(cookieDetails);
                             retryWrite++;
                         } catch (_) {}
@@ -8702,8 +8694,7 @@ async function openManagedChildWindow(url, options = {}) {
         console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页显式重置，首包前清理旧 cookie`);
         await clearShipinhaoLoginCookiesFromSession(windowSession, 'initial-shipinhao-login');
       } else {
-        console.log(`[Window Manager][${__wmTs()}] 🧹 视频号登录页加载前清理旧身份 cookie`);
-        await clearShipinhaoIdentityCookiesFromSession(windowSession, 'initial-shipinhao-login-identity');
+        console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号普通登录页不清身份 cookie，仅安装去重监听，避免破坏可复用登录态`);
       }
     }
 
@@ -9915,22 +9906,7 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
 
     for (const cookie of domainCookies) {
       try {
-        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
-
-        const newCookie = {
-          url: cookieUrl,
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          secure: cookie.secure,
-          httpOnly: cookie.httpOnly,
-          // 设置为持久化 cookie（1年过期）
-          expirationDate: cookie.expirationDate || oneYearFromNow
-        };
-        assignCookieSameSite(newCookie, cookie.sameSite);
-
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
         await persistentSession.cookies.set(newCookie);
         migratedCount++;
         console.log(`[Cookie Migration] ✓ 迁移: ${cookie.name} @ ${cookie.domain}`);
@@ -10007,19 +9983,7 @@ ipcMain.handle('migrate-cookies-to-account-session', async (event, domain, platf
     const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
     for (const cookie of dedupedDomainCookies) {
       try {
-        const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
-        const newCookie = {
-          url: cookieUrl,
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          secure: cookie.secure,
-          httpOnly: cookie.httpOnly,
-          expirationDate: cookie.expirationDate || oneYearFromNow
-        };
-        assignCookieSameSite(newCookie, cookie.sameSite);
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
         await targetSession.cookies.set(newCookie);
         migratedCount++;
       } catch (err) {
@@ -11350,43 +11314,78 @@ function buildShipinhaoCookieUrl(cookie) {
   return `${cookie?.secure ? 'https' : 'http'}://${host}${pathName}`;
 }
 
-function buildShipinhaoCookieSetDetails(cookie, expirationDate = undefined) {
-  const cookieDetails = {
-    url: buildShipinhaoCookieUrl(cookie),
-    name: cookie.name,
-    value: cookie.value || '',
-    domain: cookie.domain,
-    path: cookie.path || '/',
-    secure: !!cookie.secure,
-    httpOnly: !!cookie.httpOnly
-  };
-  assignCookieSameSite(cookieDetails, cookie.sameSite);
-  if (expirationDate !== undefined) {
-    cookieDetails.expirationDate = expirationDate;
-  } else if (cookie.expirationDate) {
-    cookieDetails.expirationDate = cookie.expirationDate;
+function isSameShipinhaoCookieStoreEntry(left, right, includeValue = true) {
+  if (!left || !right) return false;
+  const sameIdentity = String(left.name || '') === String(right.name || '')
+    && String(left.domain || '').toLowerCase() === String(right.domain || '').toLowerCase()
+    && (left.path || '/') === (right.path || '/');
+  if (!sameIdentity || !includeValue) return sameIdentity;
+  return String(left.value || '') === String(right.value || '');
+}
+
+async function hasShipinhaoCookieStoreEntry(targetSession, cookie) {
+  const candidates = await targetSession.cookies.get({ name: cookie.name });
+  return candidates.some(candidate => isSameShipinhaoCookieStoreEntry(candidate, cookie));
+}
+
+function buildShipinhaoCookieRemovalUrls(cookie) {
+  const host = String(cookie?.domain || '').toLowerCase().replace(/^\./, '');
+  const pathName = cookie?.path && String(cookie.path).startsWith('/') ? cookie.path : '/';
+  const protocols = cookie?.secure ? ['https', 'http'] : ['http', 'https'];
+  const hosts = new Set([host]);
+  if (host === 'qq.com' || host === 'weixin.qq.com' || host === 'wx.qq.com') {
+    hosts.add('channels.weixin.qq.com');
   }
-  return cookieDetails;
+
+  const paths = new Set([pathName, '/']);
+  const urls = [];
+  for (const protocol of protocols) {
+    for (const candidateHost of hosts) {
+      if (!candidateHost) continue;
+      for (const candidatePath of paths) {
+        urls.push(`${protocol}://${candidateHost}${candidatePath}`);
+      }
+    }
+  }
+  return Array.from(new Set(urls));
+}
+
+function buildShipinhaoCookieSetDetails(cookie, expirationDate = undefined) {
+  return buildCookieSetDetails(cookie, expirationDate);
 }
 
 async function expireExactShipinhaoCookie(targetSession, cookie, label) {
+  for (const cookieUrl of buildShipinhaoCookieRemovalUrls(cookie)) {
+    try {
+      await targetSession.cookies.remove(cookieUrl, cookie.name);
+      if (!(await hasShipinhaoCookieStoreEntry(targetSession, cookie))) {
+        return true;
+      }
+    } catch (rmErr) {
+      console.warn(`[${label}] ⚠️ remove cookie 失败: ${cookie.name} @ ${cookie.domain} (${cookieUrl}): ${rmErr.message}`);
+    }
+  }
+
   const expiredDetails = buildShipinhaoCookieSetDetails(cookie, 1);
   expiredDetails.value = '';
-
   try {
     await targetSession.cookies.set(expiredDetails);
-    return true;
+    if (!(await hasShipinhaoCookieStoreEntry(targetSession, cookie))) {
+      return true;
+    }
   } catch (setErr) {
-    console.warn(`[${label}] ⚠️ 精确过期 cookie 失败，尝试 remove: ${cookie.name} @ ${cookie.domain}: ${setErr.message}`);
+    console.warn(`[${label}] ⚠️ 精确过期 cookie 失败: ${cookie.name} @ ${cookie.domain}: ${setErr.message}`);
   }
 
   try {
-    await targetSession.cookies.remove(buildShipinhaoCookieUrl(cookie), cookie.name);
-    return true;
-  } catch (rmErr) {
-    console.warn(`[${label}] ⚠️ 去重删除失败: ${cookie.name} @ ${cookie.domain}: ${rmErr.message}`);
-    return false;
+    const remaining = await targetSession.cookies.get({ name: cookie.name });
+    const stillThere = remaining.filter(candidate => isSameShipinhaoCookieStoreEntry(candidate, cookie, false));
+    console.warn(`[${label}] ⚠️ cookie 删除后仍存在: ${cookie.name} @ ${cookie.domain}${cookie.path || '/'}，剩余 ${stillThere.length} 条`);
+  } catch (_) {
+    // ignore diagnostic failure
   }
+
+  return false;
 }
 
 async function clearShipinhaoIdentityCookiesFromSession(targetSession, label) {
@@ -11846,21 +11845,8 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
     );
 
     for (const cookie of filteredTempCookies) {
-      const cookieDomain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
       try {
-        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path}`;
-        const newCookie = {
-          url: cookieUrl,
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          secure: cookie.secure,
-          httpOnly: cookie.httpOnly,
-          expirationDate: cookie.expirationDate || oneYearFromNow
-        };
-        assignCookieSameSite(newCookie, cookie.sameSite);
-
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
         await targetSession.cookies.set(newCookie);
         migratedCount++;
       } catch (err) {
@@ -11893,7 +11879,7 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
       xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
       baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
       weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
-      shipinhao: ['wxuin', 'pass_ticket']
+      shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']
     };
 
     const requiredCookies = loginCookies[platform] || [];
@@ -11982,29 +11968,10 @@ ipcMain.handle('restore-session-data', async (event, sessionDataStr) => {
 
       for (const cookie of sessionData.cookies) {
         try {
-          // 构建 cookie URL
-          const protocol = cookie.secure ? 'https' : 'http';
-          const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-          const url = `${protocol}://${domain}${cookie.path || '/'}`;
-
-          const cookieDetails = {
-            url: url,
-            name: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain,
-            path: cookie.path || '/',
-            secure: cookie.secure || false,
-            httpOnly: cookie.httpOnly || false
-          };
-          assignCookieSameSite(cookieDetails, cookie.sameSite);
-
-          // 设置过期时间（如果有的话，否则设置为1年后）
-          if (cookie.expirationDate) {
-            cookieDetails.expirationDate = cookie.expirationDate;
-          } else {
-            cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
-          }
-
+          const cookieDetails = buildCookieSetDetails(
+            cookie,
+            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          );
           await ses.cookies.set(cookieDetails);
           results.cookies.restored++;
         } catch (cookieErr) {
@@ -12217,29 +12184,10 @@ ipcMain.handle('restore-account-session', async (event, platform, accountId, ses
 
       for (const cookie of sessionData.cookies) {
         try {
-          // 构建 cookie URL
-          const protocol = cookie.secure ? 'https' : 'http';
-          const domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain;
-          const url = `${protocol}://${domain}${cookie.path || '/'}`;
-
-          const cookieDetails = {
-            url: url,
-            name: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain,
-            path: cookie.path || '/',
-            secure: cookie.secure || false,
-            httpOnly: cookie.httpOnly || false
-          };
-          assignCookieSameSite(cookieDetails, cookie.sameSite);
-
-          // 设置过期时间（如果有的话，否则设置为1年后）
-          if (cookie.expirationDate) {
-            cookieDetails.expirationDate = cookie.expirationDate;
-          } else {
-            cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
-          }
-
+          const cookieDetails = buildCookieSetDetails(
+            cookie,
+            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+          );
           await targetSession.cookies.set(cookieDetails);
           results.cookies.restored++;
         } catch (cookieErr) {
@@ -12376,7 +12324,22 @@ ipcMain.handle('save-session-to-backend', async (event) => {
 
     const windowId = senderWindow.id;
     console.log('[Save Session] 窗口ID:', windowId);
-    return await persistWindowSessionToBackend(senderWindow, windowId, 'manual-save');
+    const result = await persistWindowSessionToBackend(senderWindow, windowId, 'manual-save');
+
+    if (result.success && browserView && !browserView.webContents.isDestroyed()) {
+      browserView.webContents.send('session-updated', {
+        windowId,
+        platform: result.accountInfo?.platform,
+        accountId: result.accountInfo?.accountId,
+        success: result.success,
+        cookieCount: result.cookieCount,
+        publishData: result.publishData,
+        timestamp: Date.now()
+      });
+      console.log('[Save Session] 已通知首页会话数据已更新（手动保存）');
+    }
+
+    return result;
   } catch (err) {
     console.error('[Save Session] 保存失败:', err);
     return { success: false, error: err.message };

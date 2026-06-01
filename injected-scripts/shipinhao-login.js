@@ -143,6 +143,8 @@
 
   let shipinhaoCookieDedupePending = false;
   let lastShipinhaoCookieDedupeAt = 0;
+  let backendSessionSaveInFlight = false;
+  let lastBackendSessionSaveAt = 0;
 
   function isShipinhaoLoginPage() {
     try {
@@ -155,6 +157,10 @@
 
   async function clearLoginIdentityCookiesOnce() {
     if (!isShipinhaoLoginPage()) {
+      return null;
+    }
+    if (!hasExplicitLoginResetRequest()) {
+      console.log('[Shipinhao Login] 普通登录页不清身份 cookie，仅保留去重逻辑，避免破坏可复用登录态');
       return null;
     }
     if (!window.browserAPI || typeof window.browserAPI.clearShipinhaoLoginIdentityCookies !== 'function') {
@@ -217,6 +223,39 @@
       lastShipinhaoCookieDedupeAt = Date.now();
       await dedupeShipinhaoCookies(reason);
     }, waitMs);
+  }
+
+  async function saveBackendSession(reason) {
+    if (!window.browserAPI || typeof window.browserAPI.saveSessionToBackend !== 'function') {
+      return null;
+    }
+    if (backendSessionSaveInFlight) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (now - lastBackendSessionSaveAt < 8000) {
+      return null;
+    }
+
+    backendSessionSaveInFlight = true;
+    lastBackendSessionSaveAt = now;
+
+    try {
+      await dedupeShipinhaoCookies(`before-backend-save:${reason}`);
+      const result = await window.browserAPI.saveSessionToBackend();
+      if (result && result.success) {
+        console.log(`[Shipinhao Login] ✅ 最新登录态已保存到后台 (${reason})，cookies=${result.cookieCount || 0}`);
+      } else {
+        console.warn('[Shipinhao Login] 最新登录态保存到后台失败:', result && result.error);
+      }
+      return result;
+    } catch (e) {
+      console.warn(`[Shipinhao Login] 最新登录态保存到后台异常 (${reason}):`, e);
+      return null;
+    } finally {
+      backendSessionSaveInFlight = false;
+    }
   }
 
   // 监听登录成功事件
@@ -303,6 +342,8 @@
       } catch (e) {
         console.error('[Shipinhao Login] 保存备份失败:', e);
       }
+
+      await saveBackendSession('login-success');
     } catch (error) {
       console.error('[Shipinhao Login] 保存会话数据失败:', error);
     }
