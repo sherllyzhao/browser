@@ -809,6 +809,245 @@ let hasProcessed = false;
 
 })();
 
+function getShipinhaoShadowRoot() {
+  const wujieApp = document.querySelector('wujie-app');
+  return wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
+}
+
+function getShipinhaoElementText(element) {
+  return String(element?.textContent || element?.innerText || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeShipinhaoShortTitle(rawTitle, fallbackText = '') {
+  const title = String(rawTitle || fallbackText || '').replace(/\s+/g, ' ').trim();
+  const titleChars = Array.from(title);
+  if (titleChars.length <= 16) {
+    return title;
+  }
+
+  const shortTitle = titleChars.slice(0, 16).join('').trim();
+  console.warn('[视频号发布] ⚠️ 短标题超过16字，已自动截断:', {
+    originalLength: titleChars.length,
+    shortLength: Array.from(shortTitle).length,
+    shortTitle
+  });
+  return shortTitle;
+}
+
+function isShipinhaoElementVisible(element) {
+  if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+
+  const rect = element.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+  try {
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+      return false;
+    }
+  } catch (_) {
+    // ignore style read failure
+  }
+
+  return true;
+}
+
+function isShipinhaoButtonDisabled(button) {
+  if (!button) return true;
+  const className = String(button.className || '');
+  return !!button.disabled
+    || button.getAttribute('disabled') !== null
+    || button.getAttribute('aria-disabled') === 'true'
+    || className.includes('disabled')
+    || className.includes('weui-desktop-btn_disabled');
+}
+
+function getShipinhaoPublishButtonCandidates() {
+  const shadowRoot = getShipinhaoShadowRoot();
+  const roots = [shadowRoot, document].filter(Boolean);
+  const selectors = [
+    '.form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn',
+    '.form-btns .weui-desktop-btn',
+    '.form-btns button',
+    '.form-btns [role="button"]',
+    'button.weui-desktop-btn',
+    '.weui-desktop-btn'
+  ];
+  const seen = new Set();
+  const candidates = [];
+
+  for (const root of roots) {
+    for (const selector of selectors) {
+      try {
+        root.querySelectorAll(selector).forEach(element => {
+          if (seen.has(element)) return;
+          seen.add(element);
+          candidates.push(element);
+        });
+      } catch (_) {
+        // ignore selector failure
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function isLikelyShipinhaoPublishButton(button, publishTime) {
+  const text = getShipinhaoElementText(button);
+  if (!text) return false;
+
+  const excludedKeywords = ['草稿', '保存', '预览', '取消', '返回', '关闭'];
+  if (excludedKeywords.some(keyword => text.includes(keyword))) {
+    return false;
+  }
+
+  if (+publishTime === 2 && (text.includes('定时') || text.includes('预约'))) {
+    return true;
+  }
+
+  return text.includes('发表') || text.includes('发布') || text.includes('提交');
+}
+
+function findShipinhaoPublishButton(publishTime) {
+  const candidates = getShipinhaoPublishButtonCandidates();
+  const visibleCandidates = candidates.filter(isShipinhaoElementVisible);
+  const enabledCandidates = visibleCandidates.filter(candidate => !isShipinhaoButtonDisabled(candidate));
+  const publishTextCandidates = enabledCandidates.filter(candidate => isLikelyShipinhaoPublishButton(candidate, publishTime));
+
+  if (+publishTime === 2) {
+    const scheduleButton = publishTextCandidates.find(candidate => {
+      const text = getShipinhaoElementText(candidate);
+      return text.includes('定时') || text.includes('预约');
+    });
+    if (scheduleButton) return scheduleButton;
+  }
+
+  if (publishTextCandidates.length > 0) {
+    return publishTextCandidates[publishTextCandidates.length - 1];
+  }
+
+  const footerButtons = enabledCandidates.filter(candidate => {
+    try {
+      return !!candidate.closest('.form-btns');
+    } catch (_) {
+      return false;
+    }
+  });
+
+  return footerButtons.length > 0 ? footerButtons[footerButtons.length - 1] : null;
+}
+
+function describeShipinhaoButtonCandidate(button) {
+  return {
+    text: getShipinhaoElementText(button).slice(0, 40),
+    disabled: isShipinhaoButtonDisabled(button),
+    visible: isShipinhaoElementVisible(button),
+    className: String(button?.className || '').slice(0, 120)
+  };
+}
+
+function collectShipinhaoBlockingErrorTexts() {
+  const shadowRoot = getShipinhaoShadowRoot();
+  const roots = [shadowRoot, document].filter(Boolean);
+  const errorTexts = [];
+
+  for (const root of roots) {
+    try {
+      root.querySelectorAll('.error-title').forEach(element => {
+        const text = getShipinhaoElementText(element);
+        if (text && !errorTexts.includes(text)) {
+          errorTexts.push(text);
+        }
+      });
+    } catch (_) {
+      // ignore selector failure
+    }
+  }
+
+  return errorTexts;
+}
+
+function collectShipinhaoFormDiagnostics() {
+  const shadowRoot = getShipinhaoShadowRoot();
+  const roots = [shadowRoot, document].filter(Boolean);
+  const titleInput = (shadowRoot && shadowRoot.querySelector('.post-short-title-wrap input'))
+    || document.querySelector('.post-short-title-wrap input');
+  const introInput = (shadowRoot && shadowRoot.querySelector('.input-editor'))
+    || document.querySelector('.input-editor');
+  const progressText = (shadowRoot && shadowRoot.querySelector('.ant-progress-text'))
+    || document.querySelector('.ant-progress-text');
+  const video = (shadowRoot && shadowRoot.querySelector('#fullScreenVideo'))
+    || document.querySelector('#fullScreenVideo');
+  const errorSelectors = [
+    '.error-tip',
+    '[class*="error"]',
+    '[class*="warn"]',
+    '[class*="tip"]',
+    '.toptip-content span',
+    '.weui-desktop-form__tips',
+    '.weui-desktop-form__error'
+  ];
+  const errorKeywords = ['错误', '失败', '不能为空', '请输入', '最多', '超过', '上传', '审核', '违规', '不支持', '请选择', '必填', '不能', '不可', '限制'];
+  const errorTexts = collectShipinhaoBlockingErrorTexts();
+
+  for (const root of roots) {
+    for (const selector of errorSelectors) {
+      try {
+        root.querySelectorAll(selector).forEach(element => {
+          const text = getShipinhaoElementText(element);
+          if (!text || text.length > 180) return;
+          if (!errorKeywords.some(keyword => text.includes(keyword))) return;
+          if (!errorTexts.includes(text)) {
+            errorTexts.push(text);
+          }
+        });
+      } catch (_) {
+        // ignore selector failure
+      }
+    }
+  }
+
+  return {
+    title: titleInput?.value || '未获取到',
+    titleLength: titleInput?.value?.length || 0,
+    intro: (introInput?.textContent || '未获取到').substring(0, 100),
+    introLength: introInput?.textContent?.length || 0,
+    uploadProgress: getShipinhaoElementText(progressText) || '无进度元素',
+    videoHasSrc: !!video?.src,
+    videoReadyState: typeof video?.readyState === 'number' ? video.readyState : '未获取到',
+    platformErrors: errorTexts.length > 0 ? errorTexts.slice(0, 10) : '无错误提示',
+    buttonCandidates: getShipinhaoPublishButtonCandidates().slice(0, 8).map(describeShipinhaoButtonCandidate)
+  };
+}
+
+async function waitForShipinhaoPublishButton(options = {}) {
+  const {
+    timeoutMs = 90000,
+    intervalMs = 2000,
+    publishTime = 0,
+    label = '发布按钮'
+  } = options;
+  const startedAt = Date.now();
+  let retryCount = 0;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const publishButton = findShipinhaoPublishButton(publishTime);
+    if (publishButton) {
+      console.log(`[视频号发布] ✅ ${label}已可用（第${retryCount + 1}次检测）:`, describeShipinhaoButtonCandidate(publishButton));
+      return publishButton;
+    }
+
+    retryCount++;
+    if (retryCount === 1 || retryCount % 5 === 0) {
+      console.log(`[视频号发布] ⏳ ${label}仍不可用，继续等待... (${retryCount})`, collectShipinhaoFormDiagnostics());
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(`${label}等待超时: ${JSON.stringify(collectShipinhaoFormDiagnostics())}`);
+}
+
 // ===========================
 // 7. 发布视频到视频号
 // ===========================
@@ -908,29 +1147,22 @@ async function publishApi(dataObj) {
 
     // 检测表单是否有错误提示
     await delay(1000);
-    const errors = document.querySelectorAll('.error-title');
-    if (errors.length > 0) {
+    const blockingErrors = collectShipinhaoBlockingErrorTexts();
+    if (blockingErrors.length > 0) {
       // 走错误上报
-      const errorStr = '表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', ');
+      const errorStr = '表单有错误提示：' + blockingErrors.join(', ');
       await sendStatisticsError(publishId, errorStr || '表单有错误', '视频号发布');
-      throw new Error('表单有错误提示：' + errors.map(e => e.textContent.trim()).join(', '));
+      throw new Error(errorStr);
     }
     await delay(1000);
 
-    // 等待发布按钮可用
-    const publishBtn = await retryOperation(async () => {
-      const btn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 5000);
-
-      if (!btn) {
-        throw new Error('未找到发布按钮');
-      }
-
-      if (btn.classList && btn.classList.contains("weui-desktop-btn_disabled")) {
-        throw new Error('发布按钮不可用，不符合平台发布要求');
-      }
-
-      return btn;
-    }, 10, 2000);
+    // 等待发布按钮可用。视频号页面按钮结构会变化，按文本和状态综合定位。
+    const publishBtn = await waitForShipinhaoPublishButton({
+      timeoutMs: 120000,
+      intervalMs: 2000,
+      publishTime: dataObj.video?.formData?.send_set,
+      label: '发布按钮'
+    });
 
     // 等待按钮事件绑定完成
     await delay(800);
@@ -1231,7 +1463,7 @@ async function fillFormData(dataObj) {
         // 延迟执行，让React状态稳定（关键！）
         await new Promise(resolve => setTimeout(resolve, 300));
 
-        const targetTitle = titleAndIntro.title || '';
+        const targetTitle = normalizeShipinhaoShortTitle(titleAndIntro.title, titleAndIntro.intro);
         setNativeValue(titleInput, targetTitle);
 
         // 额外触发input事件（xhs.js的做法）
@@ -1288,54 +1520,18 @@ async function fillFormData(dataObj) {
     console.log('[视频号发布] ⏳ 等待表单验证（8秒）...');
     await new Promise(resolve => setTimeout(resolve, 8000));
 
-    // 🔑 轮询检测发布按钮是否可用（最多等待60秒）
-    console.log('[视频号发布] 🔍 开始轮询检测发布按钮状态...');
-    let buttonReady = false;
-    let retryCount = 0;
-    const maxRetries = 30; // 30次 * 2秒 = 60秒
-
-    while (!buttonReady && retryCount < maxRetries) {
-      try {
-        const publishBtn = await waitForShadowElement("wujie-app", ".form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn", 2000);
-
-        if (publishBtn && !publishBtn.classList.contains("weui-desktop-btn_disabled")) {
-          buttonReady = true;
-          console.log(`[视频号发布] ✅ 发布按钮已可用（第${retryCount + 1}次检测）`);
-          break;
-        }
-
-        retryCount++;
-        console.log(`[视频号发布] ⏳ 按钮仍不可用，继续等待... (${retryCount}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-      } catch (error) {
-        retryCount++;
-        console.log(`[视频号发布] ⚠️ 检测按钮失败，继续重试... (${retryCount}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-    }
-
-    // 如果超时仍未可用，记录详细错误信息
-    if (!buttonReady) {
-      console.error('[视频号发布] ❌ 等待超时（60秒），按钮仍不可用');
-
-      // 收集详细错误信息
-      const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 1000).catch(() => null);
-      const introInput = await waitForShadowElement("wujie-app", ".input-editor", 1000).catch(() => null);
-      const errors = Array.from(document.querySelectorAll('.error-title, .error-tip, [class*="error"]'))
-        .map(e => e.textContent.trim())
-        .filter(t => t);
-
-      const errorInfo = {
-        title: titleInput?.value || '未获取到',
-        titleLength: titleInput?.value?.length || 0,
-        intro: (introInput?.textContent || '未获取到').substring(0, 100),
-        introLength: introInput?.textContent?.length || 0,
-        platformErrors: errors.length > 0 ? errors : '无错误提示'
-      };
-
-      console.error('[视频号发布] 详细信息:', errorInfo);
-      throw new Error(`发布按钮等待超时: ${JSON.stringify(errorInfo)}`);
+    // 发布按钮预检只做诊断，不在填表阶段直接判失败；真正等待放到 publishApi。
+    console.log('[视频号发布] 🔍 预检发布按钮状态...');
+    try {
+      await waitForShipinhaoPublishButton({
+        timeoutMs: 30000,
+        intervalMs: 2000,
+        publishTime,
+        label: '发布按钮预检'
+      });
+    } catch (buttonWaitError) {
+      console.warn('[视频号发布] ⚠️ 发布按钮预检未就绪，继续进入 publishApi 等待:', buttonWaitError.message);
+      console.warn('[视频号发布] 发布按钮预检诊断:', collectShipinhaoFormDiagnostics());
     }
 
     // 发布
