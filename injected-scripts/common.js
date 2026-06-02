@@ -1187,35 +1187,56 @@ if (typeof window.uploadVideo === "function"
             ? window.browserAPI.downloadImage
             : window.browserAPI?.downloadVideo;
 
-        // 优先使用主进程下载（绕过跨域限制）
-        if (downloadByMainProcess) {
-            console.log("[downloadFile] 使用主进程下载...");
-            const result = await downloadByMainProcess(url);
+        const executeWithRetry = typeof window.retryOperation === "function"
+            ? window.retryOperation
+            : async operation => operation();
+        let attemptCount = 0;
+        const downloadResult = await executeWithRetry(
+            async () => {
+                attemptCount += 1;
+                if (attemptCount > 1) {
+                    console.log(`[downloadFile] 第 ${attemptCount} 次重试下载...`);
+                }
 
-            if (!result.success) {
-                throw new Error("Download failed: " + result.error);
-            }
+                if (downloadByMainProcess) {
+                    console.log("[downloadFile] 使用主进程下载...");
+                    const result = await downloadByMainProcess(url);
 
-            const normalized = normalizeDownloadedResult(result, defaultType, "downloadFile");
-            blob = normalized.blob;
-            contentType = normalized.contentType;
-            console.log("[downloadFile] 主进程下载成功，大小:", result.size, "bytes, 类型:", contentType);
-        } else {
-            // 回退到 fetch（可能有跨域问题）
-            console.log("[downloadFile] browserAPI 下载能力不可用，使用 fetch...");
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error("HTTP error! status: " + response.status);
-            }
-            const downloadedBlob = await response.blob();
-            const normalized = await normalizeBlobResult(
-                downloadedBlob,
-                response.headers.get("Content-Type") || downloadedBlob.type || defaultType,
-                "downloadFile"
-            );
-            blob = normalized.blob;
-            contentType = normalized.contentType;
-        }
+                    if (!result.success) {
+                        throw new Error("Download failed: " + result.error);
+                    }
+
+                    const normalized = normalizeDownloadedResult(result, defaultType, "downloadFile");
+                    console.log("[downloadFile] 主进程下载成功，大小:", result.size, "bytes, 类型:", normalized.contentType);
+                    return {
+                        blob: normalized.blob,
+                        contentType: normalized.contentType,
+                    };
+                }
+
+                // 回退到 fetch（可能有跨域问题）
+                console.log("[downloadFile] browserAPI 下载能力不可用，使用 fetch...");
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error("HTTP error! status: " + response.status);
+                }
+                const downloadedBlob = await response.blob();
+                const normalized = await normalizeBlobResult(
+                    downloadedBlob,
+                    response.headers.get("Content-Type") || downloadedBlob.type || defaultType,
+                    "downloadFile"
+                );
+                return {
+                    blob: normalized.blob,
+                    contentType: normalized.contentType,
+                };
+            },
+            5,
+            3000,
+        );
+
+        blob = downloadResult.blob;
+        contentType = downloadResult.contentType;
 
         return { blob, contentType };
     };
@@ -1756,13 +1777,12 @@ if (typeof window.uploadVideo === "function"
     function getShipinhaoPublishSaveDomainPriority(cookie) {
         const rawDomain = String(cookie && cookie.domain || '').toLowerCase();
         const domain = rawDomain.replace(/^\./, '');
-        const hostOnlyBoost = rawDomain && !rawDomain.startsWith('.') ? 5 : 0;
-        if (domain === 'channels.weixin.qq.com') return 60 + hostOnlyBoost;
-        if (domain === 'weixin.qq.com') return 45 + hostOnlyBoost;
-        if (domain === 'mp.weixin.qq.com') return 35 + hostOnlyBoost;
-        if (domain === 'wx.qq.com') return 30 + hostOnlyBoost;
-        if (domain === 'qq.com') return 20 + hostOnlyBoost;
-        return hostOnlyBoost;
+        if (domain === 'channels.weixin.qq.com') return 60;
+        if (domain === 'weixin.qq.com') return 45;
+        if (domain === 'mp.weixin.qq.com') return 35;
+        if (domain === 'wx.qq.com') return 30;
+        if (domain === 'qq.com') return 20;
+        return 0;
     }
 
     function shouldPreferShipinhaoPublishSaveCookie(currentEntry, candidateEntry) {
@@ -2592,6 +2612,14 @@ if (typeof window.uploadVideo === "function"
     window.restoreSessionAndReload = async function (messageData, logPrefix = "[发布]") {
         if (!messageData.cookies) {
             return false; // 没有 cookies 数据，无需恢复
+        }
+
+        const currentUrl = String(window.location.href || '');
+        if (String(logPrefix || '').includes('视频号') || currentUrl.includes('channels.weixin.qq.com')) {
+            const windowId = await window.browserAPI.getWindowId();
+            await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+            console.log(`${logPrefix} ⏭️ 视频号链路跳过 restoreSessionAndReload，避免刷新打断扫码/登录态保存`);
+            return false;
         }
 
         console.log(`${logPrefix} 📦 检测到 cookies 数据，开始恢复会话...`);

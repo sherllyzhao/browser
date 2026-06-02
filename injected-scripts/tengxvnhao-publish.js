@@ -11,9 +11,16 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    if (window.__TXH_SCRIPT_LOADED__) {
-        console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入");
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-02-pre-click-disabled-marker-hover-v16";
+    if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
+        console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
+    }
+    if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ !== TXH_PUBLISH_SCRIPT_VERSION) {
+        console.warn("[腾讯号发布] ♻️ 检测到旧版脚本，继续加载新版逻辑:", {
+            oldVersion: window.__TXH_PUBLISH_SCRIPT_VERSION__ || "unknown",
+            newVersion: TXH_PUBLISH_SCRIPT_VERSION
+        });
     }
 
     // ===========================
@@ -27,6 +34,8 @@
     // }
 
     window.__TXH_SCRIPT_LOADED__ = true;
+    window.__TXH_PUBLISH_SCRIPT_VERSION__ = TXH_PUBLISH_SCRIPT_VERSION;
+    console.log("[腾讯号发布] 🧪 当前脚本版本:", TXH_PUBLISH_SCRIPT_VERSION);
 
     // ===========================
     // 🔑 腾讯号白屏检测和自动恢复（使用公共函数）
@@ -83,6 +92,7 @@
         errorListener.start();
     };
     const stopErrorListener = () => errorListener?.stop();
+    const clearLatestErrors = () => errorListener?.clear?.();
     const getLatestError = () => errorListener?.getLatestError() || null;
 
     // 获取窗口专属的发布成功数据 key
@@ -90,6 +100,925 @@
         const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || "default"}`;
         console.log("[腾讯号发布] 🔑 使用 localStorage key:", key);
         return key;
+    };
+
+    const normalizePublishTipText = text => (text || "").replace(/\s+/g, " ").trim();
+
+    const extractPublishErrorText = text => {
+        const normalizedText = normalizePublishTipText(text);
+        if (!normalizedText) return "";
+
+        const qualificationMatch = normalizedText.match(/您(?:的)?(?:资质|资格).{0,30}(?:未通过|不能|不可).{0,30}(?:发文|发文章|发布)/);
+        if (qualificationMatch && qualificationMatch[0]) {
+            return normalizePublishTipText(qualificationMatch[0]);
+        }
+
+        const preciseMatch = normalizedText.match(/您[^发布定时存草稿预览]{0,100}(?:资质|资格)[^发布定时存草稿预览]{0,100}(?:不能|不可|未通过|发文)[^发布定时存草稿预览]{0,60}/);
+        if (preciseMatch && preciseMatch[0]) {
+            return normalizePublishTipText(preciseMatch[0]);
+        }
+
+        const shortMatch = normalizedText.match(/(?:资质|资格)[^发布定时存草稿预览]{0,100}(?:不能|不可|未通过|发文)[^发布定时存草稿预览]{0,60}/);
+        if (shortMatch && shortMatch[0]) {
+            return normalizePublishTipText(shortMatch[0]);
+        }
+
+        return normalizedText.length <= 120 ? normalizedText : "";
+    };
+
+    const isPublishTipErrorText = text => {
+        const normalizedText = extractPublishErrorText(text);
+        return normalizedText
+            && normalizedText.length <= 120
+            && /资质|资格|不能|不可|未通过|发文|次数|权限|审核|失败|违规/.test(normalizedText);
+    };
+
+    const publishTipSelectors = [
+        'li[class*="tool_public_tip"]',
+        '[class*="tool_public_tip"]',
+        '[class*="public_tip"]',
+        '[role="tooltip"]',
+        '.omui-tooltip',
+        '.omui-tooltip-content',
+        '.omui-popover',
+        '[class*="tooltip"]',
+        '[class*="popover"]',
+        '[class*="popper"]'
+    ];
+
+    const getElementTextForPublishError = element => {
+        if (!element || element.nodeType !== 1) return "";
+        return normalizePublishTipText(
+            element.innerText
+            || element.textContent
+            || element.getAttribute("title")
+            || element.getAttribute("aria-label")
+            || ""
+        );
+    };
+
+    const getPublishElementDebugInfo = element => {
+        const rect = element.getBoundingClientRect();
+        return {
+            tag: element.tagName.toLowerCase(),
+            className: String(element.className || "").slice(0, 160),
+            text: getElementTextForPublishError(element).slice(0, 180),
+            rect: {
+                x: Math.round(rect.left),
+                y: Math.round(rect.top),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+            }
+        };
+    };
+
+    const getPublishButtonTextElements = publishBtn => {
+        const elements = [];
+        const addElement = element => {
+            if (element && element.nodeType === 1 && !elements.includes(element)) {
+                elements.push(element);
+            }
+        };
+
+        const textElements = publishBtn?.querySelectorAll?.('span[class*="tool_publish_button_text"], span[class*="tool_publish_buttons_text"], [class*="tool_publish_button_text"], [class*="tool_publish_buttons_text"], span') || [];
+        for (const element of textElements) {
+            const text = getElementTextForPublishError(element);
+            if (text && /发布/.test(text)) {
+                addElement(element);
+            }
+        }
+
+        return elements;
+    };
+
+    const getPublishTextRects = element => {
+        if (!element || element.nodeType !== 1 || typeof document.createRange !== "function") {
+            return [];
+        }
+
+        const rects = [];
+        try {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            for (const rect of Array.from(range.getClientRects())) {
+                if (rect.width > 0 && rect.height > 0) {
+                    rects.push(rect);
+                }
+            }
+            range.detach?.();
+        } catch (e) {
+            // Range 读取失败时使用元素矩形兜底。
+        }
+
+        if (rects.length === 0) {
+            const rect = element.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                rects.push(rect);
+            }
+        }
+
+        return rects;
+    };
+
+    const createPublishHoverPointerEventsOverride = (publishBtn, publishBtnWrap) => {
+        const styleId = "__txh_publish_hover_pointer_events_override__";
+        const listItem = publishBtn?.closest?.("li");
+        const toolRight = publishBtn?.closest?.('[class*="tool_right"], [class*="tool-right"]');
+        const toolContent = publishBtn?.closest?.('[class*="tool_content"], [class*="tool-content"]');
+        const publishTool = publishBtn?.closest?.('[class*="publish_tool"], [class*="publish-tool"]');
+        const roots = [publishBtnWrap, publishTool, toolContent, toolRight, listItem?.parentElement].filter(Boolean);
+        const disabledElements = [];
+        const seen = new Set();
+
+        const collectDisabledElement = element => {
+            if (!element || element.nodeType !== 1 || seen.has(element)) return;
+            seen.add(element);
+
+            const style = window.getComputedStyle(element);
+            if (style.pointerEvents === "none") {
+                disabledElements.push(getPublishElementDebugInfo(element));
+            }
+        };
+
+        [publishBtn, ...getPublishButtonTextElements(publishBtn), listItem, toolRight, toolContent, publishTool, publishBtnWrap].forEach(collectDisabledElement);
+        roots.forEach(root => {
+            collectDisabledElement(root);
+            const elements = root.querySelectorAll?.("*") || [];
+            for (const element of elements) {
+                collectDisabledElement(element);
+            }
+        });
+
+        let styleElement = document.getElementById(styleId);
+        if (!styleElement) {
+            styleElement = document.createElement("style");
+            styleElement.id = styleId;
+            document.head.appendChild(styleElement);
+        }
+
+        styleElement.textContent = `
+            footer[class*="publish_tool"],
+            footer[class*="publish_tool"] *,
+            [class*="tool_right"],
+            [class*="tool_right"] *,
+            [class*="tool-right"],
+            [class*="tool-right"] *,
+            [class*="tool_content"],
+            [class*="tool_content"] *,
+            [class*="tool-content"],
+            [class*="tool-content"] *,
+            [class*="tool_publish_buttons"],
+            [class*="tool_publish_buttons"] *,
+            [class*="tool_publish_button_text"],
+            [class*="tool_publish_buttons_text"],
+            button[class*="omui-button"],
+            button[class*="omui-button"] *,
+            button[class*="omui-button"] > span,
+            li[class*="tool_public_tip"],
+            [class*="tool_public_tip"],
+            li[class*="public_tip"],
+            [class*="public_tip"] {
+                pointer-events: auto !important;
+            }
+        `;
+
+        console.log("[腾讯号发布] 🧷 已临时解除发布区 pointer-events 禁用:", disabledElements);
+
+        return () => {
+            try {
+                styleElement.remove();
+                console.log("[腾讯号发布] 🧷 已还原发布区 pointer-events 覆盖");
+            } catch (e) {
+                console.warn("[腾讯号发布] ⚠️ 移除 pointer-events 覆盖失败:", e.message);
+            }
+        };
+    };
+
+    const isPublishPublicTipElement = element => {
+        if (!element || element.nodeType !== 1) return false;
+
+        const className = String(element.className || "");
+        return /tool_public_tip|public_tip/.test(className);
+    };
+
+    const getPublishPublicTipElements = (publishBtn, publishBtnWrap) => {
+        const elements = [];
+        const addElement = element => {
+            if (element && element.nodeType === 1 && !elements.includes(element)) {
+                elements.push(element);
+            }
+        };
+
+        const listItem = publishBtn?.closest?.("li");
+        addElement(listItem?.previousElementSibling);
+        addElement(listItem?.nextElementSibling);
+        addElement(publishBtn?.closest?.('[class*="tool_public_tip"]'));
+        addElement(publishBtn?.closest?.('[class*="public_tip"]'));
+
+        const roots = [
+            publishBtnWrap,
+            listItem?.parentElement,
+            publishBtn?.closest?.('[class*="tool_right"]'),
+            publishBtn?.closest?.('[class*="tool-right"]'),
+            publishBtn?.closest?.('[class*="tool_content"]'),
+            publishBtn?.closest?.('[class*="publish_tool"]')
+        ].filter(Boolean);
+
+        for (const root of roots) {
+            const tipElements = root.querySelectorAll?.('li[class*="tool_public_tip"], [class*="tool_public_tip"], li[class*="public_tip"], [class*="public_tip"]') || [];
+            for (const element of tipElements) {
+                addElement(element);
+            }
+        }
+
+        return elements.filter(isPublishPublicTipElement);
+    };
+
+    const readPublishPublicTipFullText = (publishBtn, publishBtnWrap) => {
+        for (const element of getPublishPublicTipElements(publishBtn, publishBtnWrap)) {
+            const text = getElementTextForPublishError(element);
+            if (text) {
+                console.log("[腾讯号发布] ✅ 捕获 tool_public_tip 元素完整文本:", {
+                    text,
+                    element: getPublishElementDebugInfo(element)
+                });
+                return text;
+            }
+        }
+
+        return null;
+    };
+
+    const extractPublishTipTextFromElement = element => {
+        if (!element || element.nodeType !== 1) return null;
+
+        if (isPublishPublicTipElement(element)) {
+            return getElementTextForPublishError(element) || null;
+        }
+
+        const directText = extractPublishErrorText(getElementTextForPublishError(element));
+        if (isPublishTipErrorText(directText)) {
+            return directText;
+        }
+
+        for (const attr of Array.from(element.attributes || [])) {
+            const attrName = attr.name || "";
+            if (!/title|label|content|tooltip|tip|popover|data-/i.test(attrName)) continue;
+
+            const attrText = extractPublishErrorText(attr.value);
+            if (isPublishTipErrorText(attrText)) {
+                return attrText;
+            }
+        }
+
+        for (const pseudo of ["::before", "::after"]) {
+            try {
+                const content = window.getComputedStyle(element, pseudo).content;
+                if (content && content !== "none" && content !== "normal") {
+                    const pseudoText = extractPublishErrorText(content.replace(/^["']|["']$/g, ""));
+                    if (isPublishTipErrorText(pseudoText)) {
+                        return pseudoText;
+                    }
+                }
+            } catch (e) {
+                // 个别节点不支持伪元素读取，跳过即可。
+            }
+        }
+
+        for (const selector of publishTipSelectors) {
+            if (typeof element.matches === "function" && element.matches(selector)) {
+                const text = isPublishPublicTipElement(element)
+                    ? getElementTextForPublishError(element)
+                    : extractPublishErrorText(getElementTextForPublishError(element));
+                if (text && (isPublishPublicTipElement(element) || isPublishTipErrorText(text))) {
+                    return text;
+                }
+            }
+
+            const elements = element.querySelectorAll(selector);
+            for (const item of elements) {
+                const text = isPublishPublicTipElement(item)
+                    ? getElementTextForPublishError(item)
+                    : extractPublishErrorText(getElementTextForPublishError(item));
+                if (text && (isPublishPublicTipElement(item) || isPublishTipErrorText(text))) {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    };
+
+    const collectPublishHoverTextCandidates = (roots = [document.body], baselineTexts = null) => {
+        if (!document.body) return [];
+
+        const candidates = [];
+        const seen = new Set();
+
+        const scanElement = element => {
+            if (!element || element.nodeType !== 1) return;
+
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return;
+
+            const style = window.getComputedStyle(element);
+            if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return;
+
+            const rawText = getElementTextForPublishError(element);
+            if (!rawText || rawText.length > 180) return;
+            if (!/资质|资格|不能|不可|未通过|发文|次数|权限|审核|失败|违规/.test(rawText)) return;
+
+            const text = extractPublishErrorText(rawText);
+            if (!isPublishTipErrorText(text) || seen.has(text)) return;
+            if (baselineTexts && baselineTexts.has(text)) return;
+
+            seen.add(text);
+            candidates.push({
+                text,
+                ...getPublishElementDebugInfo(element)
+            });
+        };
+
+        for (const root of roots.filter(Boolean)) {
+            scanElement(root);
+            const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+            for (const element of elements) {
+                scanElement(element);
+            }
+        }
+
+        return candidates.slice(0, 10);
+    };
+
+    const readPublishHoverTargetAttributeTip = (publishBtn, publishBtnWrap) => {
+        for (const element of getPublishHoverTargets(publishBtn, publishBtnWrap)) {
+            const text = extractPublishTipTextFromElement(element);
+            if (text) {
+                console.log("[腾讯号发布] ✅ 从 hover 目标属性/伪元素捕获错误提示:", {
+                    text,
+                    tag: element.tagName,
+                    className: String(element.className || "").slice(0, 160)
+                });
+                return text;
+            }
+        }
+
+        return null;
+    };
+
+    const readPublishHoverErrorTip = publishBtnWrap => {
+        const roots = [publishBtnWrap, document.body].filter(Boolean);
+
+        for (const root of roots) {
+            const publicTipElements = root.querySelectorAll?.('li[class*="tool_public_tip"], [class*="tool_public_tip"], li[class*="public_tip"], [class*="public_tip"]') || [];
+            for (const element of publicTipElements) {
+                const text = getElementTextForPublishError(element);
+                if (text) {
+                    return text;
+                }
+            }
+
+            const directText = extractPublishErrorText(root.textContent);
+            if (isPublishTipErrorText(directText)) {
+                return directText;
+            }
+
+            const text = extractPublishTipTextFromElement(root);
+            if (text) {
+                return text;
+            }
+        }
+
+        return null;
+    };
+
+    const createPublishHoverTipCapture = publishBtnWrap => {
+        let capturedText = readPublishHoverErrorTip(publishBtnWrap);
+        let observer = null;
+
+        const captureFromNode = node => {
+            if (capturedText || !node) return capturedText;
+
+            if (node.nodeType === 3) {
+                const ownText = extractPublishErrorText(node.textContent);
+                if (isPublishTipErrorText(ownText)) {
+                    capturedText = ownText;
+                    return capturedText;
+                }
+
+                const parentText = extractPublishTipTextFromElement(node.parentElement);
+                if (parentText) {
+                    capturedText = parentText;
+                }
+                return capturedText;
+            }
+
+            const rawNodeText = node.nodeType === 1 ? (node.innerText || node.textContent) : node.textContent;
+            const directNodeText = extractPublishErrorText(rawNodeText);
+            if (isPublishTipErrorText(directNodeText)) {
+                capturedText = directNodeText;
+                return capturedText;
+            }
+
+            const nodeText = extractPublishTipTextFromElement(node);
+            if (nodeText) {
+                capturedText = nodeText;
+            }
+
+            return capturedText;
+        };
+
+        if (document.body && typeof MutationObserver === "function") {
+            observer = new MutationObserver(mutations => {
+                for (const mutation of mutations) {
+                    if (capturedText) break;
+
+                    captureFromNode(mutation.target);
+                    for (const node of mutation.addedNodes || []) {
+                        captureFromNode(node);
+                        if (capturedText) break;
+                    }
+                }
+            });
+
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true,
+                characterData: true,
+                attributes: true,
+                attributeFilter: ["class", "style", "aria-hidden"]
+            });
+        }
+
+        return {
+            get: () => capturedText || readPublishHoverErrorTip(publishBtnWrap),
+            stop: () => {
+                if (observer) {
+                    observer.disconnect();
+                    observer = null;
+                }
+            }
+        };
+    };
+
+    const waitForPublishHoverTipCapture = async (tipCapture, options = {}) => {
+        const sampleDelays = options.sampleDelays || [0, 40, 80, 120, 180, 260, 360, 520, 760, 1100, 1500];
+        const roots = options.roots || [document.body];
+        const baselineTexts = options.baselineTexts || null;
+
+        for (const sampleDelay of sampleDelays) {
+            if (sampleDelay > 0) {
+                await new Promise(resolve => setTimeout(resolve, sampleDelay));
+            }
+
+            const publicTipText = tipCapture.getPublicTip?.();
+            if (publicTipText) {
+                return publicTipText;
+            }
+
+            const capturedText = tipCapture.get();
+            if (capturedText) {
+                return capturedText;
+            }
+
+            const candidates = collectPublishHoverTextCandidates(roots, baselineTexts);
+            if (candidates.length > 0) {
+                console.log("[腾讯号发布] 🔎 hover 普通元素文本候选:", candidates);
+                return candidates[0].text;
+            }
+        }
+
+        return null;
+    };
+
+    const dispatchPublishHoverEvent = (element, type, eventInit) => {
+        if (!element) return;
+
+        const EventCtor = type.startsWith("pointer") && typeof PointerEvent === "function"
+            ? PointerEvent
+            : MouseEvent;
+        try {
+            element.dispatchEvent(new EventCtor(type, {
+                ...eventInit,
+                composed: true,
+                pointerType: "mouse",
+                pointerId: 1,
+                isPrimary: true
+            }));
+        } catch (e) {
+            element.dispatchEvent(new MouseEvent(type, {
+                ...eventInit,
+                composed: true
+            }));
+        }
+    };
+
+    const getPublishHoverTargets = (publishBtn, publishBtnWrap) => {
+        const targets = [];
+        const addTarget = element => {
+            if (element && element.nodeType === 1 && !targets.includes(element)) {
+                targets.push(element);
+            }
+        };
+
+        const listItem = publishBtn?.closest?.("li");
+        getPublishButtonTextElements(publishBtn).forEach(addTarget);
+        addTarget(listItem);
+        addTarget(publishBtn);
+        addTarget(publishBtn?.parentElement);
+        addTarget(publishBtn?.closest?.('[class*="tool_publish_buttons"]'));
+        addTarget(listItem?.previousElementSibling);
+        addTarget(listItem?.nextElementSibling);
+        addTarget(listItem?.parentElement);
+        addTarget(publishBtn?.closest?.('[class*="tool_right"]'));
+        addTarget(publishBtn?.closest?.('[class*="tool-right"]'));
+        addTarget(publishBtn?.closest?.('[class*="tool_content"]'));
+        addTarget(publishBtn?.closest?.('[class*="tool_public_tip"]'));
+        addTarget(publishBtn?.closest?.('[class*="public_tip"]'));
+        addTarget(publishBtn?.closest?.('[class*="tool-right"]'));
+        addTarget(publishBtn?.closest?.('[class*="publish_tool"]'));
+        addTarget(publishBtnWrap);
+
+        return targets.filter(element => {
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0
+                && rect.height > 0
+                && rect.bottom >= 0
+                && rect.right >= 0
+                && rect.top <= window.innerHeight
+                && rect.left <= window.innerWidth;
+        });
+    };
+
+    const getPublishHoverPoints = (publishBtn, publishBtnWrap) => {
+        const clampX = value => Math.max(0, Math.min(Math.round(value), Math.max(0, window.innerWidth - 1)));
+        const clampY = value => Math.max(0, Math.min(Math.round(value), Math.max(0, window.innerHeight - 1)));
+        const points = [];
+        const pointKeys = new Set();
+
+        const addPoint = (element, x, y, label) => {
+            const clientX = clampX(x);
+            const clientY = clampY(y);
+            const key = `${clientX}:${clientY}`;
+            if (!pointKeys.has(key)) {
+                pointKeys.add(key);
+                points.push({ element, clientX, clientY, label });
+            }
+        };
+
+        getPublishHoverTargets(publishBtn, publishBtnWrap).forEach((element, targetIndex) => {
+            const rect = element.getBoundingClientRect();
+            const xInset = Math.min(Math.max(rect.width * 0.25, 4), 24);
+            const yInset = Math.min(Math.max(rect.height * 0.25, 4), 18);
+            const isTextTarget = getPublishButtonTextElements(publishBtn).includes(element);
+            const targetLabel = isTextTarget
+                ? "publish-text"
+                : element === publishBtn
+                ? "button"
+                : `${element.tagName.toLowerCase()}#${targetIndex}`;
+
+            if (isTextTarget) {
+                getPublishTextRects(element).forEach((textRect, textRectIndex) => {
+                    const textXInset = Math.min(Math.max(textRect.width * 0.2, 2), 10);
+                    const textYInset = Math.min(Math.max(textRect.height * 0.25, 2), 8);
+                    addPoint(element, textRect.left + textRect.width / 2, textRect.top + textRect.height / 2, `${targetLabel}:text-${textRectIndex}:center`);
+                    addPoint(element, textRect.left + textXInset, textRect.top + textRect.height / 2, `${targetLabel}:text-${textRectIndex}:left`);
+                    addPoint(element, textRect.right - textXInset, textRect.top + textRect.height / 2, `${targetLabel}:text-${textRectIndex}:right`);
+                    addPoint(element, textRect.left + textRect.width / 2, textRect.top + textYInset, `${targetLabel}:text-${textRectIndex}:top`);
+                });
+            }
+
+            addPoint(element, rect.left + rect.width / 2, rect.top + rect.height / 2, `${targetLabel}:center`);
+            addPoint(element, rect.left + xInset, rect.top + rect.height / 2, `${targetLabel}:left`);
+            addPoint(element, rect.right - xInset, rect.top + rect.height / 2, `${targetLabel}:right`);
+            addPoint(element, rect.left + rect.width / 2, rect.top + yInset, `${targetLabel}:top`);
+        });
+
+        return points;
+    };
+
+    const createNativeHoverPointPayload = points => points.map(point => ({
+        x: point.clientX,
+        y: point.clientY,
+        label: point.label
+    }));
+
+    const getAwayPointForPublishHover = point => {
+        const maxX = Math.max(0, window.innerWidth - 1);
+        const maxY = Math.max(0, window.innerHeight - 1);
+        return {
+            x: point.clientX < window.innerWidth / 2 ? maxX : 0,
+            y: point.clientY < window.innerHeight / 2 ? maxY : 0
+        };
+    };
+
+    const createPublishHoverEventInit = point => ({
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: point.clientX,
+        clientY: point.clientY,
+        screenX: window.screenX + point.clientX,
+        screenY: window.screenY + point.clientY
+    });
+
+    const dispatchPublishHoverEnterEvents = point => {
+        const eventInit = createPublishHoverEventInit(point);
+        const chain = [];
+        const addToChain = element => {
+            if (element && element.nodeType === 1 && !chain.includes(element)) {
+                chain.push(element);
+            }
+        };
+
+        addToChain(document.elementFromPoint(point.clientX, point.clientY));
+        addToChain(point.element);
+
+        let current = chain[0]?.parentElement;
+        while (current && current !== document.body && chain.length < 8) {
+            addToChain(current);
+            current = current.parentElement;
+        }
+
+        chain.forEach(element => {
+            dispatchPublishHoverEvent(element, "pointerover", eventInit);
+            dispatchPublishHoverEvent(element, "pointerenter", eventInit);
+            dispatchPublishHoverEvent(element, "pointermove", eventInit);
+            dispatchPublishHoverEvent(element, "mouseover", eventInit);
+            dispatchPublishHoverEvent(element, "mouseenter", eventInit);
+            dispatchPublishHoverEvent(element, "mousemove", eventInit);
+        });
+    };
+
+    const capturePublishHoverErrorTip = async (publishBtn, publishBtnWrap) => {
+        if (!publishBtn) return null;
+
+        const existingPublicTip = readPublishPublicTipFullText(publishBtn, publishBtnWrap);
+        if (existingPublicTip) return existingPublicTip;
+
+        const existingTip = readPublishHoverErrorTip(publishBtnWrap);
+        if (existingTip) return existingTip;
+
+        const targetAttrTip = readPublishHoverTargetAttributeTip(publishBtn, publishBtnWrap);
+        if (targetAttrTip) return targetAttrTip;
+
+        const restorePointerEvents = createPublishHoverPointerEventsOverride(publishBtn, publishBtnWrap);
+        const hoverTipCapture = createPublishHoverTipCapture(publishBtnWrap);
+        hoverTipCapture.getPublicTip = () => readPublishPublicTipFullText(publishBtn, publishBtnWrap);
+        try {
+            publishBtn.scrollIntoView({ block: "center", inline: "center" });
+            await new Promise(resolve => setTimeout(resolve, 120));
+        } catch (e) {
+            // footer 固定布局下 scrollIntoView 可能无意义，失败时继续 hover。
+        }
+        const hoverPoints = getPublishHoverPoints(publishBtn, publishBtnWrap);
+        const hoverRoots = [publishBtnWrap, document.body].filter(Boolean);
+        const baselineTexts = new Set(collectPublishHoverTextCandidates(hoverRoots).map(candidate => candidate.text));
+        const primaryHoverPoints = hoverPoints.slice(0, 16);
+        const cdpHoverPoints = hoverPoints.slice(0, 6);
+        let capturedHoverText = null;
+        console.log("[腾讯号发布] 🧭 发布按钮 hover 探测点:", hoverPoints.map(point => ({
+            label: point.label,
+            x: point.clientX,
+            y: point.clientY
+        })));
+
+        try {
+            if (window.browserAPI && typeof window.browserAPI.nativeMouseMove === "function") {
+                try {
+                    if (typeof window.browserAPI.nativeMouseHover === "function" && primaryHoverPoints.length > 0) {
+                        const awayPoint = getAwayPointForPublishHover(primaryHoverPoints[0]);
+                        const batchHoverPoints = [
+                            { x: awayPoint.x, y: awayPoint.y, label: "away" },
+                            ...createNativeHoverPointPayload(primaryHoverPoints)
+                        ];
+                        const batchHoverResult = await window.browserAPI.nativeMouseHover(batchHoverPoints, {
+                            intervalMs: 120,
+                            holdMs: 1600,
+                            useSendInput: true,
+                            useCdp: true
+                        });
+                        console.log("[腾讯号发布] 🖱️ 原生连续 hover 结果:", batchHoverResult);
+
+                        primaryHoverPoints.forEach(dispatchPublishHoverEnterEvents);
+
+                        const batchHoverTip = await waitForPublishHoverTipCapture(hoverTipCapture, {
+                            roots: hoverRoots,
+                            baselineTexts,
+                            sampleDelays: [0, 80, 160, 300, 520, 800, 1200]
+                        });
+                        if (batchHoverTip) {
+                            console.log("[腾讯号发布] ✅ 原生连续 hover 已捕获错误提示:", batchHoverTip);
+                            capturedHoverText = batchHoverTip;
+                            return capturedHoverText;
+                        }
+                    }
+
+                    if (primaryHoverPoints[0]) {
+                        const awayPoint = getAwayPointForPublishHover(primaryHoverPoints[0]);
+                        await window.browserAPI.nativeMouseMove(awayPoint.x, awayPoint.y, { enter: true });
+                        await new Promise(resolve => setTimeout(resolve, 120));
+                    }
+
+                    for (const point of primaryHoverPoints) {
+                        const nativeMoveResult = await window.browserAPI.nativeMouseMove(point.clientX, point.clientY, { enter: true });
+                        console.log("[腾讯号发布] 🖱️ 原生 hover 尝试:", {
+                            label: point.label,
+                            hit: getPublishElementDebugInfo(document.elementFromPoint(point.clientX, point.clientY) || point.element),
+                            result: nativeMoveResult
+                        });
+                        dispatchPublishHoverEnterEvents(point);
+
+                        const nativeHoverTip = await waitForPublishHoverTipCapture(hoverTipCapture, {
+                            roots: hoverRoots,
+                            baselineTexts,
+                            sampleDelays: [0, 40, 90, 160, 260, 420, 700, 1100, 1600]
+                        });
+                        if (nativeHoverTip) {
+                            console.log("[腾讯号发布] ✅ 原生 hover 已捕获瞬时错误提示:", nativeHoverTip);
+                            capturedHoverText = nativeHoverTip;
+                            return capturedHoverText;
+                        }
+                    }
+
+                    if (cdpHoverPoints[0]) {
+                        const awayPoint = getAwayPointForPublishHover(cdpHoverPoints[0]);
+                        await window.browserAPI.nativeMouseMove(awayPoint.x, awayPoint.y, { method: "cdp" });
+                        await new Promise(resolve => setTimeout(resolve, 120));
+                    }
+
+                    for (const point of cdpHoverPoints) {
+                        const cdpMoveResult = await window.browserAPI.nativeMouseMove(point.clientX, point.clientY, { method: "cdp" });
+                        console.log("[腾讯号发布] 🖱️ CDP hover 兜底尝试:", {
+                            label: point.label,
+                            result: cdpMoveResult
+                        });
+                        dispatchPublishHoverEnterEvents(point);
+
+                        const cdpHoverTip = await waitForPublishHoverTipCapture(hoverTipCapture, {
+                            roots: hoverRoots,
+                            baselineTexts,
+                            sampleDelays: [0, 40, 90, 160, 260, 420, 700, 1100]
+                        });
+                        if (cdpHoverTip) {
+                            console.log("[腾讯号发布] ✅ CDP hover 已捕获瞬时错误提示:", cdpHoverTip);
+                            capturedHoverText = cdpHoverTip;
+                            return capturedHoverText;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("[腾讯号发布] ⚠️ 原生鼠标移入失败，回退 DOM 事件:", e);
+                }
+            }
+
+            if (typeof publishBtn.focus === "function") {
+                try {
+                    publishBtn.focus({ preventScroll: true });
+                } catch (e) {
+                    publishBtn.focus();
+                }
+            }
+
+            for (const point of primaryHoverPoints) {
+                dispatchPublishHoverEnterEvents(point);
+                const hoverTip = await waitForPublishHoverTipCapture(hoverTipCapture, {
+                    roots: hoverRoots,
+                    baselineTexts,
+                    sampleDelays: [0, 40, 90, 160, 260, 420, 700]
+                });
+                if (hoverTip) {
+                    capturedHoverText = hoverTip;
+                    return capturedHoverText;
+                }
+            }
+
+            capturedHoverText = await waitForPublishHoverTipCapture(hoverTipCapture, {
+                roots: hoverRoots,
+                baselineTexts
+            });
+            if (!capturedHoverText) {
+                console.log("[腾讯号发布] 🧪 hover 后仍未抓到普通元素错误文本，发布区快照:", {
+                    publishWrap: publishBtnWrap ? getPublishElementDebugInfo(publishBtnWrap) : null,
+                    button: getPublishElementDebugInfo(publishBtn),
+                    candidatesWithoutBaseline: collectPublishHoverTextCandidates(hoverRoots)
+                });
+            }
+            return capturedHoverText;
+        } finally {
+            hoverTipCapture.stop();
+            restorePointerEvents();
+        }
+    };
+
+    const getPublishButtonDisabledMarkers = publishBtn => {
+        const markers = [];
+        const seen = new Set();
+
+        const addMarker = (element, reason) => {
+            if (!element || element.nodeType !== 1 || !reason) return;
+
+            const key = `${reason}:${element.tagName}:${element.className}:${markers.length}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+
+            markers.push({
+                reason,
+                element: getPublishElementDebugInfo(element)
+            });
+        };
+
+        const candidateElements = [];
+        const addCandidate = element => {
+            if (element && element.nodeType === 1 && !candidateElements.includes(element)) {
+                candidateElements.push(element);
+            }
+        };
+
+        addCandidate(publishBtn);
+        getPublishButtonTextElements(publishBtn).forEach(addCandidate);
+        addCandidate(publishBtn?.closest?.("li"));
+        addCandidate(publishBtn?.parentElement);
+        addCandidate(publishBtn?.closest?.('[class*="tool_publish_buttons"]'));
+        addCandidate(publishBtn?.closest?.('[class*="tool_right"], [class*="tool-right"]'));
+        addCandidate(publishBtn?.closest?.('[class*="tool_content"], [class*="tool-content"]'));
+        addCandidate(publishBtn?.closest?.('[class*="publish_tool"], [class*="publish-tool"]'));
+
+        for (const element of candidateElements) {
+            const className = String(element.className || "");
+            const disabledAttr = element.getAttribute?.("disabled");
+            const ariaDisabled = element.getAttribute?.("aria-disabled");
+            const dataDisabled = element.getAttribute?.("data-disabled");
+            const style = window.getComputedStyle(element);
+
+            if (element.disabled === true) {
+                addMarker(element, "element.disabled=true");
+            }
+            if (disabledAttr !== null) {
+                addMarker(element, "disabled attribute");
+            }
+            if (ariaDisabled === "true") {
+                addMarker(element, "aria-disabled=true");
+            }
+            if (dataDisabled === "true") {
+                addMarker(element, "data-disabled=true");
+            }
+            if (/(^|[\s_-])(is--disabled|is-disabled|disabled|disable|forbid|forbidden)([\s_-]|$)/i.test(className)) {
+                addMarker(element, `disabled class: ${className.slice(0, 120)}`);
+            }
+            if ((element === publishBtn || getPublishButtonTextElements(publishBtn).includes(element)) && style.pointerEvents === "none") {
+                addMarker(element, "pointer-events=none on publish button/text");
+            }
+        }
+
+        return markers;
+    };
+
+    const isPublishButtonDisabled = publishBtn => {
+        const markers = getPublishButtonDisabledMarkers(publishBtn);
+        if (markers.length > 0) {
+            console.log("[腾讯号发布] 🚫 发布按钮禁用标识检测命中:", markers);
+            return true;
+        }
+
+        return false;
+    };
+
+    const getPublishButtonDisabledMessage = async (publishBtn, publishBtnWrap) => {
+        const hoverError = await capturePublishHoverErrorTip(publishBtn, publishBtnWrap);
+        if (hoverError) {
+            return hoverError;
+        }
+
+        const latestError = getLatestError();
+        console.log("[腾讯号发布] ⚠️ 未捕获到 hover-only 错误文案，使用错误监听兜底:", latestError);
+        return latestError || "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽";
+    };
+
+    const clearPublishErrorReportLock = async publishId => {
+        if (!publishId) return;
+
+        let windowId = null;
+        try {
+            if (window.browserAPI && typeof window.browserAPI.getWindowId === "function") {
+                windowId = await window.browserAPI.getWindowId();
+            }
+        } catch (e) {
+            console.warn("[腾讯号发布] ⚠️ 获取窗口 ID 失败，按 default 清理失败上报锁:", e.message);
+        }
+
+        const key = `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_error`;
+        try {
+            const cachedRaw = sessionStorage.getItem(key);
+            if (!cachedRaw) return;
+
+            const cached = JSON.parse(cachedRaw);
+            if (String(cached?.publishId || "") === String(publishId)) {
+                sessionStorage.removeItem(key);
+                console.log("[腾讯号发布] 🧹 已清理旧失败上报锁，允许发送最新错误文案:", key);
+            }
+        } catch (e) {
+            console.warn("[腾讯号发布] ⚠️ 清理失败上报锁失败:", e.message);
+        }
     };
 
     console.log("═══════════════════════════════════════");
@@ -784,6 +1713,22 @@
                                                                 if (scheduledReleasesBtn) {
                                                                     console.log("🚀 ~ tryUploadImage ~ scheduledReleasesBtn: ", scheduledReleasesBtn);
                                                                     if (scheduledReleasesBtn) {
+                                                                        if (isPublishButtonDisabled(scheduledReleasesBtn)) {
+                                                                            console.error("[腾讯号发布] ❌ 定时发布按钮不可用(disabled)");
+                                                                            stopErrorListener();
+                                                                            clearLatestErrors();
+                                                                            const disabledErrorMessage = await getPublishButtonDisabledMessage(scheduledReleasesBtn, publishBtnWrap);
+                                                                            console.log("[腾讯号发布] 📨 定时发布按钮 hover 错误提示:", disabledErrorMessage);
+                                                                            const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                                                            if (publishIdForError) {
+                                                                                await clearPublishErrorReportLock(publishIdForError);
+                                                                                const reportResult = await sendStatisticsError(publishIdForError, disabledErrorMessage, "腾讯号发布");
+                                                                                console.log("[腾讯号发布] 📤 定时发布按钮 disabled 失败上报结果:", reportResult);
+                                                                            }
+                                                                            await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                                                            return;
+                                                                        }
+
                                                                         const clickEvent = new MouseEvent("click", {
                                                                             view: window,
                                                                             bubbles: true,
@@ -876,12 +1821,17 @@
                                                                     console.log(publishBtn.classList.contains("is--disabled"), 'publishBtn.classList.contains("is--disabled")');
                                                                     console.log(publishBtn.getAttribute("disabled") !== null, 'publishBtn.getAttribute("disabled") !== null');
                                                                     // 🔑 检查发布按钮是否 disabled
-                                                                    if (publishBtn.disabled || publishBtn.classList.contains("is--disabled") || publishBtn.getAttribute("disabled") !== null) {
+                                                                    if (isPublishButtonDisabled(publishBtn)) {
                                                                         console.error("[腾讯号发布] ❌ 发布按钮不可用(disabled)");
                                                                         stopErrorListener();
+                                                                        clearLatestErrors();
+                                                                        const disabledErrorMessage = await getPublishButtonDisabledMessage(publishBtn, publishBtnWrap);
+                                                                        console.log("[腾讯号发布] 📨 发布按钮 hover 错误提示:", disabledErrorMessage);
                                                                         const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                                         if (publishIdForError) {
-                                                                            await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "腾讯号发布");
+                                                                            await clearPublishErrorReportLock(publishIdForError);
+                                                                            const reportResult = await sendStatisticsError(publishIdForError, disabledErrorMessage, "腾讯号发布");
+                                                                            console.log("[腾讯号发布] 📤 发布按钮 disabled 失败上报结果:", reportResult);
                                                                         }
                                                                         await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                                                         return;

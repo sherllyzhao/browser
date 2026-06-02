@@ -101,13 +101,12 @@
     const domainPriority = (cookie) => {
       const rawDomain = String(cookie?.domain || '').toLowerCase();
       const domain = rawDomain.replace(/^\./, '');
-      const hostOnlyBoost = rawDomain && !rawDomain.startsWith('.') ? 5 : 0;
-      if (domain === 'channels.weixin.qq.com') return 60 + hostOnlyBoost;
-      if (domain === 'weixin.qq.com') return 45 + hostOnlyBoost;
-      if (domain === 'mp.weixin.qq.com') return 35 + hostOnlyBoost;
-      if (domain === 'wx.qq.com') return 30 + hostOnlyBoost;
-      if (domain === 'qq.com') return 20 + hostOnlyBoost;
-      return hostOnlyBoost;
+      if (domain === 'channels.weixin.qq.com') return 60;
+      if (domain === 'weixin.qq.com') return 45;
+      if (domain === 'mp.weixin.qq.com') return 35;
+      if (domain === 'wx.qq.com') return 30;
+      if (domain === 'qq.com') return 20;
+      return 0;
     };
 
     const exactMap = new Map();
@@ -187,6 +186,36 @@
     // 获取授权数据
     getAuthData: () => window.__AUTH_DATA__,
   };
+
+  async function migrateShipinhaoCookiesToPersistent(reason = 'auth-local-save') {
+    const migrateDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'];
+    let totalMigrated = 0;
+    const details = [];
+
+    console.log(`[视频号授权] 🔄 开始迁移多域名 Cookies 到持久化 session (${reason})...`, migrateDomains);
+    for (const domain of migrateDomains) {
+      try {
+        const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+        details.push({ domain, ...migrateResult });
+        if (migrateResult.success) {
+          totalMigrated += migrateResult.migratedCount || 0;
+          console.log(`[视频号授权] ✅ ${domain} Cookies 迁移成功，迁移 ${migrateResult.migratedCount || 0} 个`);
+        } else {
+          console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+        }
+      } catch (e) {
+        details.push({ domain, success: false, error: e && e.message });
+        console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移异常:`, e);
+      }
+    }
+
+    console.log(`[视频号授权] ✅ 多域名 Cookies 迁移完成 (${reason})，共迁移 ${totalMigrated} 个`);
+    return {
+      success: totalMigrated > 0,
+      totalMigrated,
+      details
+    };
+  }
 
   // ===========================
   // 4. 显示调试信息横幅
@@ -328,54 +357,57 @@
               console.error('[视频号授权] ⚠️ 获取会话数据异常:', sessionError);
             }
 
-            // 发送数据到服务器（根据环境选择域名）
-            const apiDomain = await getApiDomain();
-            console.log('[视频号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/sphinfo`);
-            const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(scanData)
-            });
+            // 后台可能不可用。先把扫码后的登录态落到本地持久化 session，再尝试上报后台。
+            const localMigrateResult = await migrateShipinhaoCookiesToPersistent('before-backend-submit');
 
-            if (!apiResponse.ok) {
-              throw new Error(`API failed: ${apiResponse.status}`);
+            let apiResult = null;
+            let apiResponseText = '';
+            let backendSuccess = false;
+            try {
+              const apiDomain = await getApiDomain();
+              console.log('[视频号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/sphinfo`);
+              const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(scanData)
+              });
+              apiResponseText = await apiResponse.text();
+              try {
+                apiResult = JSON.parse(apiResponseText);
+              } catch (_) {
+                apiResult = null;
+              }
+              backendSuccess = apiResponse.ok && apiResult && apiResult.code === 200;
+              console.log('[视频号授权] 📥 接口响应:', {
+                ok: apiResponse.ok,
+                status: apiResponse.status,
+                code: apiResult && apiResult.code,
+                response: apiResponseText.slice(0, 300)
+              });
+            } catch (apiError) {
+              console.warn('[视频号授权] ⚠️ 后台接口不可用，继续使用本地登录态缓存:', apiError && apiError.message);
             }
 
-            const apiResult = await apiResponse.json();
-            console.log('[视频号授权] 📥 接口响应:', apiResult);
-
-            if (apiResult && apiResult.code === 200) {
+            if (backendSuccess || localMigrateResult.success) {
               hasProcessed = true;
-
-              // 🔑 迁移登录 Cookies 到持久化 session
-              // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
-              // 视频号会跨多个 weixin 子域名，必须一起迁移
               try {
-                const migrateDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com'];
-                let totalMigrated = 0;
-                console.log('[视频号授权] 🔄 开始迁移多域名 Cookies 到持久化 session...', migrateDomains);
-                for (const domain of migrateDomains) {
-                  try {
-                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
-                    if (migrateResult.success) {
-                      totalMigrated += migrateResult.migratedCount;
-                      console.log(`[视频号授权] ✅ ${domain} Cookies 迁移成功，迁移 ${migrateResult.migratedCount} 个`);
-                    } else {
-                      console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
-                    }
-                  } catch (e) {
-                    console.warn(`[视频号授权] ⚠️ ${domain} Cookies 迁移异常:`, e);
-                  }
+                if (window.browserAPI && typeof window.browserAPI.setGlobalData === 'function') {
+                  await window.browserAPI.setGlobalData('shipinhao_local_auth_fallback', {
+                    timestamp: Date.now(),
+                    backendSuccess,
+                    localMigrateResult,
+                    apiResult,
+                    apiResponse: apiResponseText.slice(0, 500)
+                  });
                 }
-                console.log(`[视频号授权] ✅ 多域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
-              } catch (migrateError) {
-                console.error('[视频号授权] ⚠️ Cookies 迁移异常:', migrateError);
+              } catch (cacheError) {
+                console.warn('[视频号授权] ⚠️ 写入本地授权兜底标记失败:', cacheError);
               }
 
               sendMessageToParent('授权成功，刷新数据');
               setTimeout(() => window.browserAPI.closeCurrentWindow(), 10000);
             } else {
-              throw new Error(apiResult.msg || 'Data collection failed');
+              throw new Error((apiResult && (apiResult.msg || apiResult.message)) || '后台失败且本地登录态迁移失败');
             }
 
             isProcessing = false;

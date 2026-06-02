@@ -1054,7 +1054,11 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
     }
   }
 
-  if (ENABLE_MULTI_ACCOUNT && element.cookies) {
+  const shouldUseMultiAccountSession = ENABLE_MULTI_ACCOUNT
+    && platformFullName
+    && (element.cookies || (platformFullName === 'shipinhao' && backendAccountId));
+
+  if (shouldUseMultiAccountSession) {
     const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const sessionAccountId = backendAccountId || uniqueSessionId;
     if (platformFullName) {
@@ -1062,8 +1066,12 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
       openOptions.accountId = sessionAccountId;
       console.log(`[BrowserAPI] 📋 多账号模式，使用独立 session: platform=${platformFullName}, accountId=${sessionAccountId}, backendAccountId=${backendAccountId || 'none'}`);
     }
-    openOptions.sessionData = element.cookies;
-    console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
+    if (element.cookies) {
+      openOptions.sessionData = element.cookies;
+      console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
+    } else {
+      console.log(`[BrowserAPI] 📋 视频号未带后台 cookies，使用账号持久 session / 本地最新缓存兜底: accountId=${sessionAccountId}`);
+    }
   } else if (element.cookies) {
     console.log('[BrowserAPI] 📋 检测到 cookies 数据，但多账号模式已禁用，使用共享 session');
   } else {
@@ -1635,7 +1643,11 @@ contextBridge.exposeInMainWorld('browserAPI', {
   getPlatformConfig: () => getRuntimePlatformConfig(),
 
   // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
-  nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y)
+  nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y),
+  // 原生鼠标移动（触发真实 hover，不执行点击）
+  nativeMouseMove: (x, y, options) => ipcRenderer.invoke('native-mouse-move', x, y, options),
+  // 原生连续 hover（批量移动并停留，用于触发依赖真实鼠标移入的提示）
+  nativeMouseHover: (points, options) => ipcRenderer.invoke('native-mouse-hover', points, options)
 });
 
 // 在页面加载时注入通信代码和协议拦截
