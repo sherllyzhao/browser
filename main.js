@@ -6217,14 +6217,25 @@ function createWindow() {
           scriptResult = await runPublishSaveSessionScript(newWindow, navPlatform, `did-create-window:${eventName}`);
           if (scriptResult && scriptResult.success) {
             console.log(`[did-create-window] 🔐 [${eventName}] ✅ 脚本保存成功`);
+            let cacheSyncResult = null;
+            if (navPlatform === 'shipinhao') {
+              try {
+                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
+                console.log(`[did-create-window] 🔐 [${eventName}] 视频号本地最新会话缓存同步结果:`, cacheSyncResult);
+              } catch (cacheSyncErr) {
+                console.warn(`[did-create-window] ⚠️ [${eventName}] 视频号本地最新会话缓存同步异常:`, cacheSyncErr.message);
+              }
+            }
             result = {
               success: true,
               accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(navPublishData) || '') },
-              backendAccountId: scriptResult.uid,
+              backendAccountId: cacheSyncResult?.backendAccountId || getPublishBackendAccountId(navPublishData) || scriptResult.uid,
+              platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               statusCode: scriptResult.status,
               response: scriptResult.response,
-              source: 'script'
+              source: 'script',
+              cacheSyncResult
             };
           }
         } catch (scriptErr) {
@@ -9416,14 +9427,25 @@ async function openManagedChildWindow(url, options = {}) {
           scriptResult = await runPublishSaveSessionScript(newWindow, navPlatform, `Window Manager:${eventName}`);
           if (scriptResult && scriptResult.success) {
             console.log(`[Window Manager] 🔐 [${eventName}] ✅ 脚本保存成功`);
+            let cacheSyncResult = null;
+            if (navPlatform === 'shipinhao') {
+              try {
+                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
+                console.log(`[Window Manager] 🔐 [${eventName}] 视频号本地最新会话缓存同步结果:`, cacheSyncResult);
+              } catch (cacheSyncErr) {
+                console.warn(`[Window Manager] ⚠️ [${eventName}] 视频号本地最新会话缓存同步异常:`, cacheSyncErr.message);
+              }
+            }
             result = {
               success: true,
               accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(navPublishData) || '') },
-              backendAccountId: scriptResult.uid,
+              backendAccountId: cacheSyncResult?.backendAccountId || getPublishBackendAccountId(navPublishData) || scriptResult.uid,
+              platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               statusCode: scriptResult.status,
               response: scriptResult.response,
-              source: 'script'
+              source: 'script',
+              cacheSyncResult
             };
           }
         } catch (scriptErr) {
@@ -9560,15 +9582,26 @@ async function openManagedChildWindow(url, options = {}) {
           let result;
           if (scriptResult && scriptResult.success) {
             console.log('[Window Manager] ✅ 脚本保存成功，跳过主进程兜底');
+            let cacheSyncResult = null;
+            if (targetPlatform === 'shipinhao') {
+              try {
+                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, 'script-save:window-close');
+                console.log('[Window Manager] 视频号本地最新会话缓存同步结果:', cacheSyncResult);
+              } catch (cacheSyncErr) {
+                console.warn('[Window Manager] ⚠️ 视频号本地最新会话缓存同步异常:', cacheSyncErr.message);
+              }
+            }
             result = {
               success: true,
-              accountInfo: { platform: targetPlatform, accountId: accountInfo?.accountId || '' },
-              backendAccountId: scriptResult.uid,
+              accountInfo: { platform: targetPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(publishDataForSave) || '') },
+              backendAccountId: cacheSyncResult?.backendAccountId || getPublishBackendAccountId(publishDataForSave) || scriptResult.uid,
+              platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               cookies: [],
               statusCode: scriptResult.status,
               response: scriptResult.response,
-              source: 'script'
+              source: 'script',
+              cacheSyncResult
             };
           } else {
             // 🛡️ 主进程兜底前先检查本地 session 是否有真实登录态 + publishData 是否存在
@@ -11728,6 +11761,39 @@ async function uploadSessionToBackend({ apiOrigin, saveSessionApi, backendAccoun
     req.write(postData);
     req.end();
   });
+}
+
+async function syncLatestSessionCacheFromWindow(targetWindow, windowId, source = 'script-save') {
+  const context = await collectWindowSessionSaveContext(targetWindow, windowId);
+  if (!context.success) {
+    return context;
+  }
+
+  const localCacheSnapshot = saveLatestSessionCache({
+    platform: context.accountInfo.platform,
+    backendAccountId: context.backendAccountId,
+    cookieDomains: context.cookieDomains,
+    cookiesArray: context.cookiesArray,
+    sessionData: context.sessionData,
+    source
+  });
+
+  if (!localCacheSnapshot) {
+    return {
+      success: false,
+      error: '未生成本地最新会话缓存',
+      accountInfo: context.accountInfo,
+      backendAccountId: context.backendAccountId
+    };
+  }
+
+  return {
+    success: true,
+    accountInfo: context.accountInfo,
+    backendAccountId: context.backendAccountId,
+    cookieCount: context.cookiesArray.length,
+    source: 'latest-cache-sync'
+  };
 }
 
 async function persistWindowSessionToBackend(targetWindow, windowId, source = 'window-close') {
