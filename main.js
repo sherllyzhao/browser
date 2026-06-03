@@ -6294,6 +6294,27 @@ function createWindow() {
         console.log('[did-create-window] 发现可保存的发布窗口，等待保存会话数据完成后再关闭');
 
         try {
+          const publishDataForSave = getWindowPublishData(windowId);
+          const targetPlatform = accountInfo?.platform
+            || publishDataForSave?.platform
+            || null;
+          let hasRealLogin = true;
+          if (targetPlatform === 'shipinhao' && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+            try {
+              hasRealLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
+            } catch (loginCheckErr) {
+              hasRealLogin = false;
+              console.warn('[did-create-window] ⚠️ 关闭前视频号登录态预检异常:', loginCheckErr.message);
+            }
+          }
+
+          if (targetPlatform === 'shipinhao' && !hasRealLogin) {
+            console.log('[did-create-window] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过保存接口调用');
+            isSavingSession = false;
+            newWindow.destroy();
+            return;
+          }
+
           // 调用公共函数保存登录信息
           const result = await saveWindowSessionToBackend(newWindow, windowId);
           console.log('[did-create-window] 保存结果:', result);
@@ -9478,6 +9499,23 @@ async function openManagedChildWindow(url, options = {}) {
           const targetPlatform = accountInfo?.platform
             || publishDataForSave?.platform
             || null;
+          let hasRealLogin = true;
+          if (targetPlatform === 'shipinhao' && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+            try {
+              hasRealLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
+            } catch (loginCheckErr) {
+              hasRealLogin = false;
+              console.warn('[Window Manager] ⚠️ 关闭前视频号登录态预检异常:', loginCheckErr.message);
+            }
+          }
+
+          if (targetPlatform === 'shipinhao' && !hasRealLogin) {
+            console.log('[Window Manager] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过脚本保存和后台保存');
+            isSavingSession = false;
+            newWindow.destroy();
+            return;
+          }
+
           let scriptResult = null;
           if (targetPlatform && scriptSupportedPlatforms.includes(targetPlatform)) {
             try {
