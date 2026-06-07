@@ -231,6 +231,12 @@ if (userInfoEl) {
       const result = await window.electronAPI.showUserMenu();
       console.log('[User Menu] 菜单选择结果:', result);
 
+      // 账号切换由主进程完成（确认弹窗 + 写入切换标志 + 跳转登录页自动登录），此处无需动作
+      if (result && result.action === 'switch') {
+        console.log('[User Menu] 账号切换已由主进程处理');
+        return;
+      }
+
       if (result && result.selected && result.action === 'logout') {
         // 用户选择了退出登录
         if (confirm('确定要退出登录吗？')) {

@@ -1886,6 +1886,16 @@ function summarizeGlobalStorageValue(key, value) {
     return `[publish_data length=${length}]`;
   }
 
+  // 记住密码相关字段：日志脱敏，绝不打印明文密码（PIPL 第 51 条去标识化）
+  if (key === 'saved_accounts') {
+    const list = Array.isArray(value) ? value : [];
+    return `[saved_accounts count=${list.length} usernames=${list.map(a => maskSensitive(a?.username)).join(',')}]`;
+  }
+  if (key === 'pending_switch_account') {
+    const obj = value && typeof value === 'object' ? value : {};
+    return `[pending_switch username=${maskSensitive(obj.username)} tab=${obj.tab || ''}]`;
+  }
+
   if (/^publish_data_window_\d+$/.test(key)) {
     const obj = value && typeof value === 'object' ? value : null;
     const title = obj?.element?.title || obj?.video?.video?.title || '';
@@ -2136,13 +2146,18 @@ const SENSITIVE_GLOBAL_KEYS = [
   'login_gcc',
   'user_info',
   'siteInfo',
-  'platformAccounts'
+  'platformAccounts',
+  'saved_accounts',          // 记住密码：已保存账号列表（含密码），必须加密落盘
+  'pending_switch_account'   // 账号切换中转标志（含密码），login.html 读取后即删
 ];
 const ENCRYPTED_PREFIX = 'enc:v1:';
 
 function encryptIfPossible(value) {
   try {
-    if (!safeStorage || !safeStorage.isEncryptionAvailable()) return value;
+    if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
+      console.warn('[Global Storage] ⚠️ safeStorage 不可用，敏感字段（含记住的密码）将以明文落盘，请检查系统密钥环/DPAPI');
+      return value;
+    }
     const json = JSON.stringify(value);
     const buf = safeStorage.encryptString(json);
     return ENCRYPTED_PREFIX + buf.toString('base64');
@@ -2264,7 +2279,8 @@ if (isProduction) {
 }
 
 // 登录页地址（本地 HTML 文件）
-const LOGIN_URL = 'file:///' + __dirname.replace(/\\/g, '/') + '/login.html';
+// 🔑 用 pathToFileURL 正确编码路径（中文/空格/特殊字符），避免裸拼 file:// 导致 MIME 识别失败、CSS 渲染成文字
+const LOGIN_URL = require('url').pathToFileURL(path.join(__dirname, 'login.html')).href;
 const LOGIN_FILE_PATH = path.join(__dirname, 'login.html'); // 用于 loadFile()，避免 file:// MIME 类型问题
 
 // 首页地址（开发和生产环境都使用登录页）
@@ -4852,7 +4868,11 @@ function createWindow() {
   // mainWindow.webContents.openDevTools();
 
   // 加载浏览器控制界面
-  mainWindow.loadFile('index.html');
+  // 🔑 用 .catch 兜底：loadFile 失败时（特殊路径/符号链接/中文路径）改用 pathToFileURL 正确编码的 file:// 重试，避免白屏或 CSS 渲染成文字
+  mainWindow.loadFile('index.html').catch(err => {
+    console.warn('[mainWindow] index.html loadFile 失败，改用 pathToFileURL 兜底:', err && err.message);
+    mainWindow.loadURL(require('url').pathToFileURL(path.join(__dirname, 'index.html')).href);
+  });
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.send('browser-loading-state', browserLoadingState);
   });
@@ -6899,7 +6919,7 @@ app.whenReady().then(async () => {
 
         // 清除完成后导航回首页
         console.log('[Clear Cookies] 导航回首页...');
-        browserView.webContents.loadURL(HOME_URL);
+        loadLocalPage(browserView.webContents, 'login.html');
 
         await dialog.showMessageBox(mainWindow, {
           type: 'info',
@@ -7838,7 +7858,7 @@ ipcMain.handle('get-current-url', async () => {
 // 返回首页
 ipcMain.handle('go-home', async () => {
   if (browserView) {
-    browserView.webContents.loadURL(HOME_URL);
+    loadLocalPage(browserView.webContents, 'login.html');
   }
 });
 
@@ -8308,21 +8328,250 @@ ipcMain.handle('show-user-menu', async (event) => {
   }
 
   return new Promise((resolve) => {
+    let settled = false;
+    let acting = false; // 切换分支主动关窗时，抑制 blur 误触发 finish
     const contentBounds = mainWindow.getContentBounds();
-    const menuWidth = 140;
-    const menuHeight = 50;
+    const menuWidth = 248;
 
-    // 计算菜单位置：对齐用户信息区域右侧
-    const menuX = contentBounds.x + contentBounds.width - menuWidth - 12;
-    const menuY = contentBounds.y + 55;
+    // 工具函数
+    const escapeHtml = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const maskPhoneForMenu = (phone) => {
+      const digits = String(phone || '').replace(/\D/g, '');
+      if (digits.length === 11) return digits.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
+      return phone || '';
+    };
+    // 默认头像（内联 SVG，避免 data: 页面无法解析相对路径）
+    const DEFAULT_AVATAR = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" fill="#EBEEF5"/><circle cx="20" cy="16" r="7" fill="#C0C4CC"/><path d="M6 37c0-8 6-13 14-13s14 5 14 13" fill="#C0C4CC"/></svg>'
+    );
 
-    console.log('[User Menu] Creating menu window at:', menuX, menuY);
+    // 读取并构造账号列表（脱敏，绝不含密码）
+    const buildAccountList = () => {
+      const accounts = Array.isArray(globalStorage.saved_accounts) ? globalStorage.saved_accounts : [];
+      const userInfo = globalStorage.user_info || {};
+      const curUid = String(userInfo.unique_id || userInfo.uid || '');
+      const curPhone = String(userInfo.phone || userInfo.mobile || userInfo.tel || '');
+      const curName = String(userInfo.user_name || userInfo.username || userInfo.account || '');
+      return accounts.map((acc, index) => {
+        const phone = String(acc.phone || '');
+        const name = acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '账号';
+        const subRaw = maskPhoneForMenu(acc.phone) || acc.username || '';
+        const accUid = String(acc.uid || '');
+        // 优先用后端稳定主键 uid 判定当前账号，phone/username 仅作降级兜底
+        const isCurrent = (!!curUid && !!accUid && curUid === accUid)
+          || (!!curPhone && !!phone && curPhone === phone)
+          || (!!curName && !!acc.username && curName === acc.username);
+        return {
+          index,
+          name,
+          sub: (subRaw && subRaw !== name) ? subRaw : '',
+          avatar: acc.avatar || '',
+          isCurrent
+        };
+      });
+    };
+
+    // 动态高度：每项 54，分隔线 9，退出 44，容器内边距 12，账号区最多显示 6 项
+    const computeHeight = (count) => {
+      const visible = Math.min(count, 6);
+      return visible * 54 + (count > 0 ? 9 : 0) + 44 + 12;
+    };
+
+    // 生成菜单 HTML
+    const buildMenuHtml = (list) => {
+      const itemsHtml = list.map((a) => {
+        const av = a.avatar ? escapeHtml(a.avatar) : DEFAULT_AVATAR;
+        const rowAttr = a.isCurrent ? '' : ` data-action="switch:${a.index}"`;
+        const badge = a.isCurrent ? '<span class="acc-badge">当前</span>' : '';
+        const subHtml = a.sub ? `<div class="acc-sub">${escapeHtml(a.sub)}</div>` : '';
+        return `
+          <div class="acc-item${a.isCurrent ? ' current' : ''}"${rowAttr}>
+            <img class="acc-avatar" src="${av}" onerror="this.onerror=null;this.src='${DEFAULT_AVATAR}'">
+            <div class="acc-info">
+              <div class="acc-name">${escapeHtml(a.name)}${badge}</div>
+              ${subHtml}
+            </div>
+            <div class="acc-del" data-action="remove:${a.index}" title="删除此账号">×</div>
+          </div>`;
+      }).join('');
+      const accountSection = list.length
+        ? `<div class="acc-list">${itemsHtml}</div><div class="divider"></div>`
+        : '';
+      return `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            html, body { background: transparent !important; overflow: hidden; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+            .menu { background: #fff; border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16); padding: 6px; }
+            .acc-list { max-height: 324px; overflow-y: auto; }
+            .acc-item { display: flex; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; gap: 10px; transition: background 0.15s; }
+            .acc-item:hover { background: #F5F7FA; }
+            .acc-item.current, .acc-item.current:hover { cursor: default; background: transparent; }
+            .acc-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #EBEEF5; flex-shrink: 0; }
+            .acc-info { flex: 1; min-width: 0; }
+            .acc-name { font-size: 14px; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+            .acc-badge { font-size: 11px; color: #3E7AFF; background: #ECF3FF; border-radius: 4px; padding: 1px 5px; flex-shrink: 0; }
+            .acc-sub { font-size: 12px; color: #909399; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .acc-del { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C0C4CC; flex-shrink: 0; font-size: 18px; line-height: 1; }
+            .acc-del:hover { background: #FEF0F0; color: #F56C6C; }
+            .divider { height: 1px; background: #F0F0F0; margin: 4px 8px; }
+            .menu-item { display: flex; align-items: center; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background 0.15s; font-size: 14px; color: #F56C6C; gap: 8px; }
+            .menu-item:hover { background: #FEF0F0; }
+            .menu-item svg { width: 16px; height: 16px; }
+          </style>
+        </head>
+        <body>
+          <div class="menu">
+            ${accountSection}
+            <div class="menu-item" data-action="logout">
+              <svg viewBox="0 0 1024 1024" fill="#F56C6C">
+                <path d="M868.352 495.616l-160-160a32 32 0 0 0-45.248 45.248L761.376 479.136l-409.376 0a32 32 0 0 0 0 64l409.376 0-98.272 98.272a32 32 0 1 0 45.248 45.248l160-160a32 32 0 0 0 0-45.248z"/>
+                <path d="M448 800 224 800 224 224l224 0a32 32 0 0 0 0-64L192 160a32 32 0 0 0-32 32l0 640a32 32 0 0 0 32 32l256 0a32 32 0 0 0 0-64z"/>
+              </svg>
+              <span>退出登录</span>
+            </div>
+          </div>
+          <script>
+            const { ipcRenderer } = require('electron');
+            document.querySelectorAll('[data-action]').forEach(function (el) {
+              el.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                ipcRenderer.send('user-menu-action', el.getAttribute('data-action'));
+              });
+            });
+          </script>
+        </body>
+        </html>
+      `;
+    };
+
+    const cleanup = () => {
+      ipcMain.removeListener('user-menu-action', onAction);
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      acting = false;
+      cleanup();
+      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+        userMenuWindow.close();
+        userMenuWindow = null;
+      }
+      resolve(result);
+    };
+
+    // 渲染（含尺寸/位置），window 已存在时为原地刷新
+    const renderMenu = () => {
+      const list = buildAccountList();
+      const menuHeight = computeHeight(list.length);
+      const menuX = contentBounds.x + contentBounds.width - menuWidth - 12;
+      const menuY = contentBounds.y + 55;
+      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+        userMenuWindow.setBounds({ x: menuX, y: menuY, width: menuWidth, height: menuHeight });
+        userMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildMenuHtml(list))}`);
+      }
+      return { menuX, menuY, menuHeight };
+    };
+
+    // 菜单动作处理（可重复响应：删除后原地刷新并重新挂载监听）
+    const onAction = async (e, action) => {
+      try {
+        if (action === 'logout') {
+          finish({ selected: true, action: 'logout' });
+          return;
+        }
+
+        if (typeof action === 'string' && action.startsWith('switch:')) {
+          acting = true; // 抑制下方主动 close 触发的 blur
+          const index = parseInt(action.slice(7), 10);
+          // 先关闭浮层，避免与确认弹窗争夺焦点
+          if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+            userMenuWindow.close();
+            userMenuWindow = null;
+          }
+          const accounts = Array.isArray(globalStorage.saved_accounts) ? globalStorage.saved_accounts : [];
+          const acc = accounts[index];
+          if (!acc || !acc.username) {
+            finish({ selected: false, action: null });
+            return;
+          }
+          const display = acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
+          const { response } = await dialog.showMessageBox(mainWindow, {
+            type: 'question',
+            buttons: ['取消', '确定切换'],
+            defaultId: 1,
+            cancelId: 0,
+            title: '切换账号',
+            message: `确定切换到「${display}」吗？`,
+            detail: '将退出当前账号，并使用所选账号自动重新登录。'
+          });
+          if (response === 1) {
+            // 清理上一个账号残留数据（navigateToLoginInternal 未覆盖的部分），确保切换干净
+            delete globalStorage.company_id;
+            delete globalStorage.siteInfo;
+            delete globalStorage.current_site;
+            globalStorage.pending_switch_account = {
+              username: acc.username,
+              password: acc.password,
+              tab: acc.tab || 'aigc',
+              ts: Date.now()
+            };
+            saveGlobalStorage();
+            console.log('[User Menu] 切换账号 →', maskSensitive(acc.username));
+            await navigateToLoginInternal('switch_account');
+            finish({ selected: true, action: 'switch' });
+          } else {
+            finish({ selected: false, action: null });
+          }
+          return;
+        }
+
+        if (typeof action === 'string' && action.startsWith('remove:')) {
+          const index = parseInt(action.slice(7), 10);
+          // 注：saved_accounts 为读改写全量；login.html(登录页) 与本菜单(已登录态) 不会同时存在，无并发写
+          const accounts = Array.isArray(globalStorage.saved_accounts) ? globalStorage.saved_accounts : [];
+          if (index >= 0 && index < accounts.length) {
+            const removed = accounts.splice(index, 1)[0];
+            globalStorage.saved_accounts = accounts;
+            saveGlobalStorage();
+            console.log('[User Menu] 删除已保存账号:', removed ? maskSensitive(removed.username) : index);
+          }
+          // 原地刷新并重新挂载监听（窗口保持打开）
+          // loadURL 会重建 data: 页渲染进程，期间可能瞬时失焦，用 acting 抑制 blur 误关菜单
+          acting = true;
+          ipcMain.once('user-menu-action', onAction);
+          renderMenu();
+          setTimeout(() => { acting = false; }, 200);
+          return;
+        }
+
+        // 未知动作：重新挂载监听，避免菜单失效
+        ipcMain.once('user-menu-action', onAction);
+      } catch (err) {
+        console.error('[User Menu] 处理动作失败:', err);
+        finish({ selected: false, action: null });
+      }
+    };
+
+    // 初始尺寸与位置
+    const list0 = buildAccountList();
+    const initHeight = computeHeight(list0.length);
+    const initX = contentBounds.x + contentBounds.width - menuWidth - 12;
+    const initY = contentBounds.y + 55;
+    console.log('[User Menu] Creating menu window at:', initX, initY, '账号数:', list0.length);
 
     userMenuWindow = new BrowserWindow({
       width: menuWidth,
-      height: menuHeight,
-      x: menuX,
-      y: menuY,
+      height: initHeight,
+      x: initX,
+      y: initY,
       frame: false,
       transparent: true,
       resizable: false,
@@ -8345,75 +8594,18 @@ ipcMain.handle('show-user-menu', async (event) => {
     });
 
     userMenuWindow.on('blur', () => {
-      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
-        userMenuWindow.close();
-        userMenuWindow = null;
-        resolve({ selected: false, action: null });
-      }
+      // 失焦关闭（删除原地刷新不关窗；切换分支主动关窗时 acting=true 抑制误触发）
+      if (acting) return;
+      finish({ selected: false, action: null });
     });
 
     userMenuWindow.on('closed', () => {
       userMenuWindow = null;
     });
 
-    ipcMain.once('user-menu-action', (e, action) => {
-      if (userMenuWindow && !userMenuWindow.isDestroyed()) {
-        userMenuWindow.close();
-        userMenuWindow = null;
-      }
-      resolve({ selected: true, action });
-    });
+    ipcMain.once('user-menu-action', onAction);
 
-    const menuHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          html, body { background: transparent !important; overflow: hidden; }
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .menu {
-            background: #fff;
-            border-radius: 8px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-            padding: 6px 0;
-          }
-          .menu-item {
-            display: flex;
-            align-items: center;
-            padding: 10px 16px;
-            cursor: pointer;
-            transition: background 0.15s;
-            font-size: 14px;
-            color: #F56C6C;
-            gap: 8px;
-          }
-          .menu-item:hover { background: #FEF0F0; }
-          .menu-item svg { width: 16px; height: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="menu">
-          <div class="menu-item" id="logout">
-            <svg viewBox="0 0 1024 1024" fill="#F56C6C">
-              <path d="M868.352 495.616l-160-160a32 32 0 0 0-45.248 45.248L761.376 479.136l-409.376 0a32 32 0 0 0 0 64l409.376 0-98.272 98.272a32 32 0 1 0 45.248 45.248l160-160a32 32 0 0 0 0-45.248z"/>
-              <path d="M448 800 224 800 224 224l224 0a32 32 0 0 0 0-64L192 160a32 32 0 0 0-32 32l0 640a32 32 0 0 0 32 32l256 0a32 32 0 0 0 0-64z"/>
-            </svg>
-            <span>退出登录</span>
-          </div>
-        </div>
-        <script>
-          const { ipcRenderer } = require('electron');
-          document.getElementById('logout').onclick = () => {
-            ipcRenderer.send('user-menu-action', 'logout');
-          };
-        </script>
-      </body>
-      </html>
-    `;
-
-    userMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(menuHtml)}`);
+    userMenuWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildMenuHtml(list0))}`);
   });
 });
 

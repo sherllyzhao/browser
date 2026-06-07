@@ -252,6 +252,110 @@
       box-shadow: none;
     }
 
+    /* 记住密码勾选行 */
+    .remember-row {
+      display: flex;
+      align-items: center;
+      margin-top: clamp(0.6rem, 1vw, 0.9rem);
+      padding: 0 2px;
+      user-select: none;
+    }
+
+    .remember-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin-right: 8px;
+      cursor: pointer;
+      accent-color: #3E7AFF;
+    }
+
+    .remember-row label {
+      font-size: clamp(0.8125rem, 0.8vw + 0.2rem, 0.9375rem);
+      color: #5a6473;
+      cursor: pointer;
+    }
+
+    /* 历史账号下拉 */
+    .account-history {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      border: 1px solid #EBEEF5;
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 100;
+      display: none;
+    }
+
+    .account-history.show {
+      display: block;
+    }
+
+    .account-history-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      cursor: pointer;
+      gap: 10px;
+      transition: background 0.15s;
+    }
+
+    .account-history-item:hover {
+      background: #F5F7FA;
+    }
+
+    .account-history-item .acc-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: #EBEEF5;
+      flex-shrink: 0;
+    }
+
+    .account-history-item .acc-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .account-history-item .acc-name {
+      font-size: 14px;
+      color: #303133;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .account-history-item .acc-sub {
+      font-size: 12px;
+      color: #909399;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .account-history-item .acc-del {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #C0C4CC;
+      flex-shrink: 0;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .account-history-item .acc-del:hover {
+      background: #FEF0F0;
+      color: #F56C6C;
+    }
+
     /* 装饰元素 */
     .decoration {
       position: absolute;
@@ -389,12 +493,14 @@
     <!-- 登录表单 -->
     <form id="loginForm" class="login-form">
       <div class="form-item">
-        <input type="text" class="input-field" id="username" placeholder="请输入您的资海云账号">
+        <input type="text" class="input-field" id="username" placeholder="请输入您的资海云账号" autocomplete="off">
         <span class="input-icon" id="clearUsername" title="清除">
           <svg class="icon-svg" viewBox="0 0 1024 1024">
             <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm165.4 618.2l-66-.3L512 563.4l-99.3 118.4-66.1.3c-4.4 0-8-3.5-8-8 0-1.9.7-3.7 1.9-5.2l130.1-155L340.5 359c-1.2-1.5-1.9-3.3-1.9-5.2 0-4.4 3.6-8 8-8l66.1.3L512 464.6l99.3-118.4 66-.3c4.4 0 8 3.5 8 8 0 1.9-.7 3.7-1.9 5.2L553.5 514l130 155c1.2 1.5 1.9 3.3 1.9 5.2 0 4.4-3.6 8-8 8z"/>
           </svg>
         </span>
+        <!-- 历史账号下拉（由 JS 动态填充） -->
+        <div class="account-history" id="accountHistory"></div>
       </div>
 
       <div class="form-item">
@@ -404,6 +510,12 @@
             <path d="M942.2 486.2C847.4 286.5 704.1 186 512 186c-192.2 0-335.4 100.5-430.2 300.3a60.3 60.3 0 0 0 0 51.5C176.6 737.5 319.9 838 512 838c192.2 0 335.4-100.5 430.2-300.3 7.7-16.2 7.7-35 0-51.5zM512 766c-161.3 0-279.4-81.8-362.7-254C232.6 339.8 350.7 258 512 258c161.3 0 279.4 81.8 362.7 254C791.5 684.2 673.4 766 512 766zm-4-430c-97.2 0-176 78.8-176 176s78.8 176 176 176 176-78.8 176-176-78.8-176-176-176zm0 288c-61.9 0-112-50.1-112-112s50.1-112 112-112 112 50.1 112 112-50.1 112-112 112z"/>
           </svg>
         </span>
+      </div>
+
+      <!-- 记住密码 -->
+      <div class="remember-row">
+        <input type="checkbox" id="rememberPassword">
+        <label for="rememberPassword">记住密码</label>
       </div>
 
       <button type="submit" class="login-button" id="loginBtn">立即登录</button>
@@ -430,7 +542,7 @@
           console.error('[Login] 加载域名配置失败:', err);
         }
       }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                        // fallback 默认配置
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    // fallback 默认配置
       domainConfig = {
         isProduction: true,
         aigcUrl: 'https://www.china9.cn/aigc_browser/',
@@ -655,6 +767,128 @@
       usernameInput.focus();
     });
 
+    // ========== 记住密码 / 历史账号 ==========
+    const rememberCheckbox = document.getElementById('rememberPassword');
+    const accountHistoryEl = document.getElementById('accountHistory');
+
+    // HTML 转义，防止昵称/账号中的特殊字符破坏结构
+    function escapeHtml(str) {
+      return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // 手机号脱敏：133****9000
+    function maskPhone(phone) {
+      const digits = String(phone || '').replace(/\D/g, '');
+      if (digits.length === 11) {
+        return digits.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
+      }
+      return phone || '';
+    }
+
+    // 读取已保存账号列表
+    async function getSavedAccounts() {
+      try {
+        if (window.browserAPI && window.browserAPI.getGlobalData) {
+          const list = await window.browserAPI.getGlobalData('saved_accounts');
+          return Array.isArray(list) ? list : [];
+        }
+      } catch (err) {
+        console.error('[Login] 读取已保存账号失败:', err);
+      }
+      return [];
+    }
+
+    // 写入已保存账号列表
+    async function setSavedAccounts(list) {
+      if (window.browserAPI && window.browserAPI.setGlobalData) {
+        await window.browserAPI.setGlobalData('saved_accounts', Array.isArray(list) ? list : []);
+      }
+    }
+
+    // 渲染历史账号下拉
+    async function renderAccountHistory() {
+      if (!accountHistoryEl) return;
+      const accounts = await getSavedAccounts();
+      if (!accounts.length) {
+        accountHistoryEl.innerHTML = '';
+        accountHistoryEl.classList.remove('show');
+        return;
+      }
+      accountHistoryEl.innerHTML = accounts.map(acc => {
+        const name = acc.nickname || maskPhone(acc.phone) || acc.username || '';
+        const sub = maskPhone(acc.phone) || acc.username || '';
+        const subLine = (sub && sub !== name) ? `<div class="acc-sub">${escapeHtml(sub)}</div>` : '';
+        const avatar = acc.avatar ? escapeHtml(acc.avatar) : './assets/avatar.png';
+        return `
+          <div class="account-history-item" data-username="${escapeHtml(acc.username)}">
+            <img class="acc-avatar" src="${avatar}" onerror="this.src='./assets/avatar.png'">
+            <div class="acc-info">
+              <div class="acc-name">${escapeHtml(name)}</div>
+              ${subLine}
+            </div>
+            <div class="acc-del" data-username="${escapeHtml(acc.username)}" title="删除此账号">×</div>
+          </div>`;
+      }).join('');
+    }
+
+    // 点选 / 删除历史账号（事件委托）
+    if (accountHistoryEl) {
+      accountHistoryEl.addEventListener('mousedown', async (e) => {
+        // mousedown 而非 click：避免输入框 blur 先触发导致下拉提前隐藏
+        const delBtn = e.target.closest('.acc-del');
+        const item = e.target.closest('.account-history-item');
+        if (delBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const username = delBtn.getAttribute('data-username');
+          const list = await getSavedAccounts();
+          const next = list.filter(a => a.username !== username);
+          await setSavedAccounts(next);
+          await renderAccountHistory();
+          if (!next.length) accountHistoryEl.classList.remove('show');
+          return;
+        }
+        if (item) {
+          e.preventDefault();
+          const username = item.getAttribute('data-username');
+          const list = await getSavedAccounts();
+          const acc = list.find(a => a.username === username);
+          if (acc) {
+            usernameInput.value = acc.username || '';
+            passwordInput.value = acc.password || '';
+            if (rememberCheckbox) rememberCheckbox.checked = true;
+            // 若记录了登录类型，切到对应 Tab
+            if (acc.tab && (acc.tab === 'aigc' || acc.tab === 'geo')) {
+              tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === acc.tab));
+              activeTab = acc.tab;
+              localStorage.setItem('loginActiveTab', activeTab);
+            }
+          }
+          accountHistoryEl.classList.remove('show');
+        }
+      });
+    }
+
+    // 账号框聚焦时展示历史账号
+    usernameInput.addEventListener('focus', async () => {
+      await renderAccountHistory();
+      if (accountHistoryEl && accountHistoryEl.innerHTML.trim()) {
+        accountHistoryEl.classList.add('show');
+      }
+    });
+
+    // 点击页面其他区域隐藏下拉
+    document.addEventListener('mousedown', (e) => {
+      if (accountHistoryEl && !accountHistoryEl.contains(e.target) && e.target !== usernameInput) {
+        accountHistoryEl.classList.remove('show');
+      }
+    });
+
     // ========== 表单提交 ==========
     const loginForm = document.getElementById('loginForm');
     const loginBtn = document.getElementById('loginBtn');
@@ -849,6 +1083,41 @@
           // 存储完整用户信息供公共头部使用
           await window.browserAPI.setGlobalData('user_info', userInfo);
           console.log('[Login] 已存储用户信息:', userInfo);
+
+          // 🔑 记住密码：按勾选状态保存/移除账号（按 username 去重）
+          try {
+            if (rememberCheckbox && rememberCheckbox.checked) {
+              const nickname = userInfo.nickname || userInfo.real_name || userInfo.name || userInfo.user_name || '';
+              const phone = userInfo.phone || userInfo.mobile || userInfo.tel || '';
+              const avatar = userInfo.avatar || userInfo.avatar_url || userInfo.headimg || userInfo.head_img || userInfo.photo || '';
+              const record = {
+                id: userInfo.unique_id || username,
+                uid: userInfo.unique_id || '',
+                username,
+                password,
+                tab: activeTab,
+                nickname,
+                phone,
+                avatar,
+                lastLoginAt: Date.now()
+              };
+              const list = await getSavedAccounts();
+              const idx = list.findIndex(a => a.username === username);
+              if (idx >= 0) list[idx] = record; else list.push(record);
+              await setSavedAccounts(list);
+              console.log('[Login] ✅ 已记住账号:', maskPhone(phone) || username);
+            } else {
+              // 未勾选：若该账号之前被记住过则移除（用户主动取消记住）
+              const list = await getSavedAccounts();
+              const next = list.filter(a => a.username !== username);
+              if (next.length !== list.length) {
+                await setSavedAccounts(next);
+                console.log('[Login] 已移除未勾选记住的账号');
+              }
+            }
+          } catch (saveErr) {
+            console.error('[Login] 记住密码保存失败:', saveErr);
+          }
 
           const companyId = await getCompanyId(loginData.token)
           await window.browserAPI.setGlobalData('company_id', companyId.id);
@@ -1049,6 +1318,49 @@
       }
     });
 
+    // ========== 账号切换：自动登录 ==========
+    // 工具栏切换账号时，主进程写入 pending_switch_account 后跳到本页，
+    // 这里检测到即自动填充并登录。采用「读取后立即删除」消费一次，防止登录失败时死循环。
+    async function checkPendingSwitch() {
+      if (!(window.browserAPI && window.browserAPI.getGlobalData)) return;
+      let pending = null;
+      try {
+        pending = await window.browserAPI.getGlobalData('pending_switch_account');
+      } catch (err) {
+        console.error('[Login] 读取切换标志失败:', err);
+        return;
+      }
+      if (!pending || !pending.username) return;
+
+      // 过期保护：超过 2 分钟的切换标志视为失效，直接丢弃（防残留/重放）
+      if (pending.ts && (Date.now() - pending.ts > 120000)) {
+        try { await window.browserAPI.removeGlobalData('pending_switch_account'); } catch (_) {}
+        console.warn('[Login] 切换标志已过期，已丢弃');
+        return;
+      }
+
+      // 立即消费，防止登录失败后反复自动登录
+      try { await window.browserAPI.removeGlobalData('pending_switch_account'); } catch (_) {}
+
+      // 填充表单
+      usernameInput.value = pending.username || '';
+      passwordInput.value = pending.password || '';
+      if (rememberCheckbox) rememberCheckbox.checked = true; // 能切换的账号本就是已记住的
+      if (pending.tab === 'aigc' || pending.tab === 'geo') {
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === pending.tab));
+        activeTab = pending.tab;
+        localStorage.setItem('loginActiveTab', activeTab);
+      }
+      console.log('[Login] 检测到账号切换，自动登录:', maskPhone(pending.username) || pending.username);
+
+      // 自动提交：优先 requestSubmit（触发原生校验/提交），回退 dispatchEvent，确保一定触发
+      if (typeof loginForm.requestSubmit === 'function') {
+        loginForm.requestSubmit();
+      } else {
+        loginForm.dispatchEvent(new Event('submit'));
+      }
+    }
+
     // ========== 初始化 ==========
     console.log('[Login] 登录页面已加载');
     console.log('[Login] browserAPI 是否可用:', !!window.browserAPI);
@@ -1057,6 +1369,8 @@
     if (window.browserAPI) {
       getApiBaseUrl().then(url => {
         console.log('[Login] API 基础地址已获取:', url);
+        // API 就绪后检测是否需要自动切换登录
+        checkPendingSwitch();
       });
     }
   </script>
