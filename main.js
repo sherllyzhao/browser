@@ -12,10 +12,16 @@ const APP_VERSION = app.getVersion();
 
 function getLegacyWindowsGpuWorkaroundInfo() {
   // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-  // Windows 10 1607/LTSB(10.0.14393) 在老核显/老驱动上也可能出现 BrowserView 只出背景色的白屏。
+  // Windows 10 1607/LTSB(10.0.14393) 更容易遇到 renderer 启动兼容问题，但不要默认禁 GPU：
+  // 客户现场已经出现禁 GPU 后 launch-failed，因此它只走 1.1.2 风格的启动参数回退。
   // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
   if (process.platform !== 'win32') {
-    return { shouldDisableHardwareAcceleration: false, release: '', reason: '' };
+    return {
+      shouldDisableHardwareAcceleration: false,
+      shouldUseRendererLaunchCompatibility: false,
+      release: '',
+      reason: ''
+    };
   }
 
   try {
@@ -27,6 +33,7 @@ function getLegacyWindowsGpuWorkaroundInfo() {
     if (Number.isInteger(major) && major < 10) {
       return {
         shouldDisableHardwareAcceleration: true,
+        shouldUseRendererLaunchCompatibility: true,
         release,
         reason: 'win7-win8-legacy-gpu'
       };
@@ -34,21 +41,34 @@ function getLegacyWindowsGpuWorkaroundInfo() {
 
     if (major === 10 && Number.isInteger(build) && build <= 14393) {
       return {
-        shouldDisableHardwareAcceleration: true,
+        shouldDisableHardwareAcceleration: false,
+        shouldUseRendererLaunchCompatibility: true,
         release,
-        reason: 'win10-1607-ltsb-gpu-test'
+        reason: 'win10-1607-renderer-launch-compat'
       };
     }
 
-    return { shouldDisableHardwareAcceleration: false, release, reason: '' };
+    return {
+      shouldDisableHardwareAcceleration: false,
+      shouldUseRendererLaunchCompatibility: false,
+      release,
+      reason: ''
+    };
   } catch (e) {
     console.error('[启动] Windows 版本检测失败:', e);
-    return { shouldDisableHardwareAcceleration: false, release: '', reason: '' };
+    return {
+      shouldDisableHardwareAcceleration: false,
+      shouldUseRendererLaunchCompatibility: false,
+      release: '',
+      reason: ''
+    };
   }
 }
 
 const legacyWindowsGpuWorkaround = getLegacyWindowsGpuWorkaroundInfo();
 const shouldDisableHardwareAcceleration = legacyWindowsGpuWorkaround.shouldDisableHardwareAcceleration;
+const shouldUseRendererLaunchCompatibility = legacyWindowsGpuWorkaround.shouldUseRendererLaunchCompatibility;
+const shouldKeepBrowserViewVisibleDuringLoading = shouldDisableHardwareAcceleration || shouldUseRendererLaunchCompatibility;
 
 if (shouldDisableHardwareAcceleration) {
   console.log(`[启动] 检测到需要软件渲染的 Windows (${legacyWindowsGpuWorkaround.release}, ${legacyWindowsGpuWorkaround.reason})，禁用硬件加速以规避白屏问题`);
@@ -58,8 +78,20 @@ if (shouldDisableHardwareAcceleration) {
   // GPU 进程仍会尝试初始化；旧版 Windows/Win10 1607 老驱动下合成器
   // 常出图失败导致白屏（典型如视频号发布页），--disable-gpu 比软禁用更彻底。
   app.commandLine.appendSwitch('disable-gpu');
+} else if (shouldUseRendererLaunchCompatibility) {
+  console.log(`[启动] 检测到旧版 Win10 (${legacyWindowsGpuWorkaround.release})，保留 GPU，启用 renderer 启动兼容参数`);
 } else {
   console.log(`[启动] 当前系统保留 GPU 硬件加速 (${legacyWindowsGpuWorkaround.release || 'non-win32'})`);
+}
+
+if (shouldUseRendererLaunchCompatibility) {
+  // 仅旧系统命中，恢复 1.1.2 时代已经验证过的 renderer 启动兼容参数；
+  // 正常 Win10/11 不追加，避免扩大行为变化面。
+  app.commandLine.appendSwitch('disable-dev-shm-usage');
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 }
 
 let mainWindow;
@@ -449,6 +481,9 @@ function initializeSessionDiagnosticLog() {
         `Node: ${process.versions.node || ''}`,
         `系统: ${process.platform} ${os.release()}`,
         `执行文件: ${process.execPath}`,
+        `应用目录: ${__dirname}`,
+        `是否 asar 路径: ${String(__dirname || '').includes('app.asar') ? '是' : '否'}`,
+        `启动兼容: gpuDisabled=${shouldDisableHardwareAcceleration ? '是' : '否'}, rendererLaunchCompat=${shouldUseRendererLaunchCompatibility ? '是' : '否'}, reason=${legacyWindowsGpuWorkaround.reason || '-'}`,
         `便携版外层目录: ${getPortableExecutableDir() || '-'}`,
         `日志路径: ${logPath}`,
         '========================================',
@@ -2336,13 +2371,10 @@ function saveGlobalStorage() {
   }
 }
 
-// 检测是否为便携版（通过检查是否在标准安装目录）
-// 便携版特征：生产环境 + 不在 Program Files/ProgramData 目录
-const execPathLower = process.execPath.toLowerCase();
-const isInstalled = execPathLower.includes('program files') ||
-                    execPathLower.includes('programdata') ||
-                    execPathLower.includes('\\windows\\');
-const isPortable = isProduction && !isInstalled;
+// 检测是否为 electron-builder portable 便携版。
+// 标准 per-user NSIS 安装目录通常在 %LOCALAPPDATA%\Programs，不应再用“是否在 Program Files”
+// 这种路径启发式判断，否则会把安装版误判为便携版。
+const isPortable = isProduction && !!getPortableExecutableDir();
 
 // 设置用户数据路径
 if (isProduction) {
@@ -2379,18 +2411,49 @@ const LOGIN_FILE_PATH = path.join(__dirname, 'login.html'); // 用于 loadFile()
 const HOME_URL = LOGIN_URL;
 const PUBLISH_LOADING_PAGE = 'publish-loading.html';
 
+function isUsableWebContents(webContents) {
+  try {
+    return !!webContents && !webContents.isDestroyed();
+  } catch (_) {
+    return false;
+  }
+}
+
 // 加载本地页面（使用 loadFile 确保 MIME 类型正确，解决 CSS 渲染成文字的问题）
 // 如果 loadFile 失败（如 mklink 符号链接导致中文路径编码异常），则用正确编码的 file:// URL 重试
-function loadLocalPage(webContents, pageName) {
+function loadLocalPage(webContents, pageName, options = {}) {
   const filePath = path.join(__dirname, pageName);
-  console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
-  return webContents.loadFile(filePath).catch(err => {
-    console.warn(`[loadLocalPage] loadFile 失败 (${err.code || err.message})，尝试 loadURL fallback`);
-    // 使用 URL 构造器正确编码中文路径（符号链接/特殊路径场景）
-    const fileUrl = require('url').pathToFileURL(filePath).href;
-    console.log(`[loadLocalPage] fallback loadURL: ${fileUrl}`);
-    return webContents.loadURL(fileUrl);
-  });
+  const preferFileUrl = options.preferFileUrl ?? false;
+  const strategies = preferFileUrl ? ['loadURL', 'loadFile'] : ['loadFile', 'loadURL'];
+
+  const loadByStrategy = (index, previousError = null) => {
+    if (!isUsableWebContents(webContents)) {
+      const suffix = previousError ? `；上一错误: ${previousError.message || previousError}` : '';
+      return Promise.reject(new Error(`[loadLocalPage] webContents 已销毁，无法加载 ${pageName}${suffix}`));
+    }
+
+    const strategy = strategies[index];
+    if (!strategy) {
+      return Promise.reject(previousError || new Error(`[loadLocalPage] 无可用加载策略: ${pageName}`));
+    }
+
+    if (strategy === 'loadURL') {
+      const fileUrl = require('url').pathToFileURL(filePath).href;
+      console.log(`[loadLocalPage] 使用 loadURL 加载: ${fileUrl}`);
+      return webContents.loadURL(fileUrl).catch(err => {
+        console.warn(`[loadLocalPage] loadURL 失败 (${err.code || err.message})，尝试下一个策略`);
+        return loadByStrategy(index + 1, err);
+      });
+    }
+
+    console.log(`[loadLocalPage] 使用 loadFile 加载: ${filePath}`);
+    return webContents.loadFile(filePath).catch(err => {
+      console.warn(`[loadLocalPage] loadFile 失败 (${err.code || err.message})，尝试下一个策略`);
+      return loadByStrategy(index + 1, err);
+    });
+  };
+
+  return loadByStrategy(0);
 }
 
 function createPublishLoadingWindow(options = {}) {
@@ -2548,10 +2611,14 @@ function setBrowserLoadingState(partialState = {}) {
 
   if (browserView && browserView.webContents && !browserView.webContents.isDestroyed()) {
     if (browserLoadingState.visible) {
-      browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+      if (shouldKeepBrowserViewVisibleDuringLoading && mainWindow && !mainWindow.isDestroyed()) {
+        updateBrowserViewBounds(isScriptPanelOpen);
+      } else {
+        browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
+      }
     } else if (mainWindow && !mainWindow.isDestroyed()) {
       updateBrowserViewBounds(isScriptPanelOpen);
-      if (shouldDisableHardwareAcceleration) {
+      if (shouldKeepBrowserViewVisibleDuringLoading) {
         scheduleBrowserViewRepaint('browser-loading-state');
       }
     }
@@ -2563,7 +2630,7 @@ function setBrowserLoadingState(partialState = {}) {
 }
 
 function scheduleBrowserViewRepaint(reason = 'unknown') {
-  if (!shouldDisableHardwareAcceleration) return;
+  if (!shouldKeepBrowserViewVisibleDuringLoading) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
 
@@ -4985,7 +5052,7 @@ function createWindow() {
   // 窗口准备好后立即显示
   let windowShown = false;
   const showWindow = () => {
-    if (!windowShown) {
+    if (!windowShown && mainWindow && !mainWindow.isDestroyed()) {
       windowShown = true;
       mainWindow.show();
     }
@@ -4997,11 +5064,9 @@ function createWindow() {
   // 为主窗口打开开发者工具（用于调试控制面板）
   // mainWindow.webContents.openDevTools();
 
-  // 加载浏览器控制界面
-  // 🔑 用 .catch 兜底：loadFile 失败时（特殊路径/符号链接/中文路径）改用 pathToFileURL 正确编码的 file:// 重试，避免白屏或 CSS 渲染成文字
-  mainWindow.loadFile('index.html').catch(err => {
-    console.warn('[mainWindow] index.html loadFile 失败，改用 pathToFileURL 兜底:', err && err.message);
-    mainWindow.loadURL(require('url').pathToFileURL(path.join(__dirname, 'index.html')).href);
+  // 加载浏览器控制界面，统一走 loadLocalPage 让本地页面具备 file URL 兜底和销毁保护。
+  loadLocalPage(mainWindow.webContents, 'index.html').catch(err => {
+    console.error('[mainWindow] ❌ index.html 加载失败:', err && err.message ? err.message : err);
   });
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.send('browser-loading-state', browserLoadingState);
@@ -6588,7 +6653,7 @@ let isHeaderHidden = false;
 function updateBrowserViewBounds(scriptPanelOpen = false) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
-  if (browserLoadingState.visible) {
+  if (browserLoadingState.visible && !shouldKeepBrowserViewVisibleDuringLoading) {
     browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
     return;
   }
@@ -6831,6 +6896,8 @@ function createTray() {
 
 if (shouldDisableHardwareAcceleration) {
   console.log(`[GPU] ✅ 已对兼容性风险系统禁用 GPU 硬件加速（防止白屏: ${legacyWindowsGpuWorkaround.reason || 'unknown'}）`);
+} else if (shouldUseRendererLaunchCompatibility) {
+  console.log(`[GPU] ✅ 已保留 GPU 硬件加速，并启用 renderer 启动兼容参数（${legacyWindowsGpuWorkaround.reason || 'unknown'}）`);
 } else {
   console.log('[GPU] ✅ 已保留 GPU 硬件加速（避免动画噪点/渲染降级）');
 }
@@ -6840,23 +6907,8 @@ if (shouldDisableHardwareAcceleration) {
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 // 禁用自动化扩展
 app.commandLine.appendSwitch('disable-extensions');
-// 使用正常的渲染模式
-app.commandLine.appendSwitch('disable-dev-shm-usage');
-// 禁用沙箱 - 防止某些企业安全策略或杀毒软件拦截渲染进程
-app.commandLine.appendSwitch('no-sandbox');
-// 🛡️ 安全软件兼容性优化（电脑管家/360等）
-// 禁用渲染进程代码完整性检查 - 防止安全软件的DLL注入校验导致renderer崩溃
-app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-if (shouldDisableHardwareAcceleration) {
-  // GPU进程合并到主进程 - 已禁用硬件加速，独立GPU进程无意义，减少进程数降低安全软件误报
-  app.commandLine.appendSwitch('in-process-gpu');
-}
-// 防止后台窗口被节流 - 避免安全软件的"性能优化"功能干扰发布窗口
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
-console.log('[Sandbox] ✅ 已添加 no-sandbox fallback');
-console.log(`[Compatibility] ✅ 已添加安全软件兼容性优化（RendererCodeIntegrity禁用/${shouldDisableHardwareAcceleration ? 'GPU合并/' : ''}防后台节流）`);
+console.log(`[Compatibility] ✅ renderer 启动兼容参数: ${shouldUseRendererLaunchCompatibility ? '已启用（仅旧系统）' : '未启用'}`);
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -9550,7 +9602,7 @@ async function openManagedChildWindow(url, options = {}) {
     if (!isBareToutiao) {
       windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
       // 🩹 把"软件渲染回退"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
-      // Win7/8 以及 Win10 1607/LTSB 老驱动测试机注入；新 Win10/11 不执行该巡检。
+      // 仅真正禁用 GPU 的 Win7/8 注入；Win10 1607 只做 renderer 启动兼容，不启用页面自动巡检。
       if (shouldDisableHardwareAcceleration) {
         windowWebPreferences.additionalArguments = ['--yyzs-legacy-windows=1'];
       }
@@ -9594,8 +9646,8 @@ async function openManagedChildWindow(url, options = {}) {
         console.log(`[Window Manager] 已显示窗口 (${reason})`);
         // 🩹 旧版 Windows 软件渲染下，show() 后常出现「DOM 已就绪但合成器不出图」的白屏
         //（Electron 已知问题：show:false 窗口显示后需触发一次重绘才贴图）。
-        // 仅软件渲染回退机型执行：微调窗口高度 +1px 再还原，强制合成器重绘一帧。
-        if (shouldDisableHardwareAcceleration) {
+        // 仅旧系统兼容分支执行：微调窗口高度 +1px 再还原，强制合成器重绘一帧。
+        if (shouldKeepBrowserViewVisibleDuringLoading) {
           try {
             const __redrawBounds = newWindow.getBounds();
             newWindow.setBounds({ ...__redrawBounds, height: __redrawBounds.height + 1 });

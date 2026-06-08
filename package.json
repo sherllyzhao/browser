@@ -5,8 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build:dev": "node build-scripts/set-env.js dev && electron-builder --win",
-    "build:prod": "node build-scripts/set-env.js prod && electron-builder --win",
+    "build:dev": "node build-scripts/set-env.js dev && electron-builder --win nsis --ia32",
+    "build:prod": "node build-scripts/set-env.js prod && electron-builder --win nsis --ia32",
     "build:dev:portable": "node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
     "build:prod:portable": "node build-scripts/set-env.js prod && electron-builder --win portable --ia32",
     "build": "npm run build:prod",
@@ -20,6 +20,7 @@
       "output": "dist"
     },
     "electronVersion": "21.4.4",
+    "asar": false,
     "files": [
       "main.js",
       "preload.js",
@@ -40,9 +41,6 @@
       "injected-scripts/**",
       "assets/**"
     ],
-    "asarUnpack": [
-      "injected-scripts/**"
-    ],
     "afterPack": "./build-scripts/afterPack.js",
     "win": {
       "icon": "icon.ico",
@@ -54,28 +52,22 @@
           "arch": [
             "ia32"
           ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "ia32"
-          ]
         }
       ]
     },
     "portable": {
-      "artifactName": "资海云运营助手-便携版-${version}.exe",
+      "artifactName": "资海云运营助手-便携版-safe-${version}.exe",
       "requestExecutionLevel": "user",
-      "unpackDirName": "zhcloud-ops-assistant-portable"
+      "unpackDirName": false
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
+      "allowToChangeInstallationDirectory": true,
       "allowElevation": false,
-      "runAfterFinish": true,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": false,
+      "runAfterFinish": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
       "menuCategory": false,
       "shortcutName": "资海云运营助手",
       "deleteAppDataOnUninstall": false,
@@ -84,8 +76,7 @@
       "installerHeaderIcon": "icon.ico",
       "installerHeader": "build/installerHeader.bmp",
       "installerSidebar": "build/installerSidebar.bmp",
-      "uninstallerSidebar": "build/installerSidebar.bmp",
-      "include": "installer.nsh"
+      "uninstallerSidebar": "build/installerSidebar.bmp"
     }
   },
   "keywords": [],
