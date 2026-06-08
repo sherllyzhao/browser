@@ -12,21 +12,38 @@ const APP_VERSION = app.getVersion();
 
 function getLegacyWindowsGpuWorkaroundInfo() {
   // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
+  // Windows 10 1607/LTSB(10.0.14393) 在老核显/老驱动上也可能出现 BrowserView 只出背景色的白屏。
   // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
   if (process.platform !== 'win32') {
-    return { shouldDisableHardwareAcceleration: false, release: '' };
+    return { shouldDisableHardwareAcceleration: false, release: '', reason: '' };
   }
 
   try {
     const release = os.release();
-    const major = Number.parseInt(release.split('.')[0], 10);
-    return {
-      shouldDisableHardwareAcceleration: Number.isInteger(major) && major < 10,
-      release
-    };
+    const parts = release.split('.').map(part => Number.parseInt(part, 10));
+    const major = parts[0];
+    const build = parts[2];
+
+    if (Number.isInteger(major) && major < 10) {
+      return {
+        shouldDisableHardwareAcceleration: true,
+        release,
+        reason: 'win7-win8-legacy-gpu'
+      };
+    }
+
+    if (major === 10 && Number.isInteger(build) && build <= 14393) {
+      return {
+        shouldDisableHardwareAcceleration: true,
+        release,
+        reason: 'win10-1607-ltsb-gpu-test'
+      };
+    }
+
+    return { shouldDisableHardwareAcceleration: false, release, reason: '' };
   } catch (e) {
     console.error('[启动] Windows 版本检测失败:', e);
-    return { shouldDisableHardwareAcceleration: false, release: '' };
+    return { shouldDisableHardwareAcceleration: false, release: '', reason: '' };
   }
 }
 
@@ -34,15 +51,15 @@ const legacyWindowsGpuWorkaround = getLegacyWindowsGpuWorkaroundInfo();
 const shouldDisableHardwareAcceleration = legacyWindowsGpuWorkaround.shouldDisableHardwareAcceleration;
 
 if (shouldDisableHardwareAcceleration) {
-  console.log(`[启动] 检测到旧版 Windows (${legacyWindowsGpuWorkaround.release})，禁用硬件加速以规避白屏问题`);
+  console.log(`[启动] 检测到需要软件渲染的 Windows (${legacyWindowsGpuWorkaround.release}, ${legacyWindowsGpuWorkaround.reason})，禁用硬件加速以规避白屏问题`);
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu-compositing');
   // 🩹 裸开关：彻底禁用 GPU，强制纯软件渲染。disableHardwareAcceleration() 仅为软禁用，
-  // GPU 进程仍会尝试初始化；旧版 Windows（尤其 32 位 Electron 跑 64 位 Win7）下合成器
+  // GPU 进程仍会尝试初始化；旧版 Windows/Win10 1607 老驱动下合成器
   // 常出图失败导致白屏（典型如视频号发布页），--disable-gpu 比软禁用更彻底。
   app.commandLine.appendSwitch('disable-gpu');
 } else {
-  console.log('[启动] 当前系统保留 GPU 硬件加速');
+  console.log(`[启动] 当前系统保留 GPU 硬件加速 (${legacyWindowsGpuWorkaround.release || 'non-win32'})`);
 }
 
 let mainWindow;
@@ -6778,7 +6795,7 @@ function createTray() {
 }
 
 if (shouldDisableHardwareAcceleration) {
-  console.log('[GPU] ✅ 已仅对旧版 Windows 禁用 GPU 硬件加速（防止白屏）');
+  console.log(`[GPU] ✅ 已对兼容性风险系统禁用 GPU 硬件加速（防止白屏: ${legacyWindowsGpuWorkaround.reason || 'unknown'}）`);
 } else {
   console.log('[GPU] ✅ 已保留 GPU 硬件加速（避免动画噪点/渲染降级）');
 }
@@ -9497,8 +9514,8 @@ async function openManagedChildWindow(url, options = {}) {
     };
     if (!isBareToutiao) {
       windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
-      // 🩹 把"旧版 Windows"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
-      // 仅 Win7/8 注入；content-preload 据此决定是否启用视频号白屏巡检兜底，确保 Win10/11 完全不执行该巡检。
+      // 🩹 把"软件渲染回退"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
+      // Win7/8 以及 Win10 1607/LTSB 老驱动测试机注入；新 Win10/11 不执行该巡检。
       if (shouldDisableHardwareAcceleration) {
         windowWebPreferences.additionalArguments = ['--yyzs-legacy-windows=1'];
       }
@@ -9542,7 +9559,7 @@ async function openManagedChildWindow(url, options = {}) {
         console.log(`[Window Manager] 已显示窗口 (${reason})`);
         // 🩹 旧版 Windows 软件渲染下，show() 后常出现「DOM 已就绪但合成器不出图」的白屏
         //（Electron 已知问题：show:false 窗口显示后需触发一次重绘才贴图）。
-        // 仅 Win7/8 执行：微调窗口高度 +1px 再还原，强制合成器重绘一帧。Win10/11 不执行。
+        // 仅软件渲染回退机型执行：微调窗口高度 +1px 再还原，强制合成器重绘一帧。
         if (shouldDisableHardwareAcceleration) {
           try {
             const __redrawBounds = newWindow.getBounds();

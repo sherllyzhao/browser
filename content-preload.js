@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
-// 🩹 旧版 Windows（Win7/8）标志：由主进程通过 webPreferences.additionalArguments 注入。
-// 仅旧系统才启用视频号发布页白屏巡检兜底，Win10/11 不注入此标志、不执行巡检（满足"仅旧系统生效"）。
+// 🩹 软件渲染回退标志：由主进程通过 webPreferences.additionalArguments 注入。
+// 仅 Win7/8 与 Win10 1607/LTSB 老驱动测试机启用视频号发布页白屏巡检兜底。
 const __IS_LEGACY_WINDOWS__ = (() => {
   try {
     return Array.isArray(process.argv) && process.argv.some(arg => String(arg).includes('--yyzs-legacy-windows'));
