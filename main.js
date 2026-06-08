@@ -2551,12 +2551,47 @@ function setBrowserLoadingState(partialState = {}) {
       browserView.setBounds({ x: 0, y: -10000, width: 0, height: 0 });
     } else if (mainWindow && !mainWindow.isDestroyed()) {
       updateBrowserViewBounds(isScriptPanelOpen);
+      if (shouldDisableHardwareAcceleration) {
+        scheduleBrowserViewRepaint('browser-loading-state');
+      }
     }
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('browser-loading-state', browserLoadingState);
   }
+}
+
+function scheduleBrowserViewRepaint(reason = 'unknown') {
+  if (!shouldDisableHardwareAcceleration) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+
+  setTimeout(() => {
+    try {
+      if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
+      if (browserLoadingState.visible) return;
+
+      const bounds = typeof browserView.getBounds === 'function' ? browserView.getBounds() : null;
+      if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+        return;
+      }
+
+      console.log(`[BrowserView] 🔄 触发兼容性重绘 (${reason})`);
+      browserView.setBounds({ ...bounds, height: bounds.height + 1 });
+      setTimeout(() => {
+        try {
+          if (browserView && browserView.webContents && !browserView.webContents.isDestroyed()) {
+            browserView.setBounds(bounds);
+          }
+        } catch (err) {
+          console.warn('[BrowserView] 强制重绘恢复失败:', err && err.message ? err.message : err);
+        }
+      }, 60);
+    } catch (err) {
+      console.warn('[BrowserView] 强制重绘失败:', err && err.message ? err.message : err);
+    }
+  }, 40);
 }
 
 function beginStartupLoadGuard(targetUrl) {
