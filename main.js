@@ -1039,11 +1039,7 @@ async function clearShipinhaoLoginCookiesFromSession(targetSession, eventName) {
     }
   }
 
-  try {
-    await targetSession.flushStorageData();
-  } catch (flushErr) {
-    console.warn(`[Window Manager] ⚠️ [${eventName}] flushStorageData 失败: ${flushErr.message}`);
-  }
+  await flushSessionStorageData(targetSession, `Window Manager:${eventName}:clear-shipinhao-login-cookies`);
 
   console.log(`[Window Manager] 🧹 [${eventName}] 视频号登录前 cookie 清理完成，共删除 ${deletedCount} 个`);
   return deletedCount;
@@ -1113,6 +1109,85 @@ async function hasValidLoginCookies(windowSession, platform) {
     console.warn('[hasValidLoginCookies] 取 cookies 失败:', err.message);
     return false;
   }
+}
+
+function sessionDataHasValidLoginCookies(sessionData, platform) {
+  if (!platform) return false;
+  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[platform];
+  if (!Array.isArray(loginCookieNames) || loginCookieNames.length === 0) {
+    return false;
+  }
+
+  const cookies = extractSessionCookiesArray(sessionData);
+  const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
+  const hit = loginCookieNames.find(name => cookieNames.has(name));
+  if (hit) {
+    console.log(`[sessionDataHasValidLoginCookies] ✅ sessionData 含登录凭证（命中 cookie: ${hit}）, platform=${platform}`);
+    return true;
+  }
+
+  console.log(`[sessionDataHasValidLoginCookies] ⚠️ sessionData 未检测到登录凭证, platform=${platform}, 期望任一: [${loginCookieNames.join(', ')}]`);
+  return false;
+}
+
+async function flushSessionStorageData(targetSession, label, options = {}) {
+  const throwOnError = !!options.throwOnError;
+  if (!targetSession || typeof targetSession.flushStorageData !== 'function') {
+    if (throwOnError) {
+      throw new Error('session flushStorageData 不可用');
+    }
+    return false;
+  }
+
+  try {
+    await targetSession.flushStorageData();
+    console.log(`[${label}] ✅ session flushStorageData 完成`);
+    return true;
+  } catch (err) {
+    console.warn(`[${label}] ⚠️ session flushStorageData 异常: ${err.message}`);
+    if (throwOnError) {
+      throw err;
+    }
+    return false;
+  }
+}
+
+async function persistSessionCookiesToDisk(targetSession, label) {
+  if (!targetSession || !targetSession.cookies) {
+    return { success: false, convertedCount: 0, error: 'session 不可用' };
+  }
+
+  try {
+    const cookies = await targetSession.cookies.get({});
+    const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+    let convertedCount = 0;
+
+    for (const cookie of cookies) {
+      if (!cookie.session) {
+        continue;
+      }
+      const persistentCookie = buildCookieSetDetails(cookie, oneYearFromNow);
+      await targetSession.cookies.set(persistentCookie);
+      convertedCount++;
+    }
+
+    const flushSuccess = await flushSessionStorageData(targetSession, label);
+    if (!flushSuccess) {
+      return { success: false, convertedCount, totalCount: cookies.length, error: 'session flushStorageData 失败' };
+    }
+    console.log(`[${label}] ✅ 会话 cookie 持久化完成: ${convertedCount}/${cookies.length}`);
+    return { success: true, convertedCount, totalCount: cookies.length };
+  } catch (err) {
+    console.warn(`[${label}] ⚠️ 会话 cookie 持久化失败: ${err.message}`);
+    return { success: false, convertedCount: 0, error: err.message };
+  }
+}
+
+async function persistWindowSessionBeforeClose(targetWindow, label) {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { success: false, convertedCount: 0, error: '窗口已销毁' };
+  }
+  return persistSessionCookiesToDisk(targetWindow.webContents.session, label);
 }
 
 // 🧬 比对本地 session 与 sessionData 是否同一账号（基于 platformIdentityCookies）
@@ -3052,7 +3127,10 @@ async function tryRestoreLoginWithToken(preferredUrl) {
 
     try {
       await restoreLoginCookiesToSession(targetSession, savedToken, savedExpires);
-      await targetSession.flushStorageData();
+      const flushOk = await flushSessionStorageData(targetSession, 'Auth Restore', { throwOnError: true });
+      if (!flushOk) {
+        throw new Error('Auth Restore flushStorageData 失败');
+      }
 
       if (browserView?.webContents && !browserView.webContents.isDestroyed()) {
         await browserView.webContents.loadURL(resumeUrl);
@@ -4933,7 +5011,7 @@ function createWindow() {
 
           console.log(`[Window Close] ✅ 转换了 ${convertedCount} 个会话 Cookie 为持久化 Cookie`);
 
-          await ses.flushStorageData();
+          await flushSessionStorageData(ses, 'Window Close', { throwOnError: true });
           console.log('[Window Close] ✅ Session 数据已写入磁盘');
           if (isPortable) {
             console.log(`[Window Close] 💾 便携版数据已保存到: ${app.getPath('userData')}`);
@@ -5304,7 +5382,7 @@ function createWindow() {
           console.log('[BrowserView] ✅ company_unique_id/unique_id Cookie 已恢复:', maskSensitive(uniqueId));
         }
 
-        await ses.flushStorageData();
+        await flushSessionStorageData(ses, 'BrowserView Restore', { throwOnError: true });
         console.log('[BrowserView] ✅ 登录状态已恢复');
 
         // 🔑 根据上次退出的项目类型，跳转到对应首页
@@ -6238,13 +6316,11 @@ function createWindow() {
           if (scriptResult && scriptResult.success) {
             console.log(`[did-create-window] 🔐 [${eventName}] ✅ 脚本保存成功`);
             let cacheSyncResult = null;
-            if (navPlatform === 'shipinhao') {
-              try {
-                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
-                console.log(`[did-create-window] 🔐 [${eventName}] 视频号本地最新会话缓存同步结果:`, cacheSyncResult);
-              } catch (cacheSyncErr) {
-                console.warn(`[did-create-window] ⚠️ [${eventName}] 视频号本地最新会话缓存同步异常:`, cacheSyncErr.message);
-              }
+            try {
+              cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
+              console.log(`[did-create-window] 🔐 [${eventName}] 本地最新会话缓存同步结果:`, cacheSyncResult);
+            } catch (cacheSyncErr) {
+              console.warn(`[did-create-window] ⚠️ [${eventName}] 本地最新会话缓存同步异常:`, cacheSyncErr.message);
             }
             result = {
               success: true,
@@ -6312,6 +6388,7 @@ function createWindow() {
       // 防止重复触发
       if (isSavingSession) {
         console.log('[did-create-window] 正在保存中，忽略重复触发');
+        e.preventDefault();
         return;
       }
 
@@ -6341,6 +6418,7 @@ function createWindow() {
 
           if (targetPlatform === 'shipinhao' && !hasRealLogin) {
             console.log('[did-create-window] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过保存接口调用');
+            await persistWindowSessionBeforeClose(newWindow, `did-create-window:${windowId}:close-skip-login`);
             isSavingSession = false;
             newWindow.destroy();
             return;
@@ -6370,11 +6448,19 @@ function createWindow() {
           console.error('[did-create-window] ❌ 保存会话数据时出错:', err);
         } finally {
           // 保存完成（无论成功失败），销毁窗口
+          await persistWindowSessionBeforeClose(newWindow, `did-create-window:${windowId}:close`);
           console.log('[did-create-window] 保存完成，销毁窗口');
           newWindow.destroy();
         }
       } else {
-        console.log('[did-create-window] 非多账号模式窗口，直接关闭');
+        e.preventDefault();
+        isSavingSession = true;
+        console.log('[did-create-window] 非多账号模式窗口，先持久化当前 session 再关闭');
+        try {
+          await persistWindowSessionBeforeClose(newWindow, `did-create-window:${windowId}:generic-close`);
+        } finally {
+          newWindow.destroy();
+        }
       }
     });
 
@@ -6540,7 +6626,7 @@ async function navigateToLoginInternal(source) {
       await ses.cookies.remove('http://localhost:5173/', 'gcc').catch(() => {});
       await ses.cookies.remove('http://localhost:5173/', 'site_id').catch(() => {});
 
-      await ses.flushStorageData();
+      await flushSessionStorageData(ses, 'navigateToLoginInternal', { throwOnError: true });
       console.log(`[navigateToLoginInternal] ✅ 已清除 ${deletedCount} 个登录相关 cookies`);
     } catch (err) {
       console.error('[navigateToLoginInternal] ❌ 清除 cookies 失败:', err);
@@ -7148,7 +7234,7 @@ app.whenReady().then(async () => {
       try {
         const ses = browserView.webContents.session;
         const cookies = await ses.cookies.get({});
-        await ses.flushStorageData();
+        await flushSessionStorageData(ses, 'Auto-Save', { throwOnError: true });
         console.log(`[Auto-Save] ✅ Session 数据已保存 - ${cookies.length} 个 cookies`);
         if (isPortable) {
           console.log(`[Auto-Save] 便携版数据路径: ${app.getPath('userData')}`);
@@ -9026,42 +9112,52 @@ async function openManagedChildWindow(url, options = {}) {
         // 场景：用户在发布窗口手动登录后，新 cookies 可能未及时同步到后台
         // 如果本地登录态有效且账号匹配，跳过 sessionData 覆盖，避免擦掉本地最新登录态
         let shouldSkipSessionRestore = false;
-        const shouldForceIncomingSessionRestore = !!cachedSessionData
+        const incomingHasLogin = sessionDataHasValidLoginCookies(effectiveSessionData, options.platform);
+        const shouldForceIncomingSessionRestore = incomingHasLogin && !!cachedSessionData
           && String(effectiveSessionSource || '').startsWith('incoming');
         try {
           const localHasLogin = await hasValidLoginCookies(windowSession, options.platform);
           if (localHasLogin) {
-            // 多账号模式：persist:<platform>_<accountId> 是该账号专属空间
-            // 该 session 内一旦存在有效登录态，必然是该账号最新的登录信息
-            // （重新授权时已通过 migrate-cookies-to-account-session 写入新 cookies）
-            // 所以无需再比对 element.cookies 里可能过期的身份 cookie 字面值
-            const isMultiAccountMode = !!(options.platform && options.accountId);
-            if (isMultiAccountMode) {
-              const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
-              if (identityMatch === false) {
-                console.log(`[Window Manager] 🔄 多账号模式检测到本地 session 与后台 sessionData 身份不一致，走清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
-              } else if (shouldForceIncomingSessionRestore) {
-                console.log(`[Window Manager] 🔄 多账号模式比较结果选择后台/传入会话 (${effectiveSessionSource})，不跳过 sessionData 恢复`);
-              } else {
-                shouldSkipSessionRestore = true;
-                const matchDesc = identityMatch === true ? '身份匹配' : '身份无法验证（保守保留本地）';
-                console.log(`[Window Manager] 🛡️ 多账号模式本地登录态有效且${matchDesc}，跳过 sessionData 清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
-              }
+            if (!incomingHasLogin) {
+              shouldSkipSessionRestore = true;
+              console.log(`[Window Manager] 🛡️ 本地 session 已登录，但 sessionData 不含真实登录凭证，跳过清空恢复以避免掉登录 (platform=${options.platform}, accountId=${options.accountId || 'shared'})`);
             } else {
-              const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
-              if (identityMatch !== false && !shouldForceIncomingSessionRestore) {
-                shouldSkipSessionRestore = true;
-                const matchDesc = identityMatch === true ? '匹配' : '无法验证（保守保留本地）';
-                console.log(`[Window Manager] 🛡️ 本地登录态有效且账号${matchDesc}，跳过 sessionData 清空恢复`);
+              // 多账号模式：persist:<platform>_<accountId> 是该账号专属空间
+              // 该 session 内一旦存在有效登录态，必然是该账号最新的登录信息
+              // （重新授权时已通过 migrate-cookies-to-account-session 写入新 cookies）
+              // 所以无需再比对 element.cookies 里可能过期的身份 cookie 字面值
+              const isMultiAccountMode = !!(options.platform && options.accountId);
+              if (isMultiAccountMode) {
+                const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
+                if (identityMatch === false) {
+                  console.log(`[Window Manager] 🔄 多账号模式检测到本地 session 与后台 sessionData 身份不一致，走清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
+                } else if (shouldForceIncomingSessionRestore) {
+                  console.log(`[Window Manager] 🔄 多账号模式比较结果选择后台/传入会话 (${effectiveSessionSource})，不跳过 sessionData 恢复`);
+                } else {
+                  shouldSkipSessionRestore = true;
+                  const matchDesc = identityMatch === true ? '身份匹配' : '身份无法验证（保守保留本地）';
+                  console.log(`[Window Manager] 🛡️ 多账号模式本地登录态有效且${matchDesc}，跳过 sessionData 清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
+                }
               } else {
-                const reason = identityMatch === false
-                  ? '检测到换账号（身份 cookie 不匹配）'
-                  : `比较结果选择后台/传入会话 (${effectiveSessionSource})`;
-                console.log(`[Window Manager] 🔄 ${reason}，走 sessionData 清空恢复`);
+                const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
+                if (identityMatch !== false && !shouldForceIncomingSessionRestore) {
+                  shouldSkipSessionRestore = true;
+                  const matchDesc = identityMatch === true ? '匹配' : '无法验证（保守保留本地）';
+                  console.log(`[Window Manager] 🛡️ 本地登录态有效且账号${matchDesc}，跳过 sessionData 清空恢复`);
+                } else {
+                  const reason = identityMatch === false
+                    ? '检测到换账号（身份 cookie 不匹配）'
+                    : `比较结果选择后台/传入会话 (${effectiveSessionSource})`;
+                  console.log(`[Window Manager] 🔄 ${reason}，走 sessionData 清空恢复`);
+                }
               }
             }
           } else {
-            console.log('[Window Manager] ℹ️ 本地无登录态，走 sessionData 清空恢复');
+            if (incomingHasLogin) {
+              console.log('[Window Manager] ℹ️ 本地无登录态，sessionData 含登录凭证，走 sessionData 清空恢复');
+            } else {
+              console.log('[Window Manager] ℹ️ 本地与 sessionData 均未检测到登录凭证，仍按传入数据恢复（不涉及覆盖有效登录态）');
+            }
           }
         } catch (preCheckErr) {
           console.warn('[Window Manager] ⚠️ 本地登录态预检异常，按原流程清空恢复:', preCheckErr.message);
@@ -9074,10 +9170,10 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.finishStep?.(1);
           publishLoadingWindow?.activateStep?.(2);
         } else {
-        try {
-          // 1. 清空该账号的所有 cookies
-          const cookies = await windowSession.cookies.get({});
-          console.log(`[Window Manager] 找到 ${cookies.length} 个旧 cookies，开始清空...`);
+          try {
+            // 1. 清空该账号的所有 cookies
+            const cookies = await windowSession.cookies.get({});
+            console.log(`[Window Manager] 找到 ${cookies.length} 个旧 cookies，开始清空...`);
 
           let deletedCount = 0;
           for (const cookie of cookies) {
@@ -9335,12 +9431,7 @@ async function openManagedChildWindow(url, options = {}) {
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
           console.log(`[Window Manager][${__wmTs()}] ⏳ 第一次 flushStorageData...`);
-          try {
-            await windowSession.flushStorageData();
-            console.log(`[Window Manager][${__wmTs()}] ✅ 第一次 flush 完成`);
-          } catch (flushErr1) {
-            console.warn(`[Window Manager][${__wmTs()}] ⚠️ 第一次 flush 异常: ${flushErr1.message}`);
-          }
+          await flushSessionStorageData(windowSession, 'Window Manager:restore-session-before-create');
 
           // 保留一次短等待给 Cookie Store 收敛，但避免打开窗口时明显卡顿。
           console.log(`[Window Manager][${__wmTs()}] ⏳ 等待 120ms 让会话写入收敛...`);
@@ -9352,12 +9443,12 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.activateStep?.(2);
 
           console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
-        } catch (err) {
-          console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
-          console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
-          // 不影响窗口创建，继续执行
-        }
-        }  // end of else (!shouldSkipSessionRestore)
+          } catch (err) {
+            console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
+            console.error(`[Window Manager][${__wmTs()}] 🧾 错误堆栈:`, err.stack);
+            // 不影响窗口创建，继续执行
+          }
+        } // end of else (!shouldSkipSessionRestore)
       }
     } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
@@ -9620,13 +9711,11 @@ async function openManagedChildWindow(url, options = {}) {
           if (scriptResult && scriptResult.success) {
             console.log(`[Window Manager] 🔐 [${eventName}] ✅ 脚本保存成功`);
             let cacheSyncResult = null;
-            if (navPlatform === 'shipinhao') {
-              try {
-                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
-                console.log(`[Window Manager] 🔐 [${eventName}] 视频号本地最新会话缓存同步结果:`, cacheSyncResult);
-              } catch (cacheSyncErr) {
-                console.warn(`[Window Manager] ⚠️ [${eventName}] 视频号本地最新会话缓存同步异常:`, cacheSyncErr.message);
-              }
+            try {
+              cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, `script-save:${eventName}`);
+              console.log(`[Window Manager] 🔐 [${eventName}] 本地最新会话缓存同步结果:`, cacheSyncResult);
+            } catch (cacheSyncErr) {
+              console.warn(`[Window Manager] ⚠️ [${eventName}] 本地最新会话缓存同步异常:`, cacheSyncErr.message);
             }
             result = {
               success: true,
@@ -9693,6 +9782,7 @@ async function openManagedChildWindow(url, options = {}) {
       // 防止重复触发
       if (isSavingSession) {
         console.log('[Window Manager] 正在保存中，忽略重复触发');
+        e.preventDefault();
         return;
       }
 
@@ -9725,6 +9815,7 @@ async function openManagedChildWindow(url, options = {}) {
 
           if (targetPlatform === 'shipinhao' && !hasRealLogin) {
             console.log('[Window Manager] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过脚本保存和后台保存');
+            await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:close-skip-login`);
             isSavingSession = false;
             newWindow.destroy();
             return;
@@ -9775,13 +9866,11 @@ async function openManagedChildWindow(url, options = {}) {
           if (scriptResult && scriptResult.success) {
             console.log('[Window Manager] ✅ 脚本保存成功，跳过主进程兜底');
             let cacheSyncResult = null;
-            if (targetPlatform === 'shipinhao') {
-              try {
-                cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, 'script-save:window-close');
-                console.log('[Window Manager] 视频号本地最新会话缓存同步结果:', cacheSyncResult);
-              } catch (cacheSyncErr) {
-                console.warn('[Window Manager] ⚠️ 视频号本地最新会话缓存同步异常:', cacheSyncErr.message);
-              }
+            try {
+              cacheSyncResult = await syncLatestSessionCacheFromWindow(newWindow, windowId, 'script-save:window-close');
+              console.log('[Window Manager] 本地最新会话缓存同步结果:', cacheSyncResult);
+            } catch (cacheSyncErr) {
+              console.warn('[Window Manager] ⚠️ 本地最新会话缓存同步异常:', cacheSyncErr.message);
             }
             result = {
               success: true,
@@ -9878,11 +9967,21 @@ async function openManagedChildWindow(url, options = {}) {
           console.error('[Window Manager] ❌ 保存会话数据时出错:', err);
         } finally {
           // 保存完成（无论成功失败），销毁窗口
+          await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:close`);
           console.log('[Window Manager] 保存完成，销毁窗口');
           newWindow.destroy();
         }
       }
-      // 非多账号模式窗口直接关闭，不做处理
+      else {
+        e.preventDefault();
+        isSavingSession = true;
+        console.log('[Window Manager] 非可保存窗口，先持久化当前 session 再关闭');
+        try {
+          await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:generic-close`);
+        } finally {
+          newWindow.destroy();
+        }
+      }
     });
 
     // 监听窗口关闭事件
@@ -10492,15 +10591,20 @@ ipcMain.handle('get-cookies', async () => {
 
 // 手动保存 Session 数据
 ipcMain.handle('flush-session', async () => {
-  if (browserView) {
-    const ses = browserView.webContents.session;
-    const cookies = await ses.cookies.get({});
-    console.log(`[Manual Save] Flushing ${cookies.length} cookies to disk...`);
-    await ses.flushStorageData();
-    console.log('[Manual Save] Session data flushed successfully');
-    return { success: true, cookieCount: cookies.length };
+  try {
+    if (browserView) {
+      const ses = browserView.webContents.session;
+      const cookies = await ses.cookies.get({});
+      console.log(`[Manual Save] Flushing ${cookies.length} cookies to disk...`);
+      await flushSessionStorageData(ses, 'Manual Save', { throwOnError: true });
+      console.log('[Manual Save] Session data flushed successfully');
+      return { success: true, cookieCount: cookies.length };
+    }
+    return { success: false, error: 'No browser view' };
+  } catch (err) {
+    console.error('[Manual Save] Session flush failed:', err.message);
+    return { success: false, error: err.message };
   }
-  return { success: false, error: 'No browser view' };
 });
 
 // 获取 Session 存储路径
@@ -10561,7 +10665,7 @@ ipcMain.handle('set-cookie', async (event, cookieData) => {
       console.log('[Set Cookie] ✅ Cookie 设置成功');
 
       // 强制刷新到磁盘，确保持久化
-      await ses.flushStorageData();
+      await flushSessionStorageData(ses, 'Set Cookie', { throwOnError: true });
       console.log('[Set Cookie] ✅ Session 数据已刷新到磁盘');
 
       // 验证 Cookie 是否设置成功
@@ -10663,7 +10767,7 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
     }
 
     // 刷新到磁盘
-    await persistentSession.flushStorageData();
+    await flushSessionStorageData(persistentSession, 'Cookie Migration:migrate-cookies-to-persistent', { throwOnError: true });
     if (isShipinhaoMigration) {
       await dedupShipinhaoCookiesOnce(persistentSession, '视频号授权迁移持久化 session');
     }
@@ -10748,7 +10852,7 @@ ipcMain.handle('migrate-cookies-to-account-session', async (event, domain, platf
       }
     }
 
-    await targetSession.flushStorageData();
+    await flushSessionStorageData(targetSession, 'Cookie Migration:migrate-cookies-to-account-session', { throwOnError: true });
     if (isShipinhaoAccountMigration) {
       await dedupShipinhaoCookiesOnce(targetSession, '视频号授权迁移账号 session');
     }
@@ -11979,6 +12083,16 @@ async function syncLatestSessionCacheFromWindow(targetWindow, windowId, source =
     };
   }
 
+  const flushSuccess = await flushSessionStorageData(targetWindow.webContents.session, `Save Session:${source}`);
+  if (!flushSuccess) {
+    return {
+      success: false,
+      error: '本地 session flushStorageData 失败',
+      accountInfo: context.accountInfo,
+      backendAccountId: context.backendAccountId
+    };
+  }
+
   return {
     success: true,
     accountInfo: context.accountInfo,
@@ -12003,6 +12117,11 @@ async function persistWindowSessionToBackend(targetWindow, windowId, source = 'w
     source
   });
 
+  const localFlushSucceeded = await flushSessionStorageData(targetWindow.webContents.session, `Save Session:${source}`);
+  if (!localFlushSucceeded) {
+    console.warn('[Save Session] ⚠️ 本地 session flushStorageData 失败，继续尝试后台保存');
+  }
+
   const uploadResult = await uploadSessionToBackend(context);
   if (!uploadResult?.success && context.accountInfo?.platform === 'shipinhao' && localCacheSnapshot) {
     console.warn('[Save Session] ⚠️ 视频号后台保存失败，但本地最新会话缓存已写入，按本地保存成功处理:', uploadResult?.error);
@@ -12012,6 +12131,7 @@ async function persistWindowSessionToBackend(targetWindow, windowId, source = 'w
       backendUploaded: false,
       backendError: uploadResult?.error,
       backendStatusCode: uploadResult?.statusCode,
+      localFlushSucceeded,
       statusCode: uploadResult?.statusCode,
       response: uploadResult?.response,
       source: 'local-cache',
@@ -12027,7 +12147,8 @@ async function persistWindowSessionToBackend(targetWindow, windowId, source = 'w
     ...uploadResult,
     publishData: context.publishData,
     accountInfo: context.accountInfo,
-    backendAccountId: context.backendAccountId
+    backendAccountId: context.backendAccountId,
+    localFlushSucceeded
   };
 }
 
@@ -12331,8 +12452,8 @@ async function clearShipinhaoIdentityCookiesFromSession(targetSession, label) {
       }
     }
 
-    if (deletedCount > 0 && typeof targetSession.flushStorageData === 'function') {
-      await targetSession.flushStorageData();
+    if (deletedCount > 0) {
+      await flushSessionStorageData(targetSession, label);
     }
   } catch (err) {
     console.warn(`[${label}] 登录页身份 cookie 清理异常: ${err.message}`);
@@ -12419,8 +12540,8 @@ async function dedupShipinhaoCookiesOnce(targetSession, label, keepCookie = null
         removed += cleanup.removed;
       }
     }
-    if ((removed > 0 || touched) && typeof targetSession.flushStorageData === 'function') {
-      await targetSession.flushStorageData();
+    if (removed > 0 || touched) {
+      await flushSessionStorageData(targetSession, label);
     }
   } catch (err) {
     console.warn(`[${label}] ⚠️ cookie 去重处理异常: ${err.message}`);
@@ -12572,6 +12693,7 @@ async function deleteAccountSession(platform, accountId) {
     try {
       // 清除 session 数据
       await accountSession.clearStorageData();
+      await flushSessionStorageData(accountSession, `Account Session:delete:${partitionName}`);
       console.log(`[Account Session] 已清除 session 数据: ${partitionName}`);
     } catch (err) {
       console.error(`[Account Session] 清除 session 数据失败: ${partitionName}`, err);
@@ -12883,7 +13005,7 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
     }
 
     // 刷新到磁盘
-    await targetSession.flushStorageData();
+    await flushSessionStorageData(targetSession, 'Account Manager:migrate-to-new-account', { throwOnError: true });
 
     console.log(`[Account Manager] ✅ 迁移完成: ${migratedCount} 个 cookies`);
     return { success: true, accountId, isNew, migratedCount };
@@ -13161,6 +13283,8 @@ ipcMain.handle('restore-session-data', async (event, sessionDataStr) => {
     console.log('[Session Restore] ========== 恢复完成 ==========');
     console.log('[Session Restore] 恢复统计:', results);
 
+    await flushSessionStorageData(ses, 'Session Restore', { throwOnError: true });
+
     return { success: true, results: results };
   } catch (err) {
     console.error('[Session Restore] 恢复失败:', err);
@@ -13230,6 +13354,8 @@ ipcMain.handle('restore-account-session', async (event, platform, accountId, ses
     console.log('[Account Session Restore] 恢复统计:', results);
     console.log('[Account Session Restore] 提示: localStorage/sessionStorage/IndexedDB 需要在窗口打开后通过页面脚本恢复');
 
+    await flushSessionStorageData(targetSession, 'Account Session Restore', { throwOnError: true });
+
     return { success: true, results: results };
   } catch (err) {
     console.error('[Account Session Restore] 恢复失败:', err);
@@ -13270,6 +13396,7 @@ ipcMain.handle('clear-account-cookies', async (event, platform, accountId) => {
 
     console.log('[Clear Account Cookies] ========== 清空完成 ==========');
     console.log(`[Clear Account Cookies] 成功删除 ${deletedCount} 个 cookies`);
+    await flushSessionStorageData(targetSession, 'Clear Account Cookies', { throwOnError: true });
 
     return { success: true, deletedCount: deletedCount };
   } catch (err) {
@@ -13322,6 +13449,7 @@ ipcMain.handle('clear-all-auth-data', async () => {
           // 静默跳过单条失败
         }
       }
+      await flushSessionStorageData(mainSession, 'Clear All Auth:main-session', { throwOnError: true });
       console.log(`[Clear All Auth] ✅ 已清除 BrowserView 主 session ${deletedCookies} 个 cookies`);
     }
 
