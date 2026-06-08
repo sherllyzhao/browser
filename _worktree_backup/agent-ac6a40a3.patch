@@ -1,0 +1,384 @@
+diff --git a/.claude/settings.local.json b/.claude/settings.local.json
+index 043d566..6ec4de9 100644
+--- a/.claude/settings.local.json
++++ b/.claude/settings.local.json
+@@ -132,7 +132,8 @@
+       "Bash(python3:*)",
+       "Bash(do node -c \"$file\")",
+       "Bash(echo:*)",
+-      "Bash(python:*)"
++      "Bash(python:*)",
++      "Bash(git -C:*)"
+     ],
+     "deny": [],
+     "ask": []
+diff --git a/content-preload.js b/content-preload.js
+index c4772e1..0f113e4 100644
+--- a/content-preload.js
++++ b/content-preload.js
+@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
+ 
+ // 🛡️ 反自动化检测 - 隐藏 Electron/Webdriver 特征
+ // 必须在最开始执行，在页面脚本之前
+-(function injectAntiDetection() {
++(async function injectAntiDetection() {
+   try {
+     const antiDetectionScript = `
+       (function() {
+@@ -25,8 +25,37 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
+         }
+ 
+         // 3. 隐藏 Electron 特征
+-        delete window.process;
+-        delete window.require;
++        // 说明：严格模式下，delete 非 configurable 属性会抛异常（可能导致后续脚本不再注入）
++        // 这里改为更安全的“遮蔽”写法：优先 defineProperty getter 返回 undefined；失败再尝试赋值。
++        (function hideElectronProp(key) {
++          try {
++            Object.defineProperty(window, key, {
++              get: () => undefined,
++              set: () => {},
++              configurable: true
++            });
++            return;
++          } catch (e) {}
++
++          try {
++            window[key] = undefined;
++          } catch (e2) {}
++        })('process');
++
++        (function hideElectronProp(key) {
++          try {
++            Object.defineProperty(window, key, {
++              get: () => undefined,
++              set: () => {},
++              configurable: true
++            });
++            return;
++          } catch (e) {}
++
++          try {
++            window[key] = undefined;
++          } catch (e2) {}
++        })('require');
+ 
+         // 4. 修复 permissions API
+         const originalQuery = window.navigator.permissions?.query;
+@@ -63,7 +92,315 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
+       })();
+     `;
+ 
+-    webFrame.executeJavaScript(antiDetectionScript);
++    // ⚠️ 必须 await，确保注入顺序早于页面脚本
++    try {
++      await webFrame.executeJavaScript(antiDetectionScript);
++    } catch (e) {
++      console.error('[AntiDetection] 注入失败:', e);
++    }
++
++    // 🔧 Chromium 106 Polyfills - 补充头条等平台前端可能用到的新 API
++    const polyfillScript = `
++      (function() {
++        'use strict';
++
++        var polyfilled = [];
++
++        // Array.prototype.toSorted (Chrome 110+)
++        if (!Array.prototype.toSorted) {
++          Array.prototype.toSorted = function(compareFn) {
++            return Array.from(this).sort(compareFn);
++          };
++          polyfilled.push('Array.toSorted');
++        }
++
++        // Array.prototype.toReversed (Chrome 110+)
++        if (!Array.prototype.toReversed) {
++          Array.prototype.toReversed = function() {
++            return Array.from(this).reverse();
++          };
++          polyfilled.push('Array.toReversed');
++        }
++
++        // Array.prototype.toSpliced (Chrome 110+)
++        if (!Array.prototype.toSpliced) {
++          Array.prototype.toSpliced = function() {
++            var arr = Array.from(this);
++            arr.splice.apply(arr, arguments);
++            return arr;
++          };
++          polyfilled.push('Array.toSpliced');
++        }
++
++        // Array.prototype.with (Chrome 110+)
++        if (!Array.prototype.with) {
++          Array.prototype.with = function(index, value) {
++            var arr = Array.from(this);
++            if (index < 0) index = arr.length + index;
++            arr[index] = value;
++            return arr;
++          };
++          polyfilled.push('Array.with');
++        }
++
++        // Array.prototype.findLast (Chrome 97+, but double-check)
++        if (!Array.prototype.findLast) {
++          Array.prototype.findLast = function(fn, thisArg) {
++            for (var i = this.length - 1; i >= 0; i--) {
++              if (fn.call(thisArg, this[i], i, this)) return this[i];
++            }
++            return undefined;
++          };
++          polyfilled.push('Array.findLast');
++        }
++
++        // Array.prototype.findLastIndex (Chrome 97+)
++        if (!Array.prototype.findLastIndex) {
++          Array.prototype.findLastIndex = function(fn, thisArg) {
++            for (var i = this.length - 1; i >= 0; i--) {
++              if (fn.call(thisArg, this[i], i, this)) return i;
++            }
++            return -1;
++          };
++          polyfilled.push('Array.findLastIndex');
++        }
++
++        // Object.groupBy (Chrome 117+)
++        if (!Object.groupBy) {
++          Object.groupBy = function(iterable, callbackFn) {
++            var result = Object.create(null);
++            var index = 0;
++            for (var item of iterable) {
++              var key = callbackFn(item, index++);
++              if (!(key in result)) result[key] = [];
++              result[key].push(item);
++            }
++            return result;
++          };
++          polyfilled.push('Object.groupBy');
++        }
++
++        // Map.groupBy (Chrome 117+)
++        if (!Map.groupBy) {
++          Map.groupBy = function(iterable, callbackFn) {
++            var map = new Map();
++            var index = 0;
++            for (var item of iterable) {
++              var key = callbackFn(item, index++);
++              if (!map.has(key)) map.set(key, []);
++              map.get(key).push(item);
++            }
++            return map;
++          };
++          polyfilled.push('Map.groupBy');
++        }
++
++        // Promise.withResolvers (Chrome 119+)
++        if (!Promise.withResolvers) {
++          Promise.withResolvers = function() {
++            var resolve, reject;
++            var promise = new Promise(function(res, rej) {
++              resolve = res;
++              reject = rej;
++            });
++            return { promise: promise, resolve: resolve, reject: reject };
++          };
++          polyfilled.push('Promise.withResolvers');
++        }
++
++        // String.prototype.isWellFormed (Chrome 111+)
++        if (!String.prototype.isWellFormed) {
++          String.prototype.isWellFormed = function() {
++            return !/\\uD800/.test(this) || /[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]/.test(this);
++          };
++          polyfilled.push('String.isWellFormed');
++        }
++
++        // String.prototype.toWellFormed (Chrome 111+)
++        if (!String.prototype.toWellFormed) {
++          String.prototype.toWellFormed = function() {
++            return this.replace(/[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]/g, '\\uFFFD');
++          };
++          polyfilled.push('String.toWellFormed');
++        }
++
++        // Set methods (Chrome 122+)
++        if (!Set.prototype.intersection) {
++          Set.prototype.intersection = function(other) {
++            var result = new Set();
++            for (var item of this) { if (other.has(item)) result.add(item); }
++            return result;
++          };
++          polyfilled.push('Set.intersection');
++        }
++        if (!Set.prototype.union) {
++          Set.prototype.union = function(other) {
++            var result = new Set(this);
++            for (var item of other) result.add(item);
++            return result;
++          };
++          polyfilled.push('Set.union');
++        }
++        if (!Set.prototype.difference) {
++          Set.prototype.difference = function(other) {
++            var result = new Set();
++            for (var item of this) { if (!other.has(item)) result.add(item); }
++            return result;
++          };
++          polyfilled.push('Set.difference');
++        }
++
++        if (polyfilled.length > 0) {
++          console.log('[Polyfill] ✅ 已补充 ' + polyfilled.length + ' 个 API:', polyfilled.join(', '));
++        }
++      })();
++    `;
++    try {
++      await webFrame.executeJavaScript(polyfillScript);
++    } catch (e) {}
++
++    // 🔧 Chromium 106 IndexedDB 版本冲突修复 —— 已禁用
++    // 原因：monkey-patch indexedDB.open 导致头条发布页白屏，
++    //       而原始 IDB 错误 (A version change transaction is running) 是非致命的，不影响发布功能。
++
++    // 🔍 JS 错误捕获浮层 - 在页面上直接显示 JS 错误（不依赖 Console）
++    // 同时在头条域名额外捕获 console.* 输出（可观测日志）
++    const errorOverlayScript = `
++      (function() {
++        'use strict';
++        var errors = [];
++        var overlay = null;
++        var MAX_ERRORS = 80;
++
++        function createOverlay() {
++          if (overlay) return overlay;
++          overlay = document.createElement('div');
++          overlay.id = '__js_error_overlay__';
++          overlay.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:35vh;overflow-y:auto;' +
++            'background:rgba(0,0,0,0.88);color:#ff6b6b;font:12px/1.5 monospace;padding:8px 12px;z-index:2147483647;' +
++            'display:none;border-top:2px solid #ff4444;pointer-events:auto;';
++          var closeBtn = document.createElement('span');
++          closeBtn.textContent = '[X 关闭]';
++          closeBtn.style.cssText = 'position:sticky;top:0;float:right;cursor:pointer;color:#aaa;padding:2px 6px;';
++          closeBtn.onclick = function() { overlay.style.display = 'none'; };
++          overlay.appendChild(closeBtn);
++          (document.body || document.documentElement).appendChild(overlay);
++          return overlay;
++        }
++
++        function addLine(msg, color) {
++          errors.push(msg);
++          if (errors.length > MAX_ERRORS) errors.shift();
++          try {
++            var el = createOverlay();
++            var line = document.createElement('div');
++            line.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.1);padding:3px 0;word-break:break-all;' +
++              (color ? ('color:' + color + ';') : '');
++            line.textContent = msg;
++            el.appendChild(line);
++            el.style.display = 'block';
++            el.scrollTop = el.scrollHeight;
++          } catch(e) {}
++        }
++
++        function safeStringify(val) {
++          try {
++            if (typeof val === 'string') return val;
++            if (val && typeof val === 'object') {
++              if (val instanceof Error) return (val.stack || val.message || String(val));
++              return JSON.stringify(val);
++            }
++            return String(val);
++          } catch (e) {
++            try { return String(val); } catch (e2) { return '[unserializable]'; }
++          }
++        }
++
++        function formatArgs(args) {
++          try {
++            return Array.prototype.slice.call(args).map(safeStringify).join(' ');
++          } catch (e) {
++            return '[format failed]';
++          }
++        }
++
++        // 在头条域名展示 IDB 修复状态（避免误判：目前已禁用 IDB monkey-patch）
++        (function() {
++          try {
++            var host = window.location.hostname || '';
++            if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
++            var enabled = !!window.__IDB_FIX__;
++            addLine('[IDB-Fix] ' + (enabled ? 'enabled' : 'disabled'), enabled ? '#7bed9f' : '#ffa502');
++          } catch (e) {}
++        })();
++
++        // 捕获 JS 错误
++        window.onerror = function(msg, source, lineno, colno, error) {
++          var src = (source || '').split('/').slice(-2).join('/');
++          addLine('[ERR] ' + msg + ' | ' + src + ':' + lineno + ':' + colno, '#ff6b6b');
++        };
++
++        window.addEventListener('unhandledrejection', function(e) {
++          var reason = e.reason;
++          var msg = (reason && reason.stack) ? reason.stack.split('\\n').slice(0, 2).join(' ') :
++                    (reason && reason.message) ? reason.message : String(reason);
++          addLine('[Promise] ' + msg, '#ffa502');
++        });
++
++        // 头条域名：捕获 console.* 到 overlay（不依赖 DevTools）
++        (function hookConsoleForToutiao() {
++          try {
++            var host = window.location.hostname || '';
++            if (!host.includes('toutiao.com') && !host.includes('toutiaostatic.com')) return;
++
++            if (!window.console) return;
++
++            var con = window.console;
++            var methods = [
++              { key: 'log', tag: '[LOG]', color: '#dfe4ea' },
++              { key: 'info', tag: '[INFO]', color: '#70a1ff' },
++              { key: 'warn', tag: '[WARN]', color: '#ffa502' },
++              { key: 'error', tag: '[ERR]', color: '#ff6b6b' },
++              { key: 'debug', tag: '[DBG]', color: '#a4b0be' }
++            ];
++
++            methods.forEach(function(m) {
++              var orig = con[m.key];
++              if (typeof orig !== 'function') return;
++
++              var wrapped = function() {
++                try {
++                  addLine(m.tag + ' ' + formatArgs(arguments), m.color);
++                } catch (e) {}
++                try {
++                  return orig.apply(con, arguments);
++                } catch (e) {
++                  // console 本身失败也不要影响业务
++                }
++              };
++
++              try {
++                Object.defineProperty(con, m.key, {
++                  value: wrapped,
++                  writable: false,
++                  configurable: false,
++                  enumerable: true
++                });
++              } catch (e) {
++                try { con[m.key] = wrapped; } catch (e2) {}
++              }
++            });
++
++            addLine('[ConsoleOverlay] enabled', '#7bed9f');
++          } catch (e) {}
++        })();
++
++        console.log('[ErrorOverlay] ✅ JS 错误/日志捕获浮层已启用');
++      })();
++    `;
++    try {
++      await webFrame.executeJavaScript(errorOverlayScript);
++    } catch (e) {}
+   } catch (e) {
+     console.error('[AntiDetection] 注入失败:', e);
+   }

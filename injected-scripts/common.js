@@ -3206,7 +3206,11 @@ if (typeof window.uploadVideo === "function"
         // 网易号
         wangyi: {
             logPrefix: "[网易号发布]",
-            selectors: [{ containerClass: "el-message--error", textSelector: ".el-message__content", recursiveSelector: ".el-message.el-message--error" }],
+            selectors: [
+                { containerClass: "ne-snackbar-item-description", textSelector: "span:last-child", recursiveSelector: ".ne-snackbar-item-description" },
+                { containerClass: "ne-snackbar-item", textSelector: ".ne-snackbar-item-description span:last-child", recursiveSelector: ".ne-snackbar-item" },
+                { containerClass: "el-message--error", textSelector: ".el-message__content", recursiveSelector: ".el-message.el-message--error" },
+            ],
         },
         // 头条号
         toutiao: {

@@ -815,6 +815,10 @@
                         if (isBodyImageRequiredError(text) && Date.now() < suppressBodyImageErrorUntil) return true;
                         return ignoredTexts.some(ignored => text.includes(ignored));
                     };
+                    const getSnackbarText = (snackbar) => {
+                        const textEl = snackbar?.querySelector?.('span:last-child');
+                        return (textEl?.textContent || snackbar?.textContent || '').trim();
+                    };
 
                     // 启动错误监听
                     const startErrorListener = () => {
@@ -835,15 +839,11 @@
                             }
 
                             for (const snackbar of snackbars) {
-                                const spans = snackbar.querySelectorAll('span');
-                                if (spans.length >= 2) {
-                                    const textSpan = spans[spans.length - 1];
-                                    const text = (textSpan.textContent || '').trim();
-                                    // 🔑 采集时就过滤掉非错误文本
-                                    if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
-                                        capturedErrors.push(text);
-                                        console.log('[网易号发布] 📨 捕获到错误信息:', text);
-                                    }
+                                const text = getSnackbarText(snackbar);
+                                // 🔑 采集时就过滤掉非错误文本
+                                if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
+                                    capturedErrors.push(text);
+                                    console.log('[网易号发布] 📨 捕获到错误信息:', text);
                                 }
                             }
 
@@ -1091,15 +1091,11 @@
                                                 // 1. 先检查是否有错误信息（优先级更高）- 直接扫描 DOM
                                                 const snackbars = document.querySelectorAll('.ne-snackbar-item-description');
                                                 for (const snackbar of snackbars) {
-                                                    const spans = snackbar.querySelectorAll('span');
-                                                    if (spans.length >= 2) {
-                                                        const textSpan = spans[spans.length - 1];
-                                                        const text = (textSpan.textContent || '').trim();
-                                                        // 排除非错误提示（使用外层定义的过滤函数）
-                                                        if (!shouldIgnoreText(text)) {
-                                                            console.log('[网易号发布] 📨 实时捕获到错误信息:', text);
-                                                            return {type: 'error', message: text};
-                                                        }
+                                                    const text = getSnackbarText(snackbar);
+                                                    // 排除非错误提示（使用外层定义的过滤函数）
+                                                    if (text && !shouldIgnoreText(text)) {
+                                                        console.log('[网易号发布] 📨 实时捕获到错误信息:', text);
+                                                        return {type: 'error', message: text};
                                                     }
                                                 }
 
@@ -1117,15 +1113,11 @@
                                                             // 再次检查错误
                                                             const snackbarsConfirm = document.querySelectorAll('.ne-snackbar-item-description');
                                                             for (const snackbar of snackbarsConfirm) {
-                                                                const spans = snackbar.querySelectorAll('span');
-                                                                if (spans.length >= 2) {
-                                                                    const textSpan = spans[spans.length - 1];
-                                                                    const text = (textSpan.textContent || '').trim();
-                                                                    // 排除非错误提示，不当作错误
-                                                                    if (text && !shouldIgnoreText(text)) {
-                                                                        console.log('[网易号发布] ⚠️ 确认期间检测到错误:', text);
-                                                                        return {type: 'error', message: text};
-                                                                    }
+                                                                const text = getSnackbarText(snackbar);
+                                                                // 排除非错误提示，不当作错误
+                                                                if (text && !shouldIgnoreText(text)) {
+                                                                    console.log('[网易号发布] ⚠️ 确认期间检测到错误:', text);
+                                                                    return {type: 'error', message: text};
                                                                 }
                                                             }
 
@@ -1141,14 +1133,10 @@
                                             // 超时，再检查一次错误信息
                                             const snackbarsFinal = document.querySelectorAll('.ne-snackbar-item-description');
                                             for (const snackbar of snackbarsFinal) {
-                                                const spans = snackbar.querySelectorAll('span');
-                                                if (spans.length >= 2) {
-                                                    const textSpan = spans[spans.length - 1];
-                                                    const text = (textSpan.textContent || '').trim();
-                                                    // 排除非错误提示，不当作错误
-                                                    if (text && !shouldIgnoreText(text)) {
-                                                        return {type: 'error', message: text};
-                                                    }
+                                                const text = getSnackbarText(snackbar);
+                                                // 排除非错误提示，不当作错误
+                                                if (text && !shouldIgnoreText(text)) {
+                                                    return {type: 'error', message: text};
                                                 }
                                             }
 
