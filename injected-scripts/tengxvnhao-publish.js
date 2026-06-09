@@ -11,7 +11,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-02-pre-click-disabled-marker-hover-v16";
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-09-ai-declaration-radio-confirm-v19";
     if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
         console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
@@ -1648,7 +1648,7 @@
                                                             }
                                                         }
                                                         await delay(1000);
-                                                        const declarationDialog = await waitForElement(".omui-dialog");
+                                                        const declarationDialog = await waitForDialogByTitle("自主声明", 5000);
                                                         console.log("🚀 ~ tryUploadImage ~ declarationDialog: ", declarationDialog);
                                                         if (declarationDialog) {
                                                             const dialogTitle = declarationDialog.querySelector(".omui-dialog-header");
@@ -1657,6 +1657,7 @@
                                                                 const declarationAudios = declarationDialog.querySelectorAll(".omui-radio");
                                                                 if (declarationAudios.length) {
                                                                     let systemType = getCurrentSystem();
+                                                                    let declarationRadioChanged = false;
                                                                     declarationAudios.forEach(item => {
                                                                         console.log("🚀 ~  ~ item: ", item);
                                                                         const systemRaidoTextMap = {
@@ -1669,6 +1670,7 @@
                                                                             const radioInput = item.querySelector(".omui-radio__input");
                                                                             if (radioInput) {
                                                                                 setNativeValue(radioInput, true);
+                                                                                declarationRadioChanged = true;
                                                                             }
                                                                         }else{
                                                                             const radioInput = item.querySelector(".omui-radio__input");
@@ -1677,10 +1679,14 @@
                                                                             }
                                                                         }
                                                                     });
+                                                                    if (declarationRadioChanged) {
+                                                                        await confirmAIDeclarationDialog(3000);
+                                                                    }
                                                                     const confirmBtn = declarationDialog.querySelector(".omui-button--primary");
                                                                     console.log("🚀 ~ tryUploadImage ~ confirmBtn: ", confirmBtn);
                                                                     if (confirmBtn) {
                                                                         confirmBtn.click();
+                                                                        await confirmAIDeclarationDialog(3000);
                                                                     }
                                                                 }
                                                             }
@@ -2043,29 +2049,61 @@
         }
     }
 
+    function isVisibleElement(element) {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0
+            && rect.height > 0
+            && style.display !== "none"
+            && style.visibility !== "hidden"
+            && style.opacity !== "0";
+    }
+
+    function getDialogTitleText(dialog) {
+        return dialog?.querySelector(".omui-dialog-header")?.textContent?.trim() || "";
+    }
+
+    async function waitForDialogByTitle(titleText, timeout = 3000) {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeout) {
+            const dialogs = Array.from(document.querySelectorAll(".omui-dialog")).reverse();
+            const matchedDialog = dialogs.find(dialog => {
+                const wrapper = dialog.closest(".omui-dialog-wrapper");
+                return isVisibleElement(dialog)
+                    && (!wrapper || isVisibleElement(wrapper))
+                    && getDialogTitleText(dialog).includes(titleText);
+            });
+            if (matchedDialog) return matchedDialog;
+            await delay(200);
+        }
+        return null;
+    }
+
+    async function confirmAIDeclarationDialog(timeout = 3000) {
+        const aiCreateConfirmDialog = await waitForDialogByTitle("AI生成声明", timeout);
+        if (!aiCreateConfirmDialog) return false;
+
+        const confirmBtn = Array.from(aiCreateConfirmDialog.querySelectorAll(".omui-button--primary"))
+            .find(btn => !btn.disabled && !btn.classList.contains("is--disabled"));
+        if (confirmBtn) {
+            confirmBtn.click();
+            console.log("[腾讯号发布] ✅ 已点击AI生成声明确认");
+            await delay(1500);
+            return true;
+        }
+
+        console.warn("[腾讯号发布] ⚠️ 检测到AI生成声明弹窗，但未找到可点击的确认按钮");
+        return false;
+    }
+
 //    AI声明弹窗处理（只检测并处理弹窗，不重复点击发布按钮）
     async function AICreatePopup() {
         console.log("[腾讯号发布] 检测AI声明弹窗...");
 
         // 用短超时检测弹窗（3秒），避免长时间等待
         try {
-            const aiCreateConfirmDialog = await waitForElement(".omui-dialog", 3000);
-            if (aiCreateConfirmDialog) {
-                const dialogTitleEle = aiCreateConfirmDialog.querySelector(".omui-dialog-header");
-                const dialogTitle = dialogTitleEle?.textContent?.trim() || "";
-                if (dialogTitle === "AI生成声明") {
-                    const confirmBtn = aiCreateConfirmDialog.querySelector(".omui-button--primary");
-                    if (confirmBtn) {
-                        // 使用简单的 click() 方法，避免触发额外的事件
-                        confirmBtn.click();
-                        console.log("[腾讯号发布] ✅ 已点击AI生成声明确认");
-                        await delay(1500);
-                        return true; // 有弹窗并已处理
-                    }
-                } else {
-                    console.log("[腾讯号发布] ℹ️ 弹窗不是AI生成声明:", dialogTitle);
-                }
-            }
+            return await confirmAIDeclarationDialog(3000);
         } catch (e) {
             console.log("[腾讯号发布] ℹ️ 未检测到AI声明弹窗，继续执行");
         }

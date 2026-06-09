@@ -9,6 +9,27 @@ const config = require('./domain-config');
 
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
+const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
+const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
+const startupCommandLineSwitches = [];
+const startupCommandLineSwitchKeys = new Set();
+
+function appendStartupSwitch(name, value) {
+  const hasValue = value !== undefined && value !== null && value !== '';
+  const key = hasValue ? `${name}=${value}` : name;
+  if (startupCommandLineSwitchKeys.has(key)) {
+    return;
+  }
+
+  if (hasValue) {
+    app.commandLine.appendSwitch(name, value);
+    startupCommandLineSwitches.push(`--${name}=${value}`);
+  } else {
+    app.commandLine.appendSwitch(name);
+    startupCommandLineSwitches.push(`--${name}`);
+  }
+  startupCommandLineSwitchKeys.add(key);
+}
 
 function getLegacyWindowsGpuWorkaroundInfo() {
   // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
@@ -29,6 +50,15 @@ function getLegacyWindowsGpuWorkaroundInfo() {
     const parts = release.split('.').map(part => Number.parseInt(part, 10));
     const major = parts[0];
     const build = parts[2];
+
+    if (isRendererSafeMode) {
+      return {
+        shouldDisableHardwareAcceleration: true,
+        shouldUseRendererLaunchCompatibility: true,
+        release,
+        reason: 'renderer-safe-mode'
+      };
+    }
 
     if (Number.isInteger(major) && major < 10) {
       return {
@@ -57,10 +87,10 @@ function getLegacyWindowsGpuWorkaroundInfo() {
   } catch (e) {
     console.error('[启动] Windows 版本检测失败:', e);
     return {
-      shouldDisableHardwareAcceleration: false,
-      shouldUseRendererLaunchCompatibility: false,
+      shouldDisableHardwareAcceleration: isRendererSafeMode,
+      shouldUseRendererLaunchCompatibility: isRendererSafeMode,
       release: '',
-      reason: ''
+      reason: isRendererSafeMode ? 'renderer-safe-mode-version-detect-failed' : ''
     };
   }
 }
@@ -73,11 +103,13 @@ const shouldKeepBrowserViewVisibleDuringLoading = shouldDisableHardwareAccelerat
 if (shouldDisableHardwareAcceleration) {
   console.log(`[启动] 检测到需要软件渲染的 Windows (${legacyWindowsGpuWorkaround.release}, ${legacyWindowsGpuWorkaround.reason})，禁用硬件加速以规避白屏问题`);
   app.disableHardwareAcceleration();
-  app.commandLine.appendSwitch('disable-gpu-compositing');
+  appendStartupSwitch('disable-gpu-compositing');
   // 🩹 裸开关：彻底禁用 GPU，强制纯软件渲染。disableHardwareAcceleration() 仅为软禁用，
   // GPU 进程仍会尝试初始化；旧版 Windows/Win10 1607 老驱动下合成器
   // 常出图失败导致白屏（典型如视频号发布页），--disable-gpu 比软禁用更彻底。
-  app.commandLine.appendSwitch('disable-gpu');
+  appendStartupSwitch('disable-gpu');
+  appendStartupSwitch('disable-gpu-sandbox');
+  appendStartupSwitch('in-process-gpu');
 } else if (shouldUseRendererLaunchCompatibility) {
   console.log(`[启动] 检测到旧版 Win10 (${legacyWindowsGpuWorkaround.release})，保留 GPU，启用 renderer 启动兼容参数`);
 } else {
@@ -85,18 +117,26 @@ if (shouldDisableHardwareAcceleration) {
 }
 
 if (shouldUseRendererLaunchCompatibility) {
-  // 仅旧系统命中，恢复 1.1.2 时代已经验证过的 renderer 启动兼容参数；
-  // 正常 Win10/11 不追加，避免扩大行为变化面。
-  app.commandLine.appendSwitch('disable-dev-shm-usage');
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-features', 'RendererCodeIntegrity');
-  app.commandLine.appendSwitch('disable-renderer-backgrounding');
-  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  // 仅旧系统(Win7/8 / Win10 1607 / safe-mode)命中。以下为 1.1.2 全局验证过、1607 唯一能用的
+  // renderer 启动兼容参数；正常 Win10/11 不追加，避免扩大行为变化面。
+  appendStartupSwitch('disable-dev-shm-usage');
+  appendStartupSwitch('no-sandbox');
+  // ⚠️ 不在此处加 disable-gpu-sandbox：经 git 核对，1.1.2(1607 唯一验证能用的版本)的全局开关
+  //    并无此项；1607 保留 GPU 时叠加它会触发 renderer launch-failed(exitCode 63 沙箱族)。
+  //    禁 GPU 路径(Win7/8 / safe-mode)所需的 disable-gpu-sandbox 已在上方禁 GPU 块单独追加。
+  // ⚠️ disable-features 仅禁 RendererCodeIntegrity(与 1.1.2 一致)；CalculateNativeWinOcclusion
+  //    系 1.1.5 与 1607 崩溃同期新增项，一并移除以精确复刻 1.1.2。
+  appendStartupSwitch('disable-features', 'RendererCodeIntegrity');
+  appendStartupSwitch('disable-renderer-backgrounding');
+  appendStartupSwitch('disable-backgrounding-occluded-windows');
 }
 
 let mainWindow;
 let browserView;
 let scriptManager;
+let injectScriptForUrl = async () => {
+  console.warn('[Script Injection] injectScriptForUrl 尚未初始化，已跳过');
+};
 let isQuitting = false; // 标记是否正在退出
 let isScriptPanelOpen = false; // 跟踪脚本面板状态
 const isProduction = app.isPackaged; // 是否生产环境
@@ -106,7 +146,82 @@ let openInNewWindow = false; // 新窗口模式状态
 let heartbeatInterval = null;
 let autoSaveInterval = null;
 let destroyedWindowCleanupInterval = null;
+let mainWindowCloseForceTimer = null;
 const windowContextMap = new Map();
+
+function safeAsyncHandler(label, handler) {
+  return (...args) => {
+    try {
+      const result = handler(...args);
+      if (result && typeof result.then === 'function') {
+        result.catch(err => {
+          console.error(`[${label}] ❌ 异步处理异常:`, err);
+        });
+      }
+      return result;
+    } catch (err) {
+      console.error(`[${label}] ❌ 同步处理异常:`, err);
+      return undefined;
+    }
+  };
+}
+
+async function getInjectScriptSafely(url, label = 'Script Injection') {
+  if (!scriptManager || typeof scriptManager.getScript !== 'function') {
+    console.warn(`[${label}] scriptManager 尚未初始化，跳过脚本获取:`, url);
+    return '';
+  }
+
+  try {
+    return await scriptManager.getScript(url);
+  } catch (err) {
+    console.error(`[${label}] ❌ 脚本获取失败:`, err);
+    return '';
+  }
+}
+
+async function markScriptInjectionIfNeeded(webContents, url, label = 'Script Injection') {
+  if (!webContents || webContents.isDestroyed()) {
+    return { skip: true, reason: 'webContents-destroyed' };
+  }
+
+  const key = String(url || '').slice(0, 2048);
+  try {
+    return await webContents.executeJavaScript(`
+      (() => {
+        const key = ${JSON.stringify(key)};
+        const storeKey = '__ZH_CLOUD_SCRIPT_INJECTION_MARKS__';
+        const marks = window[storeKey] || (window[storeKey] = Object.create(null));
+        if (marks[key]) {
+          return { skip: true, injectedAt: marks[key] };
+        }
+        marks[key] = Date.now();
+        return { skip: false, injectedAt: marks[key] };
+      })()
+    `, true);
+  } catch (err) {
+    if (!String(err && err.message ? err.message : err).includes('destroyed')) {
+      console.warn(`[${label}] 注入去重标记失败，继续尝试执行脚本:`, err && err.message ? err.message : err);
+    }
+    return { skip: false, reason: 'mark-failed' };
+  }
+}
+
+async function clearScriptInjectionMarker(webContents, url) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  const key = String(url || '').slice(0, 2048);
+  await webContents.executeJavaScript(`
+    (() => {
+      const marks = window.__ZH_CLOUD_SCRIPT_INJECTION_MARKS__;
+      if (marks) {
+        delete marks[${JSON.stringify(key)}];
+      }
+    })()
+  `, true).catch(() => {});
+}
 const windowPublishDataMap = new Map();
 const sessionRequestGuardConfig = new WeakMap();
 let shutdownStarted = false;
@@ -215,6 +330,8 @@ let sessionDiagnosticLogPath = '';
 let sessionDiagnosticLogReady = false;
 let sessionDiagnosticLogDisabled = false;
 let sessionDiagnosticConsoleWrapped = false;
+let sessionDiagnosticPreserveLog = false;
+let sessionDiagnosticFatalError = null;
 const sessionDiagnosticNetworkRequests = new WeakMap();
 const sessionDiagnosticNetworkInstalled = new WeakSet();
 
@@ -483,7 +600,9 @@ function initializeSessionDiagnosticLog() {
         `执行文件: ${process.execPath}`,
         `应用目录: ${__dirname}`,
         `是否 asar 路径: ${String(__dirname || '').includes('app.asar') ? '是' : '否'}`,
+        `启动安全模式: ${isRendererSafeMode ? '是' : '否'}`,
         `启动兼容: gpuDisabled=${shouldDisableHardwareAcceleration ? '是' : '否'}, rendererLaunchCompat=${shouldUseRendererLaunchCompatibility ? '是' : '否'}, reason=${legacyWindowsGpuWorkaround.reason || '-'}`,
+        `启动开关: ${startupCommandLineSwitches.length > 0 ? startupCommandLineSwitches.join(' ') : '-'}`,
         `便携版外层目录: ${getPortableExecutableDir() || '-'}`,
         `日志路径: ${logPath}`,
         '========================================',
@@ -521,7 +640,7 @@ function appendSessionDiagnosticLog(level, scope, args = []) {
 }
 
 function removeSessionDiagnosticLog() {
-  if (!sessionDiagnosticLogPath) {
+  if (!sessionDiagnosticLogPath || sessionDiagnosticPreserveLog) {
     return;
   }
   try {
@@ -531,6 +650,80 @@ function removeSessionDiagnosticLog() {
   } catch (_) {
     // 退出清理失败不阻塞应用退出
   }
+}
+
+function markSessionDiagnosticFatalError(error, origin = 'unknown') {
+  sessionDiagnosticPreserveLog = true;
+  sessionDiagnosticFatalError = {
+    origin,
+    error: error && error.stack ? error.stack : (error && error.message ? error.message : String(error))
+  };
+}
+
+let rendererSafeModeRelaunchRequested = false;
+
+function maybeRelaunchInRendererSafeMode(details) {
+  // Win10 1607：safe-mode 会强制禁 GPU 重启，但现场已证实 1607 禁 GPU 同样 launch-failed，
+  // 重启只会形成"崩→禁GPU重启→再崩→弹框退出"的死循环(用户感知为"重启后打不开")。
+  // 故 1607 不进入禁 GPU safe-mode，首次 launch-failed 后直接走下方弹框告知，避免假死循环。
+  if (legacyWindowsGpuWorkaround.reason === 'win10-1607-renderer-launch-compat') {
+    return false;
+  }
+  if (rendererSafeModeRelaunchRequested || isRendererSafeMode || shouldDisableHardwareAcceleration || !shouldUseRendererLaunchCompatibility) {
+    return false;
+  }
+
+  rendererSafeModeRelaunchRequested = true;
+  sessionDiagnosticPreserveLog = true;
+  appendSessionDiagnosticLog('WARN', 'startup', [
+    '主窗口 renderer launch-failed，准备重启一次软件渲染安全模式',
+    details
+  ]);
+
+  try {
+    const relaunchArgs = process.argv
+      .slice(1)
+      .filter(arg => arg !== RENDERER_SAFE_MODE_ARG)
+      .concat(RENDERER_SAFE_MODE_ARG);
+    app.relaunch({ args: relaunchArgs });
+    setTimeout(() => {
+      app.exit(0);
+    }, 100);
+    return true;
+  } catch (error) {
+    appendSessionDiagnosticLog('ERROR', 'startup', ['安全模式重启失败', error]);
+    console.error('[Startup] ❌ 安全模式重启失败:', error);
+    return false;
+  }
+}
+
+function handleMainWindowRendererLaunchFailed(details = {}) {
+  const error = new Error(`主窗口 renderer 启动失败: reason=${details.reason || '-'}, exitCode=${details.exitCode ?? '-'}`);
+  markSessionDiagnosticFatalError(error, 'main-window-renderer-launch-failed');
+
+  if (maybeRelaunchInRendererSafeMode(details)) {
+    return;
+  }
+
+  appendSessionDiagnosticLog('ERROR', 'startup', [
+    '主窗口 renderer 启动失败，无法继续显示界面',
+    details,
+    `rendererSafeMode=${isRendererSafeMode ? 'yes' : 'no'}`,
+    `switches=${startupCommandLineSwitches.join(' ') || '-'}`
+  ]);
+
+  try {
+    dialog.showErrorBox(
+      '启动失败',
+      `主窗口渲染进程启动失败，程序将退出。\n\n错误: ${details.reason || '-'} (${details.exitCode ?? '-'})\n请把“运营助手-本次报错.log”发给开发排查。`
+    );
+  } catch (_) {
+    // ignore dialog failure
+  }
+
+  setTimeout(() => {
+    app.exit(Number.isInteger(details.exitCode) ? details.exitCode : 63);
+  }, 200);
 }
 
 function wrapConsoleForSessionDiagnostics() {
@@ -644,6 +837,9 @@ function attachSessionDiagnosticWebContents(webContents, label = 'webContents') 
       details,
       `url=${safeGetWebContentsUrl(webContents) || '-'}`
     ]);
+    if (label === 'main-window' && details && details.reason === 'launch-failed') {
+      handleMainWindowRendererLaunchFailed(details);
+    }
   });
 
   webContents.on('unresponsive', () => {
@@ -657,6 +853,24 @@ function attachSessionDiagnosticWebContents(webContents, label = 'webContents') 
 function installSessionDiagnosticLogger() {
   initializeSessionDiagnosticLog();
   wrapConsoleForSessionDiagnostics();
+
+  process.on('uncaughtException', (error, origin) => {
+    markSessionDiagnosticFatalError(error, origin);
+    appendSessionDiagnosticLog('ERROR', 'process', ['uncaughtException', `origin=${origin || '-'}`, error]);
+    console.error('[Process] ❌ uncaughtException:', error);
+    try {
+      dialog.showErrorBox('运行错误', error && error.stack ? error.stack : String(error));
+    } catch (_) {
+      // ignore dialog failure
+    }
+    setImmediate(() => {
+      try {
+        app.quit();
+      } catch (_) {
+        app.exit(1);
+      }
+    });
+  });
 
   process.on('uncaughtExceptionMonitor', (error, origin) => {
     appendSessionDiagnosticLog('ERROR', 'process', ['uncaughtExceptionMonitor', `origin=${origin || '-'}`, error]);
@@ -675,6 +889,9 @@ function installSessionDiagnosticLogger() {
   });
 
   app.on('quit', () => {
+    if (sessionDiagnosticPreserveLog) {
+      appendSessionDiagnosticLog('INFO', 'app', ['preserve-diagnostic-log', sessionDiagnosticFatalError || '-']);
+    }
     removeSessionDiagnosticLog();
   });
 }
@@ -2376,6 +2593,34 @@ function saveGlobalStorage() {
 // 这种路径启发式判断，否则会把安装版误判为便携版。
 const isPortable = isProduction && !!getPortableExecutableDir();
 
+function cleanupPortableRuntimeCaches(baseDir) {
+  const rootDir = path.resolve(baseDir || '');
+  const rootPrefix = `${rootDir}${path.sep}`;
+  const cacheCandidates = [
+    'Cache',
+    'Code Cache',
+    'GPUCache',
+    path.join('Partitions', 'persist_browserview', 'Cache'),
+    path.join('Partitions', 'persist_browserview', 'Code Cache'),
+    path.join('Partitions', 'persist_browserview', 'GPUCache')
+  ];
+
+  for (const relativePath of cacheCandidates) {
+    const targetPath = path.resolve(rootDir, relativePath);
+    if (!targetPath.startsWith(rootPrefix) || targetPath === rootDir) {
+      continue;
+    }
+    try {
+      if (fs.existsSync(targetPath)) {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+        console.log('[Portable Mode] 🧹 已清理运行缓存:', targetPath);
+      }
+    } catch (err) {
+      console.warn('[Portable Mode] ⚠️ 清理运行缓存失败:', targetPath, err && err.message ? err.message : err);
+    }
+  }
+}
+
 // 设置用户数据路径
 if (isProduction) {
   if (isPortable) {
@@ -2396,6 +2641,9 @@ if (isProduction) {
     app.setPath('userData', portableDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
     console.log('[Portable Mode] 数据存储在固定位置:', portableDataPath);
+    if (shouldDisableHardwareAcceleration || shouldUseRendererLaunchCompatibility) {
+      cleanupPortableRuntimeCaches(portableDataPath);
+    }
   } else {
     // 安装版：使用系统默认路径
     console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
@@ -2470,6 +2718,7 @@ function createPublishLoadingWindow(options = {}) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
       backgroundThrottling: false
     }
   });
@@ -2861,7 +3110,7 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
   if (!startupLoadGuard.active) return;
   clearStartupLoadGuardTimer();
 
-  startupLoadGuard.timer = setTimeout(async () => {
+  startupLoadGuard.timer = setTimeout(safeAsyncHandler('Startup Guard readiness timer', async () => {
     if (!startupLoadGuard.active) return;
     if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
 
@@ -2925,14 +3174,14 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
       if (retryStartupLoad(`首屏检查失败 (${err.message || err})`)) return;
       finishStartupLoadGuard('check-failed');
     }
-  }, delayMs);
+  }), delayMs);
 }
 
 function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHECK_DELAY) {
   if (!refreshLoadGuard.active) return;
   clearRefreshLoadGuardTimer();
 
-  refreshLoadGuard.timer = setTimeout(async () => {
+  refreshLoadGuard.timer = setTimeout(safeAsyncHandler('Refresh Guard readiness timer', async () => {
     if (!refreshLoadGuard.active) return;
     if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
 
@@ -2966,7 +3215,7 @@ function scheduleRefreshReadinessCheck(reason, delayMs = REFRESH_LOAD_READY_CHEC
       }
       finishRefreshLoadGuard('check-failed');
     }
-  }, delayMs);
+  }), delayMs);
 }
 
 function getDefaultProjectHomeUrl() {
@@ -4591,6 +4840,39 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
 // ===========================
 const gotTheLock = app.requestSingleInstanceLock();
 
+function showOrCreateMainWindow(source = 'unknown') {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
+  console.warn(`[Single Instance] 主窗口不存在，尝试重建 (${source})`);
+  if (!app.isReady()) {
+    app.whenReady().then(() => showOrCreateMainWindow(`${source}:ready`)).catch(err => {
+      console.error('[Single Instance] app ready 后重建主窗口失败:', err);
+    });
+    return;
+  }
+
+  if (!scriptManager) {
+    console.warn('[Single Instance] scriptManager 尚未初始化，延迟重建主窗口');
+    setTimeout(() => showOrCreateMainWindow(`${source}:wait-script-manager`), 500);
+    return;
+  }
+
+  try {
+    isQuitting = false;
+    shutdownStarted = false;
+    createWindow();
+  } catch (err) {
+    console.error('[Single Instance] ❌ 重建主窗口失败:', err);
+  }
+}
+
 if (!gotTheLock) {
   // 如果获取不到锁，说明已有实例在运行，退出当前实例
   console.log('[Single Instance] 检测到已有实例运行，退出当前实例');
@@ -4598,14 +4880,8 @@ if (!gotTheLock) {
 } else {
   // 当第二个实例启动时，聚焦到第一个实例的窗口
   app.on('second-instance', (event, commandLine, workingDirectory) => {
-    console.log('[Single Instance] 检测到第二个实例启动，聚焦到主窗口');
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    console.log('[Single Instance] 检测到第二个实例启动，显示或重建主窗口');
+    showOrCreateMainWindow('second-instance');
   });
 }
 
@@ -4849,14 +5125,14 @@ async function showUpdateDialog(newVersion, downloadUrl) {
  */
 function scheduleUpdateCheck() {
   // 延迟 5 秒后检查更新，避免影响启动速度
-  setTimeout(async () => {
+  setTimeout(safeAsyncHandler('Update check timer', async () => {
     console.log('[Update] 开始检查更新...');
     const updateInfo = await checkForUpdate();
 
     if (updateInfo.hasUpdate && updateInfo.version && updateInfo.url) {
       await showUpdateDialog(updateInfo.version, updateInfo.url);
     }
-  }, 5000);
+  }), 5000);
 }
 
 // 简易文件日志（用于打包后调试 fetchSiteInfo）
@@ -5043,6 +5319,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
       webviewTag: true,
       backgroundThrottling: false // 禁用后台节流，防止长时间不操作页面空白
     }
@@ -5073,11 +5350,24 @@ function createWindow() {
   });
 
   // 监听窗口即将关闭事件，保存 session 数据
-  mainWindow.on('close', async (e) => {
+  mainWindow.on('close', safeAsyncHandler('main-window close', async (e) => {
     if (!isQuitting) {
       e.preventDefault();
       isQuitting = true;
       beginShutdown('main-window-close');
+      if (mainWindowCloseForceTimer) {
+        clearTimeout(mainWindowCloseForceTimer);
+      }
+      mainWindowCloseForceTimer = setTimeout(() => {
+        try {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            console.warn('[Window Close] ⚠️ 关闭保存超时，强制销毁主窗口');
+            mainWindow.destroy();
+          }
+        } catch (forceErr) {
+          console.warn('[Window Close] 强制销毁主窗口失败:', forceErr && forceErr.message ? forceErr.message : forceErr);
+        }
+      }, 8000);
 
       console.log('========================================');
       console.log('[Window Close] 窗口关闭，正在保存 Session 数据...');
@@ -5139,11 +5429,17 @@ function createWindow() {
         }
       }
 
+      if (mainWindowCloseForceTimer) {
+        clearTimeout(mainWindowCloseForceTimer);
+        mainWindowCloseForceTimer = null;
+      }
       setTimeout(() => {
-        mainWindow.destroy();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+        }
       }, 200); // 给更多时间确保数据写入磁盘
     }
-  });
+  }));
 
   // 获取或创建持久化 session（禁用 HTTP 缓存，只保留 cookies 和 storage）
   const persistentSession = session.fromPartition('persist:browserview', { cache: false });
@@ -5302,11 +5598,13 @@ function createWindow() {
         } else if (result.response === 1) {
           await navigateToLoginInternal('render_process_gone');
         }
-      })();
+      })().catch(err => {
+        console.error('[BrowserView] ❌ 渲染进程恢复处理异常:', err);
+      });
     }
   });
 
-  browserView.webContents.on('did-fail-load', async (event, errorCode, errorDescription, validatedURL) => {
+  browserView.webContents.on('did-fail-load', safeAsyncHandler('BrowserView did-fail-load', async (event, errorCode, errorDescription, validatedURL) => {
     console.error('[BrowserView] ❌ 页面加载失败！');
     console.error('[BrowserView] 错误码:', errorCode);
     console.error('[BrowserView] 错误描述:', errorDescription);
@@ -5330,7 +5628,7 @@ function createWindow() {
     } else if (result.response === 1) {
       await navigateToLoginInternal('did_fail_load');
     }
-  });
+  }));
 
   browserView.webContents.on('unresponsive', () => {
     console.warn('[BrowserView] ⚠️ 页面无响应！');
@@ -5346,7 +5644,7 @@ function createWindow() {
   // ========== 定期心跳，保持页面活跃 ==========
   // 防止 Chromium 长时间不操作时对页面进行后台节流
   const HEARTBEAT_INTERVAL = 30 * 1000; // 每 30 秒发送一次心跳
-  heartbeatInterval = setInterval(async () => {
+  heartbeatInterval = setInterval(safeAsyncHandler('BrowserView heartbeat interval', async () => {
     if (!browserView || browserView.webContents.isDestroyed()) return;
     if (browserView.webContents.isLoading()) return;
     const currentUrl = browserView.webContents.getURL();
@@ -5369,14 +5667,20 @@ function createWindow() {
     } catch (err) {
       console.warn('[BrowserView] ⚠️ 心跳信号发送失败:', err.message);
     }
-  }, HEARTBEAT_INTERVAL);
+  }), HEARTBEAT_INTERVAL);
 
   mainWindow.on('closed', () => {
+    if (mainWindowCloseForceTimer) {
+      clearTimeout(mainWindowCloseForceTimer);
+      mainWindowCloseForceTimer = null;
+    }
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
     }
     clearStartupLoadGuardTimer();
+    mainWindow = null;
+    browserView = null;
   });
 
   // 监听窗口大小变化
@@ -5580,7 +5884,7 @@ function createWindow() {
   });
 
   // 脚本注入函数（提取为公共函数，可复用）
-  const injectScriptForUrl = async (webContents, url, retryCount = 0) => {
+  injectScriptForUrl = async (webContents, url, retryCount = 0) => {
     // 检查 webContents 是否已销毁
     if (!webContents || webContents.isDestroyed()) {
       return;
@@ -5719,11 +6023,20 @@ function createWindow() {
     // 保留此注释以便将来参考，公共头现在固定在 index.html 中，不会随页面切换而闪烁
 
     // 注入对应的自定义脚本
-    const script = await scriptManager.getScript(url);
+    const script = await getInjectScriptSafely(url, 'Script Injection');
 
     if (script) {
       // 再次检查（异步操作后可能已销毁）
       if (webContents.isDestroyed()) {
+        return;
+      }
+      const injectionMark = await markScriptInjectionIfNeeded(webContents, url, 'Script Injection');
+      if (injectionMark?.skip) {
+        console.log('[Script Injection] Skip duplicate script injection for current document:', {
+          url,
+          injectedAt: injectionMark.injectedAt,
+          reason: injectionMark.reason || 'already-injected'
+        });
         return;
       }
       console.log('[Script Injection] Script found! Total length:', script.length);
@@ -5735,9 +6048,11 @@ function createWindow() {
         console.log('[Script Injection] Execution result:', result);
       } catch (err) {
         // 忽略窗口销毁导致的错误
-        if (!err.message.includes('destroyed')) {
+        const errMessage = err && err.message ? err.message : String(err);
+        if (!errMessage.includes('destroyed')) {
           console.error('❌ [Script Injection] Script execution error:', err);
         }
+        await clearScriptInjectionMarker(webContents, url);
       }
     } else {
       // 没有脚本时，只显示简单的调试信息
@@ -5802,12 +6117,12 @@ function createWindow() {
       console.log('[Navigation] 🧼 主 BrowserView 命中 Toutiao，改为裸窗口打开:', url);
       event.preventDefault();
       pendingNavigationUrl = null;
-      setImmediate(async () => {
+      setImmediate(safeAsyncHandler('Navigation open bare window', async () => {
         const result = await openManagedChildWindow(url);
         if (!result.success) {
           console.error('[Navigation] ❌ 打开 Toutiao 裸窗口失败:', result.error);
         }
-      });
+      }));
       return;
     }
     if (shouldRecoverBrowserViewResourceUrl(url)) {
@@ -5892,7 +6207,7 @@ function createWindow() {
   });
 
   // 监听页面导航完成
-  browserView.webContents.on('did-navigate', async (event, url) => {
+  browserView.webContents.on('did-navigate', safeAsyncHandler('BrowserView did-navigate', async (event, url) => {
     console.log(`[Navigation] 导航完成 → ${url}`);
     if (shouldRecoverBrowserViewResourceUrl(url)) {
       const recovered = await recoverBrowserViewFromResourcePage(url, 'did-navigate', lastValidUrl);
@@ -5962,10 +6277,10 @@ function createWindow() {
         console.error('[Auth Check] 检查 Cookie 失败:', err);
       }
     }
-  });
+  }));
 
   // 🔑 监听页面 DOM 准备完成（刷新页面时也会触发）
-  browserView.webContents.on('dom-ready', async () => {
+  browserView.webContents.on('dom-ready', safeAsyncHandler('BrowserView dom-ready', async () => {
     if (startupLoadGuard.active) {
       scheduleStartupReadinessCheck('dom-ready', 800);
     } else if (refreshLoadGuard.active) {
@@ -6027,7 +6342,7 @@ function createWindow() {
         console.error('[Auth Check - DOM Ready] 检查 Cookie 失败:', err);
       }
     }
-  });
+  }));
 
   // 页面异常检测脚本（在 dom-ready 时尽早执行）
   const earlyPageCheckScript = `
@@ -6102,7 +6417,7 @@ function createWindow() {
   // });
 
   // 监听页面内导航（如 hash 变化）- 单页应用路由切换
-  browserView.webContents.on('did-navigate-in-page', async (event, url) => {
+  browserView.webContents.on('did-navigate-in-page', safeAsyncHandler('BrowserView did-navigate-in-page', async (event, url) => {
     console.log(`[Navigation] 页面内跳转 → ${url}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -6152,9 +6467,9 @@ function createWindow() {
     console.log('[SPA Navigation] Hash/path changed, injecting script...');
     // 单页应用路由切换时也需要注入脚本
     await injectScriptForCurrentPage();
-  });
+  }));
 
-  browserView.webContents.on('did-finish-load', async () => {
+  browserView.webContents.on('did-finish-load', safeAsyncHandler('BrowserView did-finish-load guard', async () => {
     if (startupLoadGuard.active) {
       scheduleStartupReadinessCheck('did-finish-load', 900);
     } else if (refreshLoadGuard.active) {
@@ -6162,14 +6477,14 @@ function createWindow() {
     }
 
     await recoverBrowserViewFromSourceTextPage('did-finish-load', lastValidUrl);
-  });
+  }));
 
   // 监听页面加载完成，注入自定义脚本
-  browserView.webContents.on('did-finish-load', injectScriptForCurrentPage);
+  browserView.webContents.on('did-finish-load', safeAsyncHandler('BrowserView did-finish-load inject', injectScriptForCurrentPage));
 
   // 监听完整页面导航，检测远程登录页和 GEO 权限
   // 注意：token 有效性检查已统一在上方的 async did-navigate handler 中处理，这里不再重复检测
-  browserView.webContents.on('did-navigate', async (event, url) => {
+  browserView.webContents.on('did-navigate', safeAsyncHandler('BrowserView did-navigate auth', async (event, url) => {
     console.log(`[Navigation] 页面导航(补充检测) → ${url}`);
 
     // 检测远程登录页，尝试恢复登录或跳转到本地登录页
@@ -6186,7 +6501,7 @@ function createWindow() {
       return;
     }
 
-  });
+  }));
 
   // 监听新窗口请求 - 默认行为：总是打开新窗口（类似正常浏览器）
   browserView.webContents.setWindowOpenHandler(({ url }) => {
@@ -6491,13 +6806,13 @@ function createWindow() {
     };
 
     // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
-    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+    newWindow.webContents.on('did-navigate', safeAsyncHandler('did-create-window did-navigate save-session', async (_e, navUrl) => {
       if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-login-reset')) return;
       await tryPersistAfterLoginNavigate(navUrl, 'did-navigate');
-    });
+    }));
 
     // 🔑 监听窗口关闭前事件，尝试保存登录信息（如果是多账号模式窗口）
-    newWindow.on('close', async (e) => {
+    newWindow.on('close', safeAsyncHandler('did-create-window close', async (e) => {
       console.log('[did-create-window] ========== 窗口关闭前 ==========');
       console.log('[did-create-window] windowId:', windowId);
       console.log('[did-create-window] URL:', newWindow.webContents.getURL());
@@ -6579,7 +6894,7 @@ function createWindow() {
           newWindow.destroy();
         }
       }
-    });
+    }));
 
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
@@ -6613,7 +6928,7 @@ function createWindow() {
     // });
 
     // 为新窗口添加脚本注入
-    newWindow.webContents.on('did-finish-load', async () => {
+    newWindow.webContents.on('did-finish-load', safeAsyncHandler('did-create-window did-finish-load inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window] Page loaded:', currentURL);
       if (shouldSkipScriptInjection(currentURL)) {
@@ -6622,10 +6937,10 @@ function createWindow() {
         return;
       }
       await injectScriptForUrl(newWindow.webContents, currentURL);
-    });
+    }));
 
     // 监听新窗口内的导航（SPA 路由）
-    newWindow.webContents.on('did-navigate-in-page', async (event, url) => {
+    newWindow.webContents.on('did-navigate-in-page', safeAsyncHandler('did-create-window did-navigate-in-page inject', async (event, url) => {
       console.log('[New Window] SPA Navigation:', url);
       // 🔐 SPA 路由也触发登录回跳保存（覆盖腾讯号 userAuth、搜狐 mpfe/v4/login 等单页应用登录路径）
       // 加存活守卫，避免窗口销毁后访问已释放对象导致 crash (0xC0000005)
@@ -6643,7 +6958,7 @@ function createWindow() {
         return;
       }
       await injectScriptForUrl(newWindow.webContents, url);
-    });
+    }));
   });
 }
 
@@ -6876,22 +7191,31 @@ async function validateAndCleanupUserData() {
 
 // createTray 创建托盘图标
 function createTray() {
-  const icon = path.join(__dirname, 'icon.ico')
-  tray = new Tray(icon)
+  try {
+    const icon = path.join(__dirname, 'icon.ico');
+    tray = new Tray(icon);
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: '显示窗口',
-      click: () => win.show()
-    },
-    {
-      label: '退出',
-      click: () => app.quit()
-    }
-  ])
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: '显示窗口',
+        click: () => {
+          showOrCreateMainWindow('tray-show-window');
+        }
+      },
+      {
+        label: '退出',
+        click: () => app.quit()
+      }
+    ]);
 
-  tray.setToolTip('应用名称')
-  tray.setContextMenu(contextMenu)
+    tray.setToolTip('应用名称');
+    tray.setContextMenu(contextMenu);
+    return true;
+  } catch (error) {
+    console.error('[Tray] ❌ 创建托盘失败:', error);
+    tray = null;
+    return false;
+  }
 }
 
 if (shouldDisableHardwareAcceleration) {
@@ -6904,11 +7228,12 @@ if (shouldDisableHardwareAcceleration) {
 
 // 🛡️ 反自动化检测 - 在 app.whenReady() 之前设置
 // 禁用 Blink 的 AutomationControlled 特征，避免被网站检测为自动化浏览器
-app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+appendStartupSwitch('disable-blink-features', 'AutomationControlled');
 // 禁用自动化扩展
-app.commandLine.appendSwitch('disable-extensions');
+appendStartupSwitch('disable-extensions');
 console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log(`[Compatibility] ✅ renderer 启动兼容参数: ${shouldUseRendererLaunchCompatibility ? '已启用（仅旧系统）' : '未启用'}`);
+console.log(`[Compatibility] ✅ 启动开关: ${startupCommandLineSwitches.length > 0 ? startupCommandLineSwitches.join(' ') : '-'}`);
 
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
@@ -7061,7 +7386,7 @@ app.whenReady().then(async () => {
 
   // 注册全局快捷键后门清除指定域名的 Cookies (Ctrl+Alt+C)
   console.log('[Main] 尝试注册清除 Cookies 快捷键: Ctrl+Alt+C');
-  const registerResult = globalShortcut.register('CommandOrControl+Alt+C', async () => {
+  const registerResult = globalShortcut.register('CommandOrControl+Alt+C', safeAsyncHandler('Clear Cookies shortcut', async () => {
     console.log('[Clear Cookies] ========== 后门快捷键触发 ==========');
 
     // 使用 Electron 的对话框让用户输入域名
@@ -7140,7 +7465,8 @@ app.whenReady().then(async () => {
         icon: appIcon, // 使用 nativeImage 加载的图标
         webPreferences: {
           nodeIntegration: true,  // 启用nodeIntegration以便使用ipcRenderer
-          contextIsolation: false  // 关闭上下文隔离
+          contextIsolation: false, // 关闭上下文隔离
+          sandbox: false
         }
       });
 
@@ -7316,7 +7642,7 @@ app.whenReady().then(async () => {
         console.log('[Clear Cookies] 输入窗口已关闭');
       });
     }
-  });
+  }));
 
   if (registerResult) {
     console.log('[Main] ✅ 清除 Cookies 快捷键注册成功 (Ctrl+Alt+C)');
@@ -7326,14 +7652,12 @@ app.whenReady().then(async () => {
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
-      isQuitting = false; // 重置标志
-      shutdownStarted = false;
-      createWindow();
+      showOrCreateMainWindow('app-activate');
     }
   });
 
   // 定期保存 session 数据（每 30 秒）
-  autoSaveInterval = setInterval(async () => {
+  autoSaveInterval = setInterval(safeAsyncHandler('Auto-Save interval', async () => {
     if (browserView && !browserView.webContents.isDestroyed()) {
       try {
         const ses = browserView.webContents.session;
@@ -7347,7 +7671,7 @@ app.whenReady().then(async () => {
         console.error('[Auto-Save] ❌ 保存失败:', err);
       }
     }
-  }, 30000);
+  }), 30000);
 
   // 优化：定期清理已销毁的窗口引用（每 60 秒）
   destroyedWindowCleanupInterval = setInterval(() => {
@@ -7358,6 +7682,15 @@ app.whenReady().then(async () => {
       console.log('[Memory] 强制垃圾回收完成');
     }
   }, 60000);
+}).catch(err => {
+  markSessionDiagnosticFatalError(err, 'app.whenReady');
+  appendSessionDiagnosticLog('ERROR', 'startup', ['app.whenReady 初始化失败', err]);
+  console.error('[Startup] ❌ app.whenReady 初始化失败:', err);
+  try {
+    dialog.showErrorBox('启动失败', err && err.stack ? err.stack : String(err));
+  } catch (_) {
+    // ignore dialog failure
+  }
 });
 
 app.on('window-all-closed', function () {
@@ -8361,7 +8694,8 @@ ipcMain.handle('show-site-menu', async (event, sites, currentSiteId) => {
       modal: false,
       webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false
+        contextIsolation: false,
+        sandbox: false
       }
     });
 
@@ -8772,7 +9106,8 @@ ipcMain.handle('show-user-menu', async (event) => {
       modal: false,
       webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false
+        contextIsolation: false,
+        sandbox: false
       }
     });
 
@@ -8836,7 +9171,8 @@ ipcMain.handle('show-company-menu', async (event, companies, currentUniqueId) =>
       modal: false,
       webPreferences: {
         nodeIntegration: true,
-        contextIsolation: false
+        contextIsolation: false,
+        sandbox: false
       }
     });
 
@@ -9595,6 +9931,7 @@ async function openManagedChildWindow(url, options = {}) {
     const windowWebPreferences = {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
       session: windowSession,
       backgroundThrottling: false, // 禁用后台节流，防止视频被暂停
       autoplayPolicy: 'no-user-gesture-required' // 允许自动播放视频
@@ -9873,13 +10210,13 @@ async function openManagedChildWindow(url, options = {}) {
     };
 
     // 🔐 监听 URL 跳转：从登录页跳回业务页时（说明用户重新登录成功）触发 cookies 保存到后台
-    newWindow.webContents.on('did-navigate', async (_e, navUrl) => {
+    newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate save-session', async (_e, navUrl) => {
       await tryPersistAfterLoginNavigate(navUrl, 'did-navigate');
-    });
+    }));
 
     // 🔑 监听窗口关闭前事件，保存最新会话数据到后台
     // 使用 e.preventDefault() 阻止立即关闭，等待保存完成后再销毁窗口
-    newWindow.on('close', async (e) => {
+    newWindow.on('close', safeAsyncHandler('managed-window close', async (e) => {
       console.log('[Window Manager] ========== 窗口关闭前 ==========');
       console.log('[Window Manager] windowId:', windowId);
 
@@ -10086,7 +10423,7 @@ async function openManagedChildWindow(url, options = {}) {
           newWindow.destroy();
         }
       }
-    });
+    }));
 
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
@@ -10138,7 +10475,7 @@ async function openManagedChildWindow(url, options = {}) {
     //   1. will-navigate：拦截页面 JS 发起的 HTTP 导航
     //   2. did-navigate：拦截服务端 302 重定向落地的 HTTP 页面（will-navigate 抓不到 302）
     //   3. onBeforeRequest：网络层拦截所有 HTTP 子请求（API 调用等），解决 Mixed Content
-    newWindow.webContents.on('did-start-navigation', (_event, navUrl, _isInPlace, isMainFrame) => {
+    newWindow.webContents.on('did-start-navigation', safeAsyncHandler('managed-window did-start-navigation', (_event, navUrl, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
         if (shouldBlockShipinhaoLoginSelfReload(navUrl)) {
           console.warn('[Shipinhao LoginGuard] 检测到发布窗口登录页同页重载请求，等待 will-navigate 拦截:', navUrl);
@@ -10146,8 +10483,8 @@ async function openManagedChildWindow(url, options = {}) {
         }
         ensureShipinhaoLoginForceReset(navUrl, 'did-start-navigation-login-reset');
       }
-    });
-    newWindow.webContents.on('will-navigate', (event, navUrl) => {
+    }));
+    newWindow.webContents.on('will-navigate', safeAsyncHandler('managed-window will-navigate', (event, navUrl) => {
       if (shouldBlockShipinhaoLoginSelfReload(navUrl)) {
         console.warn('[Shipinhao LoginGuard] 已阻止发布窗口视频号登录页同页 reload:', navUrl);
         event.preventDefault();
@@ -10160,8 +10497,8 @@ async function openManagedChildWindow(url, options = {}) {
         event.preventDefault();
         newWindow.webContents.loadURL(httpsUrl);
       }
-    });
-    newWindow.webContents.on('did-navigate', (event, navUrl) => {
+    }));
+    newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate protocol', (event, navUrl) => {
       if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-nav-reset')) return;
       // 302 重定向落地后立刻跳 HTTPS，防止页面 JS 在 HTTP 下执行并触发登录循环
       if (navUrl.startsWith('http://mp.163.com/')) {
@@ -10169,7 +10506,7 @@ async function openManagedChildWindow(url, options = {}) {
         console.log(`[Window Nav] 🔒 HTTP→HTTPS (did-navigate 302 落地): ${navUrl} → ${httpsUrl}`);
         newWindow.webContents.loadURL(httpsUrl);
       }
-    });
+    }));
 
     // 🔧 163.com Mixed Content 修复：session 网络层拦截所有 HTTP 请求，升级为 HTTPS
     // 页面在 HTTPS 上运行，但 163.com 自己的 JS 发 HTTP API 请求（如 navinfo.do）被 Mixed Content 拦截
@@ -10193,7 +10530,7 @@ async function openManagedChildWindow(url, options = {}) {
 
     // 🔑 为新窗口添加脚本注入（使用 dom-ready 而不是 did-finish-load，更早注入）
     // dom-ready 在 DOM 准备好但在 DOMContentLoaded 之前触发，可以更早执行脚本
-    newWindow.webContents.on('dom-ready', async () => {
+    newWindow.webContents.on('dom-ready', safeAsyncHandler('managed-window dom-ready inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
       const currentContext = windowContextMap.get(newWindow.id);
@@ -10210,22 +10547,12 @@ async function openManagedChildWindow(url, options = {}) {
         return;
       }
 
-      // 🔑 优先注入脚本（越早越好，防止页面 JS 先执行导致跳转问题）
-      await scriptManager.getScript(currentURL).then(async (script) => {
-        if (script) {
-          console.log('[New Window API] Injecting script on dom-ready...');
-          try {
-            await newWindow.webContents.executeJavaScript(script);
-            console.log('[New Window API] Script injected successfully');
-          } catch (err) {
-            console.error('[New Window API] Script injection error:', err);
-          }
-        }
-      });
-    });
+      // 🔑 优先走统一注入函数，避免 dom-ready / did-finish-load / SPA 导航各自重复执行脚本。
+      await injectScriptForUrl(newWindow.webContents, currentURL);
+    }));
 
     // 页面完全加载后通知首页 + 补充脚本注入（作为 dom-ready 的保底机制）
-    newWindow.webContents.on('did-finish-load', async () => {
+    newWindow.webContents.on('did-finish-load', safeAsyncHandler('managed-window did-finish-load inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
       const currentContext = windowContextMap.get(newWindow.id);
@@ -10256,9 +10583,9 @@ async function openManagedChildWindow(url, options = {}) {
       } else {
         await injectScriptForUrl(newWindow.webContents, currentURL);
       }
-    });
+    }));
 
-    newWindow.webContents.on('did-navigate', async (event, navUrl) => {
+    newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate recover', async (event, navUrl) => {
       console.log('[New Window API] Navigation:', navUrl);
       const currentContext = windowContextMap.get(newWindow.id);
       if (currentContext?.bootstrapInProgress) {
@@ -10266,10 +10593,10 @@ async function openManagedChildWindow(url, options = {}) {
         return;
       }
       await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate');
-    });
+    }));
 
     // 监听新窗口内的导航（SPA 路由）
-    newWindow.webContents.on('did-navigate-in-page', async (event, navUrl) => {
+    newWindow.webContents.on('did-navigate-in-page', safeAsyncHandler('managed-window did-navigate-in-page inject', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
       if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-in-page-reset')) return;
       // 🔐 SPA 路由也触发登录回跳保存（覆盖腾讯号 userAuth、搜狐 mpfe/v4/login 等单页应用登录路径）
@@ -10296,17 +10623,8 @@ async function openManagedChildWindow(url, options = {}) {
         await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
-      const script = await scriptManager.getScript(navUrl);
-      if (script) {
-        try {
-          await newWindow.webContents.executeJavaScript(script);
-          console.log('[New Window API] Script re-injected on navigation');
-        } catch (err) {
-          console.error('[New Window API] Script re-injection error:', err);
-        }
-      }
       await injectScriptForUrl(newWindow.webContents, navUrl);
-    });
+    }));
 
     // 🔑 检查是否需要预设 storage（解决首次打开跳转首页/掉登录的问题）
     // 问题原因：页面脚本在 dom-ready 前就执行，读取了旧的 localStorage / sessionStorage 值
@@ -12682,7 +13000,7 @@ function installShipinhaoCookieDedup(targetSession, label) {
   if (shipinhaoDedupInstalledSessions.has(targetSession)) return;
   shipinhaoDedupInstalledSessions.add(targetSession);
 
-  targetSession.cookies.on('changed', async (_event, cookie, cause, removed) => {
+  targetSession.cookies.on('changed', safeAsyncHandler(`${label} cookie changed dedup`, async (_event, cookie, cause, removed) => {
     // 只处理新增/覆盖事件，跳过 expired/evicted/我们自己删除产生的事件
     if (removed) return;
     if (cause !== 'explicit' && cause !== 'overwrite') return;
@@ -12691,7 +13009,7 @@ function installShipinhaoCookieDedup(targetSession, label) {
     rememberShipinhaoPreferredCookie(targetSession, cookie);
     await dedupShipinhaoCookiesOnce(targetSession, label, cookie);
     scheduleShipinhaoCookieDedup(targetSession, label, 1200);
-  });
+  }));
 
   console.log(`[${label}] ✅ 视频号 cookie 去重监听器已安装`);
 
@@ -12728,7 +13046,7 @@ function installShipinhaoWindowAutoSave(targetWindow, windowId, targetSession, l
     const now = Date.now();
     const waitMs = Math.max(3500, 12000 - (now - lastSavedAt), 0);
     clearTimer();
-    saveTimer = setTimeout(async () => {
+    saveTimer = setTimeout(safeAsyncHandler(`${label} shipinhao auto-save timer`, async () => {
       saveTimer = null;
       if (saveInFlight || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
         return;
@@ -12764,7 +13082,7 @@ function installShipinhaoWindowAutoSave(targetWindow, windowId, targetSession, l
       } finally {
         saveInFlight = false;
       }
-    }, waitMs);
+    }), waitMs);
   };
 
   const onCookieChanged = (_event, cookie, cause, removed) => {
