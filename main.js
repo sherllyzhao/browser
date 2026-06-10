@@ -33,8 +33,9 @@ function appendStartupSwitch(name, value) {
 
 function getLegacyWindowsGpuWorkaroundInfo() {
   // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-  // Windows 10 1607/LTSB(10.0.14393) 更容易遇到 renderer 启动兼容问题，但不要默认禁 GPU：
-  // 客户现场已经出现禁 GPU 后 launch-failed，因此它只走 1.1.2 风格的启动参数回退。
+  // Windows 10 1607/LTSB(10.0.14393)：老核显(如 HD2500)保留 GPU 时 GPU 子进程会崩弹"已停止工作"，
+  // 故 1607 走软件渲染(禁 GPU)+renderer 启动兼容参数。注：历史注释曾称"1607 禁 GPU 也 launch-failed"，
+  // 实为真凶 360 拦截期的污染误判(2026-06-10 真机证实)，加白名单后禁 GPU 无此问题。
   // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
   if (process.platform !== 'win32') {
     return {
@@ -111,7 +112,17 @@ if (shouldDisableHardwareAcceleration) {
   appendStartupSwitch('disable-gpu-sandbox');
   appendStartupSwitch('in-process-gpu');
 } else if (shouldUseRendererLaunchCompatibility) {
-  console.log(`[启动] 检测到旧版 Win10 (${legacyWindowsGpuWorkaround.release})，保留 GPU，启用 renderer 启动兼容参数`);
+  // 🩹 2026-06-10：老核显(如 Intel HD2500/Ivy Bridge)保留 GPU 时，Chromium 独立 GPU 子进程会崩，
+  //    弹"已停止工作"（主程序仍能 fallback 软件渲染继续运行，但提示扰民）。此处软禁用硬件加速 +
+  //    disable-gpu/disable-gpu-compositing 强制纯软件渲染，让 GPU 进程根本不启动，从源头消除崩溃。
+  // ⚠️ 绝不加 disable-gpu-sandbox / in-process-gpu：这俩沙箱族开关在 1607 上风险未明，保持最小变更；
+  //    no-sandbox 等兼容参数仍由下方 if(shouldUseRendererLaunchCompatibility) 块统一提供。
+  // 📌 前提：真凶 360 已加白名单(干净环境)。本次禁 GPU 与历史"360 污染期禁 GPU 也崩"无关，
+  //    详见《排查记录-Win10-1607-启动崩溃.md》最终结论。
+  console.log(`[启动] 检测到旧版 Win10 (${legacyWindowsGpuWorkaround.release})，启用软件渲染(禁 GPU 子进程) + renderer 启动兼容参数`);
+  app.disableHardwareAcceleration();
+  appendStartupSwitch('disable-gpu');
+  appendStartupSwitch('disable-gpu-compositing');
 } else {
   console.log(`[启动] 当前系统保留 GPU 硬件加速 (${legacyWindowsGpuWorkaround.release || 'non-win32'})`);
 }
@@ -121,11 +132,10 @@ if (shouldUseRendererLaunchCompatibility) {
   // renderer 启动兼容参数；正常 Win10/11 不追加，避免扩大行为变化面。
   appendStartupSwitch('disable-dev-shm-usage');
   appendStartupSwitch('no-sandbox');
-  // ⚠️ 不在此处加 disable-gpu-sandbox：经 git 核对，1.1.2(1607 唯一验证能用的版本)的全局开关
-  //    并无此项；1607 保留 GPU 时叠加它会触发 renderer launch-failed(exitCode 63 沙箱族)。
-  //    禁 GPU 路径(Win7/8 / safe-mode)所需的 disable-gpu-sandbox 已在上方禁 GPU 块单独追加。
-  // ⚠️ disable-features 仅禁 RendererCodeIntegrity(与 1.1.2 一致)；CalculateNativeWinOcclusion
-  //    系 1.1.5 与 1607 崩溃同期新增项，一并移除以精确复刻 1.1.2。
+  // ⚠️ 不在此处加 disable-gpu-sandbox / in-process-gpu：保持最小变更，沙箱族开关在 1607 上风险未明。
+  //    (1607 软件渲染所需的 disable-gpu/disable-gpu-compositing 已由上方 else-if 块提供；
+  //     Win7/8 / safe-mode 的禁 GPU 开关由最上方 if 块单独追加。)
+  // ⚠️ disable-features 仅禁 RendererCodeIntegrity；不加 CalculateNativeWinOcclusion(与 1.1.2 一致)。
   appendStartupSwitch('disable-features', 'RendererCodeIntegrity');
   appendStartupSwitch('disable-renderer-backgrounding');
   appendStartupSwitch('disable-backgrounding-occluded-windows');
@@ -148,6 +158,10 @@ let autoSaveInterval = null;
 let destroyedWindowCleanupInterval = null;
 let mainWindowCloseForceTimer = null;
 const windowContextMap = new Map();
+// 🩹 视频号白屏自愈 reload 放行标记（按 windowId）：经 shipinhao-blank-self-heal-reload 通道
+// 发起的受控 reload 临时加入，使其绕过 shouldBlockShipinhaoLoginSelfReload 的登录页同页 reload 拦截；
+// 由 handler 侧 5s 超时自动清除，避免标记残留误放行后续正常 reload。
+const blankSelfHealReloadAllowed = new Set();
 
 function safeAsyncHandler(label, handler) {
   return (...args) => {
@@ -7868,6 +7882,58 @@ ipcMain.handle('native-click', async (event, x, y) => {
   }
 });
 
+// 原生文本输入（通过 CDP 走浏览器输入管线，用于生成可信 input/beforeinput 信号）
+ipcMain.handle('native-insert-text', async (event, text) => {
+  let didAttachDebugger = false;
+  let activeDebugger = null;
+
+  try {
+    const webContents = event.sender;
+    if (!webContents || webContents.isDestroyed()) {
+      return { success: false, error: 'webContents 不可用' };
+    }
+
+    const insertText = String(text ?? '');
+    if (!insertText) {
+      return { success: true, text: '' };
+    }
+
+    try {
+      const senderWindow = BrowserWindow.fromWebContents(webContents);
+      if (senderWindow && !senderWindow.isDestroyed()) {
+        if (senderWindow.isMinimized()) senderWindow.restore();
+        senderWindow.focus();
+      } else if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
+      if (typeof webContents.focus === 'function') {
+        webContents.focus();
+      }
+    } catch (focusErr) {
+      console.warn('[Native Insert Text] focus 窗口失败，继续发送文本输入:', focusErr.message);
+    }
+
+    const dbg = webContents.debugger;
+    activeDebugger = dbg;
+    try {
+      dbg.attach('1.3');
+      didAttachDebugger = true;
+    } catch (e) { /* 可能已 attach */ }
+
+    await dbg.sendCommand('Input.insertText', { text: insertText });
+
+    return { success: true, length: insertText.length };
+  } catch (err) {
+    console.error('[Native Insert Text] 失败:', err);
+    return { success: false, error: err.message };
+  } finally {
+    if (didAttachDebugger && activeDebugger) {
+      try { activeDebugger.detach(); } catch (e) { /* ignore */ }
+    }
+  }
+});
+
 // 原生鼠标移动（优先 Electron 原生输入，CDP 兜底，不触发点击）
 ipcMain.handle('native-mouse-move', async (event, x, y, options = {}) => {
   let didAttachDebugger = false;
@@ -10064,6 +10130,13 @@ async function openManagedChildWindow(url, options = {}) {
     // 保存窗口 ID，避免在 closed 事件中访问已销毁的窗口对象
     const windowId = newWindow.id;
     const shouldBlockShipinhaoLoginSelfReload = (navUrl) => {
+      // 🩹 白屏自愈放行：经 shipinhao-blank-self-heal-reload 通道发起的受控 reload 不拦截。
+      // 仅检查不立即清除——同一次 reload 会先后经过 did-start-navigation 与 will-navigate 两次判定，
+      // 立即清除会导致第二次判定误拦；放行标记由主进程 handler 的 5s 超时统一清除。
+      if (blankSelfHealReloadAllowed.has(windowId)) {
+        console.warn('[Shipinhao LoginGuard] 放行白屏自愈 reload:', navUrl);
+        return false;
+      }
       if (!isShipinhaoLoginUrl(navUrl)) return false;
       if (newWindow.isDestroyed() || newWindow.webContents.isDestroyed()) return false;
 
@@ -11392,6 +11465,36 @@ ipcMain.handle('clear-domain-cookies', async (event, domain) => {
   } catch (err) {
     console.error('[Clear Cookies] 清除失败:', err);
     return { success: false, error: err.message };
+  }
+});
+
+// ========== 视频号白屏自愈 reload（经主进程放行） ==========
+// 旧系统软件渲染下视频号发布页/扫码页可能首屏白屏；页面侧巡检确认白屏后通过此通道请求主进程 reload。
+// 主进程主动 reload 并临时放行该窗口一次登录页同页 reload，规避 shouldBlockShipinhaoLoginSelfReload 拦截，
+// 同时不影响"防止页面 SPA 反复 reload 打断扫码"的原有保护（普通 SPA reload 无放行标记，仍被拦）。
+ipcMain.handle('shipinhao-blank-self-heal-reload', (event, payload) => {
+  try {
+    const wc = event.sender;
+    if (!wc || wc.isDestroyed()) return { success: false, reason: 'sender-destroyed' };
+    const win = BrowserWindow.fromWebContents(wc);
+    const winId = win && !win.isDestroyed() ? win.id : null;
+    console.warn('[Shipinhao BlankSelfHeal] 收到白屏自愈 reload 请求:', { winId, payload: payload || null });
+    if (winId != null) {
+      blankSelfHealReloadAllowed.add(winId);
+      // 兜底：5s 后清除放行标记，避免长期残留误放行后续正常 reload
+      setTimeout(() => { try { blankSelfHealReloadAllowed.delete(winId); } catch (_) {} }, 5000);
+    }
+    setTimeout(() => {
+      try {
+        if (!wc.isDestroyed()) wc.reload();
+      } catch (reloadErr) {
+        console.warn('[Shipinhao BlankSelfHeal] reload 执行失败:', reloadErr && reloadErr.message ? reloadErr.message : reloadErr);
+      }
+    }, 300);
+    return { success: true, winId };
+  } catch (e) {
+    console.warn('[Shipinhao BlankSelfHeal] 处理异常:', e && e.message ? e.message : e);
+    return { success: false, reason: e && e.message ? e.message : String(e) };
   }
 });
 

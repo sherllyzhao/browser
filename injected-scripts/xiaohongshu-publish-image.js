@@ -63,7 +63,9 @@ if (location.search.includes("published=true")) {
                 console.error("[小红书发布] retryOperation:", typeof retryOperation);
                 console.error("[小红书发布] uploadImage:", typeof uploadImage);
                 console.error("[小红书发布] sendStatistics:", typeof sendStatistics);
-                console.error("[小红书发布] clickWithRetry:", typeof clickWithRetry);
+                console.error("[小红书发布] nativeClickElement:", typeof nativeClickElement);
+                console.error("[小红书发布] nativeInsertText:", typeof nativeInsertText);
+                console.error("[小红书发布] clickWithTrustedRetry:", typeof clickWithTrustedRetry);
                 console.error("[小红书发布] closeWindowWithMessage:", typeof closeWindowWithMessage);
                 console.error("[小红书发布] delay:", typeof delay);
             } else {
@@ -276,6 +278,33 @@ if (location.search.includes("published=true")) {
             const html = buildParagraphHtml(normalized);
             const readCurrent = () => normalizeEditorText(editor.innerText || editor.textContent || "");
             const isExpected = value => isEditorContentMatched(value, normalized);
+            try {
+                const focusResult = await nativeClickElement(editor, {
+                    logPrefix: "[小红书发布][简介]",
+                    allowJsFallback: false,
+                });
+                if (focusResult.success) {
+                    await delay(120);
+                    editor.innerHTML = "";
+                    if (!normalized) {
+                        await delay(150);
+                        return !readCurrent();
+                    }
+
+                    const insertResult = await nativeInsertText(normalized, {
+                        logPrefix: "[小红书发布][简介]",
+                    });
+                    await delay(250);
+                    if (insertResult.success && isExpected(readCurrent())) {
+                        return true;
+                    }
+                } else {
+                    console.warn("[小红书发布] 原生聚焦简介失败，尝试兼容兜底:", focusResult.message);
+                }
+            } catch (error) {
+                console.warn("[小红书发布] 原生输入简介失败，尝试兼容兜底:", error.message);
+            }
+
             const selectAndClear = () => {
                 editor.focus();
                 const selection = window.getSelection();
@@ -865,6 +894,9 @@ if (location.search.includes("published=true")) {
                 findXhsPublishButton: typeof findXhsPublishButton,
                 isDisabledButton: typeof isDisabledButton,
                 clearPublishSuccessData: typeof clearPublishSuccessData,
+                nativeClickElement: typeof nativeClickElement,
+                nativeInsertText: typeof nativeInsertText,
+                clickWithTrustedRetry: typeof clickWithTrustedRetry,
             };
             const missingPublishHelpers = Object.entries(publishHelperStatus)
                 .filter(([, value]) => value !== "function")
@@ -935,7 +967,7 @@ if (location.search.includes("published=true")) {
             console.log("[小红书发布] ✅ 生产环境确认，准备点击发布按钮...");
             await delay(1000);
 
-            const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+            const clickResult = await clickWithTrustedRetry(publishBtn, 3, 500, true); // 启用可信点击和消息捕获
 
             if (!clickResult.success) {
                 console.error("[小红书发布] ❌ 所有点击尝试均失败:", clickResult.message);
@@ -1051,7 +1083,9 @@ if (location.search.includes("published=true")) {
         try {
             const externalDependencyStatus = {
                 waitForElement: typeof waitForElement,
-                setNativeValue: typeof setNativeValue,
+                nativeClickElement: typeof nativeClickElement,
+                nativeInsertText: typeof nativeInsertText,
+                clickWithTrustedRetry: typeof clickWithTrustedRetry,
                 extractAfterHash: typeof extractAfterHash,
                 removeHashTags: typeof removeHashTags,
                 delay: typeof delay,
@@ -1211,21 +1245,23 @@ if (location.search.includes("published=true")) {
                 // alert(`Filling title: ${titleAndIntro.title || ''}`);
 
                 try {
-                    // 先触发focus事件
-                    if (typeof titleInput.focus === "function") {
-                        titleInput.focus();
-                    } else {
-                        titleInput.dispatchEvent(new Event("focus", { bubbles: true }));
+                    const titleText = titleAndIntro.title || "";
+                    const focusResult = await nativeClickElement(titleInput, {
+                        logPrefix: "[小红书发布][标题]",
+                        allowJsFallback: false,
+                    });
+                    if (!focusResult.success) {
+                        throw new Error(focusResult.message || "标题输入框原生聚焦失败");
                     }
-
-                    // 延迟执行，让React状态稳定
                     await window.delay(200);
 
-                    // 使用setNativeValue设置值
-                    setNativeValue(titleInput, titleAndIntro.title || "");
-
-                    // 额外触发input事件
-                    titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+                    titleInput.value = "";
+                    const insertResult = await nativeInsertText(titleText, {
+                        logPrefix: "[小红书发布][标题]",
+                    });
+                    if (!insertResult.success) {
+                        throw new Error(insertResult.message || "标题原生输入失败");
+                    }
                     await delay(300);
 
                     const latestTitle = normalizeEditorTextSafe(titleInput.value || "");
@@ -1300,31 +1336,36 @@ if (location.search.includes("published=true")) {
                     if (topicList.length > 0) {
                         const introInput = await waitForElement(".tiptap-container .ProseMirror", 5000);
                         for (let topicListElement of topicList) {
-                            // 聚焦编辑器
-                            introInput.focus();
+                            const topicFocusResult = await nativeClickElement(introInput, {
+                                logPrefix: "[小红书发布][话题]",
+                                allowJsFallback: false,
+                            });
+                            if (!topicFocusResult.success) {
+                                throw new Error(topicFocusResult.message || "话题输入区原生聚焦失败");
+                            }
 
-                            // 将光标移到末尾
+                            await delay(100);
+
                             const selection = window.getSelection();
                             const range = document.createRange();
                             range.selectNodeContents(introInput);
-                            range.collapse(false); // false = 折叠到末尾
+                            range.collapse(false);
                             selection.removeAllRanges();
                             selection.addRange(range);
 
-                            // 先插入一个空格分隔
-                            document.execCommand("insertText", false, " ");
+                            const spaceInsertResult = await nativeInsertText(" ", {
+                                logPrefix: "[小红书发布][话题]",
+                            });
+                            if (!spaceInsertResult.success) {
+                                throw new Error(spaceInsertResult.message || "话题分隔空格输入失败");
+                            }
 
-                            // 使用 execCommand 模拟真实输入（这会触发编辑器的话题检测）
-                            document.execCommand("insertText", false, topicListElement);
-
-                            // 触发 input 事件确保编辑器识别变化
-                            introInput.dispatchEvent(
-                                new InputEvent("input", {
-                                    inputType: "insertText",
-                                    data: topicListElement,
-                                    bubbles: true,
-                                }),
-                            );
+                            const topicInsertResult = await nativeInsertText(topicListElement, {
+                                logPrefix: "[小红书发布][话题]",
+                            });
+                            if (!topicInsertResult.success) {
+                                throw new Error(topicInsertResult.message || "话题文本输入失败");
+                            }
 
                             // 等待话题建议列表出现（使用 waitForElement）
                             try {
@@ -1356,7 +1397,13 @@ if (location.search.includes("published=true")) {
                                     }
 
                                     if (firstOption) {
-                                        firstOption.click();
+                                        const optionClickResult = await nativeClickElement(firstOption, {
+                                            logPrefix: "[小红书发布][话题]",
+                                            allowJsFallback: false,
+                                        });
+                                        if (!optionClickResult.success) {
+                                            throw new Error(optionClickResult.message || "话题选项原生点击失败");
+                                        }
                                         console.log("🏷️ 已点击话题选项");
                                         await window.delay(200);
                                     } else {
@@ -1382,7 +1429,19 @@ if (location.search.includes("published=true")) {
                     await window.delay(1000);
                     // 定时发布
                     const scheduleRadio = await waitForElement(".publish-page-content-settings-content .post-time-switch-container .custom-switch-switch [type='checkbox']", 3000);
-                    setNativeValue(scheduleRadio, true);
+                    if (!scheduleRadio.checked) {
+                        const scheduleClickResult = await nativeClickElement(scheduleRadio, {
+                            logPrefix: "[小红书发布][定时开关]",
+                            allowJsFallback: false,
+                        });
+                        if (!scheduleClickResult.success) {
+                            throw new Error(scheduleClickResult.message || "定时发布开关原生点击失败");
+                        }
+                        await window.delay(200);
+                        if (!scheduleRadio.checked) {
+                            throw new Error("定时发布开关点击后未生效");
+                        }
+                    }
 
                     // 设置日期时间
                     await window.delay(1000);
@@ -1536,7 +1595,13 @@ if (location.search.includes("published=true")) {
                     const headerChildren = picker.querySelectorAll(".d-datepicker-header > *");
                     const nextBtn = headerChildren[3]; // 索引3 = 下一月按钮
                     if (nextBtn) {
-                        nextBtn.click();
+                        const nextClickResult = await nativeClickElement(nextBtn, {
+                            logPrefix: "[小红书发布][日期翻月]",
+                            allowJsFallback: false,
+                        });
+                        if (!nextClickResult.success) {
+                            throw new Error(nextClickResult.message || "点击下一月失败");
+                        }
                         console.log("[小红书发布] ➡️ 点击下一月");
                     }
                 } else {
@@ -1544,7 +1609,13 @@ if (location.search.includes("published=true")) {
                     const headerChildren = picker.querySelectorAll(".d-datepicker-header > *");
                     const prevBtn = headerChildren[1]; // 索引1 = 上一月按钮
                     if (prevBtn) {
-                        prevBtn.click();
+                        const prevClickResult = await nativeClickElement(prevBtn, {
+                            logPrefix: "[小红书发布][日期翻月]",
+                            allowJsFallback: false,
+                        });
+                        if (!prevClickResult.success) {
+                            throw new Error(prevClickResult.message || "点击上一月失败");
+                        }
                         console.log("[小红书发布] ⬅️ 点击上一月");
                     }
                 }
@@ -1580,7 +1651,13 @@ if (location.search.includes("published=true")) {
                 console.log(`[小红书发布] 📅 检查日期: text="${dayText}", dayNum=${dayNum}, targetDay=${targetDay}, match=${dayNum === targetDay}`);
 
                 if (!isNaN(dayNum) && dayNum === targetDay) {
-                    td.click();
+                    const dayClickResult = await nativeClickElement(td, {
+                        logPrefix: "[小红书发布][日期选择]",
+                        allowJsFallback: false,
+                    });
+                    if (!dayClickResult.success) {
+                        throw new Error(dayClickResult.message || "点击日期失败");
+                    }
                     dateSelected = true;
                     console.log(`[小红书发布] ✅ 选择日期: ${year}-${month}-${day}`);
                     break;
@@ -1610,7 +1687,13 @@ if (location.search.includes("published=true")) {
                     const itemText = item.textContent.trim();
                     const itemNum = parseInt(itemText, 10);
                     if (!isNaN(itemNum) && itemNum === targetNum) {
-                        item.click();
+                        const timeClickResult = await nativeClickElement(item, {
+                            logPrefix: "[小红书发布][时间选择]",
+                            allowJsFallback: false,
+                        });
+                        if (!timeClickResult.success) {
+                            throw new Error(timeClickResult.message || "点击时间项失败");
+                        }
                         matched = true;
                         console.log(`[小红书发布] ✅ 选择${i === 0 ? "小时" : "分钟"}: ${itemText}`);
                         break;
@@ -1629,7 +1712,12 @@ if (location.search.includes("published=true")) {
                 console.log("[小红书发布] ⏰ publishId:", publishId);
 
                 // 点击发布按钮
-                publishBtn.click();
+                const clickResult = await clickWithTrustedRetry(publishBtn, 3, 500, true); // 启用可信点击和消息捕获
+                if (!clickResult.success) {
+                    console.error("[小红书发布] ❌ 所有点击尝试均失败:", clickResult.message);
+                    await sendStatisticsError(publishId, clickResult.message || "点击发布按钮失败", "小红书发布");
+                    return false;
+                }
                 console.log("[小红书发布] ✅ 已点击定时发布按钮");
 
                 // 等待 2 秒，检测是否有错误提示

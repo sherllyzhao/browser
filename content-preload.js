@@ -10,6 +10,29 @@ const __IS_LEGACY_WINDOWS__ = (() => {
   }
 })();
 
+// 🩹 视频号白屏自愈：经主进程放行的受控 reload（仅旧系统、仅确认白屏时调用）。
+// 走独立 IPC 通道 shipinhao-blank-self-heal-reload，由主进程主动 reload 并对
+// 「发布窗口登录页同页 reload 拦截」自我放行一次：既能救回 Win7 软件渲染下的视频号白屏，
+// 又不会重新引入"页面 SPA 反复 reload 打断扫码"（35cbc40 当初移除自动刷新要防的问题）。
+function requestShipinhaoBlankSelfHealReload(scene, tag, snapshot) {
+  try {
+    ipcRenderer.invoke('shipinhao-blank-self-heal-reload', {
+      scene,
+      tag,
+      href: window.location.href,
+      snapshot
+    }).then((res) => {
+      console.warn('[视频号白屏自愈] 主进程已受理放行 reload:', res);
+    }).catch((err) => {
+      console.warn('[视频号白屏自愈] IPC 通道异常，回退页面侧 reload:', err && err.message ? err.message : err);
+      setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 300);
+    });
+  } catch (e) {
+    console.warn('[视频号白屏自愈] 调用失败，回退页面侧 reload:', e && e.message ? e.message : e);
+    setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 300);
+  }
+}
+
 function isChina9Host(hostname = '') {
   const host = String(hostname || '').toLowerCase();
   return host === 'china9.cn' || host.endsWith('.china9.cn');
@@ -458,7 +481,8 @@ function isShipinhaoPublishUrl(rawUrl = '') {
               try {
                 sessionStorage.setItem(BLANK_RELOAD_COUNT_KEY, String(reloadCount + 1));
               } catch (_) {}
-              console.warn(`[PageLifecycle][视频号白屏巡检] ${tag} 仍疑似白屏，自动刷新已禁用（原计划第 ${reloadCount + 1}/${MAX_BLANK_RELOAD} 次），仅记录诊断`);
+              console.warn(`[PageLifecycle][视频号白屏巡检] ${tag} 仍疑似白屏，触发自愈刷新（第 ${reloadCount + 1}/${MAX_BLANK_RELOAD} 次，经主进程放行 reload）`);
+              requestShipinhaoBlankSelfHealReload('shipinhao-publish', tag, snapshot);
             } else {
               console.warn(`[PageLifecycle][视频号白屏巡检] 已达刷新上限 ${MAX_BLANK_RELOAD} 次，停止自动刷新`);
             }
@@ -472,6 +496,90 @@ function isShipinhaoPublishUrl(rawUrl = '') {
       setTimeout(() => inspectShipinhaoPublishVisualState('T+6s'), 6000);
       setTimeout(() => inspectShipinhaoPublishVisualState('T+8s'), 8000);
       setTimeout(() => inspectShipinhaoPublishVisualState('T+15s'), 15000);
+    }
+
+    // 🩹 视频号登录/扫码页白屏巡检（仅旧系统）：软件渲染下扫码页同样可能首屏出图失败 → 白屏。
+    // 与发布页同款受控自愈：仅 blankSuspected（连二维码 iframe/canvas/img 都没有）时才 reload，
+    // 绝不打断"已经显示出二维码"的正常扫码页。reload 走主进程放行通道，规避发布窗口登录页同页 reload 拦截。
+    const __isShipinhaoLoginPage = (() => {
+      try {
+        const u = new URL(currentUrl);
+        return u.hostname === 'channels.weixin.qq.com' && u.pathname.toLowerCase().includes('/login');
+      } catch (_) {
+        return currentUrl.includes('channels.weixin.qq.com/login');
+      }
+    })();
+    if (__isShipinhaoLoginPage && __IS_LEGACY_WINDOWS__) {
+      const LOGIN_BLANK_RELOAD_COUNT_KEY = '__yyzs_shipinhao_login_blank_reload_count__';
+      const LOGIN_MAX_BLANK_RELOAD = 3;
+      const LOGIN_RELOAD_ALLOW_TAGS = ['T+8s', 'T+15s'];
+      let loginReloadScheduled = false;
+
+      const loginHasVisibleElement = (el) => {
+        try {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || '1') !== 0
+            && rect.width >= 8
+            && rect.height >= 8;
+        } catch (_) {
+          return false;
+        }
+      };
+
+      const inspectShipinhaoLoginVisualState = (tag) => {
+        try {
+          // 二维码常以 iframe(微信登录)/canvas/img 形式呈现；任一存在即视为"非白屏"，绝不误刷扫码页
+          const hasQrLike = !!(document.querySelector('iframe')
+            || document.querySelector('canvas')
+            || document.querySelector('img'));
+          let visibleElementCount = 0;
+          Array.from(document.querySelectorAll('*')).slice(0, 160).forEach(el => {
+            if (loginHasVisibleElement(el)) visibleElementCount += 1;
+          });
+          const bodyTextLength = document.body ? (document.body.innerText || '').trim().length : 0;
+          const bodyHtmlLength = document.body ? document.body.innerHTML.length : 0;
+          const blankSuspected = !hasQrLike && visibleElementCount <= 2 && bodyTextLength < 20;
+          const snapshot = {
+            tag,
+            scene: 'shipinhao-login',
+            href: window.location.href,
+            readyState: document.readyState,
+            bodyHtmlLength,
+            bodyTextLength,
+            visibleElementCount,
+            hasQrLike,
+            blankSuspected
+          };
+          console.warn('[PageLifecycle][视频号登录白屏巡检]', snapshot);
+
+          if (blankSuspected && LOGIN_RELOAD_ALLOW_TAGS.includes(tag) && !loginReloadScheduled) {
+            let reloadCount = 0;
+            try {
+              reloadCount = parseInt(sessionStorage.getItem(LOGIN_BLANK_RELOAD_COUNT_KEY) || '0', 10) || 0;
+            } catch (_) {}
+            if (reloadCount < LOGIN_MAX_BLANK_RELOAD) {
+              loginReloadScheduled = true;
+              try {
+                sessionStorage.setItem(LOGIN_BLANK_RELOAD_COUNT_KEY, String(reloadCount + 1));
+              } catch (_) {}
+              console.warn(`[PageLifecycle][视频号登录白屏巡检] ${tag} 仍疑似白屏，触发自愈刷新（第 ${reloadCount + 1}/${LOGIN_MAX_BLANK_RELOAD} 次，经主进程放行 reload）`);
+              requestShipinhaoBlankSelfHealReload('shipinhao-login', tag, snapshot);
+            } else {
+              console.warn(`[PageLifecycle][视频号登录白屏巡检] 已达刷新上限 ${LOGIN_MAX_BLANK_RELOAD} 次，停止自动刷新`);
+            }
+          }
+        } catch (inspectErr) {
+          console.warn('[PageLifecycle][视频号登录白屏巡检] 巡检异常:', inspectErr && inspectErr.message ? inspectErr.message : inspectErr);
+        }
+      };
+
+      setTimeout(() => inspectShipinhaoLoginVisualState('T+3s'), 3000);
+      setTimeout(() => inspectShipinhaoLoginVisualState('T+6s'), 6000);
+      setTimeout(() => inspectShipinhaoLoginVisualState('T+8s'), 8000);
+      setTimeout(() => inspectShipinhaoLoginVisualState('T+15s'), 15000);
     }
   } catch (err) {
     console.error('[PageLifecycle] 注册页面生命周期日志失败:', err);
@@ -1644,6 +1752,8 @@ contextBridge.exposeInMainWorld('browserAPI', {
 
   // 原生鼠标点击（发送 isTrusted=true 的可信事件，绕过 Vue 组件的 isTrusted 检查）
   nativeClick: (x, y) => ipcRenderer.invoke('native-click', x, y),
+  // 原生文本输入（走浏览器输入管线，生成可信 input/beforeinput 事件）
+  nativeInsertText: (text) => ipcRenderer.invoke('native-insert-text', text),
   // 原生鼠标移动（触发真实 hover，不执行点击）
   nativeMouseMove: (x, y, options) => ipcRenderer.invoke('native-mouse-move', x, y, options),
   // 原生连续 hover（批量移动并停留，用于触发依赖真实鼠标移入的提示）

@@ -1518,6 +1518,149 @@ if (typeof window.uploadVideo === "function"
         }
     };
 
+    function getNativeInputDelay() {
+        return typeof window.delay === "function"
+            ? window.delay
+            : (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function isVisibleForNativeClick(element) {
+        if (!element || typeof element.getBoundingClientRect !== "function") {
+            return false;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
+        const style = window.getComputedStyle(element);
+        return style.display !== "none"
+            && style.visibility !== "hidden"
+            && style.opacity !== "0"
+            && style.pointerEvents !== "none";
+    }
+
+    function resolveNativeClickTarget(element) {
+        if (!element) return null;
+        const closest = typeof element.closest === "function"
+            ? selector => {
+                try { return element.closest(selector); } catch (_) { return null; }
+            }
+            : () => null;
+        const candidates = [
+            closest("label"),
+            closest("[role='button']"),
+            closest("[role='switch']"),
+            closest(".custom-switch-switch"),
+            closest(".d-switch"),
+            closest(".d-checkbox"),
+            closest(".d-radio"),
+            element,
+        ].filter(Boolean);
+
+        return candidates.find(isVisibleForNativeClick) || element;
+    }
+
+    window.nativeClickElement = async function (element, options = {}) {
+        const logPrefix = options.logPrefix || "[nativeClickElement]";
+        const delayFn = getNativeInputDelay();
+        const allowJsFallback = options.allowJsFallback === true;
+        const target = options.target || resolveNativeClickTarget(element);
+
+        if (!target) {
+            return { success: false, message: "元素不存在" };
+        }
+
+        if (!window.browserAPI || typeof window.browserAPI.nativeClick !== "function") {
+            const message = "browserAPI.nativeClick 不可用";
+            console.warn(`${logPrefix} ⚠️ ${message}`);
+            if (allowJsFallback && typeof target.click === "function") {
+                target.click();
+                return { success: true, message: "已回退到 element.click", fallback: "element.click" };
+            }
+            return { success: false, message };
+        }
+
+        try {
+            if (options.scroll !== false && typeof target.scrollIntoView === "function") {
+                target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+                await delayFn(Number.isFinite(options.delayAfterScroll) ? options.delayAfterScroll : 120);
+            }
+
+            if (!isVisibleForNativeClick(target)) {
+                return { success: false, message: "元素不可见或不可点击" };
+            }
+
+            const rect = target.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const hitEl = document.elementFromPoint(x, y);
+            const hitClass = hitEl && typeof hitEl.className !== "undefined"
+                ? String(hitEl.className).substring(0, 80)
+                : "";
+
+            console.log(`${logPrefix} 🔍 nativeClick 坐标:`, x, y, "命中元素:", hitEl?.tagName, hitClass);
+            const result = await window.browserAPI.nativeClick(x, y);
+            console.log(`${logPrefix} 🔍 nativeClick 返回:`, JSON.stringify(result));
+
+            if (!result || !result.success) {
+                return {
+                    success: false,
+                    message: result?.error || "nativeClick 失败",
+                    result,
+                };
+            }
+
+            return {
+                success: true,
+                message: "点击成功",
+                result,
+                x,
+                y,
+            };
+        } catch (error) {
+            console.error(`${logPrefix} ❌ nativeClickElement 失败:`, error);
+            if (allowJsFallback && typeof target.click === "function") {
+                target.click();
+                return { success: true, message: "已回退到 element.click", fallback: error.message };
+            }
+            return { success: false, message: error.message || String(error) };
+        }
+    };
+
+    window.nativeInsertText = async function (text, options = {}) {
+        const logPrefix = options.logPrefix || "[nativeInsertText]";
+        const value = String(text ?? "");
+
+        if (!value) {
+            return { success: true, length: 0 };
+        }
+
+        if (!window.browserAPI || typeof window.browserAPI.nativeInsertText !== "function") {
+            const message = "browserAPI.nativeInsertText 不可用";
+            console.warn(`${logPrefix} ⚠️ ${message}`);
+            return { success: false, message };
+        }
+
+        try {
+            const result = await window.browserAPI.nativeInsertText(value);
+            if (!result || !result.success) {
+                return {
+                    success: false,
+                    message: result?.error || "nativeInsertText 失败",
+                    result,
+                };
+            }
+            return {
+                success: true,
+                length: result.length ?? value.length,
+                result,
+            };
+        } catch (error) {
+            console.error(`${logPrefix} ❌ nativeInsertText 失败:`, error);
+            return { success: false, message: error.message || String(error) };
+        }
+    };
+
     // 等待Shadow DOM中的元素（优化版 - 支持多选择器和重试）
     window.waitForShadowElement = function (hostSelector, shadowSelector, timeout = 30000, checkInterval = 200) {
         const startTime = Date.now();
@@ -2986,6 +3129,100 @@ if (typeof window.uploadVideo === "function"
         return { success: false, message: "所有点击尝试均失败" };
     };
 
+    window.clickWithTrustedRetry = async function (element, maxRetries = 3, delay = 300, captureMessage = false, defaultMessage = "发布成功") {
+        if (!element) {
+            console.error("[clickWithTrustedRetry] 元素不存在");
+            return { success: false, message: "元素不存在" };
+        }
+
+        const delayFn = getNativeInputDelay();
+        const successKeywords = ["成功", "提交成功", "发布成功", "上传成功"];
+        const possibleSelectors = [
+            ".cheetah-message-custom-content.cheetah-message-error span:last-child",
+            ".cheetah-message-custom-content span:last-child",
+            ".d-toast-description",
+            ".semi-toast-content-text",
+            ".ant-message-custom-content",
+            ".el-message__content",
+            ".d-message-content",
+            '[class*="toast"]',
+            '[class*="message"]',
+            '[class*="notification"]',
+            ".ant-message",
+            ".el-message",
+            ".van-toast",
+            ".semi-toast",
+            ".weui-toast",
+        ];
+
+        const readVisibleMessage = () => {
+            for (const selector of possibleSelectors) {
+                try {
+                    const elements = document.querySelectorAll(selector);
+                    for (const el of elements) {
+                        if (el && el.offsetParent !== null) {
+                            const text = (el.textContent || el.innerText || "").trim();
+                            if (text && !successKeywords.some(keyword => text.includes(keyword))) {
+                                return text;
+                            }
+                        }
+                    }
+                } catch (_) {
+                    // ignore selector errors
+                }
+            }
+            return "";
+        };
+
+        for (let i = 0; i < maxRetries; i++) {
+            if (element.offsetParent === null || element.disabled) {
+                console.log(`[clickWithTrustedRetry] 第 ${i + 1}/${maxRetries} 次尝试：按钮不可用（hidden or disabled）`);
+                if (i < maxRetries - 1) {
+                    console.log(`[clickWithTrustedRetry] 等待 ${delay}ms 后重试...`);
+                    await delayFn(delay);
+                    continue;
+                }
+                console.error("[clickWithTrustedRetry] ❌ 按钮始终不可用，所有重试失败");
+                return { success: false, message: "按钮不可用" };
+            }
+
+            try {
+                console.log(`[clickWithTrustedRetry] 第 ${i + 1}/${maxRetries} 次点击按钮`);
+                const clickResult = await window.nativeClickElement(element, {
+                    logPrefix: "[clickWithTrustedRetry]",
+                    allowJsFallback: false,
+                });
+
+                if (!clickResult.success) {
+                    throw new Error(clickResult.message || "原生点击失败");
+                }
+
+                console.log("[clickWithTrustedRetry] ✅ 点击成功");
+
+                if (captureMessage) {
+                    console.log("[clickWithTrustedRetry] ⏳ 等待提示信息出现（3秒）...");
+                    await delayFn(3000);
+                    const capturedMessage = readVisibleMessage();
+                    return {
+                        success: true,
+                        message: capturedMessage || defaultMessage,
+                    };
+                }
+
+                return { success: true, message: "点击成功" };
+            } catch (error) {
+                console.error(`[clickWithTrustedRetry] 第 ${i + 1}/${maxRetries} 次点击失败:`, error.message);
+                if (i < maxRetries - 1) {
+                    console.log(`[clickWithTrustedRetry] 等待 ${delay}ms 后重试...`);
+                    await delayFn(delay);
+                }
+            }
+        }
+
+        console.error("[clickWithTrustedRetry] ❌ 所有点击尝试均失败");
+        return { success: false, message: "所有点击尝试均失败" };
+    };
+
     // 发送成功消息并关闭窗口
     // 🔑 增加默认延迟到 2500ms，确保消息有足够时间到达 Vue 应用
     // 🔑 publish_data_window 由主进程在窗口 closed 后统一清理。
@@ -3608,6 +3845,8 @@ if (typeof downloadFile === "undefined") window.downloadFile && (downloadFile = 
 if (typeof uploadVideo === "undefined") window.uploadVideo && (uploadVideo = window.uploadVideo);
 if (typeof uploadImage === "undefined") window.uploadImage && (uploadImage = window.uploadImage);
 if (typeof setNativeValue === "undefined") window.setNativeValue && (setNativeValue = window.setNativeValue);
+if (typeof nativeClickElement === "undefined") window.nativeClickElement && (nativeClickElement = window.nativeClickElement);
+if (typeof nativeInsertText === "undefined") window.nativeInsertText && (nativeInsertText = window.nativeInsertText);
 if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);
 if (typeof deepShadowSearch === "undefined") window.deepShadowSearch && (deepShadowSearch = window.deepShadowSearch);
 if (typeof findElementInPageOrShadow === "undefined") window.findElementInPageOrShadow && (findElementInPageOrShadow = window.findElementInPageOrShadow);
@@ -3618,6 +3857,7 @@ if (typeof buildStatisticsRequestData === "undefined") window.buildStatisticsReq
 if (typeof getApiDomain === "undefined") window.getApiDomain && (getApiDomain = window.getApiDomain);
 if (typeof getStatisticsUrl === "undefined") window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === "undefined") window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
+if (typeof clickWithTrustedRetry === "undefined") window.clickWithTrustedRetry && (clickWithTrustedRetry = window.clickWithTrustedRetry);
 if (typeof closeWindowWithMessage === "undefined") window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
 if (typeof getRandomDelayMs === "undefined") window.getRandomDelayMs && (getRandomDelayMs = window.getRandomDelayMs);
 if (typeof delay === "undefined") window.delay && (delay = window.delay);
