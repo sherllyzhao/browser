@@ -1253,7 +1253,7 @@
             const startTime = Date.now();
 
             while (stableCount < 3 && Date.now() - startTime < maxWait) {
-                await new Promise(r => setTimeout(r, 500));
+                await window.delay(500);
                 if (window.location.href === lastUrl) {
                     stableCount++;
                 } else {
@@ -1309,7 +1309,7 @@
                                     }
 
                                     // 延迟执行，让React状态稳定
-                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    await window.delay(300);
 
                                     setNativeValue(titleEle, expectedValue);
 
@@ -1317,13 +1317,13 @@
                                     titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
                                     // 等待 React 更新
-                                    await new Promise(resolve => setTimeout(resolve, 200));
+                                    await window.delay(200);
 
                                     // 🔑 验证是否成功设置
                                     const verifyValue = (titleEle.value || '').trim();
 
                                     // 🔴 检查平台是否弹出了错误提示（如"标题字数已达到最大限制"）
-                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    await window.delay(300);
                                     const titleErrorMsg = getLatestError();
                                     if (titleErrorMsg) {
                                         throw Error(`[新浪发布]：标题设置失败 - ${titleErrorMsg}`);
@@ -1377,7 +1377,7 @@
                                         }
 
                                         // 延迟执行，让React状态稳定
-                                        await new Promise(resolve => setTimeout(resolve, 300));
+                                        await window.delay(300);
 
                                         setNativeValue(introEle, dataObj.video.video.intro);
 
@@ -1385,7 +1385,7 @@
                                         introEle.dispatchEvent(new Event('input', {bubbles: true}));
 
                                         // 等待 React 更新
-                                        await new Promise(resolve => setTimeout(resolve, 200));
+                                        await window.delay(200);
 
                                         // 🔑 验证是否成功设置
                                         const updatedValue = (introEle.value || '').trim();
@@ -2208,7 +2208,7 @@
                 fillFormRunning = false;
                 window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');
-            }, 10000);
+            }, window.getRandomDelayMs(10000));
         } catch (error) {
             console.error("[新浪发布] fillFormData 错误:", error);
             const publishId = dataObj?.video?.dyPlatform?.id;

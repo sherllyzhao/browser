@@ -59,7 +59,7 @@
       debugDiv.style.opacity = '0.3';
       debugDiv.style.transition = 'opacity 0.5s';
     }
-  }, 3000);
+  }, typeof window.getRandomDelayMs === "function" ? window.getRandomDelayMs(3000) : 3000 + Math.floor(Math.random() * Math.max(80, Math.round(3000 * 0.35))));
 
   // 检查 URL 参数
   const urlParams = new URLSearchParams(window.location.search);

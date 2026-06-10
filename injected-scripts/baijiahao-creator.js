@@ -261,7 +261,7 @@
                 // 统计接口成功后关闭弹窗
                 setTimeout(() => {
                   window.browserAPI.closeCurrentWindow();
-                }, 10000);
+                }, window.getRandomDelayMs(10000));
               } else {
                 throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
               }
@@ -328,7 +328,7 @@
     } catch (fallbackError) {
       console.error('[百家号授权] ❌ 本页兜底上报触发失败:', fallbackError);
     }
-  }, 8000);
+  }, window.getRandomDelayMs(8000));
 
   console.log('═══════════════════════════════════════');
   console.log('✅ 百家号授权脚本初始化完成');

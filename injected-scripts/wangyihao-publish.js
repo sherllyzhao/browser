@@ -48,7 +48,7 @@
     // 延迟执行脚本，避免在 React 渲染过程中干扰 DOM
     // ===========================
     console.log('[网易号发布] ⏳ 等待页面渲染完成...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await window.delay(1500);
     console.log('[网易号发布] ✅ 延迟完成，开始执行脚本');
 
     // 变量声明（放在防重复检查之后）
@@ -567,7 +567,7 @@
                         }
 
                         // 延迟执行，让React状态稳定
-                        await new Promise(resolve => setTimeout(resolve, 300));
+                        await window.delay(300);
 
                         const targetTitle = dataObj.video.video.title || '';
                         setNativeValue(titleEle, targetTitle);
@@ -576,7 +576,7 @@
                         titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
                         // 等待 React 更新
-                        await new Promise(resolve => setTimeout(resolve, 200));
+                        await window.delay(200);
 
                         // 🔑 验证是否成功设置
                         const currentValue = (titleEle.value || '').trim();
@@ -737,7 +737,7 @@
 
                                 // 让编辑器获得焦点
                                 editorEle.focus();
-                                await new Promise(resolve => setTimeout(resolve, 300));
+                                await window.delay(300);
 
                                 // 🔑 关键：不要清空编辑器！让 Draft.js 自己处理
                                 // 只通过粘贴事件插入内容（追加到现有内容后面）
@@ -761,7 +761,7 @@
                                 console.log('[网易号发布] ✅ 已触发粘贴事件');
 
                                 // 等待 Draft.js 处理粘贴内容
-                                await new Promise(resolve => setTimeout(resolve, 1000));
+                                await window.delay(1000);
 
                                 console.log('[网易号发布] ✅ 内容填写完成');
                                 contentFilled = true;
@@ -771,7 +771,7 @@
                             } finally {
                                 resolve(contentFilled);
                             }
-                        }, 200);
+                        }, window.getRandomDelayMs(200));
                     });
                 } catch (e) {
                     console.log('[网易号发布] ❌ 内容填写失败:', e.message)
@@ -860,7 +860,7 @@
                                     }
                                 }
                             }
-                        }, 300); // 每 300ms 扫描一次
+                        }, window.getRandomDelayMs(300)); // 每 300ms 扫描一次
 
                         console.log('[网易号发布] ✅ 全局错误监听器已启动');
                     };
@@ -1461,9 +1461,9 @@
                                     // 启动上传检测（延迟2秒等待上传开始）
                                     setTimeout(async () => {
                                         await tryUploadImage(0);
-                                    }, 2000);
-                                }, 1000);
-                            }, 2000);
+                                    }, window.getRandomDelayMs(2000));
+                                }, window.getRandomDelayMs(1000));
+                            }, window.getRandomDelayMs(2000));
                         } catch (error) {
                             console.log('[网易号发布] ❌ 封面下载失败:', error);
                             stopErrorListener();
@@ -1478,7 +1478,7 @@
 
                 fillFormRunning = false;
                 // alert('Automation process completed');
-            }, 10000);
+            }, window.getRandomDelayMs(10000));
 
         } catch (error) {
             // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）

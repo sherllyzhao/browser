@@ -73,7 +73,7 @@ let hasProcessed = false;
     } else {
       console.log('[抖音发布] ✅ common.js 已完整加载，所有工具函数可用');
     }
-  }, 100); // 延迟 100ms 检查
+  }, window.getRandomDelayMs(100)); // 延迟 100ms 检查
 
   // ===========================
   // 1. 从 URL 获取发布数据
@@ -703,7 +703,7 @@ async function fillFormData(dataObj) {
       }
 
       // 延迟执行，让React状态稳定
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await window.delay(300);
 
       // 使用setNativeValue设置值
       const targetTitle = titleAndIntro.title || '';
@@ -713,7 +713,7 @@ async function fillFormData(dataObj) {
       titleInput.dispatchEvent(new Event('input', {bubbles: true}));
 
       // 等待 React 更新
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await window.delay(200);
 
       // 🔑 验证是否成功设置（清除前后空格后比较）
       const currentValue = (titleInput.value || '').trim();
@@ -741,7 +741,7 @@ async function fillFormData(dataObj) {
             setNativeValue(scheduledPublish, true);
 
             // 设置日期时间
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await window.delay(500);
             const dateInput = await waitForElement('.date-picker-ioPchj input', 3000);
 
             // 多次设置确保生效
@@ -749,7 +749,7 @@ async function fillFormData(dataObj) {
               if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
                 break;
               }
-              await new Promise(resolve => setTimeout(resolve, 300));
+              await window.delay(300);
             }
           }
         } catch (error) {
@@ -835,7 +835,7 @@ async function fillFormData(dataObj) {
             }
 
             // 延迟执行，让React状态稳定
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await window.delay(300);
 
             // 使用简单的方式填充内容
             const lines = cleanedText.split('\n').filter(line => line.trim());
@@ -858,7 +858,7 @@ async function fillFormData(dataObj) {
             introInput.dispatchEvent(new Event('input', {bubbles: true}));
 
             // 延迟后检查编辑器是否自动添加了额外内容
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await window.delay(100);
             // alert('After input event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
 
             // 清理所有空的 ace-line 元素（编辑器可能在开头自动添加）
@@ -948,7 +948,7 @@ async function fillFormData(dataObj) {
                         if (retryCount % 10 === 0) {
                           console.log('🏷️ 重试', retryCount, '次，当前DOM:', mentionSuggest.innerHTML.substring(0, 500));
                         }
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        await window.delay(100);
                         retryCount++;
                       }
                     }
@@ -956,7 +956,7 @@ async function fillFormData(dataObj) {
                     if (firstOption) {
                       // 确保元素可见
                       firstOption.scrollIntoView({ block: 'nearest' });
-                      await new Promise(resolve => setTimeout(resolve, 100));
+                      await window.delay(100);
 
                       // 尝试多种点击方式
                       console.log('🏷️ 准备点击话题选项');
@@ -967,22 +967,22 @@ async function fillFormData(dataObj) {
                       const clickY = rect.top + rect.height / 2;
 
                       firstOption.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: clickX, clientY: clickY }));
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await window.delay(50);
 
                       firstOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: clickX, clientY: clickY }));
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await window.delay(50);
 
                       firstOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: clickX, clientY: clickY }));
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await window.delay(50);
 
                       firstOption.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: clickX, clientY: clickY }));
 
                       // 方式2: 原生点击（作为兜底）
-                      await new Promise(resolve => setTimeout(resolve, 50));
+                      await window.delay(50);
                       firstOption.click();
 
                       console.log('🏷️ 已点击话题选项');
-                      await new Promise(resolve => setTimeout(resolve, 500));
+                      await window.delay(500);
                     } else {
                       console.log('🏷️ 未找到话题选项（已重试', retryCount, '次）');
                       console.log('🏷️ 完整DOM:', mentionSuggest.innerHTML);
@@ -995,7 +995,7 @@ async function fillFormData(dataObj) {
             }
 
             // 延迟后触发blur事件
-            await new Promise(resolve => setTimeout(resolve, 200));
+            await window.delay(200);
             if (typeof introInput.blur === 'function') {
               introInput.blur();
             } else {
@@ -1003,7 +1003,7 @@ async function fillFormData(dataObj) {
             }
 
             // 最后再检查一次
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await window.delay(100);
             // alert('After blur event:\nHTML: ' + JSON.stringify(introInput.innerHTML) + '\nText: ' + JSON.stringify(introInput.textContent));
 
             // alert('✅ Intro filled successfully');
@@ -1067,19 +1067,19 @@ async function fillFormData(dataObj) {
 
         // 完整的鼠标事件序列
         coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await window.delay(50);
 
         coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await window.delay(50);
 
         coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await window.delay(50);
 
         coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
 
         console.log('[封面设置] ✅ 已触发完整点击事件序列');
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await window.delay(1000);
 
         // 尝试查找并确认弹窗（如果没有弹窗也没关系）
         try {
@@ -1096,7 +1096,7 @@ async function fillFormData(dataObj) {
     }
 
     // 等待表单填写完成
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await window.delay(5000);
 
     // 直接调用发布（封面检测移到 publishApi 中，在视频上传完成后进行）
     await publishApi(dataObj);

@@ -378,7 +378,7 @@
           }
 
           // 延迟执行，让React状态稳定
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await window.delay(300);
 
           const targetTitle = dataObj.video.video.title || '';
           setNativeValue(titleEle, targetTitle);
@@ -387,7 +387,7 @@
           titleEle.dispatchEvent(new Event('input', { bubbles: true }));
 
           // 等待 React 更新
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await window.delay(200);
 
           // 🔑 验证是否成功设置
           const currentValue = (titleEle.value || '').trim();
@@ -426,7 +426,7 @@
                 const editorIframeEle = document.querySelector("iframe");
 
                 // 🔑 等待 iframe 完全加载（增加到 1 秒）
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await window.delay(1000);
 
                 const iframeWin = editorIframeEle.contentWindow;
                 if (!iframeWin) {
@@ -439,7 +439,7 @@
                 }
 
                 // 🔑 额外等待编辑器初始化（增加到 1 秒）
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await window.delay(1000);
 
                 const editorEle = iframeDoc.querySelector(".news-editor-pc");
                 if (!editorEle) {
@@ -502,7 +502,7 @@
 
                 // 🔑 直接 innerHTML 赋值（最稳，paste 事件会被编辑器拦截清洗导致内容丢失）
                 editorEle.focus();
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await window.delay(100);
                 editorEle.innerHTML = htmlContent;
 
                 // 把光标移到末尾，让编辑器认为是用户操作完成
@@ -526,7 +526,7 @@
             } catch (e) {
               console.log('[百家号发布] ❌ 内容填写失败:', e.message);
             }
-          }, 200);
+          }, window.getRandomDelayMs(200));
 
           // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
           startErrorListener();
@@ -940,11 +940,11 @@
                         // 启动上传检测（延迟2秒等待上传开始）
                         setTimeout(async () => {
                           await tryUploadImage(0);
-                        }, 2000);
+                        }, window.getRandomDelayMs(2000));
                       }
-                    }, 1000);
-                }, 2000);
-              }, 1000);
+                    }, window.getRandomDelayMs(1000));
+                }, window.getRandomDelayMs(2000));
+              }, window.getRandomDelayMs(1000));
             } catch (error) {
               console.log('[百家号发布] ❌ 封面下载失败:', error);
               stopErrorListener();
@@ -959,7 +959,7 @@
 
         fillFormRunning = false;
         // alert('Automation process completed');
-      }, 10000);
+      }, window.getRandomDelayMs(10000));
 
     } catch (error) {
       // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
@@ -1095,7 +1095,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
         selectTrigger.dispatchEvent(new Event('mousedown', { bubbles: true }));
 
         // 等待下拉出现 - 增加等待时间到 2000ms
-        await new Promise(r => setTimeout(r, 2000));
+        await window.delay(2000);
 
         // 2. 查找虚拟列表容器（可能有多个位置）
         const startTime = Date.now();
@@ -1128,7 +1128,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
               // 滚动到最顶部
               virtualList[targetIndex].scrollTo(0, 0);
-              await new Promise(r => setTimeout(r, 500)); // 🔑 增加等待时间到 500ms
+              await window.delay(500); // 🔑 增加等待时间到 500ms
 
                 options = allOptions.filter(el => el.offsetParent !== null);
 
@@ -1142,7 +1142,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
                 console.log('[百家号发布] ⏳ 虚拟列表还未出现，等待中...');
             }
 
-            await new Promise(r => setTimeout(r, 200));
+            await window.delay(200);
         }
 
         if (options.length === 0) {
@@ -1189,7 +1189,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
             // 向下滚动
             virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 300)); // 🔑 增加等待时间到 300ms
+            await window.delay(300); // 🔑 增加等待时间到 300ms
         }
 
         if (!foundOption) {
@@ -1200,14 +1200,14 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
         // 4. 滚动到视图并点击
         foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 500)); // 🔑 增加等待时间到 500ms
+        await window.delay(500); // 🔑 增加等待时间到 500ms
 
         console.log('[百家号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
         console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
         foundOption.querySelector('.cheetah-select-item-option-content').dispatchEvent(new Event('click', { bubbles: true }));
 
         // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 800)); // 🔑 增加等待时间到 800ms
+        await window.delay(800); // 🔑 增加等待时间到 800ms
 
         console.log('[百家号发布] ✅ 选项选择完成');
         return true;
@@ -1261,7 +1261,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
             return false;
         }
 
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         const hourText = `${hour}点`;
         console.log('[百家号发布] 🕐 选择小时:', hourText);
@@ -1269,7 +1269,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
             return false;
         }
 
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         const minuteText = `${minute}分`;
         console.log('[百家号发布] ⏱️ 选择分钟:', minuteText);

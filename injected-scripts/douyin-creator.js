@@ -258,7 +258,7 @@
                 // 统计接口成功后关闭弹窗
                 setTimeout(() => {
                   window.browserAPI.closeCurrentWindow();
-                }, 10000);
+                }, window.getRandomDelayMs(10000));
               } else {
                 throw new Error(apiResult.msg || apiResult.message || 'Data collection failed');
               }
@@ -326,7 +326,7 @@
       console.log('[抖音授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
       console.log('[抖音授权] 🔄 准备自动跳转到发布页...');
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await window.delay(1000);
 
       const publishUrl = 'https://creator.douyin.com/creator-micro/content/upload';
       console.log('[抖音授权] 🔗 跳转到发布页:', publishUrl);
@@ -334,7 +334,7 @@
     } catch (error) {
       console.error('[抖音授权] ❌ 检查发布数据失败:', error);
     }
-  }, 2000);
+  }, window.getRandomDelayMs(2000));
 
 })();
 

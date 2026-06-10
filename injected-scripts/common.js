@@ -954,7 +954,7 @@ if (typeof window.uploadVideo === "function"
                 const waitTime = delay * attempt;
                 // alert(`🔄 RETRYING... (${attempt}/${maxRetries})
                 // Waiting ${waitTime}ms before next attempt`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
+                await window.delay(waitTime);
             }
         }
     };
@@ -1004,6 +1004,7 @@ if (typeof window.uploadVideo === "function"
                 inputElement.dispatchEvent(inputEvent);
             }
 
+            await window.delay(80);
             return true;
         } catch (error) {
             //alert('File upload failed: ' + error.message);
@@ -1340,7 +1341,7 @@ if (typeof window.uploadVideo === "function"
         await uploadFileToInput(uploadInput, file);
 
         // 等待上传完成并填写表单
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await window.delay(3000);
     };
 
     // 上传图片到input元素
@@ -1461,7 +1462,7 @@ if (typeof window.uploadVideo === "function"
         await uploadFileToInput(uploadInput, file);
 
         // 等待上传完成并填写表单
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await window.delay(3000);
     };
 
     /* 给react的input、checkbox、radio赋值 */
@@ -2753,7 +2754,7 @@ if (typeof window.uploadVideo === "function"
                 console.log(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次尝试：按钮不可用（hidden or disabled）`);
                 if (i < maxRetries - 1) {
                     console.log(`[clickWithRetry] 等待 ${delay}ms 后重试...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
+                    await window.delay(delay);
                     continue;
                 } else {
                     console.error("[clickWithRetry] ❌ 按钮始终不可用，所有重试失败");
@@ -2898,7 +2899,7 @@ if (typeof window.uploadVideo === "function"
                 // 如果需要捕获提示信息，等待提示出现
                 if (captureMessage) {
                     console.log("[clickWithRetry] ⏳ 等待提示信息出现（3秒）...");
-                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await window.delay(3000);
 
                     // 停止监听
                     if (messageObserver) {
@@ -2976,7 +2977,7 @@ if (typeof window.uploadVideo === "function"
                 console.error(`[clickWithRetry] 第 ${i + 1}/${maxRetries} 次点击失败:`, e.message);
                 if (i < maxRetries - 1) {
                     console.log(`[clickWithRetry] 等待 ${delay}ms 后重试...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
+                    await window.delay(delay);
                 }
             }
         }
@@ -2994,11 +2995,11 @@ if (typeof window.uploadVideo === "function"
         window.sendMessageToParent(message);
 
         // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await window.delay(500);
 
         if (delay > 0) {
             console.log(`[closeWindow] 等待 ${delay}ms 确保消息到达...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await window.delay(delay);
         }
 
         // 开发环境下跳过关闭窗口，方便测试（旧版浏览器未暴露 isProduction，按生产环境处理）
@@ -3018,10 +3019,20 @@ if (typeof window.uploadVideo === "function"
         }
     };
 
-    // 延迟执行（Promise 包装的 setTimeout）
-    window.delay = function (ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+    // 延迟执行（带随机抖动的 Promise 包装 setTimeout）
+    window.getRandomDelayMs = function (ms, jitterMs) {
+        const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+        const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
+        const resolvedJitterMs = hasCustomJitter
+            ? Math.max(0, Math.floor(Number(jitterMs)))
+            : Math.max(80, Math.round(baseMs * 0.35));
+        return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
     };
+    window.delay = function (ms, jitterMs) {
+        const actualMs = window.getRandomDelayMs(ms, jitterMs);
+        return new Promise(resolve => setTimeout(resolve, actualMs));
+    };
+    window.randomDelay = window.delay;
 
     // ===========================
     // 🔴 通用错误监听器工厂函数
@@ -3534,7 +3545,7 @@ if (typeof window.uploadVideo === "function"
     };
 
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, findElementInPageOrShadow, sendStatistics, clickWithRetry, closeWindowWithMessage, delay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, findElementInPageOrShadow, sendStatistics, clickWithRetry, closeWindowWithMessage, getRandomDelayMs, delay, randomDelay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -3608,7 +3619,9 @@ if (typeof getApiDomain === "undefined") window.getApiDomain && (getApiDomain = 
 if (typeof getStatisticsUrl === "undefined") window.getStatisticsUrl && (getStatisticsUrl = window.getStatisticsUrl);
 if (typeof clickWithRetry === "undefined") window.clickWithRetry && (clickWithRetry = window.clickWithRetry);
 if (typeof closeWindowWithMessage === "undefined") window.closeWindowWithMessage && (closeWindowWithMessage = window.closeWindowWithMessage);
+if (typeof getRandomDelayMs === "undefined") window.getRandomDelayMs && (getRandomDelayMs = window.getRandomDelayMs);
 if (typeof delay === "undefined") window.delay && (delay = window.delay);
+if (typeof randomDelay === "undefined") window.randomDelay && (randomDelay = window.randomDelay);
 if (typeof createErrorListener === "undefined") window.createErrorListener && (createErrorListener = window.createErrorListener);
 if (typeof ERROR_LISTENER_CONFIGS === "undefined") window.ERROR_LISTENER_CONFIGS && (ERROR_LISTENER_CONFIGS = window.ERROR_LISTENER_CONFIGS);
 if (typeof parseMessageData === "undefined") window.parseMessageData && (parseMessageData = window.parseMessageData);

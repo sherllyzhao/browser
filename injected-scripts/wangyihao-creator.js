@@ -345,7 +345,7 @@
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
                                             window.browserAPI.closeCurrentWindow();
-                                        }, 10000);
+                                        }, window.getRandomDelayMs(10000));
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }
@@ -424,7 +424,7 @@
                     console.log('[网易号授权] 🔄 准备自动跳转到发布页...');
 
                     // 等待页面完全加载
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await window.delay(1000);
 
                     // 网易号发布页是 SPA 的 hash 路由，直接修改 hash 即可跳转
                     const publishHash = '#/article-publish';
@@ -438,7 +438,7 @@
         } catch (error) {
             console.error('[网易号授权] ❌ 检查发布数据失败:', error);
         }
-    }, 2000); // 延迟2秒，等待页面完全加载
+    }, window.getRandomDelayMs(2000)); // 延迟2秒，等待页面完全加载
 
 })();
 

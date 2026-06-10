@@ -137,7 +137,7 @@ let hasProcessed = false;
     } catch (e) {
       console.error(`${__LOG_PREFIX__} 🛡 [复检 T+8s] 执行异常:`, e);
     }
-  }, 8000);
+  }, window.getRandomDelayMs(8000));
 
   setTimeout(() => {
     try {
@@ -145,7 +145,7 @@ let hasProcessed = false;
     } catch (e) {
       console.error(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 执行异常:`, e);
     }
-  }, 18000);
+  }, window.getRandomDelayMs(18000));
 
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
@@ -193,7 +193,7 @@ let hasProcessed = false;
   const getPublishDataKey = () => `SHIPINHAO_PUBLISH_DATA_${currentWindowId || 'default'}`;
   const getPublishUrlKey = () => `SHIPINHAO_PUBLISH_URL_${currentWindowId || 'default'}`;
 
-  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const sleep = (ms) => window.delay(ms);
 
   async function waitForUploadCompleteBeforeForm(tag = '上传后填表前') {
     const timeoutMs = 5 * 60 * 1000;
@@ -439,7 +439,7 @@ let hasProcessed = false;
                               //alert(`找到上传按钮: ${selector}`);
                               uploadButton.click();
                               uploadButtonClicked = true;
-                              await new Promise(resolve => setTimeout(resolve, 1000));
+                              await window.delay(1000);
                               break;
                             }
                           } catch (error) {
@@ -494,7 +494,7 @@ let hasProcessed = false;
                         if (retryCount < maxRetries) {
                           // alert(`🔄 RETRYING... (${retryCount}/${maxRetries})
                           // Waiting 2 seconds before next attempt`);
-                          await new Promise(resolve => setTimeout(resolve, 2000)); // 重试前等待2秒
+                          await window.delay(2000); // 重试前等待2秒
                         } else {
                           // alert(`❌ MAX RETRIES REACHED
                           // Failed to find upload input after ${maxRetries} attempts`);
@@ -805,7 +805,7 @@ let hasProcessed = false;
       }
       isProcessing = false;
     }
-  }, 2000); // 延迟2秒，等待页面完全加载
+  }, window.getRandomDelayMs(2000)); // 延迟2秒，等待页面完全加载
 
 })();
 
@@ -1042,7 +1042,7 @@ async function waitForShipinhaoPublishButton(options = {}) {
     if (retryCount === 1 || retryCount % 5 === 0) {
       console.log(`[视频号发布] ⏳ ${label}仍不可用，继续等待... (${retryCount})`, collectShipinhaoFormDiagnostics());
     }
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await window.delay(intervalMs);
   }
 
   throw new Error(`${label}等待超时: ${JSON.stringify(collectShipinhaoFormDiagnostics())}`);
@@ -1342,7 +1342,7 @@ async function fillFormData(dataObj) {
           }
 
           // 延迟执行，让React状态稳定
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await window.delay(300);
 
           // 清空现有内容，避免累积
           introInput.innerHTML = '';
@@ -1379,7 +1379,7 @@ async function fillFormData(dataObj) {
           }
 
           // 等待内容设置完成
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await window.delay(100);
 
           // 触发完整的事件序列（关键！）
           // beforeinput事件
@@ -1407,7 +1407,7 @@ async function fillFormData(dataObj) {
           introInput.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: titleAndIntro.intro || '' }));
 
           // 再次触发input事件确保React捕获到变化
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await window.delay(100);
           introInput.dispatchEvent(new InputEvent('input', {
             bubbles: true,
             cancelable: true,
@@ -1416,7 +1416,7 @@ async function fillFormData(dataObj) {
           }));
 
           // 延迟后触发blur事件
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await window.delay(300);
           if (typeof introInput.blur === 'function') {
             introInput.blur();
           } else {
@@ -1424,7 +1424,7 @@ async function fillFormData(dataObj) {
           }
 
           // 最后再延迟确保所有事件都被处理
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await window.delay(200);
 
           // 🔑 验证是否成功设置
           const updatedContent = (introInput.textContent || introInput.innerText || '').trim();
@@ -1461,7 +1461,7 @@ async function fillFormData(dataObj) {
         }
 
         // 延迟执行，让React状态稳定（关键！）
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await window.delay(300);
 
         const targetTitle = normalizeShipinhaoShortTitle(titleAndIntro.title, titleAndIntro.intro);
         setNativeValue(titleInput, targetTitle);
@@ -1470,7 +1470,7 @@ async function fillFormData(dataObj) {
         titleInput.dispatchEvent(new Event('input', { bubbles: true }));
 
         // 等待 React 更新
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await window.delay(200);
 
         // 🔑 验证是否成功设置
         const currentValue = (titleInput.value || '').trim();
@@ -1498,7 +1498,7 @@ async function fillFormData(dataObj) {
           setNativeValue(scheduleRadio, true);
 
           // 设置日期时间
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await window.delay(500);
           const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
 
           // 多次设置确保生效
@@ -1506,7 +1506,7 @@ async function fillFormData(dataObj) {
             if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
               break;
             }
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await window.delay(300);
           }
 
           console.log('[视频号发布] ✅ 定时发布时间设置成功');
@@ -1518,7 +1518,7 @@ async function fillFormData(dataObj) {
 
     // 等待表单填写完成（初始等待增加到8秒）
     console.log('[视频号发布] ⏳ 等待表单验证（8秒）...');
-    await new Promise(resolve => setTimeout(resolve, 8000));
+    await window.delay(8000);
 
     // 发布按钮预检只做诊断，不在填表阶段直接判失败；真正等待放到 publishApi。
     console.log('[视频号发布] 🔍 预检发布按钮状态...');

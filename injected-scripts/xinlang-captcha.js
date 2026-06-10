@@ -12,7 +12,7 @@
     function showBanner() {
         // 确保 body 存在
         if (!document.body) {
-            setTimeout(showBanner, 100);
+            setTimeout(showBanner, typeof window.getRandomDelayMs === "function" ? window.getRandomDelayMs(100) : 100 + Math.floor(Math.random() * Math.max(80, Math.round(100 * 0.35))));
             return;
         }
 

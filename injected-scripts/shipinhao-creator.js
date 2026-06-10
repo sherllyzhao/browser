@@ -274,7 +274,7 @@
 
             const nicknameEle = document.querySelector('.finder-nickname');
             if (!nicknameEle || !nicknameEle.innerText) {
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              await window.delay(2000);
             }
 
             // 收集用户信息
@@ -405,7 +405,7 @@
               }
 
               sendMessageToParent('授权成功，刷新数据');
-              setTimeout(() => window.browserAPI.closeCurrentWindow(), 10000);
+              setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
             } else {
               throw new Error((apiResult && (apiResult.msg || apiResult.message)) || '后台失败且本地登录态迁移失败');
             }
@@ -477,7 +477,7 @@
 
         // 🔑 增加等待时间，确保登录状态完全生效（从 1 秒增加到 3 秒）
         console.log('[视频号授权] ⏳ 等待 3 秒，确保登录状态完全生效...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await window.delay(3000);
 
         // 🔑 优先使用保存的发布页 URL 直接跳转（更可靠，保留 URL 参数）
         if (savedPublishUrl && savedPublishUrl.includes('/platform/post/create')) {
@@ -507,7 +507,7 @@
     } catch (error) {
       console.error('[视频号授权] ❌ 检查发布数据失败:', error);
     }
-  }, 2000); // 延迟2秒，等待页面完全加载
+  }, window.getRandomDelayMs(2000)); // 延迟2秒，等待页面完全加载
 
 })();
 

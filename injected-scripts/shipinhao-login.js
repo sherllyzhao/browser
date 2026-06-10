@@ -405,9 +405,9 @@
         lastUrl = window.location.href;
         console.log('[Shipinhao Login] URL 已变化:', lastUrl);
         scheduleShipinhaoCookieDedupe('url-change');
-        setTimeout(detectLoginSuccess, 1000);
+        setTimeout(detectLoginSuccess, window.getRandomDelayMs(1000));
       }
-    }, 500);
+    }, window.getRandomDelayMs(500));
 
     // 方法2：监听 DOM 变化
     const observer = new MutationObserver(() => {
@@ -447,7 +447,7 @@
     setupLoginMonitor();
 
     // 检查当前是否已登录
-    setTimeout(detectLoginSuccess, 2000);
+    setTimeout(detectLoginSuccess, window.getRandomDelayMs(2000));
 
     console.log('[Shipinhao Login] ✅ 初始化完成');
   }

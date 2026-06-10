@@ -512,7 +512,7 @@
                         }
 
                         // 延迟执行，让React状态稳定
-                        await new Promise(resolve => setTimeout(resolve, 300));
+                        await window.delay(300);
 
                         const targetTitle = dataObj.video.video.title || '';
                         setNativeValue(titleEle, targetTitle);
@@ -521,7 +521,7 @@
                         titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
                         // 等待 React 更新
-                        await new Promise(resolve => setTimeout(resolve, 200));
+                        await window.delay(200);
 
                         // 🔑 验证是否成功设置
                         const currentValue = (titleEle.value || '').trim();
@@ -571,7 +571,7 @@
                             }
 
                             // 延迟执行，让React状态稳定
-                            await new Promise(resolve => setTimeout(resolve, 300));
+                            await window.delay(300);
 
                             setNativeValue(introEle, dataObj.video.video.intro);
 
@@ -579,7 +579,7 @@
                             introEle.dispatchEvent(new Event('input', { bubbles: true }));
 
                             // 等待 React 更新
-                            await new Promise(resolve => setTimeout(resolve, 200));
+                            await window.delay(200);
 
                             // 🔑 验证是否成功设置
                             const updatedValue = (introEle.value || '').trim();
@@ -679,14 +679,14 @@
                                 editorEle.dispatchEvent(pasteEvent);
 
                                 // 等待编辑器处理粘贴事件
-                                await new Promise(resolve => setTimeout(resolve, 800));
+                                await window.delay(800);
 
                                 console.log('[搜狐号发布] ✅ 内容填写完成');
                             }, 3, 1000);
                         } catch (e) {
                             console.log('[搜狐号发布] ❌ 内容填写失败:', e.message);
                         }
-                    }, 200);
+                    }, window.getRandomDelayMs(200));
                 } catch (e) {
                     console.log('[搜狐号发布] ❌ 内容填写失败:', e.message)
                 }
@@ -1072,11 +1072,11 @@
                                             // 启动上传检测（延迟2秒等待上传开始）
                                             setTimeout(async () => {
                                                 await tryUploadImage(0);
-                                            }, 2000);
+                                            }, window.getRandomDelayMs(2000));
                                         }
-                                    }, 1000);
-                                }, 2000);
-                            }, 1000);
+                                    }, window.getRandomDelayMs(1000));
+                                }, window.getRandomDelayMs(2000));
+                            }, window.getRandomDelayMs(1000));
                         } catch (error) {
                             console.log('[搜狐号发布] ❌ 封面下载失败:', error);
                             stopErrorListener();
@@ -1091,7 +1091,7 @@
 
                 fillFormRunning = false;
                 // alert('Automation process completed');
-            }, 10000);
+            }, window.getRandomDelayMs(10000));
 
         } catch (error) {
             // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
@@ -1283,7 +1283,7 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
         selectTrigger.click();
 
         // 等待下拉出现
-        await new Promise(r => setTimeout(r, 500));
+        await window.delay(500);
 
         // 2. 查找虚拟列表容器（可能有多个位置）
         const startTime = Date.now();
@@ -1305,7 +1305,7 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
                 }
             }
 
-            await new Promise(r => setTimeout(r, 100));
+            await window.delay(100);
         }
 
         if (options.length === 0) {
@@ -1336,13 +1336,13 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
 
         // 4. 滚动到视图并点击
         foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-        await new Promise(r => setTimeout(r, 200));
+        await window.delay(200);
 
         console.log('[搜狐号发布] 🖱️ 点击选项:', foundOption.textContent.trim());
         foundOption.click();
 
         // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         console.log('[搜狐号发布] ✅ 选项选择完成');
         return true;
@@ -1396,7 +1396,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
             return false;
         }
 
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         const hourText = `${hour}`;
         console.log('[搜狐号发布] 🕐 选择小时:', hourText);
@@ -1404,7 +1404,7 @@ async function selectScheduledTime(dateIndex, hour, minute) {
             return false;
         }
 
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         const minuteText = `${minute}`;
         console.log('[搜狐号发布] ⏱️ 选择分钟:', minuteText);

@@ -430,7 +430,7 @@
                                         // 统计接口成功后关闭弹窗
                                         setTimeout(() => {
                                             window.browserAPI.closeCurrentWindow();
-                                        }, 10000);
+                                        }, window.getRandomDelayMs(10000));
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }
@@ -508,7 +508,7 @@
             console.log('[腾讯号授权] ✅ 检测到发布数据，这是从发布流程登录后跳回来的');
             console.log('[腾讯号授权] 🔄 准备自动跳转到发布页...');
 
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await window.delay(1000);
 
             const publishUrl = 'https://om.qq.com/main/creation/article';
             console.log('[腾讯号授权] 🔗 跳转到发布页:', publishUrl);
@@ -516,7 +516,7 @@
         } catch (error) {
             console.error('[腾讯号授权] ❌ 检查发布数据失败:', error);
         }
-    }, 2000);
+    }, window.getRandomDelayMs(2000));
 
 })();
 

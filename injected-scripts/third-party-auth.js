@@ -161,9 +161,9 @@
         setTimeout(() => {
           console.log('[第三方授权] 准备关闭窗口');
           window.close();
-        }, 2000);
+        }, typeof window.getRandomDelayMs === "function" ? window.getRandomDelayMs(2000) : 2000 + Math.floor(Math.random() * Math.max(80, Math.round(2000 * 0.35))));
       }
-    }, 500);
+    }, typeof window.getRandomDelayMs === "function" ? window.getRandomDelayMs(500) : 500 + Math.floor(Math.random() * Math.max(80, Math.round(500 * 0.35))));
   });
 
   // ===========================

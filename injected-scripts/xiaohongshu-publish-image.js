@@ -69,7 +69,7 @@ if (location.search.includes("published=true")) {
             } else {
                 console.log("[小红书发布] ✅ common.js 已完整加载，所有工具函数可用");
             }
-        }, 100); // 延迟 100ms 检查
+        }, window.getRandomDelayMs(100)); // 延迟 100ms 检查
 
         // ===========================
         // 1. 从 URL 获取发布数据
@@ -1219,7 +1219,7 @@ if (location.search.includes("published=true")) {
                     }
 
                     // 延迟执行，让React状态稳定
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await window.delay(200);
 
                     // 使用setNativeValue设置值
                     setNativeValue(titleInput, titleAndIntro.title || "");
@@ -1350,7 +1350,7 @@ if (location.search.includes("published=true")) {
                                         }
 
                                         if (!firstOption) {
-                                            await new Promise(resolve => setTimeout(resolve, 100));
+                                            await window.delay(100);
                                             retryCount++;
                                         }
                                     }
@@ -1358,7 +1358,7 @@ if (location.search.includes("published=true")) {
                                     if (firstOption) {
                                         firstOption.click();
                                         console.log("🏷️ 已点击话题选项");
-                                        await new Promise(resolve => setTimeout(resolve, 200));
+                                        await window.delay(200);
                                     } else {
                                         console.log("🏷️ 未找到话题选项（已重试", retryCount, "次），列表内容:", topicSuggest.innerHTML.substring(0, 500));
                                     }
@@ -1379,13 +1379,13 @@ if (location.search.includes("published=true")) {
             const publishTime = dataObj.video.formData.send_set;
             if (+publishTime === 2) {
                 try {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await window.delay(1000);
                     // 定时发布
                     const scheduleRadio = await waitForElement(".publish-page-content-settings-content .post-time-switch-container .custom-switch-switch [type='checkbox']", 3000);
                     setNativeValue(scheduleRadio, true);
 
                     // 设置日期时间
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await window.delay(1000);
                     const sendTime = dataObj.video?.formData?.send_time;
                     const publishId = dataObj.video.dyPlatform.id;
                     const timeSelectSuccess = await selectScheduledTime(sendTime, publishId);
@@ -1407,7 +1407,7 @@ if (location.search.includes("published=true")) {
             }
 
             // 等待表单填写完成
-            await new Promise(resolve => setTimeout(resolve, 6000));
+            await window.delay(6000);
 
             const latestTitleInput = await waitForElement(".d-input-wrapper .d-input input", 5000);
             const latestTitle = normalizeEditorTextSafe(latestTitleInput?.value || "");

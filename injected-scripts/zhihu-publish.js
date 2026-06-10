@@ -875,7 +875,7 @@
                     }
 
                     // 延迟执行，让React状态稳定
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await window.delay(300);
 
                     const targetTitle = dataObj.video.video.title || '';
                     setNativeValue(titleEle, targetTitle);
@@ -884,7 +884,7 @@
                     titleEle.dispatchEvent(new Event('input', { bubbles: true }));
 
                     // 等待 React 更新
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await window.delay(200);
 
                     // 🔑 验证是否成功设置
                     const currentValue = (titleEle.value || '').trim();
@@ -959,7 +959,7 @@
                         } catch (e) {
                             console.log('[知乎发布] ❌ 内容填写失败:', e.message);
                         }
-                    }, 200);
+                    }, window.getRandomDelayMs(200));
                 } catch (e) {
                     console.log('[知乎发布] ❌ 内容填写失败:', e.message)
                 }
@@ -1245,10 +1245,10 @@
                                     // 启动上传检测（延迟2秒等待上传开始）
                                     setTimeout(async () => {
                                         await tryUploadImage(0);
-                                    }, 2000);
-                                }, 1000);
-                            }, 2000);
-                        }, 1000);
+                                    }, window.getRandomDelayMs(2000));
+                                }, window.getRandomDelayMs(1000));
+                            }, window.getRandomDelayMs(2000));
+                        }, window.getRandomDelayMs(1000));
                     } catch (error) {
                         console.log("[知乎发布] ❌ 封面下载失败:", error);
                         stopErrorListener();
@@ -1262,7 +1262,7 @@
 
                 fillFormRunning = false;
                 // alert('Automation process completed');
-            }, 10000);
+            }, window.getRandomDelayMs(10000));
         } catch (error) {
             // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
             console.error("[知乎发布] fillFormData 错误:", error);
@@ -1306,7 +1306,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
         selectTrigger.dispatchEvent(new Event("mousedown", { bubbles: true }));
 
         // 等待下拉出现 - 增加等待时间到 1000ms
-        await new Promise(r => setTimeout(r, 1000));
+        await window.delay(1000);
 
         // 2. 查找虚拟列表容器（可能有多个位置）
         const startTime = Date.now();
@@ -1334,7 +1334,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
                 // 滚动到最顶部
                 virtualList[targetIndex].scrollTo(0, 0);
-                await new Promise(r => setTimeout(r, 300));
+                await window.delay(300);
 
                 options = allOptions.filter(el => el.offsetParent !== null);
 
@@ -1348,7 +1348,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
                 console.log("[知乎发布] ⏳ 虚拟列表还未出现，等待中...");
             }
 
-            await new Promise(r => setTimeout(r, 200));
+            await window.delay(200);
         }
 
         if (options.length === 0) {
@@ -1393,7 +1393,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
             // 向下滚动
             virtualList[targetIndex].scrollTo(0, currentScroll);
-            await new Promise(r => setTimeout(r, 200));
+            await window.delay(200);
         }
 
         if (!foundOption) {
@@ -1404,14 +1404,14 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
 
         // 4. 滚动到视图并点击
         foundOption.scrollIntoView({ behavior: "auto", block: "nearest" });
-        await new Promise(r => setTimeout(r, 300));
+        await window.delay(300);
 
         console.log("[知乎发布] 🖱️ 点击选项:", foundOption.textContent.trim());
         console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
         foundOption.querySelector(".ne-select-item-option-content").dispatchEvent(new Event("click", { bubbles: true }));
 
         // 等待下拉关闭
-        await new Promise(r => setTimeout(r, 500));
+        await window.delay(500);
 
         console.log("[知乎发布] ✅ 选项选择完成");
         return true;

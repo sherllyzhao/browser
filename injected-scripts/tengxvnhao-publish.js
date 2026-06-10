@@ -568,7 +568,7 @@
 
         for (const sampleDelay of sampleDelays) {
             if (sampleDelay > 0) {
-                await new Promise(resolve => setTimeout(resolve, sampleDelay));
+                await window.delay(sampleDelay);
             }
 
             const publicTipText = tipCapture.getPublicTip?.();
@@ -767,7 +767,7 @@
         hoverTipCapture.getPublicTip = () => readPublishPublicTipFullText(publishBtn, publishBtnWrap);
         try {
             publishBtn.scrollIntoView({ block: "center", inline: "center" });
-            await new Promise(resolve => setTimeout(resolve, 120));
+            await window.delay(120);
         } catch (e) {
             // footer 固定布局下 scrollIntoView 可能无意义，失败时继续 hover。
         }
@@ -817,7 +817,7 @@
                     if (primaryHoverPoints[0]) {
                         const awayPoint = getAwayPointForPublishHover(primaryHoverPoints[0]);
                         await window.browserAPI.nativeMouseMove(awayPoint.x, awayPoint.y, { enter: true });
-                        await new Promise(resolve => setTimeout(resolve, 120));
+                        await window.delay(120);
                     }
 
                     for (const point of primaryHoverPoints) {
@@ -844,7 +844,7 @@
                     if (cdpHoverPoints[0]) {
                         const awayPoint = getAwayPointForPublishHover(cdpHoverPoints[0]);
                         await window.browserAPI.nativeMouseMove(awayPoint.x, awayPoint.y, { method: "cdp" });
-                        await new Promise(resolve => setTimeout(resolve, 120));
+                        await window.delay(120);
                     }
 
                     for (const point of cdpHoverPoints) {
@@ -1287,13 +1287,13 @@
                         }
 
                         // 延迟执行，让React状态稳定
-                        await new Promise(resolve => setTimeout(resolve, 300));
+                        await window.delay(300);
 
                         const targetTitle = dataObj.video.video.title || ""
 
                         // 清空原有内容
                         titleEle.innerText = "";
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        await window.delay(100);
 
                         // 设置新标题
                         titleEle.innerText = targetTitle;
@@ -1310,7 +1310,7 @@
 
                         // 模拟键盘输入结束
                         titleEle.dispatchEvent(new Event("blur", { bubbles: true }));
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        await window.delay(100);
                         titleEle.focus();
 
                         console.log("[腾讯号发布] ✅ 已填写标题:", targetTitle);
@@ -1425,7 +1425,7 @@
                                     editorEle.dispatchEvent(pasteEvent);
 
                                     // 等待编辑器处理粘贴事件
-                                    await new Promise(resolve => setTimeout(resolve, 1500)); // 🔑 增加到 1.5 秒
+                                    await window.delay(1500); // 🔑 增加到 1.5 秒
 
                                     console.log("[腾讯号发布] ✅ 内容填写完成");
                                 },
@@ -1435,7 +1435,7 @@
                         } catch (e) {
                             console.log("[腾讯号发布] ❌ 内容填写失败:", e.message);
                         }
-                    }, 200);
+                    }, window.getRandomDelayMs(200));
                 } catch (e) {
                     console.log("[腾讯号发布] ❌ 内容填写失败:", e.message);
                 }
@@ -1977,11 +1977,11 @@
                                             // 启动上传检测（延迟2秒等待上传开始）
                                             setTimeout(async () => {
                                                 await tryUploadImage(0);
-                                            }, 2000);
+                                            }, window.getRandomDelayMs(2000));
                                         }
-                                    }, 1000);
-                                }, 2000);
-                            }, 1000);
+                                    }, window.getRandomDelayMs(1000));
+                                }, window.getRandomDelayMs(2000));
+                            }, window.getRandomDelayMs(1000));
                         } catch (error) {
                             console.log("[腾讯号发布] ❌ 封面下载失败:", error);
                             stopErrorListener();
@@ -1996,7 +1996,7 @@
 
                 fillFormRunning = false;
                 // alert('Automation process completed');
-            }, 10000);
+            }, window.getRandomDelayMs(10000));
         } catch (error) {
             // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
             console.error("[腾讯号发布] fillFormData 错误:", error);

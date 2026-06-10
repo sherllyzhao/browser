@@ -122,7 +122,7 @@
                     await waitForElement('.account-name', 15000);
                     const titleEle = document.querySelector('.account-name');
                     if (!titleEle || !titleEle.innerText) {
-                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        await window.delay(2000);
                     }
 
                     // 🆕 改为接口取（与 publish 关闭时保存逻辑一致，避免 DOM 选择器失效）
@@ -204,7 +204,7 @@
                         if(isDev){
                             console.log('[小红书授权] ✅ 开发环境，不关闭窗口');
                         }else{
-                            setTimeout(() => window.browserAPI.closeCurrentWindow(), 10000);
+                            setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
                         }
                     } else {
                         throw new Error(apiResult.msg || 'Failed');
