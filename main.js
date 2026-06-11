@@ -9717,7 +9717,9 @@ async function openManagedChildWindow(url, options = {}) {
         // 如果本地登录态有效且账号匹配，跳过 sessionData 覆盖，避免擦掉本地最新登录态
         let shouldSkipSessionRestore = false;
         const incomingHasLogin = sessionDataHasValidLoginCookies(effectiveSessionData, options.platform);
-        const shouldForceIncomingSessionRestore = incomingHasLogin && !!cachedSessionData
+        // 后台快照比本地缓存更新（或本地无缓存），且含真实登录凭证 → 强制走后台恢复
+        // 修复：去掉 !!cachedSessionData 限制，避免「本地无缓存时 incoming 快照被本地旧 sessionid 阻断」
+        const shouldForceIncomingSessionRestore = incomingHasLogin
           && String(effectiveSessionSource || '').startsWith('incoming');
         const restoreDiag = { localHasLogin: null, identityMatch: undefined };
         try {
