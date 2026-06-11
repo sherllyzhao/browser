@@ -145,6 +145,7 @@
   let lastShipinhaoCookieDedupeAt = 0;
   let backendSessionSaveInFlight = false;
   let lastBackendSessionSaveAt = 0;
+  const LOGIN_EXPIRY_BANNER_ID = 'yyzs-shipinhao-login-expiry-banner';
 
   function isShipinhaoLoginPage() {
     try {
@@ -153,6 +154,71 @@
     } catch (_) {
       return window.location.href.includes('channels.weixin.qq.com/login.html');
     }
+  }
+
+  function showLoginExpiryBanner() {
+    if (!isShipinhaoLoginPage()) {
+      return;
+    }
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', showLoginExpiryBanner, { once: true });
+      return;
+    }
+    if (document.getElementById(LOGIN_EXPIRY_BANNER_ID)) {
+      return;
+    }
+
+    const banner = document.createElement('div');
+    banner.id = LOGIN_EXPIRY_BANNER_ID;
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    banner.style.cssText = `
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2147483647;
+      width: min(calc(100% - 32px), 760px);
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border: 1px solid rgba(217, 119, 6, 0.35);
+      border-radius: 8px;
+      background: rgba(255, 251, 235, 0.97);
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+      color: #78350f;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      pointer-events: none;
+    `;
+
+    const icon = document.createElement('span');
+    icon.textContent = '!';
+    icon.style.cssText = `
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #d97706;
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+    `;
+
+    const text = document.createElement('span');
+    text.textContent = '温馨提示：视频号登录状态约 24 小时后会过期，请登录后尽快完成授权或发布；过期后需要重新扫码登录。';
+
+    banner.appendChild(icon);
+    banner.appendChild(text);
+    document.body.appendChild(banner);
+    console.log('[Shipinhao Login] 已显示 24 小时登录过期提示横幅');
   }
 
   async function clearLoginIdentityCookiesOnce() {
@@ -428,6 +494,12 @@
   // 初始化
   async function init() {
     console.log('[Shipinhao Login] 初始化中...');
+
+    if (typeof showLoginExpiryBanner === 'function') {
+      showLoginExpiryBanner();
+    } else {
+      console.warn('[Shipinhao Login] 登录过期提示横幅函数不可用，跳过显示');
+    }
 
     // 首先检查是否需要刷新页面（仅对新窗口）
     if (await checkAndRefreshIfNeeded()) {

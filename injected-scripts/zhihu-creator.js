@@ -183,14 +183,16 @@
                 console.log('[知乎授权] 📦 正在获取完整会话数据...');
                 let cookiesData = '';
                 try {
-                    const sessionResult = await window.browserAPI.getFullSessionData('www.zhihu.com');
+                    // 🔑 用父域 zhihu.com 采集（覆盖 www/zhuanlan 等全部子域的 host-only cookie）
+                    // 之前传 'www.zhihu.com' 会漏掉 zhuanlan.zhihu.com（发布页所在域）的 cookie
+                    const sessionResult = await window.browserAPI.getFullSessionData('zhihu.com');
                     if (sessionResult.success) {
                         cookiesData = JSON.stringify(sessionResult.data);
                         console.log(`[知乎授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                     } else {
                         console.warn('[知乎授权] ⚠️ 获取完整会话数据失败:', sessionResult.error);
                         // 降级为简单 cookie 字符串
-                        const cookieResult = await window.browserAPI.getDomainCookies('www.zhihu.com');
+                        const cookieResult = await window.browserAPI.getDomainCookies('zhihu.com');
                         if (cookieResult.success && cookieResult.cookies) {
                             cookiesData = cookieResult.cookies;
                         }
@@ -245,7 +247,8 @@
                     // 🔑 迁移登录 Cookies 到持久化 session
                     try {
                         console.log('[知乎授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                        const migrateResult = await window.browserAPI.migrateCookiesToPersistent('www.zhihu.com');
+                        // 🔑 用父域 zhihu.com 迁移（与快照采集口径一致，覆盖全部子域）
+                        const migrateResult = await window.browserAPI.migrateCookiesToPersistent('zhihu.com');
                         if (migrateResult.success) {
                             console.log(`[知乎授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
                         } else {

@@ -1539,6 +1539,56 @@ if (typeof window.uploadVideo === "function"
             && style.pointerEvents !== "none";
     }
 
+    function isElementCenterInViewport(element, margin = 8) {
+        if (!element || typeof element.getBoundingClientRect !== "function") {
+            return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
+
+        const viewportWidth = Math.max(document.documentElement?.clientWidth || 0, window.innerWidth || 0);
+        const viewportHeight = Math.max(document.documentElement?.clientHeight || 0, window.innerHeight || 0);
+        const safeMargin = Math.max(0, Number.isFinite(Number(margin)) ? Number(margin) : 8);
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        return centerX >= safeMargin
+            && centerX <= viewportWidth - safeMargin
+            && centerY >= safeMargin
+            && centerY <= viewportHeight - safeMargin;
+    }
+
+    window.scrollElementIntoViewIfNeeded = function (element, options = {}) {
+        if (!element || typeof element.scrollIntoView !== "function") {
+            return false;
+        }
+
+        const margin = Number.isFinite(Number(options.margin)) ? Number(options.margin) : 8;
+        if (isElementCenterInViewport(element, margin)) {
+            return false;
+        }
+
+        element.scrollIntoView({
+            behavior: options.behavior || "instant",
+            block: options.block || "nearest",
+            inline: options.inline || "nearest",
+        });
+        return true;
+    };
+
+    // 点击坐标命中校验：elementFromPoint 命中目标自身或其后代才算命中
+    // （元素被滚动容器裁剪/sticky 浮层遮挡时，视口几何判断感知不到，命中的会是遮挡物）
+    // 注意：目标在 Shadow DOM 内时 document.elementFromPoint 返回宿主，校验会误判未命中，
+    //       因此校验失败只触发一次补救滚动，不阻断点击（fail-open 与旧行为兼容）
+    function isNativeClickHitOnTarget(target, hitEl) {
+        if (!target || !hitEl) return false;
+        if (hitEl === target) return true;
+        return typeof target.contains === "function" && target.contains(hitEl);
+    }
+
     function resolveNativeClickTarget(element) {
         if (!element) return null;
         const closest = typeof element.closest === "function"
@@ -1582,18 +1632,47 @@ if (typeof window.uploadVideo === "function"
 
         try {
             if (options.scroll !== false && typeof target.scrollIntoView === "function") {
-                target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-                await delayFn(Number.isFinite(options.delayAfterScroll) ? options.delayAfterScroll : 120);
+                const didScroll = typeof window.scrollElementIntoViewIfNeeded === "function"
+                    ? window.scrollElementIntoViewIfNeeded(target, {
+                        margin: options.scrollMargin,
+                        behavior: "instant",
+                        block: options.scrollBlock || "nearest",
+                        inline: options.scrollInline || "nearest",
+                    })
+                    : false;
+                if (didScroll) {
+                    await delayFn(Number.isFinite(options.delayAfterScroll) ? options.delayAfterScroll : 120);
+                }
             }
 
             if (!isVisibleForNativeClick(target)) {
                 return { success: false, message: "元素不可见或不可点击" };
             }
 
-            const rect = target.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const hitEl = document.elementFromPoint(x, y);
+            let rect = target.getBoundingClientRect();
+            let x = rect.left + rect.width / 2;
+            let y = rect.top + rect.height / 2;
+            let hitEl = document.elementFromPoint(x, y);
+
+            // 🛡️ 命中校验兜底：元素中心在视口内但被滚动容器裁剪（如时间选择器列表）或
+            // sticky/fixed 浮层遮挡时，scrollElementIntoViewIfNeeded 的纯几何判断会跳过滚动，
+            // 此时坐标点击会打在遮挡物上。这里检测到未命中就强制居中滚动一次再重算坐标
+            if (!isNativeClickHitOnTarget(target, hitEl)
+                && options.scroll !== false
+                && typeof target.scrollIntoView === "function") {
+                console.warn(`${logPrefix} ⚠️ 点击坐标未命中目标（命中: ${hitEl?.tagName || "无"}），强制居中滚动后重算坐标`);
+                target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+                await delayFn(Number.isFinite(options.delayAfterScroll) ? options.delayAfterScroll : 120);
+                rect = target.getBoundingClientRect();
+                x = rect.left + rect.width / 2;
+                y = rect.top + rect.height / 2;
+                hitEl = document.elementFromPoint(x, y);
+                if (!isNativeClickHitOnTarget(target, hitEl)) {
+                    // Shadow DOM 内目标会走到这里（elementFromPoint 返回宿主），按原行为继续点击
+                    console.warn(`${logPrefix} ⚠️ 滚动后仍未命中目标（命中: ${hitEl?.tagName || "无"}），按原行为继续点击`);
+                }
+            }
+
             const hitClass = hitEl && typeof hitEl.className !== "undefined"
                 ? String(hitEl.className).substring(0, 80)
                 : "";
@@ -2055,7 +2134,7 @@ if (typeof window.uploadVideo === "function"
             },
             toutiao: {
                 apiPath: '/api/mediaauth/ttinfo',
-                domains: ['toutiao.com', 'www.toutiao.com', 'mp.toutiao.com', '.bytedance.com', 'xxbg.snssdk.com'],
+                domains: ['toutiao.com', 'www.toutiao.com', 'mp.toutiao.com', '.bytedance.com', 'snssdk.com'],
                 getUserInfo: async () => {
                     const r = await fetch('https://mp.toutiao.com/mp/agw/media/get_media_info', { method: 'GET', credentials: 'include' });
                     const res = await r.json();
@@ -3520,10 +3599,10 @@ if (typeof window.uploadVideo === "function"
     // ===========================
 
     /**
-     * 显示操作提示横幅（顶部居中浮动卡片，可折叠为右上角圆点）
+     * 显示操作提示横幅（右下角浮动卡片，可折叠为右下角圆点）
      * - 不占据文档流，不挤压页面布局，对 SPA / 100vh 布局友好
      * - 橙黄色渐变背景 + 扫描线动画 + 呼吸脉冲指示灯
-     * - 点击右侧折叠按钮可收起到右上角小圆点；点击圆点可重新展开
+     * - 点击右侧折叠按钮可收起到右下角小圆点；点击圆点可重新展开
      * - 折叠状态用 sessionStorage 持久化，避免 SPA 跳转后又展开
      * @param {string} text - 横幅文案
      */
@@ -3560,23 +3639,23 @@ if (typeof window.uploadVideo === "function"
             "}",
             "/* 入场滑入动画 */",
             "@keyframes __ob_slide__ {",
-            "  0% { transform: translate(-50%, -120%); opacity: 0; }",
-            "  100% { transform: translate(-50%, 0); opacity: 1; }",
+            "  0% { transform: translateY(24px); opacity: 0; }",
+            "  100% { transform: translateY(0); opacity: 1; }",
             "}",
             "/* 折叠态淡入 */",
             "@keyframes __ob_fade__ {",
             "  0% { opacity: 0; transform: scale(0.6); }",
             "  100% { opacity: 1; transform: scale(1); }",
             "}",
-            "/* 横幅主体（顶部居中浮动卡片，不占据文档流） */",
+            "/* 横幅主体（右下角浮动卡片，不占据文档流，避开顶部平台提示） */",
             "#__operation_banner__ {",
             "  position: fixed;",
-            "  top: 10px;",
-            "  left: 50%;",
-            "  transform: translate(-50%, 0);",
+            "  right: 18px;",
+            "  bottom: 76px;",
+            "  transform: translateY(0);",
             "  z-index: 2147483647;",
-            "  max-width: 90vw;",
-            "  padding: 8px 14px 8px 14px;",
+            "  max-width: calc(100vw - 36px);",
+            "  padding: 7px 12px 7px 12px;",
             "  border-radius: 20px;",
             "  background: linear-gradient(135deg, #e8870e 0%, #f5a623 40%, #f7c948 100%);",
             "  border: 1px solid rgba(255, 255, 255, 0.4);",
@@ -3584,7 +3663,7 @@ if (typeof window.uploadVideo === "function"
             "  align-items: center;",
             "  gap: 8px;",
             "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;",
-            "  font-size: 13px;",
+            "  font-size: 12px;",
             "  font-weight: 600;",
             "  color: #fff;",
             "  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);",
@@ -3648,11 +3727,11 @@ if (typeof window.uploadVideo === "function"
             ".__ob_collapse_btn__:hover {",
             "  background: rgba(255, 255, 255, 0.35);",
             "}",
-            "/* 折叠态小圆点（右上角） */",
+            "/* 折叠态小圆点（右下角） */",
             "#__operation_banner_mini__ {",
             "  position: fixed;",
-            "  top: 12px;",
-            "  right: 12px;",
+            "  right: 18px;",
+            "  bottom: 76px;",
             "  z-index: 2147483647;",
             "  width: 22px; height: 22px;",
             "  border-radius: 50%;",
@@ -3782,7 +3861,7 @@ if (typeof window.uploadVideo === "function"
     };
 
     console.log("[common.js] ✅ common.js 加载完成");
-    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, waitForShadowElement, deepShadowSearch, findElementInPageOrShadow, sendStatistics, clickWithRetry, closeWindowWithMessage, getRandomDelayMs, delay, randomDelay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
+    console.log("[common.js] 已定义函数: waitForElement, waitForElements, retryOperation, sendMessageToParent, uploadFileToInput, downloadFile, uploadVideo, uploadImage, setNativeValue, scrollElementIntoViewIfNeeded, waitForShadowElement, deepShadowSearch, findElementInPageOrShadow, sendStatistics, clickWithRetry, closeWindowWithMessage, getRandomDelayMs, delay, randomDelay, createErrorListener, parseMessageData, checkWindowIdMatch, restoreSessionAndReload, loadPublishDataFromGlobalStorage, getCurrentWindowId, showOperationBanner, hideOperationBanner, checkBlankPageAndReload");
 } // 结束 if-else 块，所有函数在 else 块内定义
 
 /**
@@ -3845,6 +3924,7 @@ if (typeof downloadFile === "undefined") window.downloadFile && (downloadFile = 
 if (typeof uploadVideo === "undefined") window.uploadVideo && (uploadVideo = window.uploadVideo);
 if (typeof uploadImage === "undefined") window.uploadImage && (uploadImage = window.uploadImage);
 if (typeof setNativeValue === "undefined") window.setNativeValue && (setNativeValue = window.setNativeValue);
+if (typeof scrollElementIntoViewIfNeeded === "undefined") window.scrollElementIntoViewIfNeeded && (scrollElementIntoViewIfNeeded = window.scrollElementIntoViewIfNeeded);
 if (typeof nativeClickElement === "undefined") window.nativeClickElement && (nativeClickElement = window.nativeClickElement);
 if (typeof nativeInsertText === "undefined") window.nativeInsertText && (nativeInsertText = window.nativeInsertText);
 if (typeof waitForShadowElement === "undefined") window.waitForShadowElement && (waitForShadowElement = window.waitForShadowElement);

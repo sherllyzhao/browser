@@ -67,6 +67,7 @@ if (location.search.includes("published=true")) {
                 console.error("[小红书发布] nativeInsertText:", typeof nativeInsertText);
                 console.error("[小红书发布] clickWithTrustedRetry:", typeof clickWithTrustedRetry);
                 console.error("[小红书发布] closeWindowWithMessage:", typeof closeWindowWithMessage);
+                console.error("[小红书发布] scrollElementIntoViewIfNeeded:", typeof scrollElementIntoViewIfNeeded);
                 console.error("[小红书发布] delay:", typeof delay);
             } else {
                 console.log("[小红书发布] ✅ common.js 已完整加载，所有工具函数可用");
@@ -1529,9 +1530,16 @@ if (location.search.includes("published=true")) {
             }
             console.log("[小红书发布] 🔧 开始选择定时发布时间...");
 
-            // 先滚动到视口中心，popover 组件通常需要元素在可视区域内才能正确弹出
-            dateInput.scrollIntoView({ behavior: "instant", block: "center" });
-            await delay(500);
+            // 仅在中心点不在视口内时做最小必要滚动，避免无意义位移
+            const dateInputDidScroll = typeof window.scrollElementIntoViewIfNeeded === "function"
+                ? window.scrollElementIntoViewIfNeeded(dateInput, {
+                    margin: 12,
+                    behavior: "instant",
+                    block: "nearest",
+                    inline: "nearest",
+                })
+                : false;
+            await delay(dateInputDidScroll ? 500 : 120);
 
             // 使用原生可信点击（isTrusted=true），绕过 Vue 组件的事件检查
             const rect = dateInput.getBoundingClientRect();

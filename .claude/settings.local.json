@@ -135,9 +135,18 @@
       "Bash(python:*)",
       "Bash(git -C:*)",
       "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 2; echo \"已清理进程\")",
-      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 1; echo \"已清理\")"
+      "Bash(taskkill /F /IM electron.exe 2>/dev/null; sleep 1; echo \"已清理\")",
+      "Bash(awk 'NR>=9604 && NR<=10110 && \\(/windowSession[ ]*=/ || /cookiesArray[ ]*=/ || /restoredCount[ ]*=/ || /let windowSession|const windowSession|var windowSession/\\)' main.js)",
+      "Bash(awk -F: '$1>=9604 && $1<=10110')",
+      "Bash(awk -F: '$1>=9604 && $1<=10320')",
+      "Bash(awk -F: '$1>=10440 && $1<=10540')",
+      "Bash(awk -F: '$1>=1960 && $1<=2005')",
+      "Bash(node \"D:/浏览器/运营助手/.omc/tmp-scope-check.js\"; rm -f \"D:/浏览器/运营助手/.omc/tmp-probe.js\" \"D:/浏览器/运营助手/.omc/tmp-scope-check.js\")"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\浏览器\\运营助手\\.omc"
+    ]
   }
 }

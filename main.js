@@ -1735,6 +1735,79 @@ function isSessionSnapshotExpired(snapshot) {
   return Date.now() - timestamp > SESSION_SNAPSHOT_TTL_MS;
 }
 
+// 🔍 ===== 发布会话诊断日志（排查第三方平台掉登录）=====
+// ⚠️ 命名注意：不要叫 appendSessionDiagnosticLog —— main.js 顶部已有同名的崩溃/网络诊断函数（运营助手-本次报错.log），
+//    顶层函数声明同名会被 hoisting 覆盖，导致旧日志系统报废（曾出过此回归）
+// 写入 <userData>/logs/session-diagnostic.log，JSON 行格式，超过 5MB 轮转为 .1
+// 记录：发布窗口会话来源决策 / 恢复结果 / 业务页弹跳到登录页 / 关闭保存结果
+// 账号指纹 = 登录/身份 cookie 值的 md5 前 8 位（不落明文，可比对是否同一份凭证，定位串号/互踢）
+const PUBLISH_SESSION_DIAG_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+function getPublishSessionDiagLogPath() {
+  return path.join(app.getPath('userData'), 'logs', 'session-diagnostic.log');
+}
+
+function cookieValueFingerprint(value) {
+  if (!value) return '';
+  try {
+    return require('crypto').createHash('md5').update(String(value)).digest('hex').slice(0, 8);
+  } catch (_) {
+    return String(value).slice(0, 6) + '…';
+  }
+}
+
+function buildCookieFingerprints(cookies, platform) {
+  const names = new Set([
+    ...((config.platformLoginCookies && config.platformLoginCookies[platform]) || []),
+    ...((config.platformIdentityCookies && config.platformIdentityCookies[platform]) || []),
+  ]);
+  const result = {};
+  for (const c of (cookies || [])) {
+    if (c && names.has(c.name) && c.value) {
+      result[`${c.name}@${c.domain || ''}`] = cookieValueFingerprint(c.value);
+    }
+  }
+  return result;
+}
+
+async function buildSessionCookieFingerprints(targetSession, platform) {
+  if (!targetSession || !platform) return {};
+  try {
+    const cookies = await targetSession.cookies.get({});
+    return buildCookieFingerprints(cookies, platform);
+  } catch (_) {
+    return {};
+  }
+}
+
+// 写盘持续失败时只告警一次后置失效标志，避免反复进 catch
+let publishSessionDiagLogBroken = false;
+
+function appendPublishSessionDiagLog(eventName, payload) {
+  if (publishSessionDiagLogBroken) return;
+  try {
+    const logPath = getPublishSessionDiagLogPath();
+    const logDir = path.dirname(logPath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    try {
+      const stat = fs.statSync(logPath);
+      if (stat.size > PUBLISH_SESSION_DIAG_LOG_MAX_BYTES) {
+        const rotated = logPath + '.1';
+        try { fs.unlinkSync(rotated); } catch (_) {}
+        fs.renameSync(logPath, rotated);
+      }
+    } catch (_) { /* 文件不存在，首次写入 */ }
+    const line = JSON.stringify({ ts: new Date().toISOString(), event: eventName, ...payload });
+    fs.appendFileSync(logPath, line + '\n', 'utf-8');
+  } catch (err) {
+    // ⚠️ 静默失效：这里禁止调用 console.warn —— console 已被 wrapConsoleForSessionDiagnostics
+    //    包装为写盘逻辑，写盘失败时再进 console 会形成无限递归（栈溢出 → app 退出）
+    publishSessionDiagLogBroken = true;
+  }
+}
+
 // 🔐 登录页 URL 识别模式（全局共用，覆盖所有平台变体）
 // /login - 通用、小红书、视频号 login.html、搜狐 /mpfe/v4/login
 // /userauth - 腾讯号 om.qq.com/userAuth/index
@@ -6722,7 +6795,32 @@ function createWindow() {
       if (newWindow.isDestroyed() || newWindow.webContents.isDestroyed()) return;
       const prevWasLogin = isLoginPageUrl(lastNavUrl);
       const currIsLogin = isLoginPageUrl(navUrl);
+      const prevNavUrl = lastNavUrl;
       lastNavUrl = navUrl;
+
+      // 🔍 诊断：业务页 → 登录页 = 掉登录瞬间，记录现场（含 cookie 指纹）
+      if (!prevWasLogin && currIsLogin) {
+        try {
+          const diagAccountInfo = windowAccountMap.get(windowId);
+          const diagPublishData = getWindowPublishData(windowId);
+          const rawDiagPlatform = (diagAccountInfo && diagAccountInfo.platform) || (diagPublishData && diagPublishData.platform) || null;
+          const diagPlatform = (config.platformNameMap && config.platformNameMap[rawDiagPlatform]) || rawDiagPlatform;
+          const diagCookies = await newWindow.webContents.session.cookies.get({});
+          appendPublishSessionDiagLog('publish-window-bounced-to-login', {
+            flow: 'did-create-window',
+            windowId,
+            eventName,
+            platform: diagPlatform,
+            accountId: (diagAccountInfo && diagAccountInfo.accountId) || null,
+            fromUrl: prevNavUrl,
+            toUrl: navUrl,
+            cookieCount: diagCookies.length,
+            fingerprints: buildCookieFingerprints(diagCookies, diagPlatform)
+          });
+        } catch (diagErr) {
+          console.warn('[SessionDiag] 登录页弹跳日志失败:', diagErr.message);
+        }
+      }
 
       if (!prevWasLogin || currIsLogin) return;
 
@@ -9621,8 +9719,10 @@ async function openManagedChildWindow(url, options = {}) {
         const incomingHasLogin = sessionDataHasValidLoginCookies(effectiveSessionData, options.platform);
         const shouldForceIncomingSessionRestore = incomingHasLogin && !!cachedSessionData
           && String(effectiveSessionSource || '').startsWith('incoming');
+        const restoreDiag = { localHasLogin: null, identityMatch: undefined };
         try {
           const localHasLogin = await hasValidLoginCookies(windowSession, options.platform);
+          restoreDiag.localHasLogin = localHasLogin;
           if (localHasLogin) {
             if (!incomingHasLogin) {
               shouldSkipSessionRestore = true;
@@ -9635,6 +9735,7 @@ async function openManagedChildWindow(url, options = {}) {
               const isMultiAccountMode = !!(options.platform && options.accountId);
               if (isMultiAccountMode) {
                 const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
+                restoreDiag.identityMatch = identityMatch;
                 if (identityMatch === false) {
                   console.log(`[Window Manager] 🔄 多账号模式检测到本地 session 与后台 sessionData 身份不一致，走清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
                 } else if (shouldForceIncomingSessionRestore) {
@@ -9646,6 +9747,7 @@ async function openManagedChildWindow(url, options = {}) {
                 }
               } else {
                 const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
+                restoreDiag.identityMatch = identityMatch;
                 if (identityMatch !== false && !shouldForceIncomingSessionRestore) {
                   shouldSkipSessionRestore = true;
                   const matchDesc = identityMatch === true ? '匹配' : '无法验证（保守保留本地）';
@@ -9667,6 +9769,30 @@ async function openManagedChildWindow(url, options = {}) {
           }
         } catch (preCheckErr) {
           console.warn('[Window Manager] ⚠️ 本地登录态预检异常，按原流程清空恢复:', preCheckErr.message);
+        }
+
+        // 🔍 诊断：记录发布窗口会话来源决策全量上下文（排查掉登录）
+        try {
+          appendPublishSessionDiagLog('publish-session-decision', {
+            platform: options.platform || null,
+            accountId: options.accountId || null,
+            backendAccountId: backendAccountId || null,
+            url: url,
+            source: effectiveSessionSource,
+            hasCache: !!cachedSessionData,
+            cachedTimestamp: extractSessionTimestamp(cachedSessionData) || 0,
+            incomingTimestamp: extractSessionTimestamp(effectiveSessionData) || 0,
+            incomingCookieCount: extractSessionCookiesArray(effectiveSessionData).length,
+            incomingHasLogin,
+            forceIncoming: shouldForceIncomingSessionRestore,
+            localHasLogin: restoreDiag.localHasLogin,
+            identityMatch: restoreDiag.identityMatch === undefined ? 'not-compared' : restoreDiag.identityMatch,
+            skipRestore: shouldSkipSessionRestore,
+            localFingerprints: await buildSessionCookieFingerprints(windowSession, options.platform),
+            incomingFingerprints: buildCookieFingerprints(extractSessionCookiesArray(effectiveSessionData), options.platform)
+          });
+        } catch (diagErr) {
+          console.warn('[SessionDiag] 会话决策日志失败:', diagErr.message);
         }
 
         if (shouldSkipSessionRestore) {
@@ -9933,6 +10059,20 @@ async function openManagedChildWindow(url, options = {}) {
             } catch (verifyErr) {
                 console.error(`[Window Manager][${__wmTs()}] ❌ cookies 校验失败:`, verifyErr.message);
             }
+
+            // 🔍 诊断：记录会话恢复结果（含恢复后的实际指纹）
+            try {
+              appendPublishSessionDiagLog('publish-session-restored', {
+                platform: options.platform || null,
+                accountId: options.accountId || null,
+                source: effectiveSessionSource,
+                cookiesTotal: cookiesArray.length,
+                restoredCount,
+                fingerprints: await buildSessionCookieFingerprints(windowSession, options.platform)
+              });
+            } catch (diagErr) {
+              console.warn('[SessionDiag] 恢复结果日志失败:', diagErr.message);
+            }
           }
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
@@ -10185,7 +10325,32 @@ async function openManagedChildWindow(url, options = {}) {
       if (newWindow.isDestroyed() || newWindow.webContents.isDestroyed()) return;
       const prevWasLogin = isLoginPageUrl(lastNavUrl);
       const currIsLogin = isLoginPageUrl(navUrl);
+      const prevNavUrl = lastNavUrl;
       lastNavUrl = navUrl;
+
+      // 🔍 诊断：业务页 → 登录页 = 掉登录瞬间，记录现场（含 cookie 指纹）
+      if (!prevWasLogin && currIsLogin) {
+        try {
+          const diagAccountInfo = windowAccountMap.get(windowId);
+          const diagPublishData = getWindowPublishData(windowId);
+          const rawDiagPlatform = (diagAccountInfo && diagAccountInfo.platform) || (diagPublishData && diagPublishData.platform) || null;
+          const diagPlatform = (config.platformNameMap && config.platformNameMap[rawDiagPlatform]) || rawDiagPlatform;
+          const diagCookies = await newWindow.webContents.session.cookies.get({});
+          appendPublishSessionDiagLog('publish-window-bounced-to-login', {
+            flow: 'managed-window',
+            windowId,
+            eventName,
+            platform: diagPlatform,
+            accountId: (diagAccountInfo && diagAccountInfo.accountId) || null,
+            fromUrl: prevNavUrl,
+            toUrl: navUrl,
+            cookieCount: diagCookies.length,
+            fingerprints: buildCookieFingerprints(diagCookies, diagPlatform)
+          });
+        } catch (diagErr) {
+          console.warn('[SessionDiag] 登录页弹跳日志失败:', diagErr.message);
+        }
+      }
 
       if (!prevWasLogin || currIsLogin) return;
 
@@ -10262,6 +10427,28 @@ async function openManagedChildWindow(url, options = {}) {
           }
         }
         console.log(`[Window Manager] 🔐 [${eventName}] 重登录后保存结果:`, result);
+        // 🔍 诊断：重登录后保存结果（uid + 指纹用于核对是否串号）
+        try {
+          // 共享 session 模式下 navPlatform 可能是短名（shh/dy），查指纹表前先映射成长名
+          const diagNavPlatform = (config.platformNameMap && config.platformNameMap[navPlatform]) || navPlatform;
+          appendPublishSessionDiagLog('publish-relogin-save', {
+            flow: 'managed-window',
+            windowId,
+            eventName,
+            platform: diagNavPlatform,
+            accountId: (accountInfo && accountInfo.accountId) || null,
+            success: !!(result && result.success),
+            source: result && result.source,
+            uid: result && result.platformUid,
+            cookieCount: result && result.cookieCount,
+            statusCode: result && result.statusCode,
+            fingerprints: (newWindow.webContents && !newWindow.webContents.isDestroyed())
+              ? await buildSessionCookieFingerprints(newWindow.webContents.session, diagNavPlatform)
+              : {}
+          });
+        } catch (diagErr) {
+          console.warn('[SessionDiag] 重登录保存日志失败:', diagErr.message);
+        }
         if (browserView && !browserView.webContents.isDestroyed() && result && result.success) {
           const publishData = getWindowPublishData(windowId);
           browserView.webContents.send('session-updated', {
@@ -10437,6 +10624,29 @@ async function openManagedChildWindow(url, options = {}) {
             }
           }
           console.log('[Window Manager] 保存结果:', result);
+
+          // 🔍 诊断：窗口关闭保存结果（uid + 指纹用于核对是否串号）
+          try {
+            // 共享 session 模式下 targetPlatform 可能是短名（shh/dy），查指纹表前先映射成长名
+            const diagTargetPlatform = (config.platformNameMap && config.platformNameMap[targetPlatform]) || targetPlatform;
+            appendPublishSessionDiagLog('publish-window-close-save', {
+              flow: 'managed-window',
+              windowId,
+              platform: diagTargetPlatform,
+              accountId: (accountInfo && accountInfo.accountId) || null,
+              success: !!(result && result.success),
+              source: result && result.source,
+              uid: result && result.platformUid,
+              cookieCount: result && result.cookieCount,
+              statusCode: result && result.statusCode,
+              error: result && result.error,
+              fingerprints: (newWindow.webContents && !newWindow.webContents.isDestroyed())
+                ? await buildSessionCookieFingerprints(newWindow.webContents.session, diagTargetPlatform)
+                : {}
+            });
+          } catch (diagErr) {
+            console.warn('[SessionDiag] 关闭保存日志失败:', diagErr.message);
+          }
 
           // 🔍 转发保存结果到首页 DevTools 控制台（覆盖所有路径：script/skip-save/main-fallback）
           try {

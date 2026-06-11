@@ -319,6 +319,122 @@ function isDouyinPublishSuccessMessage(message) {
     && !failureKeywords.some(keyword => text.includes(keyword));
 }
 
+function isDouyinNeutralPublishMessage(message) {
+  const text = String(message || '').trim();
+  if (!text) {
+    return true;
+  }
+
+  const exactNeutralMessages = ['点击完成', '点击成功'];
+  const pendingKeywords = ['正在发布', '正在提交', '正在上传', '加载中', '处理中'];
+  const failureKeywords = ['失败', '错误', '异常', '不可用', '未找到', '超时', '审核未通过'];
+  if (failureKeywords.some(keyword => text.includes(keyword))) {
+    return false;
+  }
+
+  return exactNeutralMessages.includes(text)
+    || pendingKeywords.some(keyword => text.includes(keyword));
+}
+
+function getDouyinTimeoutFailureMessage(lastToastMessage, clickMessage) {
+  const toastText = String(lastToastMessage || '').trim();
+  if (toastText && !isDouyinNeutralPublishMessage(toastText)) {
+    return toastText;
+  }
+
+  const clickText = String(clickMessage || '').trim();
+  if (clickText && !isDouyinNeutralPublishMessage(clickText)) {
+    return clickText;
+  }
+
+  return '发布超时，未跳转到成功页（点击已触发，但未捕获平台成功或失败提示）';
+}
+
+async function clickDouyinPublishButton(publishBtn) {
+  let trustedResult = null;
+  if (typeof clickWithTrustedRetry === 'function') {
+    trustedResult = await clickWithTrustedRetry(publishBtn, 3, 500, true, '');
+    if (trustedResult?.success) {
+      return {
+        ...trustedResult,
+        clickMode: 'trusted',
+      };
+    }
+
+    console.warn('[抖音发布] ⚠️ 可信点击失败，准备回退普通点击:', trustedResult);
+  } else {
+    console.warn('[抖音发布] ⚠️ clickWithTrustedRetry 不可用，准备回退普通点击');
+  }
+
+  if (typeof clickWithRetry === 'function') {
+    const fallbackResult = await clickWithRetry(publishBtn, 3, 500, true, '');
+    return {
+      ...fallbackResult,
+      clickMode: 'js-fallback',
+      trustedMessage: trustedResult?.message || '',
+    };
+  }
+
+  return {
+    success: false,
+    message: trustedResult?.message || '点击工具不可用',
+    clickMode: 'none',
+  };
+}
+
+function normalizeDouyinPublishText(message) {
+  return String(message || '').replace(/\s+/g, ' ').trim();
+}
+
+function isDouyinPhoneVerifyMessage(message) {
+  const text = normalizeDouyinPublishText(message);
+  if (!text) {
+    return false;
+  }
+
+  const keywords = [
+    '接收短信验证码',
+    '短信验证码',
+    '手机号验证',
+    '验证手机号',
+    '选择其他验证方式',
+    '当前手机号',
+  ];
+
+  return keywords.some(keyword => text.includes(keyword));
+}
+
+function getDouyinPhoneVerifyMessage() {
+  const selectors = ['#uc-second-verify', '.uc-ui-verify-sms-verify'];
+  const bodyText = normalizeDouyinPublishText(document.body?.innerText || document.body?.textContent || '');
+
+  for (const selector of selectors) {
+    const elements = document.querySelectorAll(selector);
+    for (const element of elements) {
+      if (!element) {
+        continue;
+      }
+
+      const rect = element.getBoundingClientRect?.();
+      const isVisible = element.offsetParent !== null || (rect && rect.width > 0 && rect.height > 0);
+      if (!isVisible) {
+        continue;
+      }
+
+      const text = normalizeDouyinPublishText(element.textContent || element.innerText || '');
+      if (text && isDouyinPhoneVerifyMessage(text)) {
+        return text;
+      }
+    }
+  }
+
+  if (isDouyinPhoneVerifyMessage(bodyText)) {
+    return bodyText;
+  }
+
+  return '';
+}
+
 async function clearDouyinPublishSuccessData(windowId) {
   if (windowId) {
     localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
@@ -389,11 +505,52 @@ async function publishApi(dataObj) {
   try {
     // 标记发布正在进行
     publishRunning = true;
+    let phoneVerifyReported = false;
+
+    const reportDouyinPhoneVerifyFailure = async (reason = 'phone-verify', rawMessage = '') => {
+      if (phoneVerifyReported) {
+        return true;
+      }
+
+      phoneVerifyReported = true;
+      hasProcessed = true;
+      const normalizedRawMessage = normalizeDouyinPublishText(rawMessage);
+      console.warn('[抖音发布] 📱 检测到手机号认证弹窗，准备上报失败:', {
+        reason,
+        rawMessage: normalizedRawMessage,
+      });
+
+      try {
+        await clearDouyinPublishSuccessData(windowId);
+      } catch (clearError) {
+        console.error('[抖音发布] ❌ 清除发布数据失败:', clearError);
+      }
+
+      try {
+        await sendStatisticsError(publishId, '需要手机号认证', '抖音发布');
+      } catch (reportError) {
+        console.error('[抖音发布] ❌ 手机号认证失败上报异常:', reportError);
+      }
+
+      publishRunning = false;
+
+      try {
+        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+      } catch (closeError) {
+        console.error('[抖音发布] ❌ 关闭窗口失败:', closeError);
+      }
+
+      return true;
+    };
 
     const publishHelperStatus = {
       isDouyinPublishSuccessMessage: typeof isDouyinPublishSuccessMessage,
+      isDouyinPhoneVerifyMessage: typeof isDouyinPhoneVerifyMessage,
+      getDouyinPhoneVerifyMessage: typeof getDouyinPhoneVerifyMessage,
       clearDouyinPublishSuccessData: typeof clearDouyinPublishSuccessData,
       reportDouyinPublishSuccess: typeof reportDouyinPublishSuccess,
+      reportDouyinPhoneVerifyFailure: typeof reportDouyinPhoneVerifyFailure,
+      clickDouyinPublishButton: typeof clickDouyinPublishButton,
     };
     const missingPublishHelpers = Object.entries(publishHelperStatus)
       .filter(([, value]) => value !== 'function')
@@ -556,7 +713,7 @@ async function publishApi(dataObj) {
     console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
     await delay(1000);
 
-    const clickResult = await clickWithRetry(publishBtn, 3, 500, true, '点击完成'); // 启用消息捕获
+    const clickResult = await clickDouyinPublishButton(publishBtn); // 优先可信点击，失败时回退普通点击
 
     if (!clickResult.success) {
       console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
@@ -569,15 +726,28 @@ async function publishApi(dataObj) {
     }
 
     console.log('[抖音发布] ✅ 发布按钮已点击');
-    console.log('[抖音发布] 📨 平台提示:', clickResult.message);
+    console.log('[抖音发布] 📨 平台提示:', {
+      message: clickResult.message,
+      clickMode: clickResult.clickMode || '',
+      trustedMessage: clickResult.trustedMessage || '',
+    });
+
+    // 等待页面稳定
+    await delay(2000);
+
+    const initialPhoneVerifyMessage =
+      getDouyinPhoneVerifyMessage() ||
+      (isDouyinPhoneVerifyMessage(clickResult.message) ? clickResult.message : '');
+    if (initialPhoneVerifyMessage) {
+      console.log('[抖音发布] 📱 点击后检测到手机号认证弹窗:', initialPhoneVerifyMessage);
+      await reportDouyinPhoneVerifyFailure('post-click', initialPhoneVerifyMessage);
+      return;
+    }
 
     // 开发环境弹窗显示平台提示信息
     if (window.browserAPI && window.browserAPI.isProduction === false) {
       alert(`抖音发布结果：\n\n${clickResult.message}`);
     }
-
-    // 等待页面稳定
-    await delay(2000);
 
     // 点击成功后，不再判断 toast 消息（因为各平台提示词不统一，无法准确判断）
     // 直接认为发布已提交，等待页面跳转到成功页
@@ -602,11 +772,21 @@ async function publishApi(dataObj) {
     const currentUrl = window.location.href;
     const startTime = Date.now();
     const timeout = 30000; // 30秒
-    // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
-    let lastToastMessage = isDouyinPublishSuccessMessage(clickResult.message) ? '' : (clickResult.message || '');
+    // 🔑 只保留真实平台提示，避免把“点击完成/点击成功”这类中性状态当失败原因上报
+    let lastToastMessage = !isDouyinPublishSuccessMessage(clickResult.message)
+      && !isDouyinNeutralPublishMessage(clickResult.message)
+      ? (clickResult.message || '')
+      : '';
 
     while (Date.now() - startTime < timeout) {
       await delay(2000); // 每 2 秒检查一次
+
+      const phoneVerifyMessage = getDouyinPhoneVerifyMessage();
+      if (phoneVerifyMessage) {
+        console.log('[抖音发布] 📱 轮询检测到手机号认证弹窗:', phoneVerifyMessage);
+        await reportDouyinPhoneVerifyFailure('polling', phoneVerifyMessage);
+        return;
+      }
 
       // 检查 URL 是否变化
       if (window.location.href !== currentUrl) {
@@ -630,9 +810,11 @@ async function publishApi(dataObj) {
         if (toastEl) {
           const text = (toastEl.textContent || '').trim();
           const isSuccess = isDouyinPublishSuccessMessage(text);
-          if (text && !isSuccess) {
+          if (text && !isSuccess && !isDouyinNeutralPublishMessage(text)) {
             lastToastMessage = text;
             console.log('[抖音发布] 📨 检测到提示:', text);
+          } else if (text && isDouyinNeutralPublishMessage(text)) {
+            console.log('[抖音发布] 📨 检测到中性提示，暂不作为失败原因:', text);
           } else if (isSuccess) {
             console.log('[抖音发布] ✅ 检测到成功提示，直接上报:', text);
             const reported = await reportDouyinPublishSuccess(publishId, windowId, 'poll-success-toast');
@@ -658,10 +840,20 @@ async function publishApi(dataObj) {
     }
 
     // 真正的超时失败
-    console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败');
+    const timeoutFailureMessage = getDouyinTimeoutFailureMessage(lastToastMessage, clickResult.message);
+    console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败:', {
+      timeoutFailureMessage,
+      lastToastMessage,
+      clickMessage: clickResult.message || '',
+      clickMode: clickResult.clickMode || '',
+      startUrl: currentUrl,
+      currentUrl: window.location.href,
+      hasWindowSuccessData: !!finalHasWindowData,
+      hasGenericSuccessData: !!finalHasGenericData,
+    });
     // 清除数据（窗口专属 key 和通用 key）
     await clearDouyinPublishSuccessData(windowId);
-    await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '抖音发布');
+    await sendStatisticsError(publishId, timeoutFailureMessage, '抖音发布', new Error(timeoutFailureMessage));
     publishRunning = false;
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
 

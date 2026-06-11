@@ -188,6 +188,33 @@
                                 if (sessionResult.success) {
                                     console.log("🚀 ~  ~ sessionResult.data: ", sessionResult.data);
 
+                                    // 🔑 追加 sohu.com 全域 cookies（含 passport.sohu.com 等子域）
+                                    // mp.sohu.com 的域过滤会漏掉 passport 子域的续签凭证，导致隔天 ppmdig 失效后
+                                    // 静默续签无凭证可用而掉登录。这里只合并去重新增 cookie，原结构不变
+                                    try {
+                                        const fullDomainResult = await window.browserAPI.getFullSessionData('sohu.com');
+                                        if (fullDomainResult.success && fullDomainResult.data && Array.isArray(fullDomainResult.data.cookies)) {
+                                            // 防御：data.cookies 缺失时补成空数组，保证 push 不抛错（合并仍能生效）
+                                            sessionResult.data.cookies = sessionResult.data.cookies || [];
+                                            const cookieKey = (c) => [c.name, c.domain, c.path || '/', c.secure ? '1' : '0'].join('|');
+                                            const seen = new Set(sessionResult.data.cookies.map(cookieKey));
+                                            let addedCount = 0;
+                                            for (const c of fullDomainResult.data.cookies) {
+                                                const k = cookieKey(c);
+                                                if (!seen.has(k)) {
+                                                    seen.add(k);
+                                                    sessionResult.data.cookies.push(c);
+                                                    addedCount++;
+                                                }
+                                            }
+                                            console.log(`[搜狐号授权] ✅ 已合并 sohu.com 全域 cookies，新增 ${addedCount} 个（含 passport 子域）`);
+                                        } else {
+                                            console.warn('[搜狐号授权] ⚠️ 获取 sohu.com 全域 cookies 失败:', fullDomainResult && fullDomainResult.error);
+                                        }
+                                    } catch (mergeErr) {
+                                        console.warn('[搜狐号授权] ⚠️ 合并 sohu.com 全域 cookies 异常:', mergeErr && mergeErr.message);
+                                    }
+
                                     cookiesData = JSON.stringify(sessionResult.data);
                                     console.log(`[搜狐号授权] ✅ 会话数据获取成功，大小: ${Math.round(sessionResult.size / 1024)} KB`);
                                 } else {
@@ -303,6 +330,14 @@
                                         console.log(`[搜狐号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
                                     } else {
                                         console.error('[搜狐号授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                                    }
+                                    // 🔑 追加迁移 sohu.com 全域（含 passport.sohu.com 等子域的续签凭证）
+                                    // 与上面快照采集的口径一致，避免持久化 session 缺 passport 子域 cookie
+                                    const migrateFullResult = await window.browserAPI.migrateCookiesToPersistent('sohu.com');
+                                    if (migrateFullResult.success) {
+                                        console.log(`[搜狐号授权] ✅ sohu.com 全域 Cookies 迁移成功，共迁移 ${migrateFullResult.migratedCount} 个`);
+                                    } else {
+                                        console.error('[搜狐号授权] ⚠️ sohu.com 全域 Cookies 迁移失败:', migrateFullResult.error);
                                     }
                                 } catch (migrateError) {
                                     console.error('[搜狐号授权] ⚠️ Cookies 迁移异常:', migrateError);

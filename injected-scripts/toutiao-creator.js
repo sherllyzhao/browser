@@ -197,8 +197,10 @@
                             const result = await response.json();
 
                             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
-                            // 头条需要多个域名的数据：www.toutiao.com, .toutiao.com, xxbg.snssdk.com, .bytedance.com
-                            const sessionDomains = ['www.toutiao.com', '.toutiao.com', 'xxbg.snssdk.com', '.bytedance.com'];
+                            // 头条需要多个注册域的数据，统一用父域口径：
+                            // toutiao.com 覆盖 www/mp/sso 等全部子域；snssdk.com 覆盖 xxbg 等全部子域（SSO 续签凭证）
+                            // 之前列 'www.toutiao.com'+'.toutiao.com' 会重复采集，'xxbg.snssdk.com' 会漏兄弟子域
+                            const sessionDomains = ['toutiao.com', 'snssdk.com', 'bytedance.com'];
                             console.log('[头条授权] 📦 正在获取多域名完整会话数据...', sessionDomains);
                             let cookiesData = '';
                             try {
@@ -322,7 +324,8 @@
                                 // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
                                 // 头条涉及多个域名，需要全部迁移
                                 try {
-                                    const migrateDomains = ['www.toutiao.com', '.toutiao.com', 'xxbg.snssdk.com', '.bytedance.com'];
+                                    // 🔑 父域口径迁移（与快照采集一致）：toutiao.com/snssdk.com 覆盖各自全部子域
+                                    const migrateDomains = ['toutiao.com', 'snssdk.com', 'bytedance.com'];
                                     console.log('[头条授权] 🔄 开始迁移多域名 Cookies 到持久化 session...', migrateDomains);
                                     let totalMigrated = 0;
                                     for (const domain of migrateDomains) {
