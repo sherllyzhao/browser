@@ -406,6 +406,31 @@ let hasProcessed = false;
                 return;
               }
 
+              // 🔑 采集昵称并更新到 publishData（用于关窗保存）
+              try {
+                console.log('[视频号发布] 🔍 开始采集昵称...');
+                await window.delay(1500); // 等待页面渲染
+                const nicknameEle = document.querySelector('.finder-nickname, .weui-desktop-account__nickname');
+                console.log('[视频号发布] 📋 昵称元素:', nicknameEle);
+                const nickFromDom = nicknameEle ? nicknameEle.innerText.trim() : '';
+                console.log('[视频号发布] 📝 采集到昵称:', nickFromDom || '(空)');
+
+                if (nickFromDom && messageData.element) {
+                  messageData.element.nickname = nickFromDom;
+                  if (!messageData.element.account_info) messageData.element.account_info = {};
+                  messageData.element.account_info.nickname = nickFromDom;
+                  // 重新保存到 globalData
+                  if (currentWindowId) {
+                    await window.browserAPI.setGlobalData(`publish_data_window_${currentWindowId}`, messageData);
+                    console.log('[视频号发布] ✅ 已采集并更新昵称到 publishData:', nickFromDom);
+                  }
+                } else {
+                  console.warn('[视频号发布] ⚠️ 未采集到昵称或 messageData.element 不存在');
+                }
+              } catch (e) {
+                console.warn('[视频号发布] ⚠️ 采集昵称失败:', e && e.message);
+              }
+
               // 等待wujie-app元素
               const wujieApp = await waitForElement("wujie-app", 15000);
               if (wujieApp) {

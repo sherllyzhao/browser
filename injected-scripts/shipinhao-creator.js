@@ -23,8 +23,10 @@
   }
 
   // ===========================
-  // 防止脚本重复注入
+  // 防止脚本重复注入（同一页面内）
   // ===========================
+  // 注意：扫码后页面会跳转，跳转后算新页面，需要重新注入采集逻辑
+  // 所以只阻止同一页面的重复注入，不阻止跳转后的重注入
   if (window.__DOUYIN_SCRIPT_LOADED__) {
     console.log('[视频号授权] ⚠️ 脚本已经加载过，跳过重复注入');
     return;
@@ -230,6 +232,216 @@
   let isProcessing = false;
   let hasProcessed = false;
 
+  // ===========================
+  // 核心：采集用户信息并上报
+  // 供两处调用：① 收到父窗口 auth-data 消息；② 扫码后重注入时主动检测
+  // ===========================
+  async function collectAndSubmit(authType) {
+    if (isProcessing || hasProcessed) {
+      console.warn('[视频号授权] ⚠️ 正在处理或已处理，跳过');
+      return;
+    }
+    isProcessing = true;
+
+    try {
+      console.log('[视频号授权] 🚀 collectAndSubmit 开始执行, authType:', authType);
+      // ── 用户信息采集：DOM 优先，无昵称则走接口兜底 ──
+      const NICK_SEL = '.finder-nickname, .weui-desktop-account__nickname';
+      await waitForElement(NICK_SEL, 8000).catch(() => null);
+      const nicknameEle = document.querySelector(NICK_SEL);
+      if (nicknameEle && !nicknameEle.innerText.trim()) {
+        await window.delay(1500);
+      }
+
+      let nickname = '', avatar = '', follower_count = '', video = '', uid = '';
+
+      // 尝试 DOM 采集
+      const refreshedNickEle = document.querySelector(NICK_SEL);
+      if (refreshedNickEle && refreshedNickEle.innerText.trim()) {
+        const isFinderPage = !!document.querySelector('.finder-nickname');
+        if (isFinderPage) {
+          const avatarEle = document.querySelector('.avatar');
+          const followerCountEle = document.querySelector('.finder-content-info > div:nth-of-type(2) .finder-info-num');
+          const videoCountEle = document.querySelector('.finder-content-info > div:nth-of-type(1) .finder-info-num');
+          const uidEle = document.querySelector('.finder-uniq-id');
+          nickname = refreshedNickEle.innerText.trim();
+          avatar = avatarEle ? avatarEle.getAttribute('src') : '';
+          follower_count = followerCountEle ? followerCountEle.innerText : '';
+          video = videoCountEle ? videoCountEle.innerText : '';
+          uid = uidEle ? uidEle.innerText.trim() : '';
+        } else {
+          const avatarEle = document.querySelector('.weui-desktop-account__img, .weui-desktop-account__thumb img');
+          const uidEle = document.querySelector('.weui-desktop-account__uniqid, .finder-uniq-id');
+          nickname = refreshedNickEle.innerText.trim();
+          avatar = avatarEle ? (avatarEle.getAttribute('src') || avatarEle.src || '') : '';
+          uid = uidEle ? uidEle.innerText.replace(/视频号 ?ID[:：]?\s*/i, '').trim() : '';
+        }
+        console.log('[视频号授权] 📋 DOM采集:', { nickname, uid });
+      }
+
+      // DOM 没拿到昵称 → 调接口兜底
+      if (!nickname) {
+        console.log('[视频号授权] DOM无昵称，尝试接口采集...');
+        try {
+          // _aid 在 localStorage，key 可能是 _rx:aid 或 _ml:aid
+          const aid = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || '';
+          // _log_finder_id 在 localStorage，key 是 finder_username
+          const logFinderId = localStorage.getItem('finder_username') || '';
+          if (aid && logFinderId) {
+            const params = new URLSearchParams({
+              _aid: aid,
+              _rid: String(Date.now()).slice(0, 10),
+              _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
+            });
+            const body = {
+              timestamp: String(Date.now()),
+              _log_finder_id: logFinderId,
+              _log_finder_uin: '',
+              pluginSessionId: null,
+              rawKeyBuff: null,
+              reqScene: 7,
+              scene: 7
+            };
+            const apiResp = await fetch(
+              `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                credentials: 'include'
+              }
+            );
+            const apiJson = await apiResp.json();
+            console.log('[视频号授权] 接口响应:', JSON.stringify(apiJson).slice(0, 300));
+            const d = apiJson && apiJson.data;
+            if (d) {
+              const finderUser = d.finderUser || {};
+              const userAttr = d.userAttr || {};
+              nickname = finderUser.nickname || userAttr.nickname || '';
+              avatar = finderUser.headImgUrl || userAttr.encryptedHeadImage || '';
+              uid = finderUser.finderUsername || logFinderId || '';
+              follower_count = String(finderUser.fansCount || '');
+              video = String(finderUser.feedsCount || '');
+            }
+            console.log('[视频号授权] 接口采集:', { nickname, uid });
+          } else {
+            console.warn('[视频号授权] 缺少 _aid 或 finder_username，接口采集跳过');
+          }
+        } catch (apiErr) {
+          console.warn('[视频号授权] 接口采集失败:', apiErr && apiErr.message);
+        }
+      }
+
+      console.log('[视频号授权] 📝 采集完成，准备弹窗确认:', { nickname, uid });
+
+      const scanData = {
+        data: JSON.stringify({
+          nickname,
+          avatar,
+          follower_count,
+          video,
+          uid,
+          favoriting_count: 0,
+          total_favorited: 0,
+          company_id: await window.browserAPI.getGlobalData('company_id'),
+          auth_type: authType
+        })
+      };
+
+      // 获取多域名完整会话数据
+      console.log('[视频号授权] 📦 正在获取多域名完整会话数据...');
+      try {
+        const sessionDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'];
+        const sessionResults = await Promise.all(
+          sessionDomains.map(domain => window.browserAPI.getFullSessionData(domain).catch(err => {
+            console.warn(`[视频号授权] ⚠️ 获取 ${domain} 会话数据失败:`, err);
+            return { success: false, domain };
+          }))
+        );
+
+        const mergedData = {
+          domains: sessionDomains,
+          timestamp: Date.now(),
+          cookies: [],
+          localStorage: {},
+          sessionStorage: {},
+          indexedDB: {}
+        };
+
+        let totalSize = 0;
+        sessionResults.forEach((result, index) => {
+          const domain = sessionDomains[index];
+          if (result.success && result.data) {
+            totalSize += result.size || 0;
+            if (Array.isArray(result.data.cookies)) mergedData.cookies.push(...result.data.cookies);
+            if (result.data.localStorage && Object.keys(result.data.localStorage).length > 0)
+              mergedData.localStorage[domain] = result.data.localStorage;
+            if (result.data.sessionStorage && Object.keys(result.data.sessionStorage).length > 0)
+              mergedData.sessionStorage[domain] = result.data.sessionStorage;
+            if (result.data.indexedDB && Object.keys(result.data.indexedDB).length > 0)
+              mergedData.indexedDB[domain] = result.data.indexedDB;
+          } else {
+            console.warn(`[视频号授权] ⚠️ ${domain} 会话数据获取失败`);
+          }
+        });
+
+        mergedData.cookies = dedupeShipinhaoSessionCookies(mergedData.cookies);
+        if (mergedData.cookies.length > 0) {
+          const dataObj = JSON.parse(scanData.data);
+          dataObj.cookies = JSON.stringify(mergedData);
+          scanData.data = JSON.stringify(dataObj);
+          console.log(`[视频号授权] ✅ 多域名会话数据合并完成，共 ${mergedData.cookies.length} 个 cookies，总大小: ${Math.round(totalSize / 1024)} KB`);
+        } else {
+          console.warn('[视频号授权] ⚠️ 所有域名均无有效会话数据');
+        }
+      } catch (sessionError) {
+        console.error('[视频号授权] ⚠️ 获取会话数据异常:', sessionError);
+      }
+
+      const localMigrateResult = await migrateShipinhaoCookiesToPersistent('before-backend-submit');
+
+      let apiResult = null;
+      let apiResponseText = '';
+      let backendSuccess = false;
+      try {
+        const apiDomain = await getApiDomain();
+        console.log('[视频号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/sphinfo`);
+        const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scanData)
+        });
+        apiResponseText = await apiResponse.text();
+        try { apiResult = JSON.parse(apiResponseText); } catch (_) { apiResult = null; }
+        backendSuccess = apiResponse.ok && apiResult && apiResult.code === 200;
+        console.log('[视频号授权] 📥 接口响应:', {
+          ok: apiResponse.ok, status: apiResponse.status,
+          code: apiResult && apiResult.code, response: apiResponseText.slice(0, 300)
+        });
+      } catch (apiError) {
+        console.warn('[视频号授权] ⚠️ 后台接口不可用，继续使用本地登录态缓存:', apiError && apiError.message);
+      }
+
+      if (backendSuccess || localMigrateResult.success) {
+        hasProcessed = true;
+        try {
+          await window.browserAPI.setGlobalData('shipinhao_local_auth_fallback', {
+            timestamp: Date.now(), backendSuccess, localMigrateResult,
+            apiResult, apiResponse: apiResponseText.slice(0, 500)
+          });
+        } catch (cacheError) {
+          console.warn('[视频号授权] ⚠️ 写入本地授权兜底标记失败:', cacheError);
+        }
+        sendMessageToParent('授权成功，刷新数据');
+        setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
+      } else {
+        throw new Error((apiResult && (apiResult.msg || apiResult.message)) || '后台失败且本地登录态迁移失败');
+      }
+    } finally {
+      isProcessing = false;
+    }
+  }
+
   if (!window.browserAPI) {
     console.error('[视频号授权] ❌ browserAPI 不可用！');
   } else {
@@ -247,11 +459,9 @@
           console.log('[视频号授权] 消息内容:', message);
           console.log('═══════════════════════════════════════');
 
-          // 接收完整的授权数据
           if (message.type === 'auth-data') {
             console.log('[视频号授权] ✅ 收到授权数据:', message.data);
 
-            // 🔑 检查 windowId 是否匹配
             if (message.windowId) {
               const myWindowId = await window.browserAPI.getWindowId();
               if (myWindowId !== message.windowId) {
@@ -260,157 +470,10 @@
               }
             }
 
-            // 防重复检查
-            if (isProcessing || hasProcessed) {
-              console.warn('[视频号授权] ⚠️ 正在处理或已处理，跳过');
-              return;
-            }
-
-            isProcessing = true;
             const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-
-            // 等待页面元素加载完成
-            await waitForElement('.finder-nickname', 15000);
-
-            const nicknameEle = document.querySelector('.finder-nickname');
-            if (!nicknameEle || !nicknameEle.innerText) {
-              await window.delay(2000);
-            }
-
-            // 收集用户信息
-            const nicknameEleFinal = await waitForElement('.finder-nickname', 5000);
-            const avatarEle = await waitForElement('.avatar', 5000);
-            const followerCountEle = await waitForElement('.finder-content-info > div:nth-of-type(2) .finder-info-num', 5000);
-            const videoCountEle = await waitForElement('.finder-content-info > div:nth-of-type(1) .finder-info-num', 5000);
-            const uidEle = await waitForElement('.finder-uniq-id', 5000);
-
-            const scanData = {
-              data: JSON.stringify({
-                nickname: nicknameEleFinal.innerText,
-                avatar: avatarEle.getAttribute('src'),
-                follower_count: followerCountEle.innerText,
-                video: videoCountEle.innerText,
-                uid: uidEle.innerText,
-                favoriting_count: 0,
-                total_favorited: 0,
-                company_id: await window.browserAPI.getGlobalData('company_id'),
-                auth_type: messageData.auth_type
-              })
-            };
-
-            // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
-            // 视频号登录链路会跨 weixin.qq.com / channels.weixin.qq.com，单域名会漏掉扫码后的关键会话
-            console.log('[视频号授权] 📦 正在获取多域名完整会话数据...');
-            try {
-              const sessionDomains = ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'];
-              const sessionResults = await Promise.all(
-                sessionDomains.map(domain => window.browserAPI.getFullSessionData(domain).catch(err => {
-                  console.warn(`[视频号授权] ⚠️ 获取 ${domain} 会话数据失败:`, err);
-                  return { success: false, domain };
-                }))
-              );
-
-              const mergedData = {
-                domains: sessionDomains,
-                timestamp: Date.now(),
-                cookies: [],
-                localStorage: {},
-                sessionStorage: {},
-                indexedDB: {}
-              };
-
-              let totalSize = 0;
-              sessionResults.forEach((result, index) => {
-                const domain = sessionDomains[index];
-                if (result.success && result.data) {
-                  console.log(`[视频号授权] ✅ ${domain} 会话数据获取成功，大小: ${Math.round((result.size || 0) / 1024)} KB`);
-                  totalSize += result.size || 0;
-
-                  if (Array.isArray(result.data.cookies)) {
-                    mergedData.cookies.push(...result.data.cookies);
-                  }
-                  if (result.data.localStorage && Object.keys(result.data.localStorage).length > 0) {
-                    mergedData.localStorage[domain] = result.data.localStorage;
-                  }
-                  if (result.data.sessionStorage && Object.keys(result.data.sessionStorage).length > 0) {
-                    mergedData.sessionStorage[domain] = result.data.sessionStorage;
-                  }
-                  if (result.data.indexedDB && Object.keys(result.data.indexedDB).length > 0) {
-                    mergedData.indexedDB[domain] = result.data.indexedDB;
-                  }
-                } else {
-                  console.warn(`[视频号授权] ⚠️ ${domain} 会话数据获取失败`);
-                }
-              });
-
-              mergedData.cookies = dedupeShipinhaoSessionCookies(mergedData.cookies);
-
-              if (mergedData.cookies.length > 0) {
-                const dataObj = JSON.parse(scanData.data);
-                dataObj.cookies = JSON.stringify(mergedData);
-                scanData.data = JSON.stringify(dataObj);
-                console.log(`[视频号授权] ✅ 多域名会话数据合并完成，共 ${mergedData.cookies.length} 个 cookies，总大小: ${Math.round(totalSize / 1024)} KB`);
-              } else {
-                console.warn('[视频号授权] ⚠️ 所有域名均无有效会话数据');
-              }
-            } catch (sessionError) {
-              console.error('[视频号授权] ⚠️ 获取会话数据异常:', sessionError);
-            }
-
-            // 后台可能不可用。先把扫码后的登录态落到本地持久化 session，再尝试上报后台。
-            const localMigrateResult = await migrateShipinhaoCookiesToPersistent('before-backend-submit');
-
-            let apiResult = null;
-            let apiResponseText = '';
-            let backendSuccess = false;
-            try {
-              const apiDomain = await getApiDomain();
-              console.log('[视频号授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/sphinfo`);
-              const apiResponse = await fetch(`${apiDomain}/api/mediaauth/sphinfo`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(scanData)
-              });
-              apiResponseText = await apiResponse.text();
-              try {
-                apiResult = JSON.parse(apiResponseText);
-              } catch (_) {
-                apiResult = null;
-              }
-              backendSuccess = apiResponse.ok && apiResult && apiResult.code === 200;
-              console.log('[视频号授权] 📥 接口响应:', {
-                ok: apiResponse.ok,
-                status: apiResponse.status,
-                code: apiResult && apiResult.code,
-                response: apiResponseText.slice(0, 300)
-              });
-            } catch (apiError) {
-              console.warn('[视频号授权] ⚠️ 后台接口不可用，继续使用本地登录态缓存:', apiError && apiError.message);
-            }
-
-            if (backendSuccess || localMigrateResult.success) {
-              hasProcessed = true;
-              try {
-                if (window.browserAPI && typeof window.browserAPI.setGlobalData === 'function') {
-                  await window.browserAPI.setGlobalData('shipinhao_local_auth_fallback', {
-                    timestamp: Date.now(),
-                    backendSuccess,
-                    localMigrateResult,
-                    apiResult,
-                    apiResponse: apiResponseText.slice(0, 500)
-                  });
-                }
-              } catch (cacheError) {
-                console.warn('[视频号授权] ⚠️ 写入本地授权兜底标记失败:', cacheError);
-              }
-
-              sendMessageToParent('授权成功，刷新数据');
-              setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
-            } else {
-              throw new Error((apiResult && (apiResult.msg || apiResult.message)) || '后台失败且本地登录态迁移失败');
-            }
-
-            isProcessing = false;
+            // 保存 auth_type 供主动采集路径使用
+            window.__AUTH_DATA__.auth_type = messageData.auth_type;
+            await collectAndSubmit(messageData.auth_type);
           }
         } catch (error) {
           console.error('[视频号授权] ❌ 授权流程出错:', error);
@@ -420,6 +483,26 @@
 
       console.log('[视频号授权] ✅ 消息监听器注册成功');
     }
+
+    // ===========================
+    // 🔑 主动检测：扫码后重注入时，页面已有昵称元素说明已登录
+    // 此时父窗口不会再发 auth-data，直接采集上报
+    // ===========================
+    setTimeout(async () => {
+      try {
+        if (hasProcessed) return;
+        const nicknameEle = document.querySelector('.finder-nickname, .weui-desktop-account__nickname');
+        if (!nicknameEle) {
+          console.log('[视频号授权] ℹ️ 未检测到昵称元素，等待父窗口消息触发采集');
+          return;
+        }
+        console.log('[视频号授权] 🔍 检测到已登录状态，主动触发采集...', nicknameEle.className);
+        const authType = (window.__AUTH_DATA__ && window.__AUTH_DATA__.auth_type) || 1;
+        await collectAndSubmit(authType);
+      } catch (e) {
+        console.error('[视频号授权] ❌ 主动采集失败:', e);
+      }
+    }, 1500);
   }
 
   // ===========================

@@ -2257,34 +2257,163 @@ if (typeof window.uploadVideo === "function"
                 apiPath: '/api/mediaauth/sphinfo',
                 domains: ['weixin.qq.com', 'channels.weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
                 getUserInfo: async (publishData) => {
+                    let finalResult = null;
                     // 优先 DOM 取
                     try {
                         const nicknameEle = document.querySelector('.finder-nickname, .nickname, [class*="nickname"]');
                         const avatarEle = document.querySelector('.finder-avatar img, .avatar img, img[class*="avatar"]');
                         const uidEle = Array.from(document.querySelectorAll('*')).find(e => /视频号 ?ID/i.test(e.textContent || ''));
-                        if (nicknameEle) {
-                            return {
-                                nickname: (nicknameEle.innerText || '').trim(),
+                        const nickFromDom = nicknameEle ? (nicknameEle.innerText || '').trim() : '';
+                        if (nickFromDom) {
+                            finalResult = {
+                                nickname: nickFromDom,
                                 avatar: avatarEle ? avatarEle.getAttribute('src') : '',
                                 uid: uidEle ? (uidEle.innerText || '').replace(/视频号 ?ID[:：]\s*/i, '').trim() : ''
                             };
+                            return finalResult;
                         }
                     } catch (_) {}
+                    // 接口兜底：DOM 无昵称时，用 localStorage 的 _aid / finder_username 调接口
+                    try {
+                        const aid = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || '';
+                        const logFinderId = localStorage.getItem('finder_username') || '';
+                        console.log('[shipinhao getUserInfo] localStorage参数:', {
+                            aid: aid ? (aid.slice(0, 20) + '...') : '(空)',
+                            logFinderId: logFinderId ? (logFinderId.slice(0, 30) + '...') : '(空)'
+                        });
+                        if (aid && logFinderId) {
+                            const params = new URLSearchParams({
+                                _aid: aid,
+                                _rid: String(Date.now()).slice(0, 10),
+                                _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
+                            });
+                            const resp = await fetch(
+                                `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
+                                {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        timestamp: String(Date.now()),
+                                        _log_finder_id: logFinderId,
+                                        _log_finder_uin: '',
+                                        pluginSessionId: null,
+                                        rawKeyBuff: null,
+                                        reqScene: 7,
+                                        scene: 7
+                                    }),
+                                    credentials: 'include'
+                                }
+                            );
+                            const json = await resp.json();
+                            console.log('[shipinhao getUserInfo] 接口返回:', JSON.stringify(json).slice(0, 500));
+                            const d = json && json.data;
+                            if (d) {
+                                const finderUser = d.finderUser || {};
+                                const userAttr = d.userAttr || {};
+                                console.log('[shipinhao getUserInfo] finderUser.nickname:', finderUser.nickname);
+                                console.log('[shipinhao getUserInfo] userAttr.nickname:', userAttr.nickname);
+                                const nickFromApi = finderUser.nickname || userAttr.nickname || '';
+                                if (nickFromApi) {
+                                    finalResult = {
+                                        nickname: nickFromApi,
+                                        avatar: finderUser.headImgUrl || userAttr.encryptedHeadImage || '',
+                                        uid: finderUser.finderUsername || logFinderId || ''
+                                    };
+                                    return finalResult;
+                                } else {
+                                    console.warn('[shipinhao getUserInfo] 接口返回数据中无昵称');
+                                }
+                            } else {
+                                console.warn('[shipinhao getUserInfo] 接口返回无 data 字段');
+                            }
+                        }
+                    } catch (apiErr) {
+                        console.warn('[shipinhao getUserInfo] 接口兜底失败:', apiErr && apiErr.message);
+                    }
                     // 当前窗口绑定账号兜底：发布成功页/列表页可能没有昵称 DOM，但主进程仍知道窗口账号。
                     try {
                         if (window.browserAPI && window.browserAPI.getCurrentAccount) {
                             const ar = await window.browserAPI.getCurrentAccount();
                             const acc = ar && ar.success && ar.account;
                             if (acc && acc.platformUid) {
-                                return {
+                                finalResult = {
                                     nickname: acc.nickname || '',
                                     avatar: acc.avatar || '',
                                     uid: acc.platformUid
                                 };
+                                return finalResult;
                             }
                         }
                     } catch (e) {
                         console.warn('[shipinhao getUserInfo] getCurrentAccount 兜底失败:', e && e.message);
+                    }
+                    // 最后尝试从 localStorage 取参数再调一次接口（发布页可能第一次没取到，再试一次）
+                    try {
+                        const aidLocal2 = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || localStorage.getItem('_aid') || '';
+                        const finderIdLocal2 = localStorage.getItem('finder_username') || localStorage.getItem('_log_finder_id') || '';
+                        console.log('[shipinhao getUserInfo] localStorage 二次尝试:', {
+                            aid: aidLocal2 ? (aidLocal2.slice(0, 20) + '...') : '(空)',
+                            finderId: finderIdLocal2 ? (finderIdLocal2.slice(0, 30) + '...') : '(空)'
+                        });
+                        // 即使 aid 为空也尝试调用（某些接口可能不强制要求）
+                        if (finderIdLocal2) {
+                            const params = new URLSearchParams({
+                                _aid: aidLocal2 || 'default-aid-placeholder',
+                                _rid: String(Date.now()).slice(0, 10),
+                                _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
+                            });
+                            const resp = await fetch(
+                                `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
+                                {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        timestamp: String(Date.now()),
+                                        _log_finder_id: finderIdLocal2,
+                                        _log_finder_uin: '',
+                                        pluginSessionId: null,
+                                        rawKeyBuff: null,
+                                        reqScene: 7,
+                                        scene: 7
+                                    }),
+                                    credentials: 'include'
+                                }
+                            );
+                            const json = await resp.json();
+                            const d = json && json.data;
+                            if (d) {
+                                const finderUser = d.finderUser || {};
+                                const userAttr = d.userAttr || {};
+                                const nickFromApi = finderUser.nickname || userAttr.nickname || '';
+                                if (nickFromApi) {
+                                    finalResult = {
+                                        nickname: nickFromApi,
+                                        avatar: finderUser.headImgUrl || userAttr.encryptedHeadImage || '',
+                                        uid: finderUser.finderUsername || finderIdLocal2 || ''
+                                    };
+                                    return finalResult;
+                                }
+                            }
+                        }
+                    } catch (apiErr2) {
+                        console.warn('[shipinhao getUserInfo] localStorage 接口兜底失败:', apiErr2 && apiErr2.message);
+                    }
+                    // 最后尝试：从 document.cookie 中提取参数调接口
+                    try {
+                        const cookies = document.cookie.split(';').reduce((obj, c) => {
+                            const [k, v] = c.trim().split('=');
+                            obj[k] = v;
+                            return obj;
+                        }, {});
+                        const aidCookie = cookies['_aid'] || cookies['mm_aid'] || '';
+                        console.log('[shipinhao getUserInfo] 从 cookie 提取 _aid:', aidCookie ? (aidCookie.slice(0, 20) + '...') : '(空)');
+                        // finder_username 可能在 localStorage，但跨域拿不到，从 URL 或其他地方推断
+                        // 如果都拿不到，就放弃接口调用
+                        if (!aidCookie) {
+                            console.warn('[shipinhao getUserInfo] Cookie 中无 _aid，跳过最后接口尝试');
+                        }
+                    } catch (cookieErr) {
+                        console.warn('[shipinhao getUserInfo] Cookie 提取失败:', cookieErr && cookieErr.message);
                     }
                     // 兜底从 publishData 取
                     const e = publishData && publishData.element || {};
@@ -2305,11 +2434,12 @@ if (typeof window.uploadVideo === "function"
                         || accountInfo.id
                         || mediaAuth.id;
                     if (uid) {
-                        return {
+                        finalResult = {
                             nickname: e.nickname || accountInfo.nickname || mediaAuth.nickname || '',
                             avatar: e.avatar || accountInfo.avatar || mediaAuth.avatar || '',
                             uid: uid
                         };
+                        return finalResult;
                     }
                     throw new Error('视频号 DOM/publishData 均无 uid');
                 }
