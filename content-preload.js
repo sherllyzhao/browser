@@ -1603,6 +1603,13 @@ contextBridge.exposeInMainWorld('browserAPI', {
   clearShipinhaoLoginIdentityCookies: () => ipcRenderer.invoke('clear-shipinhao-login-identity-cookies'),
   clearAllAuthData: () => ipcRenderer.invoke('clear-all-auth-data'),
 
+  // 混合发布策略 / 审计：供注入脚本记录自动化关键节点，敏感字段在主进程脱敏
+  getHybridPublishPolicy: (windowId) => ipcRenderer.invoke('hybrid-publish-get-policy', windowId),
+  recordHybridPublishAudit: (payload) => ipcRenderer.invoke('hybrid-publish-record-audit', payload || {}),
+  getHybridPublishAuditEvents: (filters) => ipcRenderer.invoke('hybrid-publish-get-audit-events', filters || {}),
+  setHybridPublishConsent: (payload) => ipcRenderer.invoke('hybrid-publish-set-consent', payload || {}),
+  getHybridPublishConsent: (platform, accountId) => ipcRenderer.invoke('hybrid-publish-get-consent', platform, accountId),
+
   // 迁移临时 Session 的 Cookies 到持久化 Session
   // 用于授权窗口（临时session）授权成功后，把登录状态复制到持久化session
   // 参数: domain - 要迁移的域名，如 'baidu.com'

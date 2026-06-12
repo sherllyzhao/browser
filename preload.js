@@ -120,6 +120,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAllGlobalData: () => ipcRenderer.invoke('global-storage-get-all').then(r => r.data),
   getWindowContext: () => ipcRenderer.invoke('get-window-context').then(r => r.success ? r.context : null),
 
+  // 混合发布策略 / 审计
+  getHybridPublishPolicy: (windowId) => ipcRenderer.invoke('hybrid-publish-get-policy', windowId),
+  recordHybridPublishAudit: (payload) => ipcRenderer.invoke('hybrid-publish-record-audit', payload || {}),
+  getHybridPublishAuditEvents: (filters) => ipcRenderer.invoke('hybrid-publish-get-audit-events', filters || {}),
+  setHybridPublishConsent: (payload) => ipcRenderer.invoke('hybrid-publish-set-consent', payload || {}),
+  getHybridPublishConsent: (platform, accountId) => ipcRenderer.invoke('hybrid-publish-get-consent', platform, accountId),
+
   // 版本更新
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),

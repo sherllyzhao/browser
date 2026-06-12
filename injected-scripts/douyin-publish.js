@@ -13,6 +13,25 @@ let hasProcessed = false;
  * 依赖: common.js (会在此脚本之前注入)
  */
 
+async function recordDouyinHybridAudit(stage, details = {}) {
+  try {
+    if (!window.browserAPI || typeof window.browserAPI.recordHybridPublishAudit !== 'function') {
+      return;
+    }
+    const windowId = typeof window.browserAPI.getWindowId === 'function'
+      ? await window.browserAPI.getWindowId()
+      : null;
+    await window.browserAPI.recordHybridPublishAudit({
+      stage,
+      platform: 'douyin',
+      windowId,
+      details
+    });
+  } catch (error) {
+    console.warn('[抖音发布] 混合发布审计记录失败:', error && error.message ? error.message : error);
+  }
+}
+
 (async function () {
   'use strict';
 
@@ -185,6 +204,13 @@ let hasProcessed = false;
               receivedAt: Date.now()
             };
             console.log('[抖音发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
+            await recordDouyinHybridAudit('publish-data-received', {
+              source: 'message',
+              publishId: messageData?.video?.dyPlatform?.id || '',
+              contentType: messageData?.contentType || '',
+              hasVideo: !!messageData?.video?.video,
+              hasCover: !!(messageData?.video?.video?.cover || messageData?.element?.cover)
+            });
 
             // 💾 保存数据到 localStorage（用于授权跳转后恢复）
             /* try {
@@ -203,8 +229,16 @@ let hasProcessed = false;
             } */
 
             console.log("🚀 ~  ~ messageData: ", messageData);
+            await recordDouyinHybridAudit('upload-start', {
+              source: 'message',
+              publishId: messageData?.video?.dyPlatform?.id || ''
+            });
             await uploadVideo(messageData);
             try {
+              await recordDouyinHybridAudit('form-fill-start', {
+                source: 'message',
+                publishId: messageData?.video?.dyPlatform?.id || ''
+              });
               await retryOperation(async () => await fillFormData(messageData), 3, 2000);
             } catch (e) {
               console.log('[抖音发布] ❌ 填写表单数据失败:', e);
@@ -287,8 +321,23 @@ let hasProcessed = false;
         };
 
         console.log("🚀 ~  ~ publishData: ", publishData);
+        await recordDouyinHybridAudit('publish-data-restored', {
+          source: 'cookieRestore',
+          publishId: publishData?.video?.dyPlatform?.id || '',
+          contentType: publishData?.contentType || '',
+          hasVideo: !!publishData?.video?.video,
+          hasCover: !!(publishData?.video?.video?.cover || publishData?.element?.cover)
+        });
+        await recordDouyinHybridAudit('upload-start', {
+          source: 'cookieRestore',
+          publishId: publishData?.video?.dyPlatform?.id || ''
+        });
         await uploadVideo(publishData);
         try {
+          await recordDouyinHybridAudit('form-fill-start', {
+            source: 'cookieRestore',
+            publishId: publishData?.video?.dyPlatform?.id || ''
+          });
           await retryOperation(async () => await fillFormData(publishData), 3, 2000);
         } catch (e) {
           console.log('[抖音发布] ❌ 填写表单数据失败:', e);
@@ -450,6 +499,10 @@ async function reportDouyinPublishSuccess(publishId, windowId, reason = 'success
     return false;
   }
 
+  await recordDouyinHybridAudit('publish-success-detected', {
+    publishId,
+    reason
+  });
   console.log('[抖音发布] 📤 发送成功统计:', { publishId, reason });
   let result = null;
   if (typeof sendStatistics === 'function') {
@@ -475,10 +528,18 @@ async function reportDouyinPublishSuccess(publishId, windowId, reason = 'success
   if (result?.success) {
     await clearDouyinPublishSuccessData(windowId);
     console.log('[抖音发布] ✅ 成功统计已上报，发布标记已清理:', result);
+    await recordDouyinHybridAudit('publish-success-reported', {
+      publishId,
+      reason
+    });
     return true;
   }
 
   console.error('[抖音发布] ❌ 成功统计上报失败:', result);
+  await recordDouyinHybridAudit('publish-success-report-failed', {
+    publishId,
+    reason
+  });
   return false;
 }
 
@@ -506,6 +567,10 @@ async function publishApi(dataObj) {
     // 标记发布正在进行
     publishRunning = true;
     let phoneVerifyReported = false;
+    await recordDouyinHybridAudit('publish-submit-start', {
+      publishId,
+      url: window.location.href
+    });
 
     const reportDouyinPhoneVerifyFailure = async (reason = 'phone-verify', rawMessage = '') => {
       if (phoneVerifyReported) {
@@ -518,6 +583,11 @@ async function publishApi(dataObj) {
       console.warn('[抖音发布] 📱 检测到手机号认证弹窗，准备上报失败:', {
         reason,
         rawMessage: normalizedRawMessage,
+      });
+      await recordDouyinHybridAudit('risk-control-required', {
+        publishId,
+        reason,
+        message: normalizedRawMessage
       });
 
       try {
@@ -713,10 +783,18 @@ async function publishApi(dataObj) {
     console.log('[抖音发布] ✅ 封面检测完成，准备点击发布按钮');
     await delay(1000);
 
+    await recordDouyinHybridAudit('final-submit-click-start', {
+      publishId
+    });
     const clickResult = await clickDouyinPublishButton(publishBtn); // 优先可信点击，失败时回退普通点击
 
     if (!clickResult.success) {
       console.error('[抖音发布] ❌ 所有点击尝试均失败:', clickResult.message);
+      await recordDouyinHybridAudit('final-submit-click-failed', {
+        publishId,
+        message: clickResult.message || '',
+        clickMode: clickResult.clickMode || ''
+      });
       // 清除提前保存的数据（使用窗口专属 key 和通用 key，确保兼容性）
       await clearDouyinPublishSuccessData(windowId);
       // 发送失败统计
@@ -730,6 +808,11 @@ async function publishApi(dataObj) {
       message: clickResult.message,
       clickMode: clickResult.clickMode || '',
       trustedMessage: clickResult.trustedMessage || '',
+    });
+    await recordDouyinHybridAudit('final-submit-click-succeeded', {
+      publishId,
+      message: clickResult.message || '',
+      clickMode: clickResult.clickMode || ''
     });
 
     // 等待页面稳定
@@ -853,6 +936,13 @@ async function publishApi(dataObj) {
     });
     // 清除数据（窗口专属 key 和通用 key）
     await clearDouyinPublishSuccessData(windowId);
+    await recordDouyinHybridAudit('publish-timeout-failed', {
+      publishId,
+      message: timeoutFailureMessage,
+      clickMode: clickResult.clickMode || '',
+      startUrl: currentUrl,
+      currentUrl: window.location.href
+    });
     await sendStatisticsError(publishId, timeoutFailureMessage, '抖音发布', new Error(timeoutFailureMessage));
     publishRunning = false;
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
@@ -861,6 +951,10 @@ async function publishApi(dataObj) {
     console.log("🚀 ~ publishApi ~ error: ", error);
     // 清除提前保存的数据（窗口专属 key 和通用 key）
     await clearDouyinPublishSuccessData(windowId);
+    await recordDouyinHybridAudit('publish-exception-failed', {
+      publishId,
+      message: error && error.message ? error.message : String(error)
+    });
     // 发送失败统计
     await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
     publishRunning = false;
@@ -1289,6 +1383,9 @@ async function fillFormData(dataObj) {
 
     // 等待表单填写完成
     await window.delay(5000);
+    await recordDouyinHybridAudit('form-fill-completed', {
+      publishId: dataObj?.video?.dyPlatform?.id || ''
+    });
 
     // 直接调用发布（封面检测移到 publishApi 中，在视频上传完成后进行）
     await publishApi(dataObj);
@@ -1298,6 +1395,10 @@ async function fillFormData(dataObj) {
     console.error('[抖音发布] fillFormData 错误:', error);
     // 发送错误上报
     const publishId = dataObj?.video?.dyPlatform?.id;
+    await recordDouyinHybridAudit('form-fill-failed', {
+      publishId: publishId || '',
+      message: error && error.message ? error.message : String(error)
+    });
     if (publishId) {
       await sendStatisticsError(publishId, error.message || '填写表单失败', '抖音发布');
     }

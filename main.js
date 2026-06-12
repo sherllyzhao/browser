@@ -2395,6 +2395,129 @@ function getWindowPublishData(windowId) {
   return null;
 }
 
+const HYBRID_PUBLISH_AUDIT_KEY = 'hybrid_publish_audit_events';
+const HYBRID_PUBLISH_CONSENT_KEY = 'hybrid_publish_consents';
+const HYBRID_PUBLISH_AUDIT_LIMIT = 300;
+
+function getPublishTitleForAudit(publishData = {}) {
+  return publishData?.element?.title
+    || publishData?.video?.video?.title
+    || publishData?.title
+    || '';
+}
+
+function getPublishContentTypeForAudit(publishData = {}) {
+  return publishData?.contentType
+    || publishData?.video?.contentType
+    || publishData?.element?.contentType
+    || '';
+}
+
+function buildHybridPublishPolicy(publishData = {}, options = {}, windowId = null) {
+  const existingPolicy = publishData.hybridPublishPolicy && typeof publishData.hybridPublishPolicy === 'object'
+    ? publishData.hybridPublishPolicy
+    : {};
+  const platform = publishData.platform || options.platform || existingPolicy.platform || '';
+  const backendAccountId = getPublishBackendAccountId(publishData);
+
+  return {
+    version: 1,
+    mode: existingPolicy.mode || 'page-automation-first',
+    platform,
+    contentType: getPublishContentTypeForAudit(publishData),
+    windowId,
+    accountId: options.accountId || publishData.accountId || publishData?.element?.accountId || '',
+    backendAccountId,
+    officialApiOnly: existingPolicy.officialApiOnly !== false,
+    allowPrivateApi: false,
+    pageAutomation: {
+      enabled: existingPolicy.pageAutomation?.enabled !== false,
+      visibleWindowRequired: existingPolicy.pageAutomation?.visibleWindowRequired !== false,
+      finalSubmitMode: existingPolicy.pageAutomation?.finalSubmitMode || 'delegated-after-consent'
+    },
+    riskControl: {
+      captcha: existingPolicy.riskControl?.captcha || 'show-visible-page',
+      loginExpired: existingPolicy.riskControl?.loginExpired || 'show-visible-page',
+      phoneVerify: existingPolicy.riskControl?.phoneVerify || 'show-visible-page'
+    },
+    audit: {
+      enabled: existingPolicy.audit?.enabled !== false,
+      store: HYBRID_PUBLISH_AUDIT_KEY
+    },
+    createdAt: existingPolicy.createdAt || Date.now()
+  };
+}
+
+function attachHybridPublishPolicy(publishData = {}, options = {}, windowId = null) {
+  if (!publishData || typeof publishData !== 'object') {
+    return publishData;
+  }
+
+  return {
+    ...publishData,
+    hybridPublishPolicy: buildHybridPublishPolicy(publishData, options, windowId)
+  };
+}
+
+function sanitizeHybridAuditDetails(details = {}) {
+  if (!details || typeof details !== 'object') {
+    return {};
+  }
+
+  const output = {};
+  for (const key of Object.keys(details).slice(0, 24)) {
+    const value = details[key];
+    if (/cookie|token|csrf|authorization|password|passwd|secret|session/i.test(key)) {
+      output[key] = '[已脱敏]';
+      continue;
+    }
+    if (value === null || value === undefined) {
+      output[key] = value;
+      continue;
+    }
+    if (typeof value === 'string') {
+      output[key] = value.length > 240 ? `${value.slice(0, 120)}... [length=${value.length}]` : value;
+      continue;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      output[key] = value;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      output[key] = `[array length=${value.length}]`;
+      continue;
+    }
+    output[key] = '[object]';
+  }
+  return output;
+}
+
+function recordHybridPublishAudit(rawEvent = {}) {
+  const windowId = Number(rawEvent.windowId);
+  const publishData = Number.isFinite(windowId) ? getWindowPublishData(windowId) : null;
+  const event = {
+    id: `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+    timestamp: Date.now(),
+    stage: String(rawEvent.stage || 'unknown').slice(0, 80),
+    platform: String(rawEvent.platform || publishData?.platform || '').slice(0, 40),
+    windowId: Number.isFinite(windowId) ? windowId : null,
+    accountId: String(rawEvent.accountId || publishData?.accountId || '').slice(0, 80),
+    backendAccountId: String(rawEvent.backendAccountId || getPublishBackendAccountId(publishData) || '').slice(0, 80),
+    contentType: String(rawEvent.contentType || getPublishContentTypeForAudit(publishData) || '').slice(0, 40),
+    title: String(rawEvent.title || getPublishTitleForAudit(publishData) || '').slice(0, 120),
+    details: sanitizeHybridAuditDetails(rawEvent.details || {})
+  };
+
+  const events = Array.isArray(globalStorage[HYBRID_PUBLISH_AUDIT_KEY])
+    ? globalStorage[HYBRID_PUBLISH_AUDIT_KEY]
+    : [];
+  events.push(event);
+  globalStorage[HYBRID_PUBLISH_AUDIT_KEY] = events.slice(-HYBRID_PUBLISH_AUDIT_LIMIT);
+  saveGlobalStorage();
+  console.log('[Hybrid Publish Audit]', summarizeGlobalStorageValue('hybrid_publish_audit_event', event));
+  return event;
+}
+
 function beginShutdown(source = 'unknown') {
   if (shutdownStarted) {
     return;
@@ -10228,13 +10351,26 @@ async function openManagedChildWindow(url, options = {}) {
         delete globalStorage[publishDataKey];
         console.log(`[Window Manager] 🧹 清理旧发布数据: ${publishDataKey}`);
       }
-      globalStorage[publishDataKey] = {
+      globalStorage[publishDataKey] = attachHybridPublishPolicy({
         ...options.publishData,
         windowId: newWindow.id,
         createdAt: options.publishData.createdAt || Date.now()
-      };
+      }, options, newWindow.id);
       rememberWindowPublishData(newWindow.id, globalStorage[publishDataKey]);
       console.log(`[Window Manager] ✅ 已预写入发布数据: ${publishDataKey}`);
+      recordHybridPublishAudit({
+        stage: 'window-created',
+        platform: globalStorage[publishDataKey].platform,
+        windowId: newWindow.id,
+        accountId: options.accountId,
+        details: {
+          url,
+          mode: globalStorage[publishDataKey].hybridPublishPolicy?.mode,
+          sessionType,
+          hasSessionData: !!options.sessionData,
+          hasCookies: !!options.publishData?.element?.cookies
+        }
+      });
     } else if (isBareToutiao && globalStorage[publishDataKey]) {
       delete globalStorage[publishDataKey];
       windowPublishDataMap.delete(newWindow.id);
@@ -11818,6 +11954,94 @@ ipcMain.handle('global-storage-clear', async () => {
   globalStorage = {};
   saveGlobalStorage(); // 持久化保存
   return { success: true };
+});
+
+function getSenderWindowId(event) {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  return senderWindow && !senderWindow.isDestroyed() ? senderWindow.id : null;
+}
+
+// ========== 混合发布策略 / 审计 ==========
+ipcMain.handle('hybrid-publish-get-policy', async (event, windowId) => {
+  const targetWindowId = Number(windowId || getSenderWindowId(event));
+  const publishData = Number.isFinite(targetWindowId) ? getWindowPublishData(targetWindowId) : null;
+  if (!publishData) {
+    return { success: false, error: '发布数据不存在', policy: null };
+  }
+
+  const policy = publishData.hybridPublishPolicy || buildHybridPublishPolicy(publishData, {}, targetWindowId);
+  return { success: true, policy };
+});
+
+ipcMain.handle('hybrid-publish-record-audit', async (event, payload = {}) => {
+  try {
+    const senderWindowId = getSenderWindowId(event);
+    const auditEvent = recordHybridPublishAudit({
+      ...payload,
+      windowId: payload.windowId || senderWindowId
+    });
+    return { success: true, event: auditEvent };
+  } catch (err) {
+    console.error('[Hybrid Publish Audit] 记录失败:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('hybrid-publish-get-audit-events', async (event, filters = {}) => {
+  const events = Array.isArray(globalStorage[HYBRID_PUBLISH_AUDIT_KEY])
+    ? globalStorage[HYBRID_PUBLISH_AUDIT_KEY]
+    : [];
+  const platform = filters.platform ? String(filters.platform) : '';
+  const windowId = Number(filters.windowId);
+  const data = events.filter(item => {
+    if (platform && item.platform !== platform) return false;
+    if (Number.isFinite(windowId) && item.windowId !== windowId) return false;
+    return true;
+  });
+  return { success: true, events: data };
+});
+
+ipcMain.handle('hybrid-publish-set-consent', async (event, payload = {}) => {
+  const platform = String(payload.platform || '').trim();
+  const accountId = String(payload.accountId || payload.backendAccountId || '').trim();
+  if (!platform || !accountId) {
+    return { success: false, error: 'platform/accountId 不能为空' };
+  }
+
+  const key = `${platform}:${accountId}`;
+  const consents = globalStorage[HYBRID_PUBLISH_CONSENT_KEY] && typeof globalStorage[HYBRID_PUBLISH_CONSENT_KEY] === 'object'
+    ? globalStorage[HYBRID_PUBLISH_CONSENT_KEY]
+    : {};
+  consents[key] = {
+    platform,
+    accountId,
+    delegatedPublish: payload.delegatedPublish !== false,
+    batchPublish: payload.batchPublish !== false,
+    visibleRiskControlRequired: payload.visibleRiskControlRequired !== false,
+    source: String(payload.source || 'local-ui').slice(0, 80),
+    updatedAt: Date.now()
+  };
+  globalStorage[HYBRID_PUBLISH_CONSENT_KEY] = consents;
+  saveGlobalStorage();
+  recordHybridPublishAudit({
+    stage: 'consent-updated',
+    platform,
+    accountId,
+    details: {
+      delegatedPublish: consents[key].delegatedPublish,
+      batchPublish: consents[key].batchPublish,
+      source: consents[key].source
+    }
+  });
+  return { success: true, consent: consents[key] };
+});
+
+ipcMain.handle('hybrid-publish-get-consent', async (event, platform, accountId) => {
+  const key = `${String(platform || '').trim()}:${String(accountId || '').trim()}`;
+  const consents = globalStorage[HYBRID_PUBLISH_CONSENT_KEY] && typeof globalStorage[HYBRID_PUBLISH_CONSENT_KEY] === 'object'
+    ? globalStorage[HYBRID_PUBLISH_CONSENT_KEY]
+    : {};
+  return { success: true, consent: consents[key] || null };
 });
 
 // 调试：将内容页面传来的文本保存到 userData/debug-dumps 目录
