@@ -150,7 +150,7 @@ let hasProcessed = false;
   // 显示操作提示横幅
   if (typeof showOperationBanner === 'function') {
     try {
-      showOperationBanner('正在自动发布中，请勿操作此页面...');
+      showOperationBanner('正在自动发布中，手动操作会暂停，停手后自动继续...');
       console.log(`${__LOG_PREFIX__} 📢 [step 4/4] showOperationBanner 已调用`);
     } catch (e) {
       console.error(`${__LOG_PREFIX__} ❌ [step 4/4] showOperationBanner 调用失败:`, e);

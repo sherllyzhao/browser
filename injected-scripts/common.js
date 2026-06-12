@@ -725,7 +725,10 @@ if (typeof window.uploadVideo === "function"
     //   - class$=suffix  匹配 class 中以 suffix 结尾的元素
     // 示例：waitForElement('class^=editor_container') 匹配 class="editor_container-abc123" 的元素
     window.waitForElement = function (selector, timeout = 30000, checkInterval = 200, ele = document) {
-        return new Promise((resolve, reject) => {
+        // 🚦 礼让门闸：步骤开始前若有真人操作，等用户停手再开始等待元素
+        // （计时在停手后才起算，避免暂停期间误触发超时；恢复后天然复查当前 DOM 状态）
+        const runWait = function () {
+            return new Promise((resolve, reject) => {
             const startTime = Date.now();
             let timeoutId;
 
@@ -820,6 +823,12 @@ if (typeof window.uploadVideo === "function"
 
             check();
         });
+        };
+
+        if (typeof window.waitForUserIdle === "function") {
+            return window.waitForUserIdle(undefined, { logPrefix: "[waitForElement]" }).then(runWait);
+        }
+        return runWait();
     };
 
     // 等待多个元素出现的通用函数（返回数组）
@@ -1616,6 +1625,11 @@ if (typeof window.uploadVideo === "function"
         const allowJsFallback = options.allowJsFallback === true;
         const target = options.target || resolveNativeClickTarget(element);
 
+        // 🚦 礼让门闸：点击前若有真人操作，等用户停手再继续（options.skipUserIdle 可跳过）
+        if (options.skipUserIdle !== true && typeof window.waitForUserIdle === "function") {
+            await window.waitForUserIdle(undefined, { logPrefix });
+        }
+
         if (!target) {
             return { success: false, message: "元素不存在" };
         }
@@ -1678,6 +1692,8 @@ if (typeof window.uploadVideo === "function"
                 : "";
 
             console.log(`${logPrefix} 🔍 nativeClick 坐标:`, x, y, "命中元素:", hitEl?.tagName, hitClass);
+            // 🚦 标记脚本忙碌：屏蔽本次原生点击产生的 isTrusted 事件，避免自我误判为人为干涉
+            if (typeof window.markScriptBusy === "function") window.markScriptBusy(500);
             const result = await window.browserAPI.nativeClick(x, y);
             console.log(`${logPrefix} 🔍 nativeClick 返回:`, JSON.stringify(result));
 
@@ -1720,7 +1736,16 @@ if (typeof window.uploadVideo === "function"
             return { success: false, message };
         }
 
+        // 🚦 礼让门闸：输入前若有真人操作，等用户停手再继续
+        if (options.skipUserIdle !== true && typeof window.waitForUserIdle === "function") {
+            await window.waitForUserIdle(undefined, { logPrefix });
+        }
+
         try {
+            // 🚦 标记脚本忙碌：屏蔽本次原生输入产生的 isTrusted 事件
+            if (typeof window.markScriptBusy === "function") {
+                window.markScriptBusy(Math.min(3000, 200 + value.length * 30));
+            }
             const result = await window.browserAPI.nativeInsertText(value);
             if (!result || !result.success) {
                 return {
@@ -3988,6 +4013,98 @@ if (typeof window.uploadVideo === "function"
         }
 
         console.log("[横幅] 🗑️ 操作提示横幅已移除");
+    };
+
+    // ===========================
+    // 🚦 用户活动礼让门闸（自动化运行时检测人为干涉，暂停后自动续接）
+    // ===========================
+    // 背景：脚本通过 browserAPI.nativeClick / nativeInsertText 走主进程 sendInputEvent，
+    //       产生的事件 isTrusted === true，与真人操作无法区分。因此引入"脚本忙碌窗口"：
+    //       脚本发起原生输入前置 markScriptBusy()，窗口内捕获的 isTrusted 事件视为脚本自身、忽略；
+    //       窗口外的 isTrusted 事件才算真人干涉。
+    // 机制：waitForUserIdle(idleMs) 在每个动作/等待步骤前调用——若刚有真人操作则阻塞，
+    //       直到停手 idleMs 毫秒；暂停时切横幅为"已暂停"，恢复时切回，下一步天然复查 DOM 状态。
+    (function initUserActivityGuard() {
+        if (window.__userActivityGuardReady__) return;
+        window.__userActivityGuardReady__ = true;
+
+        var state = {
+            lastUserActivityAt: 0,   // 最后一次真人操作时间戳（0 表示从未）
+            scriptBusyUntil: 0,      // 脚本忙碌窗口结束时间戳（此前的 isTrusted 事件忽略）
+            paused: false,           // 当前是否处于"已暂停"态
+            bannerSaved: null,       // 暂停时保存的原始横幅文案，恢复时切回
+        };
+        window.__activityGuardState__ = state;
+
+        // 原生输入触发的连带事件（如 nativeClick 引发的 focus/补充事件）可能稍晚于调用，
+        // 故脚本操作结束后再多屏蔽一段尾巴时间，避免误判为真人
+        var SCRIPT_BUSY_TAIL_MS = 600;
+
+        function onUserEvent(e) {
+            if (!e || e.isTrusted !== true) return;          // 只认浏览器可信事件
+            if (Date.now() < state.scriptBusyUntil) return;  // 脚本忙碌窗口内 → 是脚本自身的原生输入，忽略
+            state.lastUserActivityAt = Date.now();
+        }
+
+        // capture 阶段尽早捕获，避免页面 stopPropagation 吃掉事件
+        ["mousedown", "keydown", "wheel", "touchstart", "pointerdown"].forEach(function (type) {
+            try {
+                window.addEventListener(type, onUserEvent, { capture: true, passive: true });
+            } catch (_) {
+                window.addEventListener(type, onUserEvent, true);
+            }
+        });
+
+        // 脚本声明"我即将做原生输入"，在 durationMs（+尾巴）内屏蔽自身 isTrusted 事件
+        window.markScriptBusy = function (durationMs) {
+            var d = Number.isFinite(Number(durationMs)) ? Math.max(0, Number(durationMs)) : 300;
+            state.scriptBusyUntil = Math.max(state.scriptBusyUntil, Date.now() + d + SCRIPT_BUSY_TAIL_MS);
+        };
+
+        console.log("[礼让门闸] ✅ 用户活动监听已就绪（仅识别真人 isTrusted 操作）");
+    })();
+
+    /**
+     * 礼让门闸：若最近有真人操作，阻塞直到用户停手 idleMs 毫秒
+     * - 暂停期间切横幅为"已暂停，停手后自动继续"，恢复时切回原文案
+     * - 在每个动作/等待步骤前调用，实现"人为干涉就等等，停手后再继续"
+     * @param {number} idleMs - 判定"停手"所需的连续无操作时长，默认 4000
+     * @param {Object} [options] - { logPrefix }
+     */
+    window.waitForUserIdle = async function (idleMs, options) {
+        idleMs = Number.isFinite(Number(idleMs)) ? Number(idleMs) : 4000;
+        var state = window.__activityGuardState__;
+        if (!state) return;
+        var logPrefix = (options && options.logPrefix) || "[礼让门闸]";
+
+        while (true) {
+            // 从未检测到真人操作，或已停手足够久 → 放行
+            if (state.lastUserActivityAt === 0 || (Date.now() - state.lastUserActivityAt) >= idleMs) {
+                if (state.paused) {
+                    state.paused = false;
+                    // 仅当横幅仍存在时才切回原文案（避免在无横幅的页面凭空创建）
+                    if (state.bannerSaved && document.getElementById("__operation_banner__")
+                        && typeof window.showOperationBanner === "function") {
+                        window.showOperationBanner(state.bannerSaved);
+                    }
+                    console.log(logPrefix, "✅ 用户已停手，恢复自动发布并复查页面状态");
+                }
+                return;
+            }
+            // 仍在操作 → 进入/保持暂停态并切横幅
+            if (!state.paused) {
+                state.paused = true;
+                var bannerEl = document.getElementById("__operation_banner__");
+                // 仅在发布横幅已显示时切换文案；无横幅则静默暂停（不创建横幅）
+                if (bannerEl && typeof window.showOperationBanner === "function") {
+                    var cur = document.querySelector("#__operation_banner__ .__ob_text__");
+                    state.bannerSaved = cur ? cur.textContent : "正在自动发布中，手动操作会暂停，停手后自动继续...";
+                    window.showOperationBanner("检测到手动操作，已暂停自动发布，停手后自动继续...");
+                }
+                console.log(logPrefix, "⏸️ 检测到手动操作，暂停自动发布，等待用户停手");
+            }
+            await new Promise(function (r) { setTimeout(r, 300); });
+        }
     };
 
     console.log("[common.js] ✅ common.js 加载完成");

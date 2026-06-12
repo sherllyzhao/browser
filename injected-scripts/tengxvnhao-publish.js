@@ -50,7 +50,7 @@
 
     // 显示操作提示横幅
     if (typeof showOperationBanner === "function") {
-        showOperationBanner("正在自动发布中，请勿操作此页面...");
+        showOperationBanner("正在自动发布中，手动操作会暂停，停手后自动继续...");
     }
 
     // 变量声明（放在防重复检查之后）
