@@ -270,7 +270,9 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
       || host === 'weixin.qq.com'
       || host.endsWith('.weixin.qq.com')
       || host === 'wx.qq.com'
-      || host.endsWith('.wx.qq.com');
+      || host.endsWith('.wx.qq.com')
+      || host === 'qq.com'
+      || host.endsWith('.qq.com');
   };
 
   try {
@@ -281,7 +283,8 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
     return urlText.includes('douyin.com')
       || urlText.includes('channels.weixin.qq.com')
       || urlText.includes('weixin.qq.com')
-      || urlText.includes('wx.qq.com');
+      || urlText.includes('wx.qq.com')
+      || urlText.includes('qq.com');
   }
 }
 
