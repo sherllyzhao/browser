@@ -1285,11 +1285,41 @@
                 // 标题（带重试和验证）
                 try {
                 await retryOperation(async () => {
-                    const titleEles = await waitForElements(".n-input__textarea-el", 5000);
+                    // 🔴 增加备用选择器，兼容新浪不同版本的页面结构
+                    let titleEles = [];
+                    try {
+                        titleEles = await waitForElements(".n-input__textarea-el", 5000);
+                    } catch (e) {
+                        console.warn("[新浪发布] ⚠️ 未找到 .n-input__textarea-el，尝试备用选择器...");
+                        // 备用选择器1：textarea 标签
+                        const textareas = document.querySelectorAll("textarea");
+                        titleEles = Array.from(textareas);
+
+                        // 备用选择器2：input 标签
+                        if (titleEles.length === 0) {
+                            const inputs = document.querySelectorAll("input[type='text']");
+                            titleEles = Array.from(inputs);
+                        }
+
+                        // 备用选择器3：所有 input
+                        if (titleEles.length === 0) {
+                            const allInputs = document.querySelectorAll("input");
+                            titleEles = Array.from(allInputs);
+                        }
+
+                        console.log(`[新浪发布] 📝 使用备用选择器找到 ${titleEles.length} 个输入框`);
+
+                        // 🔴 如果所有选择器都找不到元素，抛出错误让 retryOperation 重试
+                        if (titleEles.length === 0) {
+                            throw new Error('找不到标题/简介输入框（所有选择器都失败）');
+                        }
+                    }
+
                     if (titleEles.length > 0) {
                         // 找到titleEles中placeholder包括标题的元素
                         for (const titleEle of titleEles) {
-                            if (titleEle.placeholder.includes("标题")) {
+                            const placeholder = titleEle.placeholder || titleEle.getAttribute('placeholder') || '';
+                            if (placeholder.includes("标题")) {
                                 try {
                                     // 🔴 检查标题是否已填写（防止从验证页返回时重复填写）
                                     const currentValue = (titleEle.value || '').trim();
@@ -1342,7 +1372,7 @@
                                     console.log("[新浪发布] ❌ 设置标题失败:", e);
                                     throw e; // 🔑 重新抛出错误以便 retryOperation 重试
                                 }
-                            } else if (titleEle.placeholder.includes("导语")) {
+                            } else if (placeholder.includes("导语") || placeholder.includes("简介")) {
                                 //设置简介（带重试）
                                 try {
                                     // 首先检查是否已经填写过（通过全局标记）
@@ -1434,8 +1464,37 @@
                 }
 
                 // 设置封面（使用主进程下载绕过跨域）
-                await (async () => {
+                // 🔴 整个封面上传流程包装在重试逻辑中，任何元素找不到都会重试
+                await retryOperation(async () => {
                     try {
+                        // 🔴 先检查是否已经有封面（防止重复上传）
+                        const existingCover = document.querySelector(".cover-preview .cover-img");
+                        if (existingCover && existingCover.getAttribute("src")) {
+                            console.log("[新浪发布] ✅ 检测到已有封面图片，跳过上传步骤");
+                            // 继续发布流程
+                            await delay(2000);
+                            const publishBtns = document.querySelectorAll(".common-footer .footer-item button");
+                            let publishBtn = null;
+                            let saveBtn = null;
+                            if (publishBtns.length > 0) {
+                                publishBtns.forEach(btn => {
+                                    if (btn.textContent.trim() === "下一步") {
+                                        publishBtn = btn;
+                                    } else if (btn.textContent.trim().includes("保存")) {
+                                        saveBtn = btn;
+                                    }
+                                });
+                            }
+                            if (saveBtn) {
+                                saveBtn.click();
+                            }
+                            await delay(5000);
+                            if (publishBtn) {
+                                await tryUploadImage(); // 跳转到发布流程
+                            }
+                            return;
+                        }
+
                         const {blob, contentType} = await downloadFile(pathImage, "image/png");
                         var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
                         // 选中本地上传（点击"选择封面"按钮）
@@ -1461,14 +1520,14 @@
                                 }
                                 console.log("🚀 ~  ~ coverChangeBtn: ", coverChangeBtn);
                                 if (!coverChangeBtn) {
-                                    console.log('[新浪发布]：找不到替换封面按钮');
+                                    throw new Error('找不到替换封面按钮');
                                 }
                                 coverChangeBtn.click();
 
                             } else {
                                 const uploadBtn = document.querySelector(".cover-empty");
                                 if (!uploadBtn) {
-                                    console.log('[新浪发布]：找不到封面按钮');
+                                    throw new Error('找不到封面按钮');
                                 }
                                 uploadBtn.click();
                             }
@@ -1476,7 +1535,7 @@
                             console.log("[新浪发布] 未找到替换封面图按钮，尝试查找选择封面按钮...");
                             const uploadBtn = document.querySelector(".cover-empty");
                             if (!uploadBtn) {
-                                console.log('[新浪发布]：找不到封面按钮（既没有替换封面图按钮，也没有选择封面按钮）');
+                                throw new Error('找不到封面按钮（既没有替换封面图按钮，也没有选择封面按钮）');
                             }
                             uploadBtn.click();
                         }
@@ -1486,7 +1545,7 @@
                         const uploadModal = await waitForElement(".n-dialog", 10000, 500);
                         console.log("🚀 ~  ~ uploadModal: ", uploadModal);
                         if (!uploadModal) {
-                            console.log('[新浪发布]：上传封面弹窗未出现（等待10秒超时）')
+                            throw new Error('上传封面弹窗未出现（等待10秒超时）');
                         }
 
                         await delay(1000);
@@ -2196,15 +2255,20 @@
                             await tryUploadImage();
                         }  // if (tabClickSuccess) 结束
                     } catch (error) {
-                        console.log("[新浪发布] ❌ 封面下载失败:", error);
-                        stopErrorListener();
-                        const publishId = dataObj?.video?.dyPlatform?.id;
-                        if (publishId) {
-                            await sendStatisticsError(publishId, error.message || "封面下载失败", "新浪发布");
-                        }
-                        await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
+                        console.log("[新浪发布] ❌ 封面上传流程出错:", error);
+                        // 🔴 重新抛出错误，让 retryOperation 重试
+                        throw error;
                     }
-                })();
+                }, 3, 2000).catch(async (coverError) => {
+                    // 🔴 重试3次后仍然失败，上报错误
+                    console.error("[新浪发布] ❌ 封面上传失败（重试3次后）:", coverError);
+                    stopErrorListener();
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, coverError.message || "封面上传失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("封面上传失败，刷新数据", 1000);
+                });
                 fillFormRunning = false;
                 window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');

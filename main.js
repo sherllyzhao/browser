@@ -9862,6 +9862,22 @@ async function openManagedChildWindow(url, options = {}) {
       if (effectiveSessionData) {
         console.log('[Window Manager] ========== 检测到 sessionData，开始自动清空并恢复会话数据 ==========');
 
+        // 🔒 核心修复：将清空+恢复操作放入 session 队列中串行执行
+        // 问题：多个发布窗口同时操作同一个 session，导致 cookies 相互覆盖
+        // 解决：使用队列确保对同一 session 的操作按顺序执行
+        const partitionName = `persist:${options.platform}_${options.accountId}`;
+        const windowLabel = `窗口[即将创建]`; // 🔴 修复：此时 newWindow 还未创建，使用临时标识符
+
+        // 🚀 优化1：检查是否已恢复过相同的 sessionData（避免重复恢复）
+        if (isSessionAlreadyRestored(partitionName, effectiveSessionData)) {
+          console.log(`[Window Manager][${windowLabel}] 🎯 Session 已恢复过相同数据，直接跳过（性能优化）`);
+          publishLoadingWindow?.finishStep?.(0);
+          publishLoadingWindow?.finishStep?.(1);
+          publishLoadingWindow?.activateStep?.(2);
+        } else {
+          // 需要恢复，放入队列执行
+          await executeInSessionQueue(partitionName, async () => {
+
         // 🛡️ 本地优先策略：检查本地 session 是否已有有效登录态
         // 场景：用户在发布窗口手动登录后，新 cookies 可能未及时同步到后台
         // 如果本地登录态有效且账号匹配，跳过 sessionData 覆盖，避免擦掉本地最新登录态
@@ -9953,6 +9969,8 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.finishStep?.(0);
           publishLoadingWindow?.finishStep?.(1);
           publishLoadingWindow?.activateStep?.(2);
+          // 🚀 优化：标记本地登录态有效，避免后续窗口重复检查
+          markSessionRestored(partitionName, effectiveSessionData);
         } else {
           try {
             // 1. 清空该账号的所有 cookies
@@ -10240,6 +10258,9 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.finishStep?.(1);
           publishLoadingWindow?.activateStep?.(2);
 
+          // 🚀 优化：记录恢复状态到缓存，避免后续窗口重复恢复
+          markSessionRestored(partitionName, effectiveSessionData);
+
           console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
           } catch (err) {
             console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
@@ -10247,6 +10268,11 @@ async function openManagedChildWindow(url, options = {}) {
             // 不影响窗口创建，继续执行
           }
         } // end of else (!shouldSkipSessionRestore)
+
+        }, `${windowLabel}-session-restore`); // 🔒 executeInSessionQueue 闭合
+
+        console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成（已排队执行）==========`);
+        } // end of else (需要恢复)
       }
     } else if (options.useTemporarySession) {
       // 创建一个唯一的临时 session（不持久化，窗口关闭后数据丢失）
@@ -13095,6 +13121,161 @@ async function saveWindowSessionToBackend(targetWindow, windowId, extraDebugInfo
 // ========== 多账号管理功能 ==========
 // 账号 Session 缓存（避免重复创建）
 const accountSessions = new Map();
+
+// 🔒 Session 操作队列（解决多窗口并发竞态）
+// 问题：多个发布窗口同时清空+恢复同一个 session 的 cookies，导致相互覆盖
+// 解决：对每个 session partition 使用操作队列，确保清空+恢复操作串行执行
+const sessionOperationQueues = new Map();
+
+// 🚀 Session 恢复状态缓存（优化：避免重复恢复）
+// 记录每个 session 最近一次成功恢复的 sessionData 指纹
+const sessionRestoreCache = new Map();
+
+/**
+ * 计算 sessionData 的指纹（用于判断是否需要重复恢复）
+ * @param {object|string} sessionData - 会话数据
+ * @returns {string} 指纹字符串
+ */
+function getSessionDataFingerprint(sessionData) {
+  try {
+    let cookiesArray = [];
+    let data = sessionData;
+
+    // 解析 sessionData
+    if (typeof data === 'string') {
+      data = JSON.parse(data);
+      if (typeof data === 'string') {
+        data = JSON.parse(data);
+      }
+    }
+
+    // 提取 cookies
+    if (Array.isArray(data)) {
+      if (data.length > 0 && data[0]?.cookies) {
+        cookiesArray = data[0].cookies;
+      } else {
+        cookiesArray = data;
+      }
+    } else if (data?.cookies) {
+      cookiesArray = data.cookies;
+    }
+
+    // 计算指纹：关键 cookie 的 name+value 组合
+    const keyCookies = cookiesArray
+      .filter(c => ['sessionid', 'sessionid_ss', 'web_session', 'BDUSS', 'pass_ticket', 'wxuin'].includes(c.name))
+      .map(c => `${c.name}:${String(c.value || '').substring(0, 8)}`)
+      .sort()
+      .join('|');
+
+    return keyCookies || 'empty';
+  } catch (err) {
+    return 'error';
+  }
+}
+
+/**
+ * 检查 session 是否已恢复过相同的 sessionData
+ * @param {string} partitionName - session 分区名
+ * @param {object|string} sessionData - 会话数据
+ * @returns {boolean} 是否已恢复
+ */
+function isSessionAlreadyRestored(partitionName, sessionData) {
+  const cache = sessionRestoreCache.get(partitionName);
+  if (!cache) return false;
+
+  const currentFingerprint = getSessionDataFingerprint(sessionData);
+  const cachedFingerprint = cache.fingerprint;
+  const cacheAge = Date.now() - cache.timestamp;
+
+  // 指纹相同 且 缓存未过期（5分钟内）
+  const isMatch = currentFingerprint === cachedFingerprint && cacheAge < 5 * 60 * 1000;
+
+  if (isMatch) {
+    console.log(`[Session Cache][${partitionName}] ✅ 命中缓存，跳过重复恢复 (age=${Math.round(cacheAge/1000)}s, fingerprint=${currentFingerprint})`);
+  }
+
+  return isMatch;
+}
+
+/**
+ * 记录 session 恢复状态
+ * @param {string} partitionName - session 分区名
+ * @param {object|string} sessionData - 会话数据
+ */
+function markSessionRestored(partitionName, sessionData) {
+  const fingerprint = getSessionDataFingerprint(sessionData);
+  sessionRestoreCache.set(partitionName, {
+    fingerprint,
+    timestamp: Date.now()
+  });
+  console.log(`[Session Cache][${partitionName}] 📝 记录恢复状态 (fingerprint=${fingerprint})`);
+}
+
+/**
+ * 获取 session 的操作队列
+ * @param {string} partitionName - session 分区名
+ * @returns {Promise<any>[]} 队列数组
+ */
+function getSessionOperationQueue(partitionName) {
+  if (!sessionOperationQueues.has(partitionName)) {
+    sessionOperationQueues.set(partitionName, []);
+  }
+  return sessionOperationQueues.get(partitionName);
+}
+
+/**
+ * 在 session 操作队列中执行异步操作（串行）
+ * @param {string} partitionName - session 分区名
+ * @param {Function} operation - 要执行的异步操作
+ * @param {string} label - 操作标签（用于日志）
+ * @returns {Promise<any>} 操作结果
+ */
+async function executeInSessionQueue(partitionName, operation, label = 'unknown') {
+  const queue = getSessionOperationQueue(partitionName);
+  const queuePosition = queue.length + 1;
+
+  // 创建一个 promise，等待前面所有操作完成
+  const previousOperation = queue.length > 0 ? queue[queue.length - 1] : Promise.resolve();
+
+  // 创建当前操作的 promise
+  const currentOperation = previousOperation
+    .catch(() => {
+      // 前一个操作失败不影响当前操作
+      console.warn(`[Session Queue][${partitionName}] ⚠️ 前序操作失败，继续执行: ${label}`);
+    })
+    .then(async () => {
+      const startTime = Date.now();
+      console.log(`[Session Queue][${partitionName}] 🚀 [${queuePosition}/${queue.length}] 开始执行: ${label}`);
+      try {
+        const result = await operation();
+        const duration = Date.now() - startTime;
+        console.log(`[Session Queue][${partitionName}] ✅ [${queuePosition}/${queue.length}] 完成 (${duration}ms): ${label}`);
+        return result;
+      } catch (err) {
+        const duration = Date.now() - startTime;
+        console.error(`[Session Queue][${partitionName}] ❌ [${queuePosition}/${queue.length}] 失败 (${duration}ms): ${label}`, err.message);
+        throw err;
+      }
+    });
+
+  // 将当前操作加入队列
+  queue.push(currentOperation);
+
+  if (queuePosition > 1) {
+    console.log(`[Session Queue][${partitionName}] ⏳ 队列中有 ${queuePosition - 1} 个操作正在执行，当前操作将等待...`);
+  }
+
+  // 清理已完成的操作（保持队列不会无限增长）
+  currentOperation.finally(() => {
+    const index = queue.indexOf(currentOperation);
+    if (index > -1 && queue.length > 10) {
+      // 只保留最近 10 个操作
+      queue.splice(0, queue.length - 10);
+    }
+  });
+
+  return currentOperation;
+}
 
 // 生成唯一账号 ID
 function generateAccountId(platform) {
