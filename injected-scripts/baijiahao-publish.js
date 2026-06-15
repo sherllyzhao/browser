@@ -89,6 +89,119 @@
   const stopErrorListener = () => errorListener?.stop();
   const getLatestError = () => errorListener?.getLatestError() || null;
 
+  // ===========================
+  // 📱 短信验证检测器
+  // ===========================
+  let smsVerificationObserver = null;
+  let smsDetected = false; // 防止重复上报
+
+  /**
+   * 检测短信验证弹窗
+   * 使用 MutationObserver 监听页面变化，检测是否出现短信验证相关的元素
+   */
+  const startSmsVerificationDetector = () => {
+    if (smsVerificationObserver) {
+      console.log('[百家号发布] ⚠️ 短信验证检测器已启动');
+      return;
+    }
+
+    const keywords = [
+      '短信验证', '验证码', '发送验证码', '手机验证',
+      '安全验证', '身份验证', '输入验证码', '获取验证码',
+      '验证手机', '短信校验'
+    ];
+
+    console.log('[百家号发布] 🔍 启动短信验证检测器，监听关键词:', keywords);
+
+    smsVerificationObserver = new MutationObserver((mutations) => {
+      if (smsDetected) return; // 已检测到，不再重复处理
+
+      for (const mutation of mutations) {
+        if (mutation.addedNodes.length) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === 1) { // Element node
+              const text = node.textContent || '';
+
+              // 检查是否包含关键字
+              const matchedKeyword = keywords.find(keyword => text.includes(keyword));
+              if (matchedKeyword) {
+                // 检查是否是弹窗或对话框
+                const isModal = node.classList?.contains('cheetah-modal') ||
+                              node.classList?.contains('cheetah-dialog') ||
+                              node.classList?.contains('cheetah-modal-wrap') ||
+                              node.querySelector?.('.cheetah-modal') ||
+                              node.querySelector?.('.cheetah-dialog') ||
+                              node.closest?.('.cheetah-modal') ||
+                              node.closest?.('.cheetah-dialog') ||
+                              node.closest?.('.cheetah-modal-wrap');
+
+                if (isModal) {
+                  console.log('[百家号发布] 🚨 检测到短信验证弹窗！');
+                  console.log('[百家号发布] 📝 匹配关键词:', matchedKeyword);
+                  console.log('[百家号发布] 📄 弹窗内容:', text.substring(0, 200));
+                  handleSmsVerification(text);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    smsVerificationObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    console.log('[百家号发布] ✅ 短信验证检测器已启动');
+  };
+
+  /**
+   * 停止短信验证检测器
+   */
+  const stopSmsVerificationDetector = () => {
+    if (smsVerificationObserver) {
+      smsVerificationObserver.disconnect();
+      smsVerificationObserver = null;
+      console.log('[百家号发布] 🛑 短信验证检测器已停止');
+    }
+  };
+
+  /**
+   * 处理短信验证检测
+   */
+  const handleSmsVerification = async (text) => {
+    if (smsDetected) return; // 防止重复处理
+    smsDetected = true;
+
+    console.log('[百家号发布] 📱 检测到需要短信验证');
+    console.log('[百家号发布] 📄 弹窗内容:', text);
+
+    // 停止错误监听器和短信检测器
+    stopErrorListener();
+    stopSmsVerificationDetector();
+
+    // 显示提示横幅
+    if (typeof showOperationBanner === 'function') {
+      showOperationBanner('⚠️ 检测到需要短信验证，请手动完成验证后重新发布', 'warning');
+    }
+
+    // 上报错误
+    const publishId = window.__AUTH_DATA__?.message?.video?.dyPlatform?.id;
+    if (publishId) {
+      console.log('[百家号发布] 📤 上报短信验证错误...');
+      await sendStatisticsError(publishId, '需要短信验证，请手动完成验证后重试', '百家号发布');
+    } else {
+      console.log('[百家号发布] ⚠️ 无 publishId，跳过上报');
+    }
+
+    // 不立即关闭窗口，给用户5秒时间看到提示
+    console.log('[百家号发布] ⏳ 5秒后关闭窗口...');
+    await delay(5000);
+    await closeWindowWithMessage('需要短信验证，刷新数据', 1000);
+  };
+
   // 获取窗口专属的发布成功数据 key
   const getPublishSuccessKey = () => {
     const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || 'default'}`;
@@ -348,12 +461,16 @@
     }
     fillFormRunning = true;
 
+    // 🔑 启动短信验证检测器（在填写表单前就开始监听）
+    startSmsVerificationDetector();
+
     try {
       const pathImage = dataObj?.video?.video?.cover;
       console.log("🚀 ~ fillFormData ~ pathImage: ", pathImage);
       if (!pathImage) {
         // alert('No cover image found');
         fillFormRunning = false;
+        stopSmsVerificationDetector(); // 停止检测器
         return;
       }
 
@@ -676,6 +793,7 @@
                           if (result.type === 'error') {
                             console.log(`[百家号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
                             stopErrorListener();
+                            stopSmsVerificationDetector();
                             const publishId = dataObj.video?.dyPlatform?.id;
                             if (publishId) {
                               await sendStatisticsError(publishId, result.message, '百家号发布');
@@ -716,6 +834,7 @@
                             } else {
                               console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                               stopErrorListener();
+                              stopSmsVerificationDetector();
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
                                 await sendStatisticsError(publishId, '找不到提交图片按钮', '百家号发布');
@@ -810,6 +929,7 @@
                                         // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
                                         console.log('[百家号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
                                         stopErrorListener();
+                                        stopSmsVerificationDetector();
                                       } else {
                                         console.error('[百家号发布] ❌ 未找到确定按钮');
                                       }
@@ -826,6 +946,7 @@
                                 if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
                                   console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
                                   stopErrorListener();
+                                  stopSmsVerificationDetector();
                                   const publishIdForError = dataObj.video?.dyPlatform?.id;
                                   if (publishIdForError) {
                                     await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽', '百家号发布');
@@ -863,6 +984,7 @@
                               }else{
                                 console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
                                 stopErrorListener();
+                                stopSmsVerificationDetector();
                                 const publishId = dataObj.video?.dyPlatform?.id;
                                 if (publishId) {
                                   await sendStatisticsError(publishId, '发布按钮不可用', '百家号发布');
@@ -885,6 +1007,7 @@
                             if (errorMessage) {
                               console.log(`[百家号发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
                               stopErrorListener(); // 停止监听
+                              stopSmsVerificationDetector();
                               const publishId = dataObj.video?.dyPlatform?.id;
                               console.log(`[百家号发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
                               console.log(`[百家号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
@@ -918,6 +1041,7 @@
                               } else {
                                 console.error('[百家号发布] ❌ 无法找到上传输入框，无法重试');
                                 stopErrorListener();
+                                stopSmsVerificationDetector();
                                 const publishId = dataObj.video?.dyPlatform?.id;
                                 if (publishId) {
                                   await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '百家号发布');
@@ -928,6 +1052,7 @@
                               // 超过最大重试次数
                               console.error('[百家号发布] ❌ 图片上传重试次数已用尽');
                               stopErrorListener();
+                              stopSmsVerificationDetector();
                               const publishId = dataObj.video?.dyPlatform?.id;
                               if (publishId) {
                                 await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '百家号发布');
@@ -948,6 +1073,7 @@
             } catch (error) {
               console.log('[百家号发布] ❌ 封面下载失败:', error);
               stopErrorListener();
+              stopSmsVerificationDetector();
               const publishId = dataObj?.video?.dyPlatform?.id;
               if (publishId) {
                 await sendStatisticsError(publishId, error.message || '封面下载失败', '百家号发布');
@@ -964,6 +1090,9 @@
     } catch (error) {
       // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
       console.error('[百家号发布] fillFormData 错误:', error);
+      // 停止检测器
+      stopErrorListener();
+      stopSmsVerificationDetector();
       // 发送错误上报
       const publishId = dataObj?.video?.dyPlatform?.id;
       if (publishId) {
@@ -1018,6 +1147,7 @@
     if (publishErrorMsg) {
       console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
       stopErrorListener();
+      stopSmsVerificationDetector();
       const publishId = dataObj.video?.dyPlatform?.id;
       if (publishId) {
         console.log('[百家号发布] 📤 调用失败接口...');
@@ -1028,6 +1158,7 @@
     } else {
       console.log('[百家号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
       stopErrorListener();
+      stopSmsVerificationDetector();
       return true;
     }
   }
