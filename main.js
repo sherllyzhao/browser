@@ -7765,6 +7765,153 @@ app.whenReady().then(async () => {
     console.error('[Main] ❌ 清除 Cookies 快捷键注册失败，可能被占用');
   }
 
+  // 注册全局快捷键清除整个数据目录 (Ctrl+Alt+D)
+  console.log('[Main] 尝试注册清除数据目录快捷键: Ctrl+Alt+D');
+  const registerClearDataResult = globalShortcut.register('CommandOrControl+Alt+D', safeAsyncHandler('Clear Data Directory shortcut', async () => {
+    console.log('[Clear Data] ========== 清除数据目录快捷键触发 ==========');
+
+    const { dialog } = require('electron');
+    const fsExtra = require('fs-extra');
+
+    // 确认对话框
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['取消', '清除数据目录'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '清除数据目录',
+      message: '确定要清除整个数据目录吗？',
+      detail: '此操作将删除以下内容：\n\n• 所有平台的登录状态（Cookies）\n• localStorage / sessionStorage\n• 缓存文件\n• 全局存储数据（global-storage.json）\n\n删除后需要重新登录所有平台。\n\n⚠️ 此操作不可恢复！'
+    });
+
+    if (result.response === 0) {
+      console.log('[Clear Data] 用户取消操作');
+      return;
+    }
+
+    console.log('[Clear Data] 用户确认清除，开始执行...');
+
+    try {
+      // 确定所有可能的数据目录路径（开发版 + 便携版）
+      const currentDataDir = app.getPath('userData');
+      const portableDataDir = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
+      const installedDataDir = path.join(app.getPath('appData'), 'yunying-zhushou');
+
+      // 去重并过滤存在的目录
+      const dataDirs = Array.from(new Set([currentDataDir, portableDataDir, installedDataDir]))
+        .filter(dir => fsExtra.existsSync(dir));
+
+      console.log('[Clear Data] 当前数据目录:', currentDataDir);
+      console.log('[Clear Data] 找到的所有数据目录:', dataDirs);
+
+      if (dataDirs.length === 0) {
+        console.log('[Clear Data] 没有找到数据目录，无需清除');
+        await dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: '清除完成',
+          message: '没有找到数据目录，无需清除',
+          buttons: ['确定']
+        });
+        return;
+      }
+
+      // 创建临时批处理脚本（应用退出后删除所有数据目录）
+      const tempBatPath = path.join(require('os').tmpdir(), `clear-data-${Date.now()}.bat`);
+      const deleteCommands = dataDirs.map(dir => `
+echo 正在删除: ${dir}
+rd /s /q "${dir}"
+if exist "${dir}" (
+  echo   删除失败: ${dir}
+) else (
+  echo   删除成功: ${dir}
+)
+`).join('\n');
+
+      const batContent = `@echo off
+chcp 65001 >nul
+echo ========================================
+echo 运营助手数据清理脚本
+echo ========================================
+echo.
+echo 等待运营助手完全退出...
+timeout /t 3 /nobreak >nul
+
+echo 强制结束可能残留的进程...
+taskkill /f /im "运营助手.exe" 2>nul
+taskkill /f /im "资海云运营助手.exe" 2>nul
+taskkill /f /im "yunying-zhushou.exe" 2>nul
+timeout /t 1 /nobreak >nul
+
+echo.
+${deleteCommands}
+echo.
+echo ========================================
+echo 清理完成
+echo ========================================
+echo 按任意键退出...
+pause >nul
+del "%~f0"
+`;
+
+      console.log('[Clear Data] 创建清理脚本:', tempBatPath);
+      fs.writeFileSync(tempBatPath, batContent, 'utf8');
+
+      // 成功提示
+      const dirList = dataDirs.map((dir, i) => `${i + 1}. ${dir}`).join('\n');
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: '准备清除',
+        message: '以下数据目录将在应用退出后自动删除',
+        detail: `${dirList}\n\n程序将在 2 秒后关闭，后台脚本会自动删除这些目录。\n\n删除完成后，请手动重新打开运营助手。`,
+        buttons: ['确定']
+      });
+
+      // 启动清理脚本（显示窗口，方便查看删除结果）
+      console.log('[Clear Data] 启动清理脚本...');
+      const { spawn } = require('child_process');
+      spawn('cmd.exe', ['/c', tempBatPath], {
+        detached: true,
+        stdio: 'ignore'
+        // 不设置 windowsHide，让用户看到删除过程
+      }).unref();
+
+      // 关闭应用
+      console.log('[Clear Data] 准备关闭应用...');
+      setTimeout(() => {
+        app.quit();
+      }, 2000);
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: '清除成功',
+        message: '数据目录已清除',
+        detail: '所有登录状态和缓存已删除。\n\n程序将在 2 秒后自动关闭，请手动重新打开运营助手。',
+        buttons: ['确定']
+      });
+
+      // 6. 关闭应用（让用户手动重启）
+      console.log('[Clear Data] 准备关闭应用...');
+      setTimeout(() => {
+        app.quit();
+      }, 2000);
+
+    } catch (error) {
+      console.error('[Clear Data] ❌ 清除失败:', error);
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: '清除失败',
+        message: '清除数据目录时出错',
+        detail: `错误信息：${error.message}\n\n请手动删除以下目录：\n${isPortable ? path.join(process.env.LOCALAPPDATA, '运营助手-Portable') : path.join(app.getPath('appData'), '运营助手')}`,
+        buttons: ['确定']
+      });
+    }
+  }));
+
+  if (registerClearDataResult) {
+    console.log('[Main] ✅ 清除数据目录快捷键注册成功 (Ctrl+Alt+D)');
+  } else {
+    console.error('[Main] ❌ 清除数据目录快捷键注册失败，可能被占用');
+  }
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
       showOrCreateMainWindow('app-activate');

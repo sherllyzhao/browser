@@ -297,6 +297,7 @@ const publishData = await window.browserAPI.getGlobalData(`publish_data_window_$
 | 快捷键 | 功能 |
 |--------|------|
 | `Ctrl+Alt+C` | 清除所有 Cookies |
+| `Ctrl+Alt+D` | 清除整个数据目录 |
 
 ## 常见问题
 
