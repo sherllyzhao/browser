@@ -1501,7 +1501,9 @@
       return;
     }
     fillFormRunning = true;
-    try {
+
+    // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
+    const executeAllFormSteps = async () => {
       const rawTitle = dataObj?.video?.video?.title || dataObj?.element?.title || '';
       const intro = dataObj?.video?.video?.intro || dataObj?.element?.intro || '';
       const rawContent = dataObj?.video?.video?.content || dataObj?.element?.content || intro;
@@ -1595,11 +1597,19 @@
       }
 
       await publishArticle(dataObj);
-    } catch (e) {
-      console.error(`${LOG_PREFIX} ❌ 填写表单失败:`, e);
+    };
+    // ===== 原有逻辑结束 =====
+
+    // 🔴 最外层兜底重试：即使单步骤重试都失败，外层还会重试整个流程2次
+    try {
+      await retryOperation(executeAllFormSteps, 2, 3000);
+      console.log('[头条发布] ✅ 所有表单填写完成');
+    } catch (finalError) {
+      console.error('[头条发布] ❌ 填表流程失败（外层重试2次后）:', finalError);
+      stopErrorListener?.();
       const publishId = dataObj?.video?.dyPlatform?.id;
       if (publishId && typeof sendStatisticsError === 'function') {
-        await sendStatisticsError(publishId, e.message || '填写表单失败', '头条发布', e);
+        await sendStatisticsError(publishId, finalError.message || '填写表单失败', '头条发布', finalError);
       }
       await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
     } finally {

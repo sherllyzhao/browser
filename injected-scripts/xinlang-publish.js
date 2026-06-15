@@ -1282,38 +1282,41 @@
 
             setTimeout(async () => {
                 startErrorListener();
-                // 标题（带重试和验证）
-                try {
-                await retryOperation(async () => {
-                    // 🔴 增加备用选择器，兼容新浪不同版本的页面结构
-                    let titleEles = [];
+
+                // 🔴 将整个填表流程包装在大的重试逻辑中（最外层兜底，避免单步骤失败导致整个流程中断）
+                const fillAllFormFields = async () => {
+                    // 标题（带重试和验证）
                     try {
-                        titleEles = await waitForElements(".n-input__textarea-el", 5000);
-                    } catch (e) {
-                        console.warn("[新浪发布] ⚠️ 未找到 .n-input__textarea-el，尝试备用选择器...");
-                        // 备用选择器1：textarea 标签
-                        const textareas = document.querySelectorAll("textarea");
-                        titleEles = Array.from(textareas);
+                    await retryOperation(async () => {
+                        // 🔴 增加备用选择器，兼容新浪不同版本的页面结构
+                        let titleEles = [];
+                        try {
+                            titleEles = await waitForElements(".n-input__textarea-el", 5000);
+                        } catch (e) {
+                            console.warn("[新浪发布] ⚠️ 未找到 .n-input__textarea-el，尝试备用选择器...");
+                            // 备用选择器1：textarea 标签
+                            const textareas = document.querySelectorAll("textarea");
+                            titleEles = Array.from(textareas);
 
-                        // 备用选择器2：input 标签
-                        if (titleEles.length === 0) {
-                            const inputs = document.querySelectorAll("input[type='text']");
-                            titleEles = Array.from(inputs);
+                            // 备用选择器2：input 标签
+                            if (titleEles.length === 0) {
+                                const inputs = document.querySelectorAll("input[type='text']");
+                                titleEles = Array.from(inputs);
+                            }
+
+                            // 备用选择器3：所有 input
+                            if (titleEles.length === 0) {
+                                const allInputs = document.querySelectorAll("input");
+                                titleEles = Array.from(allInputs);
+                            }
+
+                            console.log(`[新浪发布] 📝 使用备用选择器找到 ${titleEles.length} 个输入框`);
+
+                            // 🔴 如果所有选择器都找不到元素，抛出错误让 retryOperation 重试
+                            if (titleEles.length === 0) {
+                                throw new Error('找不到标题/简介输入框（所有选择器都失败）');
+                            }
                         }
-
-                        // 备用选择器3：所有 input
-                        if (titleEles.length === 0) {
-                            const allInputs = document.querySelectorAll("input");
-                            titleEles = Array.from(allInputs);
-                        }
-
-                        console.log(`[新浪发布] 📝 使用备用选择器找到 ${titleEles.length} 个输入框`);
-
-                        // 🔴 如果所有选择器都找不到元素，抛出错误让 retryOperation 重试
-                        if (titleEles.length === 0) {
-                            throw new Error('找不到标题/简介输入框（所有选择器都失败）');
-                        }
-                    }
 
                     if (titleEles.length > 0) {
                         // 找到titleEles中placeholder包括标题的元素
@@ -2269,6 +2272,22 @@
                     }
                     await closeWindowWithMessage("封面上传失败，刷新数据", 1000);
                 });
+                }; // fillAllFormFields 函数结束
+
+                // 🔴 执行整个填表流程，带最外层兜底重试（重试2次，每次间隔3秒）
+                try {
+                    await retryOperation(fillAllFormFields, 2, 3000);
+                    console.log("[新浪发布] ✅ 所有表单填写完成");
+                } catch (finalError) {
+                    console.error("[新浪发布] ❌ 填表流程失败（重试2次后）:", finalError);
+                    stopErrorListener();
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, finalError.message || "填写表单失败", "新浪发布");
+                    }
+                    await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
+                }
+
                 fillFormRunning = false;
                 window.__XL_fillFormRunning = false; // 🔴 释放全局锁
                 // alert('Automation process completed');

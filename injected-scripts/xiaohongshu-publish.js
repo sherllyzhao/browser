@@ -717,7 +717,8 @@ if (location.search.includes("published=true")) {
         }
         fillFormRunning = true;
 
-        try {
+        // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
+        const executeAllFormSteps = async () => {
             const titleAndIntro = dataObj.video.video.sendlog;
             // alert(JSON.stringify(titleAndIntro));
 
@@ -990,15 +991,21 @@ if (location.search.includes("published=true")) {
 
             // 即时发布
             await publishApi(dataObj);
-        } catch (error) {
-            console.error("[小红书发布] fillFormData 错误:", error);
-            // 发送错误上报
+        };
+        // ===== 原有逻辑结束 =====
+
+        // 🔴 最外层兜底重试：即使单步骤重试都失败，外层还会重试整个流程2次
+        try {
+            await retryOperation(executeAllFormSteps, 2, 3000);
+            console.log('[小红书发布] ✅ 所有表单填写完成');
+        } catch (finalError) {
+            console.error('[小红书发布] ❌ 填表流程失败（外层重试2次后）:', finalError);
+            stopErrorListener?.();
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {
-                await sendStatisticsError(publishId, error.message || "填写表单失败", "小红书发布");
+                await sendStatisticsError(publishId, finalError.message || '填写表单失败', '小红书发布');
             }
-            // 填写表单失败也要关闭窗口，不阻塞下一个任务
-            await closeWindowWithMessage("填写表单失败，刷新数据", 1000);
+            await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
         } finally {
             // 无论成功还是失败，都重置标记
             fillFormRunning = false;
