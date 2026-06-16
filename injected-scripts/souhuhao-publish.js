@@ -984,7 +984,37 @@
                                                             // 🔑 检查发布按钮是否 disabled
                                                             if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
                                                                 console.error('[搜狐号发布] ❌ 发布按钮不可用(disabled)');
-                                                                await failPublishAndClose(dataObj, '发布失败，刷新数据', '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽');
+
+                                                                // 🔴 收集表单诊断信息
+                                                                const formDiagnostics = typeof window.collectFormDiagnostics === 'function' ?
+                                                                  window.collectFormDiagnostics({
+                                                                    platform: 'souhuhao',
+                                                                    selectors: {
+                                                                      title: 'input[placeholder*="标题"]',
+                                                                      content: '.editor-content',
+                                                                      coverImage: '.select-image img',
+                                                                    },
+                                                                    required: {
+                                                                      title: true,
+                                                                      content: true,
+                                                                      coverImage: true,
+                                                                    }
+                                                                  }) : null;
+
+                                                                // 🔴 诊断按钮 disabled 原因
+                                                                const buttonDiagnosis = typeof window.diagnoseButtonDisabled === 'function' ?
+                                                                  window.diagnoseButtonDisabled(publishBtn, formDiagnostics, getLatestError() ? [getLatestError()] : []) : null;
+
+                                                                console.log('[搜狐号发布] 📋 表单诊断结果:', formDiagnostics);
+                                                                console.log('[搜狐号发布] 📋 按钮诊断结果:', buttonDiagnosis);
+
+                                                                // 🔴 生成详细的失败原因（人类可读）
+                                                                let failureReason = '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽';
+                                                                if (buttonDiagnosis && buttonDiagnosis.recommendation) {
+                                                                  failureReason = buttonDiagnosis.recommendation;
+                                                                }
+
+                                                                await failPublishAndClose(dataObj, '发布失败，刷新数据', failureReason);
                                                                 return;
                                                             }
                                                             await savePublishSuccessMarker(dataObj);

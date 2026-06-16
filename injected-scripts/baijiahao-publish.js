@@ -945,11 +945,49 @@
                                 // 🔑 检查发布按钮是否 disabled
                                 if (publishBtn.disabled || publishBtn.classList.contains('cheetah-btn-disabled') || publishBtn.getAttribute('disabled') !== null) {
                                   console.error('[百家号发布] ❌ 发布按钮不可用(disabled)');
+
+                                  // 🔴 收集表单诊断信息
+                                  const formDiagnostics = typeof window.collectFormDiagnostics === 'function' ?
+                                    window.collectFormDiagnostics({
+                                      platform: 'baijiahao',
+                                      selectors: {
+                                        title: '.news-editor-pc input[placeholder*="标题"]',
+                                        content: '.news-editor-pc iframe',
+                                        coverImage: "[class*='-imglist'] [class*='-selectedItem'] img",
+                                      },
+                                      required: {
+                                        title: true,
+                                        content: true,
+                                        coverImage: true,
+                                      }
+                                    }) : null;
+
+                                  // 🔴 诊断按钮 disabled 原因
+                                  const buttonDiagnosis = typeof window.diagnoseButtonDisabled === 'function' ?
+                                    window.diagnoseButtonDisabled(publishBtn, formDiagnostics, getLatestError() ? [getLatestError()] : []) : null;
+
+                                  console.log('[百家号发布] 📋 表单诊断结果:', formDiagnostics);
+                                  console.log('[百家号发布] 📋 按钮诊断结果:', buttonDiagnosis);
+
+                                  // 🔴 生成详细的失败原因（人类可读）
+                                  let failureReason = '发布按钮不可用';
+                                  if (buttonDiagnosis && buttonDiagnosis.recommendation) {
+                                    failureReason = buttonDiagnosis.recommendation;
+                                  }
+
                                   stopErrorListener();
                                   stopSmsVerificationDetector();
                                   const publishIdForError = dataObj.video?.dyPlatform?.id;
                                   if (publishIdForError) {
-                                    await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽', '百家号发布');
+                                    // 🔴 status_text 保持人类可读，诊断信息走 extraFields（自动分类）
+                                    await sendStatisticsError(publishIdForError, failureReason, '百家号发布', null, {
+                                      categorizeContext: { buttonDisabled: true },
+                                      diagnosis: {
+                                        form: formDiagnostics?.summary || '',
+                                        formIssues: formDiagnostics?.issues || [],
+                                        buttonReasons: buttonDiagnosis?.disabledReasons || [],
+                                      }
+                                    });
                                   }
                                   await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                   return;

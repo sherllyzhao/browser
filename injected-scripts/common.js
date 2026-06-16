@@ -2854,8 +2854,16 @@ if (typeof window.uploadVideo === "function"
     };
 
     // 发送错误统计接口（发布失败时调用）
-    // 🔑 增强版：附带详细的错误上下文日志
-    window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null) {
+    // 🔑 增强版：附带详细的错误上下文日志 + 标准化失败分类
+    // @param {string} publishId - 发布 ID
+    // @param {string} statusText - 人类可读的失败原因（会作为 status_text 上报）
+    // @param {string} platform - 平台名称
+    // @param {Error} errorObj - 错误对象（可选，用于日志记录）
+    // @param {Object} extraFields - 附加结构化字段（可选）：
+    //   - {Object} categorizeContext - 传给 categorizeFailure 的上下文提示（如 { buttonDisabled: true }）
+    //   - {Object} diagnosis - 诊断信息（如表单/按钮诊断结果）
+    //   - {string} failure_category - 显式指定失败分类（覆盖自动推断）
+    window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null) {
         const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
         if (!reportLock.acquired) {
             return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
@@ -2866,9 +2874,23 @@ if (typeof window.uploadVideo === "function"
             window.PublishLogger.error(platform || "发布", "sendStatisticsError", errorObj, { publishId, statusText });
         }
 
+        // 🔴 标准化失败分类：自动根据 statusText 推断失败类别（方便后台统计分析）
+        let failureCategory = "unknown";
+        if (typeof window.categorizeFailure === "function") {
+            try {
+                const categorizeContext = (extraFields && extraFields.categorizeContext) || {};
+                const categorized = window.categorizeFailure(statusText, categorizeContext);
+                failureCategory = categorized.category;
+            } catch (e) {
+                console.warn(`[${platform || "发布"}][统计接口] ⚠️ 失败分类异常:`, e.message);
+            }
+        }
+
         // 构建错误数据（包含更多上下文信息）
         const errorExtraData = {
             status_text: statusText,
+            // 🔴 标准化失败分类（方便后台统计分析）
+            failure_category: failureCategory,
             // 🔑 附加诊断信息
             context: {
                 url: window.location.href,
@@ -2887,6 +2909,13 @@ if (typeof window.uploadVideo === "function"
                     message: log.message,
                 }));
             }
+        }
+
+        // 🔴 合并调用方附加的结构化字段（如 diagnosis、显式 failure_category 覆盖）
+        // categorizeContext 仅用于分类提示，不上报到后台
+        if (extraFields && typeof extraFields === "object") {
+            const { categorizeContext, ...mergeable } = extraFields;
+            Object.assign(errorExtraData, mergeable);
         }
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
@@ -3690,6 +3719,281 @@ if (typeof window.uploadVideo === "function"
             // 改为直接读 .n-alert-body__content 的 textContent
             selectors: [{ containerClass: "n-alert", textSelector: ".n-alert-body__content", recursiveSelector: ".n-alert" }],
         }
+    };
+
+    // ===========================
+    // 🔴 失败分类标准化工具
+    // ===========================
+
+    /**
+     * 失败原因分类枚举
+     */
+    window.FAILURE_CATEGORIES = {
+        FORM_VALIDATION: 'form_validation',      // 表单验证错误（标题为空、内容不合规等）
+        UPLOAD_FAILED: 'upload_failed',          // 上传失败（图片/视频下载失败、上传超时）
+        NETWORK_ERROR: 'network_error',          // 网络错误（API 调用失败）
+        PLATFORM_LIMIT: 'platform_limit',        // 平台限制（发文次数限制、手机号认证）
+        SCRIPT_ERROR: 'script_error',            // 脚本异常（common.js 未加载、API 不可用）
+        TIMEOUT: 'timeout',                      // 超时（元素等待超时、上传超时）
+        AUTH_REQUIRED: 'auth_required',          // 需要认证（登录失效、需要手机号认证）
+        BUTTON_DISABLED: 'button_disabled',      // 发布按钮不可用
+        UNKNOWN: 'unknown',                      // 未知错误
+    };
+
+    /**
+     * 失败原因分类器（根据错误消息自动判断失败类别）
+     * @param {string} errorMessage - 错误消息
+     * @param {Object} context - 额外上下文信息（可选）
+     * @returns {Object} { category: string, message: string, detail: Object }
+     */
+    window.categorizeFailure = function (errorMessage, context = {}) {
+        const msg = String(errorMessage || '').toLowerCase();
+        const { buttonDisabled = false, hasUploadError = false, hasNetworkError = false } = context;
+
+        // 1. 认证相关（兼容「登录已失效」「登录状态过期」「重新登录」等常见文案变体）
+        if (/手机号认证|实名认证|需要认证|认证失败|登录.{0,4}(失效|过期|超时)|重新登录|未登录|请先登录|账号.{0,4}异常/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.AUTH_REQUIRED,
+                message: errorMessage,
+                detail: { type: 'auth', originalMessage: errorMessage }
+            };
+        }
+
+        // 2. 表单验证错误
+        if (/不能为空|必填|请输入|请填写|内容不合规|标题.*长度|敏感词|违规|审核未通过|不符合.*要求/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.FORM_VALIDATION,
+                message: errorMessage,
+                detail: { type: 'validation', originalMessage: errorMessage }
+            };
+        }
+
+        // 3. 上传失败
+        if (hasUploadError || /上传失败|下载失败|图片.*失败|视频.*失败|文件.*失败|格式不支持|gif.*不支持/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.UPLOAD_FAILED,
+                message: errorMessage,
+                detail: { type: 'upload', originalMessage: errorMessage }
+            };
+        }
+
+        // 4. 平台限制
+        if (/发文次数|已用尽|超限|超过.*次|达到上限|驳回/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.PLATFORM_LIMIT,
+                message: errorMessage,
+                detail: { type: 'limit', originalMessage: errorMessage }
+            };
+        }
+
+        // 5. 超时
+        if (/超时|timeout|找不到元素/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.TIMEOUT,
+                message: errorMessage,
+                detail: { type: 'timeout', originalMessage: errorMessage }
+            };
+        }
+
+        // 6. 网络错误
+        if (hasNetworkError || /网络.*错误|network.*error|连接.*失败|请求.*失败|api.*失败/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.NETWORK_ERROR,
+                message: errorMessage,
+                detail: { type: 'network', originalMessage: errorMessage }
+            };
+        }
+
+        // 7. 脚本错误
+        if (/common\.js.*未加载|browserapi.*不可用|undefined|is not a function/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.SCRIPT_ERROR,
+                message: errorMessage,
+                detail: { type: 'script', originalMessage: errorMessage }
+            };
+        }
+
+        // 8. 按钮 disabled
+        if (buttonDisabled || /按钮.*不可用|disabled|按钮.*禁用/.test(msg)) {
+            return {
+                category: window.FAILURE_CATEGORIES.BUTTON_DISABLED,
+                message: errorMessage,
+                detail: { type: 'button', originalMessage: errorMessage }
+            };
+        }
+
+        // 9. 未知错误
+        return {
+            category: window.FAILURE_CATEGORIES.UNKNOWN,
+            message: errorMessage,
+            detail: { type: 'unknown', originalMessage: errorMessage }
+        };
+    };
+
+    /**
+     * 通用表单诊断工具（收集表单状态用于失败诊断）
+     * @param {Object} config - 配置选项
+     * @param {Object} config.selectors - 各字段的选择器
+     * @param {Object} config.required - 各字段是否必填
+     * @param {Function} config.customChecks - 自定义检查函数（可选）
+     * @returns {Object} 诊断结果
+     */
+    window.collectFormDiagnostics = function (config = {}) {
+        const {
+            selectors = {},
+            required = {},
+            customChecks = null,
+            platform = 'unknown'
+        } = config;
+
+        const diagnostics = {
+            platform: platform,
+            timestamp: Date.now(),
+            fields: {},
+            issues: [],
+            summary: '',
+        };
+
+        // 检查各个字段
+        for (const [fieldName, selector] of Object.entries(selectors)) {
+            try {
+                const element = typeof selector === 'string'
+                    ? document.querySelector(selector)
+                    : selector;
+
+                const fieldInfo = {
+                    exists: !!element,
+                    required: !!required[fieldName],
+                    value: null,
+                    filled: false,
+                    valid: true,
+                };
+
+                if (element) {
+                    // 获取字段值
+                    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+                        fieldInfo.value = element.value;
+                        fieldInfo.filled = !!element.value && element.value.trim().length > 0;
+                    } else {
+                        fieldInfo.value = element.textContent || element.innerText;
+                        fieldInfo.filled = !!fieldInfo.value && fieldInfo.value.trim().length > 0;
+                    }
+
+                    // 检查是否满足必填要求
+                    if (fieldInfo.required && !fieldInfo.filled) {
+                        fieldInfo.valid = false;
+                        diagnostics.issues.push(`${fieldName}: 必填字段为空`);
+                    }
+                }
+
+                diagnostics.fields[fieldName] = fieldInfo;
+            } catch (e) {
+                diagnostics.fields[fieldName] = {
+                    exists: false,
+                    error: e.message,
+                };
+                diagnostics.issues.push(`${fieldName}: 检测异常 - ${e.message}`);
+            }
+        }
+
+        // 执行自定义检查
+        if (typeof customChecks === 'function') {
+            try {
+                const customResult = customChecks(diagnostics);
+                if (customResult && Array.isArray(customResult.issues)) {
+                    diagnostics.issues.push(...customResult.issues);
+                }
+            } catch (e) {
+                diagnostics.issues.push(`自定义检查异常: ${e.message}`);
+            }
+        }
+
+        // 生成摘要
+        const missingFields = Object.keys(diagnostics.fields)
+            .filter(key => diagnostics.fields[key].required && !diagnostics.fields[key].filled);
+
+        if (missingFields.length > 0) {
+            diagnostics.summary = `缺少必填字段: ${missingFields.join(', ')}`;
+        } else if (diagnostics.issues.length > 0) {
+            diagnostics.summary = `发现 ${diagnostics.issues.length} 个问题`;
+        } else {
+            diagnostics.summary = '表单填写完整';
+        }
+
+        return diagnostics;
+    };
+
+    /**
+     * 按钮 disabled 原因诊断（当按钮不可用时，诊断可能的原因）
+     * @param {HTMLElement} button - 发布按钮元素
+     * @param {Object} formDiagnostics - 表单诊断结果（来自 collectFormDiagnostics）
+     * @param {Array} recentErrors - 最近的错误消息（来自错误监听器）
+     * @returns {Object} 诊断结果
+     */
+    window.diagnoseButtonDisabled = function (button, formDiagnostics = null, recentErrors = []) {
+        const diagnosis = {
+            isDisabled: false,
+            disabledReasons: [],
+            htmlAttributes: {},
+            formIssues: [],
+            platformErrors: [],
+            recommendation: '',
+        };
+
+        if (!button) {
+            diagnosis.recommendation = '未找到发布按钮';
+            return diagnosis;
+        }
+
+        // 检查按钮是否 disabled
+        diagnosis.isDisabled = !!(
+            button.disabled ||
+            button.classList.contains('disabled') ||
+            button.getAttribute('disabled') !== null ||
+            button.getAttribute('aria-disabled') === 'true'
+        );
+
+        // 收集 HTML 属性
+        diagnosis.htmlAttributes = {
+            disabled: button.disabled,
+            ariaDisabled: button.getAttribute('aria-disabled'),
+            classList: Array.from(button.classList),
+        };
+
+        if (!diagnosis.isDisabled) {
+            diagnosis.recommendation = '发布按钮可用';
+            return diagnosis;
+        }
+
+        // 分析可能的原因
+
+        // 1. 表单验证问题
+        if (formDiagnostics && formDiagnostics.issues && formDiagnostics.issues.length > 0) {
+            diagnosis.formIssues = formDiagnostics.issues;
+            diagnosis.disabledReasons.push('表单验证未通过');
+        }
+
+        // 2. 平台错误提示
+        if (recentErrors && recentErrors.length > 0) {
+            diagnosis.platformErrors = recentErrors;
+            diagnosis.disabledReasons.push('平台提示错误');
+        }
+
+        // 3. 未知原因
+        if (diagnosis.disabledReasons.length === 0) {
+            diagnosis.disabledReasons.push('未知原因（可能是上传中、加载中或其他平台限制）');
+        }
+
+        // 生成建议
+        if (diagnosis.formIssues.length > 0) {
+            diagnosis.recommendation = `请检查: ${diagnosis.formIssues.join('; ')}`;
+        } else if (diagnosis.platformErrors.length > 0) {
+            diagnosis.recommendation = `平台提示: ${diagnosis.platformErrors[diagnosis.platformErrors.length - 1]}`;
+        } else {
+            diagnosis.recommendation = '按钮不可用，请检查表单是否填写完整，或是否有文件正在上传';
+        }
+
+        return diagnosis;
     };
 
     // 判断当前系统类型

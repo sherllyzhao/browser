@@ -861,8 +861,48 @@ async function publishApi(dataObj) {
     console.log("🚀 ~ publishApi ~ error: ", error);
     // 清除提前保存的数据（窗口专属 key 和通用 key）
     await clearDouyinPublishSuccessData(windowId);
+
+    // 🔴 识别按钮 disabled 错误，补充诊断信息
+    let errorDetail = error.message || '发布过程出错';
+    if (errorDetail.includes('发布按钮') && errorDetail.includes('不可用')) {
+      console.log('[抖音发布] 🔍 检测到按钮 disabled 错误，尝试诊断...');
+      try {
+        const publishBtn = document.querySelector(".button-dhlUZE");
+
+        // 🔴 收集表单诊断信息
+        const formDiagnostics = typeof window.collectFormDiagnostics === 'function' ?
+          window.collectFormDiagnostics({
+            platform: 'douyin',
+            selectors: {
+              title: '.editor-kit-root-container .semi-input',
+              content: '.zone-container',
+              video: '[class*="upload-progress-style"]',
+            },
+            required: {
+              title: true,
+              content: false,
+              video: true,
+            }
+          }) : null;
+
+        // 🔴 诊断按钮 disabled 原因
+        const buttonDiagnosis = typeof window.diagnoseButtonDisabled === 'function' ?
+          window.diagnoseButtonDisabled(publishBtn, formDiagnostics, []) : null;
+
+        console.log('[抖音发布] 📋 表单诊断结果:', formDiagnostics);
+        console.log('[抖音发布] 📋 按钮诊断结果:', buttonDiagnosis);
+
+        // 🔴 使用诊断生成的人类可读原因（如果有）
+        if (buttonDiagnosis && buttonDiagnosis.recommendation) {
+          errorDetail = buttonDiagnosis.recommendation;
+        }
+      } catch (diagError) {
+        console.warn('[抖音发布] ⚠️ 诊断异常，使用原始错误:', diagError.message);
+      }
+    }
+
     // 发送失败统计
-    await sendStatisticsError(publishId, error.message || '发布过程出错', '抖音发布');
+    await sendStatisticsError(publishId, errorDetail, '抖音发布');
     publishRunning = false;
     // 即使出错也尝试关闭窗口
     await closeWindowWithMessage('发布失败，刷新数据', 1000);
