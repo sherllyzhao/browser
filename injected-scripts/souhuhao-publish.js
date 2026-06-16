@@ -8,6 +8,21 @@
 (async function () {
     'use strict';
 
+    // ===========================
+    // 🔑 检查 common.js 依赖并提供降级实现
+    // ===========================
+    if (typeof window.getRandomDelayMs !== "function") {
+        console.warn("[搜狐号发布] ⚠️ common.js 未正确加载，使用降级实现");
+        window.getRandomDelayMs = function (ms, jitterMs) {
+            const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+            const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
+            const resolvedJitterMs = hasCustomJitter
+                ? Math.max(0, Math.floor(Number(jitterMs)))
+                : Math.max(80, Math.round(baseMs * 0.35));
+            return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
+        };
+    }
+
     // 🔑 平台配置（从 common.js 引用，避免重复定义）
     const PLATFORM_CONFIG = window.PLATFORM_CONFIGS?.souhuhao || {
         name: '搜狐号',

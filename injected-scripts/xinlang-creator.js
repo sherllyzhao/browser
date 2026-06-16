@@ -13,6 +13,21 @@
     'use strict';
 
     // ===========================
+    // 🔑 检查 common.js 依赖并提供降级实现
+    // ===========================
+    if (typeof window.getRandomDelayMs !== "function") {
+        console.warn("[新浪授权] ⚠️ common.js 未正确加载，使用降级实现");
+        window.getRandomDelayMs = function (ms, jitterMs) {
+            const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+            const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
+            const resolvedJitterMs = hasCustomJitter
+                ? Math.max(0, Math.floor(Number(jitterMs)))
+                : Math.max(80, Math.round(baseMs * 0.35));
+            return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
+        };
+    }
+
+    // ===========================
     // 未认证账号拦截：微信扫码登录后新浪会跳到 /#/type 选择创作者类型
     // 该账号尚未在新浪侧完成认证，直接提示用户并关闭窗口
     // 放在最前面（独立于防重复注入），并监听 hashchange 兼容 SPA 路由跳转

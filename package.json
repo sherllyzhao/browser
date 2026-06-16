@@ -42,7 +42,10 @@
       "assets/**"
     ],
     "asarUnpack": [
-      "injected-scripts/**"
+      "injected-scripts/**",
+      "icon.ico",
+      "icon.png",
+      "logo1.png"
     ],
     "afterPack": "./build-scripts/afterPack.js",
     "win": {

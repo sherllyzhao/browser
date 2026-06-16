@@ -242,10 +242,29 @@ let shutdownStarted = false;
 
 // 跨平台图标路径
 function getAppIconPath() {
-  if (process.platform === 'darwin') {
-    return path.join(__dirname, 'icon.png');
+  const iconName = process.platform === 'darwin' ? 'icon.png' : 'icon.ico';
+
+  // 打包后，asar 中的文件会被解包到 app.asar.unpacked 目录
+  // 需要将路径从 app.asar 替换为 app.asar.unpacked
+  let iconPath = path.join(__dirname, iconName);
+
+  console.log('[Icon] 初始路径:', iconPath);
+  console.log('[Icon] __dirname:', __dirname);
+
+  // 如果当前路径包含 app.asar，尝试从 app.asar.unpacked 加载
+  if (iconPath.includes('app.asar')) {
+    const unpackedPath = iconPath.replace('app.asar', 'app.asar.unpacked');
+    console.log('[Icon] 检测到 asar 路径，尝试解包路径:', unpackedPath);
+    console.log('[Icon] 文件是否存在:', fs.existsSync(unpackedPath));
+    if (fs.existsSync(unpackedPath)) {
+      console.log('[Icon] ✅ 使用解包路径:', unpackedPath);
+      return unpackedPath;
+    }
   }
-  return path.join(__dirname, 'icon.ico');
+
+  console.log('[Icon] 使用默认路径:', iconPath);
+  console.log('[Icon] 文件是否存在:', fs.existsSync(iconPath));
+  return iconPath;
 }
 
 // 使用与 Electron 内核版本一致的标准 Chrome UA，避免 sec-ch-ua 与 UA 主版本不一致触发风控
@@ -2795,7 +2814,7 @@ function loadLocalPage(webContents, pageName, options = {}) {
 }
 
 function createPublishLoadingWindow(options = {}) {
-  const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+  const appIcon = nativeImage.createFromPath(getAppIconPath());
   const loadingWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -5394,7 +5413,7 @@ async function fetchSiteInfo() {
 
 function createWindow() {
   // 使用 nativeImage 创建图标（支持高 DPI）
-  const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+  const appIcon = nativeImage.createFromPath(getAppIconPath());
 
   // 创建主窗口
   mainWindow = new BrowserWindow({
@@ -7307,7 +7326,7 @@ async function validateAndCleanupUserData() {
 // createTray 创建托盘图标
 function createTray() {
   try {
-    const icon = path.join(__dirname, 'icon.ico');
+    const icon = getAppIconPath();
     tray = new Tray(icon);
 
     const contextMenu = Menu.buildFromTemplate([
@@ -7568,7 +7587,7 @@ app.whenReady().then(async () => {
 
       // 直接使用简化的prompt对话框
       const { BrowserWindow } = require('electron');
-      const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+      const appIcon = nativeImage.createFromPath(getAppIconPath());
 
       const inputWindow = new BrowserWindow({
         width: 500,
@@ -9789,7 +9808,7 @@ async function openManagedChildWindow(url, options = {}) {
   };
 
   try {
-    const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.ico'));
+    const appIcon = nativeImage.createFromPath(getAppIconPath());
 
     // 根据参数决定使用哪个 session
     // 优先级：platform + accountId > useTemporarySession > 默认持久化 session
