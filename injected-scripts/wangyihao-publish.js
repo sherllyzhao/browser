@@ -758,12 +758,17 @@
                                 // 只通过粘贴事件插入内容（追加到现有内容后面）
                                 // 如果编辑器有默认占位内容，粘贴后会自动替换
 
+                                // 📏 记录预期内容长度（用于验证）
+                                const expectedPlainText = tempDiv.textContent || '';
+                                const expectedLength = expectedPlainText.trim().length;
+                                console.log('[网易号发布] 📏 预期内容长度:', expectedLength, '字符');
+
                                 console.log('[网易号发布] 📋 准备通过粘贴事件插入内容...');
 
                                 // 创建粘贴事件
                                 const clipboardData = new DataTransfer();
                                 clipboardData.setData('text/html', htmlContent);
-                                clipboardData.setData('text/plain', tempDiv.textContent);
+                                clipboardData.setData('text/plain', expectedPlainText);
 
                                 const pasteEvent = new ClipboardEvent('paste', {
                                     clipboardData: clipboardData,
@@ -775,11 +780,39 @@
                                 editorEle.dispatchEvent(pasteEvent);
                                 console.log('[网易号发布] ✅ 已触发粘贴事件');
 
-                                // 等待 Draft.js 处理粘贴内容
-                                await window.delay(1000);
+                                // 🔑 等待并验证内容是否完整粘贴
+                                // Draft.js 可能需要更长时间处理大段内容
+                                let actualLength = 0;
+                                let retryCount = 0;
+                                const maxRetries = 3;
+                                const waitTimes = [1000, 2000, 3000]; // 递增等待时间
 
-                                console.log('[网易号发布] ✅ 内容填写完成');
-                                contentFilled = true;
+                                while (retryCount < maxRetries) {
+                                    await window.delay(waitTimes[retryCount]);
+
+                                    // 获取编辑器实际内容
+                                    const actualText = (editorEle.innerText || editorEle.textContent || '').trim();
+                                    actualLength = actualText.length;
+
+                                    console.log(`[网易号发布] 📏 第${retryCount + 1}次验证: 实际长度=${actualLength}, 预期长度=${expectedLength}`);
+
+                                    // 验证：实际长度 >= 预期长度的 80%（允许格式差异）
+                                    if (actualLength >= expectedLength * 0.8) {
+                                        console.log('[网易号发布] ✅ 内容验证通过！实际/预期比例:', (actualLength / expectedLength * 100).toFixed(1) + '%');
+                                        contentFilled = true;
+                                        break;
+                                    }
+
+                                    retryCount++;
+                                    if (retryCount < maxRetries) {
+                                        console.warn(`[网易号发布] ⚠️ 内容可能未完全粘贴（${actualLength}/${expectedLength}），等待更长时间...`);
+                                    }
+                                }
+
+                                if (!contentFilled) {
+                                    console.error(`[网易号发布] ❌ 内容验证失败！实际长度${actualLength}，预期长度${expectedLength}，仅达到${(actualLength / expectedLength * 100).toFixed(1)}%`);
+                                    throw new Error(`内容截断：仅粘贴了 ${actualLength}/${expectedLength} 字符`);
+                                }
                                 }, 3, 1000);
                             } catch (e) {
                                 console.log('[网易号发布] ❌ 内容填写失败:', e.message);

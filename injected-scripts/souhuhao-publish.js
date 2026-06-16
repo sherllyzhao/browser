@@ -680,6 +680,11 @@
                                 // 让编辑器获得焦点
                                 editorEle.focus();
 
+                                // 📏 记录预期内容长度（用于验证）
+                                const expectedPlainText = tempDiv.textContent || '';
+                                const expectedLength = expectedPlainText.trim().length;
+                                console.log('[搜狐号发布] 📏 预期内容长度:', expectedLength, '字符');
+
                                 // 通过粘贴事件插入内容（让 Draft.js 自己处理）
                                 const pasteEvent = new ClipboardEvent('paste', {
                                     clipboardData: new DataTransfer(),
@@ -689,12 +694,39 @@
 
                                 // 设置粘贴的 HTML 和纯文本内容
                                 pasteEvent.clipboardData.setData('text/html', htmlContent);
-                                pasteEvent.clipboardData.setData('text/plain', tempDiv.textContent);
+                                pasteEvent.clipboardData.setData('text/plain', expectedPlainText);
 
                                 editorEle.dispatchEvent(pasteEvent);
+                                console.log('[搜狐号发布] ✅ 已触发粘贴事件');
 
-                                // 等待编辑器处理粘贴事件
-                                await window.delay(800);
+                                // 🔑 等待并验证内容是否完整粘贴
+                                let actualLength = 0;
+                                let retryCount = 0;
+                                const maxRetries = 3;
+                                const waitTimes = [800, 2000, 3000];
+
+                                while (retryCount < maxRetries) {
+                                    await window.delay(waitTimes[retryCount]);
+
+                                    const actualText = (editorEle.innerText || editorEle.textContent || '').trim();
+                                    actualLength = actualText.length;
+
+                                    console.log(`[搜狐号发布] 📏 第${retryCount + 1}次验证: 实际长度=${actualLength}, 预期长度=${expectedLength}`);
+
+                                    if (actualLength >= expectedLength * 0.8) {
+                                        console.log('[搜狐号发布] ✅ 内容验证通过！实际/预期比例:', (actualLength / expectedLength * 100).toFixed(1) + '%');
+                                        break;
+                                    }
+
+                                    retryCount++;
+                                    if (retryCount < maxRetries) {
+                                        console.warn(`[搜狐号发布] ⚠️ 内容可能未完全粘贴（${actualLength}/${expectedLength}），等待更长时间...`);
+                                    }
+                                }
+
+                                if (actualLength < expectedLength * 0.8) {
+                                    console.error(`[搜狐号发布] ❌ 内容验证失败！实际长度${actualLength}，预期长度${expectedLength}，仅达到${(actualLength / expectedLength * 100).toFixed(1)}%`);
+                                }
 
                                 console.log('[搜狐号发布] ✅ 内容填写完成');
                             }, 3, 1000);

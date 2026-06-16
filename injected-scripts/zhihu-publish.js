@@ -244,9 +244,14 @@
         editorEle.focus();
         await delay(200);
 
+        // 📏 记录预期内容长度（用于验证）
+        const expectedPlainText = plainText || extractPlainTextFromHtml(htmlContent);
+        const expectedLength = expectedPlainText.trim().length;
+        console.log("[知乎发布] 📏 预期内容长度:", expectedLength, "字符");
+
         const clipboardData = new DataTransfer();
         clipboardData.setData("text/html", htmlContent);
-        clipboardData.setData("text/plain", plainText || extractPlainTextFromHtml(htmlContent));
+        clipboardData.setData("text/plain", expectedPlainText);
 
         const pasteEvent = new ClipboardEvent("paste", {
             clipboardData,
@@ -255,7 +260,38 @@
         });
 
         editorEle.dispatchEvent(pasteEvent);
-        await delay(800);
+        console.log("[知乎发布] ✅ 已触发粘贴事件");
+
+        // 🔑 等待并验证内容是否完整粘贴
+        // Draft.js 可能需要更长时间处理大段内容
+        let actualLength = 0;
+        let retryCount = 0;
+        const maxRetries = 3;
+        const waitTimes = [800, 2000, 3000]; // 递增等待时间
+
+        while (retryCount < maxRetries) {
+            await delay(waitTimes[retryCount]);
+
+            // 获取编辑器实际内容
+            const actualText = (editorEle.innerText || editorEle.textContent || "").trim();
+            actualLength = actualText.length;
+
+            console.log(`[知乎发布] 📏 第${retryCount + 1}次验证: 实际长度=${actualLength}, 预期长度=${expectedLength}`);
+
+            // 验证：实际长度 >= 预期长度的 80%（允许格式差异）
+            if (actualLength >= expectedLength * 0.8) {
+                console.log("[知乎发布] ✅ 内容验证通过！实际/预期比例:", (actualLength / expectedLength * 100).toFixed(1) + "%");
+                return; // 验证通过，返回
+            }
+
+            retryCount++;
+            if (retryCount < maxRetries) {
+                console.warn(`[知乎发布] ⚠️ 内容可能未完全粘贴（${actualLength}/${expectedLength}），等待更长时间...`);
+            }
+        }
+
+        // 验证失败，记录警告但不抛出错误（因为是回退方案中调用）
+        console.error(`[知乎发布] ❌ 内容验证失败！实际长度${actualLength}，预期长度${expectedLength}，仅达到${(actualLength / expectedLength * 100).toFixed(1)}%`);
     }
 
     async function tryUploadImageByUrlToZhihu(img) {
