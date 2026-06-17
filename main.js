@@ -9213,8 +9213,12 @@ ipcMain.handle('show-user-menu', async (event) => {
       const curName = String(userInfo.user_name || userInfo.username || userInfo.account || '');
       return accounts.map((acc, index) => {
         const phone = String(acc.phone || '');
-        const name = acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '账号';
-        const subRaw = maskPhoneForMenu(acc.phone) || acc.username || '';
+        // 🔑 第一行显示公司名称，第二行显示姓名+手机号
+        const companyName = acc.companyName || '未知公司';
+        const nickname = acc.nickname || '';
+        const maskedPhone = maskPhoneForMenu(acc.phone) || '';
+        // sub: 姓名 · 手机号（如果有手机号就用 · 分隔，否则只显示姓名）
+        const subRaw = maskedPhone ? `${nickname} · ${maskedPhone}` : nickname;
         const accUid = String(acc.uid || '');
         // 优先用后端稳定主键 uid 判定当前账号，phone/username 仅作降级兜底
         const isCurrent = (!!curUid && !!accUid && curUid === accUid)
@@ -9222,8 +9226,8 @@ ipcMain.handle('show-user-menu', async (event) => {
           || (!!curName && !!acc.username && curName === acc.username);
         return {
           index,
-          name,
-          sub: (subRaw && subRaw !== name) ? subRaw : '',
+          name: companyName,  // 第一行：公司名称
+          sub: subRaw,        // 第二行：姓名 · 手机号
           avatar: acc.avatar || '',
           isCurrent
         };
@@ -9273,7 +9277,7 @@ ipcMain.handle('show-user-menu', async (event) => {
             .acc-item.current, .acc-item.current:hover { cursor: default; background: transparent; }
             .acc-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #EBEEF5; flex-shrink: 0; }
             .acc-info { flex: 1; min-width: 0; }
-            .acc-name { font-size: 14px; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+            .acc-name { font-size: 14px; font-weight: 500; color: #303133; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
             .acc-badge { font-size: 11px; color: #3E7AFF; background: #ECF3FF; border-radius: 4px; padding: 1px 5px; flex-shrink: 0; }
             .acc-sub { font-size: 12px; color: #909399; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .acc-del { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C0C4CC; flex-shrink: 0; font-size: 18px; line-height: 1; }

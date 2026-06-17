@@ -324,6 +324,7 @@
 
     .account-history-item .acc-name {
       font-size: 14px;
+      font-weight: 500;
       color: #303133;
       white-space: nowrap;
       overflow: hidden;
@@ -332,10 +333,20 @@
 
     .account-history-item .acc-sub {
       font-size: 12px;
-      color: #909399;
+      color: #C0C4CC;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    .account-history-item .acc-company {
+      font-size: 11px;
+      color: #C0C4CC;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
     }
 
     .account-history-item .acc-del {
@@ -820,15 +831,17 @@
         return;
       }
       accountHistoryEl.innerHTML = accounts.map(acc => {
+        // 主要显示公司名称，次要显示姓名和手机号
+        const companyName = acc.companyName || '未知公司';
         const name = acc.nickname || maskPhone(acc.phone) || acc.username || '';
-        const sub = maskPhone(acc.phone) || acc.username || '';
-        const subLine = (sub && sub !== name) ? `<div class="acc-sub">${escapeHtml(sub)}</div>` : '';
+        const phone = maskPhone(acc.phone) || '';
+        const subLine = phone ? `<div class="acc-sub">${escapeHtml(name)} · ${escapeHtml(phone)}</div>` : `<div class="acc-sub">${escapeHtml(name)}</div>`;
         const avatar = acc.avatar ? escapeHtml(acc.avatar) : './assets/avatar.png';
         return `
           <div class="account-history-item" data-username="${escapeHtml(acc.username)}">
             <img class="acc-avatar" src="${avatar}" onerror="this.src='./assets/avatar.png'">
             <div class="acc-info">
-              <div class="acc-name">${escapeHtml(name)}</div>
+              <div class="acc-name">${escapeHtml(companyName)}</div>
               ${subLine}
             </div>
             <div class="acc-del" data-username="${escapeHtml(acc.username)}" title="删除此账号">×</div>
@@ -1080,6 +1093,10 @@
         }
 
         if (window.browserAPI && window.browserAPI.setGlobalData) {
+          // 🔑 把 gcc 添加到 userInfo 中（供右上角显示公司名称）
+          if (loginData.gcc) {
+            userInfo.gcc = loginData.gcc;
+          }
           // 存储完整用户信息供公共头部使用
           await window.browserAPI.setGlobalData('user_info', userInfo);
           console.log('[Login] 已存储用户信息:', userInfo);
@@ -1090,6 +1107,8 @@
               const nickname = userInfo.nickname || userInfo.real_name || userInfo.name || userInfo.user_name || '';
               const phone = userInfo.phone || userInfo.mobile || userInfo.tel || '';
               const avatar = userInfo.avatar || userInfo.avatar_url || userInfo.headimg || userInfo.head_img || userInfo.photo || '';
+              // 🔑 使用 loginData.gcc 作为公司名称（从 auth 接口返回）
+              const companyName = loginData.gcc || userInfo.company?.name || userInfo.company?.company_name || '';
               const record = {
                 id: userInfo.unique_id || username,
                 uid: userInfo.unique_id || '',
@@ -1099,13 +1118,14 @@
                 nickname,
                 phone,
                 avatar,
+                companyName,
                 lastLoginAt: Date.now()
               };
               const list = await getSavedAccounts();
               const idx = list.findIndex(a => a.username === username);
               if (idx >= 0) list[idx] = record; else list.push(record);
               await setSavedAccounts(list);
-              console.log('[Login] ✅ 已记住账号:', maskPhone(phone) || username);
+              console.log('[Login] ✅ 已记住账号:', maskPhone(phone) || username, '公司:', companyName);
             } else {
               // 未勾选：若该账号之前被记住过则移除（用户主动取消记住）
               const list = await getSavedAccounts();
