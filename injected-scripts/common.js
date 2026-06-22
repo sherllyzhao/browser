@@ -4041,7 +4041,7 @@ if (typeof window.uploadVideo === "function"
      * @param {string} text - 横幅文案
      */
     window.showOperationBanner = function (text) {
-        text = text || "自动操作进行中，请勿操作此页面...";
+        text = text || "正在自动发布中... 如遇问题可随时手动干预";
         var COLLAPSED_KEY = "__operation_banner_collapsed__";
 
         // 🛡️ 登录页不显示横幅：避免用户登录时看到"正在自动发布中"误导

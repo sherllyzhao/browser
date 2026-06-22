@@ -188,6 +188,139 @@
 
     const getLatestError = () => errorListener?.getLatestError() || detectXinlangParamError() || null;
 
+    const xinlangDelay = (ms) => {
+        const delayFn = window.delay || (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)));
+        return delayFn(ms);
+    };
+
+    const isXinlangVisibleElement = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0)) {
+            return false;
+        }
+        return element.offsetParent !== null || style?.position === 'fixed';
+    };
+
+    const getVisibleXinlangDialogs = () => Array.from(document.querySelectorAll('.n-dialog'))
+        .filter(dialog => isXinlangVisibleElement(dialog));
+
+    const getXinlangModalError = (root) => {
+        const modalError = Array.from(root?.querySelectorAll?.('.n-message--error, .error-message, .n-form-item-feedback--error, [role="alert"]') || [])
+            .find(element => isXinlangVisibleElement(element));
+        const text = (modalError?.textContent || '').trim();
+        return text || null;
+    };
+
+    const closeXinlangCoverDialogs = async (reason = 'retry') => {
+        const dialogs = getVisibleXinlangDialogs();
+        if (!dialogs.length) return;
+
+        console.log(`[新浪发布] 🧹 重试前清理残留封面弹窗(${reason})，数量: ${dialogs.length}`);
+        for (const dialog of dialogs.reverse()) {
+            const closeBtn = dialog.querySelector('.n-base-close, .n-dialog__close, .n-modal-close, button[aria-label="Close"], button[aria-label="关闭"]');
+            if (closeBtn) {
+                closeBtn.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 0
+                }));
+            } else {
+                document.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    code: 'Escape',
+                    bubbles: true,
+                    cancelable: true
+                }));
+            }
+            await xinlangDelay(800);
+        }
+    };
+
+    const waitForXinlangUploadedImageItems = async (getModal, timeout = 90000) => {
+        const startTime = Date.now();
+        let lastCount = 0;
+        let lastText = '';
+
+        while (Date.now() - startTime < timeout) {
+            const latestError = getLatestError();
+            if (latestError) {
+                throw new Error(latestError);
+            }
+
+            const modal = typeof getModal === 'function' ? getModal() : getModal;
+            const modalError = getXinlangModalError(modal);
+            if (modalError) {
+                throw new Error(modalError);
+            }
+
+            const imageItems = Array.from(modal?.querySelectorAll?.('.image-list .image-item, .image-item') || [])
+                .filter(item => isXinlangVisibleElement(item));
+            const readyItems = imageItems.filter(item => {
+                const text = (item.textContent || '').replace(/\s+/g, '');
+                return item.querySelector('img') || !/上传中|处理中|加载中|loading/i.test(text);
+            });
+
+            lastCount = imageItems.length;
+            lastText = (modal?.textContent || '').replace(/\s+/g, '').slice(0, 120);
+
+            if (readyItems.length > 0) {
+                console.log(`[新浪发布] ✅ 图片库已有可选图片，数量: ${readyItems.length}`);
+                return readyItems;
+            }
+
+            console.log(`[新浪发布] ⏳ 等待图片上传入库中... 当前图片项: ${imageItems.length}`);
+            await xinlangDelay(1000);
+        }
+
+        throw new Error(`图片上传等待超时，图片库未出现可选图片（最后数量: ${lastCount}，弹窗内容: ${lastText || '空'}）`);
+    };
+
+    const waitForXinlangCoverCutDialog = async (previousModal, timeout = 120000) => {
+        const startTime = Date.now();
+        let lastDialogText = '';
+
+        while (Date.now() - startTime < timeout) {
+            const latestError = getLatestError();
+            if (latestError) {
+                throw new Error(latestError);
+            }
+
+            const dialogs = getVisibleXinlangDialogs();
+            for (const dialog of dialogs) {
+                const modalError = getXinlangModalError(dialog);
+                if (modalError) {
+                    throw new Error(modalError);
+                }
+
+                const primaryButtons = Array.from(dialog.querySelectorAll('.n-button--primary-type, button'))
+                    .filter(btn => isXinlangVisibleElement(btn));
+                const primaryButton = primaryButtons.find(btn => btn.classList?.contains('n-button--primary-type')) || primaryButtons[0];
+                const primaryText = (primaryButton?.textContent || '').replace(/\s+/g, '');
+                const hasCropSignal = !!dialog.querySelector('[class*="crop"], canvas, .vue-cropper, .cropper-container, .cropper-view-box');
+                const hasConfirmSignal = primaryButton && primaryText && !primaryText.includes('下一步');
+                const isDifferentReadyDialog = dialog !== previousModal && !!primaryButton;
+
+                lastDialogText = (dialog.textContent || '').replace(/\s+/g, '').slice(0, 120);
+
+                if (primaryButton && (hasCropSignal || hasConfirmSignal || isDifferentReadyDialog)) {
+                    console.log('[新浪发布] ✅ 检测到裁剪确认弹窗:', {
+                        primaryText,
+                        hasCropSignal,
+                        isDifferentReadyDialog
+                    });
+                    return {dialog, confirmButton: primaryButton};
+                }
+            }
+
+            console.log('[新浪发布] ⏳ 等待图片上传完成并进入裁剪弹窗...');
+            await xinlangDelay(1000);
+        }
+
+        throw new Error(`图片上传超时，找不到图片裁剪弹窗（最后弹窗内容: ${lastDialogText || '空'}）`);
+    };
+
     // 获取窗口专属的发布成功数据 key
     const getPublishSuccessKey = () => {
         const key = `PUBLISH_SUCCESS_DATA_${currentWindowId || "default"}`;
@@ -280,12 +413,18 @@
             return {type: "timeout", reason: "no_cover_image"};
         };
 
-        const result = await waitForImageOrError(15000);
+        const result = await waitForImageOrError(45000);
         const myWindowId = await window.browserAPI.getWindowId();
 
-        // 🔴 检测到错误信息，直接上报失败
+        // 检测到上传相关错误时交给外层封面上传重试；非上传类错误仍按发布失败处理
         if (result.type === "error") {
-            console.log(`[新浪发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
+            console.log(`[新浪发布] [窗口${myWindowId}] ❌ 检测到错误信息: ${result.message}`);
+            const retryableUploadError = /上传|封面|图片|点击重试|系统繁忙|请求失败|操作失败|网络|超时/i.test(result.message || '');
+            if (retryableUploadError) {
+                console.warn(`[新浪发布] [窗口${myWindowId}] 🔁 上传相关错误，进入封面上传重试: ${result.message}`);
+                throw new Error(`封面上传失败(${result.message})`);
+            }
+
             stopErrorListener();
             const publishId = dataObj.video?.dyPlatform?.id;
             if (publishId) {
@@ -635,7 +774,7 @@
                 await closeWindowWithMessage("发布失败，刷新数据", 1000);
             }
         } else {
-            // 图片上传失败（timeout），直接上报失败
+            // 图片上传确认超时，抛给外层封面上传 retryOperation 重试
             const timeoutReason = result.reason === "modal_still_open" ? "弹窗未关闭" : "封面图未出现";
             console.log(`[新浪发布] [窗口${myWindowId}] ❌ 封面上传超时(${timeoutReason})`);
 
@@ -643,19 +782,9 @@
             const errorMessage = getLatestError();
             console.log(`[新浪发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
 
-            // 构建失败消息
             const failureMessage = errorMessage || `封面上传失败(${timeoutReason})`;
-            console.log(`[新浪发布] [窗口${myWindowId}] ❌ 上报失败: ${failureMessage}`);
-
-            stopErrorListener();
-            const publishId4 = dataObj.video?.dyPlatform?.id;
-            if (publishId4) {
-                await sendStatisticsError(publishId4, failureMessage, "新浪发布");
-            } else {
-                console.error(`[新浪发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
-            }
-            await closeWindowWithMessage("发布失败，刷新数据", 1000);
-            return;
+            console.warn(`[新浪发布] [窗口${myWindowId}] 🔁 ${failureMessage}，进入封面上传重试`);
+            throw new Error(failureMessage);
         }
     };
 
@@ -1949,6 +2078,9 @@
                 // 🔴 整个封面上传流程包装在重试逻辑中，任何元素找不到都会重试
                 await retryOperation(async () => {
                     try {
+                        await closeXinlangCoverDialogs('cover-upload-attempt-start');
+                        await delay(1000);
+
                         // 🔴 先检查是否已经有封面（防止重复上传）
                         const existingCover = document.querySelector(".cover-preview .cover-img");
                         if (existingCover && existingCover.getAttribute("src")) {
@@ -2173,8 +2305,12 @@
                             window.__xinlangImageUploaded = true;
                             console.log('[新浪发布] 🔑 已设置图片上传标志，防止重复上传');
 
-                            // 增加等待时间，让文件上传开始处理
+                            // 增加等待时间，让文件上传开始处理，并等待图片真正进入图片库
                             await delay(2000);
+                            const readyImageItems = await waitForXinlangUploadedImageItems(
+                                () => getVisibleXinlangDialogs()[0] || uploadModal,
+                                90000
+                            );
 
                             // 选中第一项（只执行一次，不重试）
                             // 🔴 改进：移除重试循环，只执行一次选择，避免重复点击
@@ -2182,9 +2318,9 @@
                             try {
                                 console.log(`[新浪发布] 开始选中第一张图片...`);
 
-                                // 获取所有图片项
-                                const imageItems = uploadModal.querySelectorAll('.image-list .image-item');
-                                console.log(`[新浪发布] 找到 ${imageItems.length} 个图片项`);
+                                // 获取已等待完成的图片项
+                                const imageItems = readyImageItems;
+                                console.log(`[新浪发布] 找到 ${imageItems.length} 个可选图片项`);
 
                                 if (imageItems.length > 0) {
                                     const firstImg = imageItems[0];
@@ -2265,21 +2401,18 @@
                             // 不检测 loading，直接等待最终结果（裁剪弹窗）
                             console.log("[新浪发布] ⏳ 等待图片上传完成，裁剪弹窗出现...");
 
-                            await delay(5000);
-                            // 等待裁剪弹窗出现，最多等 120 秒
-                            const coverCutDialogEle = await waitForElement(".n-dialog", 120000, 1000);
+                            await delay(3000);
+                            // 等待裁剪弹窗出现，最多等 120 秒；不能直接 waitForElement(".n-dialog")，否则会命中尚未关闭的图片库弹窗
+                            const coverCutResult = await waitForXinlangCoverCutDialog(uploadModal, 120000);
+                            const coverCutDialogEle = coverCutResult.dialog;
+                            const confirmCutBtn = coverCutResult.confirmButton;
                             console.log("🚀 ~  ~ coverCutDialogEle: ", coverCutDialogEle);
-                            if (!coverCutDialogEle) {
-                                throw Error('[新浪发布]：图片上传超时，找不到图片裁剪弹窗');
+                            console.log("🚀 ~  ~ confirmCutBtn: ", confirmCutBtn);
+                            if (!coverCutDialogEle || !confirmCutBtn) {
+                                throw Error('[新浪发布]：找不到图片裁剪弹窗或确认按钮');
                             }
                             console.log("[新浪发布] ✅ 图片上传完成，裁剪弹窗已出现");
-
                             await delay(1000);
-                            const confirmCutBtn = coverCutDialogEle.querySelector(".n-button--primary-type");
-                            console.log("🚀 ~  ~ confirmCutBtn: ", confirmCutBtn);
-                            if (!confirmCutBtn) {
-                                throw Error('[新浪发布]：找不到图片裁剪弹窗确认按钮');
-                            }
                             confirmCutBtn.click();
 
                             // 🔴 增加等待时间，让裁剪弹窗有足够时间关闭（从1秒增加到5秒）
@@ -2296,15 +2429,17 @@
                                 closeWindowWithMessage,
                                 selectScheduledTime
                             );
-                        }  // if (tabClickSuccess) 结束
+                        } else {
+                            throw new Error('找不到图片库标签，无法上传封面');
+                        }
                     } catch (error) {
                         console.log("[新浪发布] ❌ 封面上传流程出错:", error);
                         // 🔴 重新抛出错误，让 retryOperation 重试
                         throw error;
                     }
-                }, 3, 2000).catch(async (coverError) => {
-                    // 🔴 重试3次后仍然失败，上报错误
-                    console.error("[新浪发布] ❌ 封面上传失败（重试3次后）:", coverError);
+                }, 4, 5000).catch(async (coverError) => {
+                    // 🔴 重试4次后仍然失败，上报错误
+                    console.error("[新浪发布] ❌ 封面上传失败（重试4次后）:", coverError);
                     stopErrorListener();
                     const publishId = dataObj?.video?.dyPlatform?.id;
                     if (publishId) {

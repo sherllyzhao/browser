@@ -105,14 +105,14 @@
   const getLatestError = () => errorListener?.getLatestError() || null;
 
   // ===========================
-  // 📱 短信验证检测器
+  // 📱 短信验证/安全风险检测器
   // ===========================
   let smsVerificationObserver = null;
   let smsDetected = false; // 防止重复上报
 
   /**
-   * 检测短信验证弹窗
-   * 使用 MutationObserver 监听页面变化，检测是否出现短信验证相关的元素
+   * 检测短信验证弹窗和安全风险提示
+   * 使用 MutationObserver 监听页面变化，检测是否出现短信验证或安全风险相关的元素
    */
   const startSmsVerificationDetector = () => {
     if (smsVerificationObserver) {
@@ -123,10 +123,12 @@
     const keywords = [
       '短信验证', '验证码', '发送验证码', '手机验证',
       '安全验证', '身份验证', '输入验证码', '获取验证码',
-      '验证手机', '短信校验'
+      '验证手机', '短信校验',
+      // 🔑 新增：账号风险相关关键词
+      '账号有风险', '完成安全验证', '检查到您账号有风险'
     ];
 
-    console.log('[百家号发布] 🔍 启动短信验证检测器，监听关键词:', keywords);
+    console.log('[百家号发布] 🔍 启动短信验证/安全风险检测器，监听关键词:', keywords);
 
     smsVerificationObserver = new MutationObserver((mutations) => {
       if (smsDetected) return; // 已检测到，不再重复处理
@@ -151,7 +153,7 @@
                               node.closest?.('.cheetah-modal-wrap');
 
                 if (isModal) {
-                  console.log('[百家号发布] 🚨 检测到短信验证弹窗！');
+                  console.log('[百家号发布] 🚨 检测到短信验证/安全风险弹窗！');
                   console.log('[百家号发布] 📝 匹配关键词:', matchedKeyword);
                   console.log('[百家号发布] 📄 弹窗内容:', text.substring(0, 200));
                   handleSmsVerification(text);
@@ -169,7 +171,7 @@
       subtree: true
     });
 
-    console.log('[百家号发布] ✅ 短信验证检测器已启动');
+    console.log('[百家号发布] ✅ 短信验证/安全风险检测器已启动');
   };
 
   /**
@@ -184,37 +186,99 @@
   };
 
   /**
-   * 处理短信验证检测
+   * 处理短信验证/安全风险检测
    */
   const handleSmsVerification = async (text) => {
     if (smsDetected) return; // 防止重复处理
+
+    // 🔑 先检查用户是否正在操作，如果是就等他停下来
+    if (typeof window.checkUserActivity === 'function') {
+      console.log('[百家号发布] 🔍 检测到验证弹窗，先检查用户是否正在操作...');
+      await window.checkUserActivity();
+      console.log('[百家号发布] ✅ 用户操作检查完成，继续处理验证弹窗');
+    }
+
     smsDetected = true;
 
-    console.log('[百家号发布] 📱 检测到需要短信验证');
+    console.log('[百家号发布] 📱 检测到需要短信验证或安全验证');
     console.log('[百家号发布] 📄 弹窗内容:', text);
 
     // 停止错误监听器和短信检测器
     stopErrorListener();
     stopSmsVerificationDetector();
 
-    // 显示提示横幅
-    if (typeof showOperationBanner === 'function') {
-      showOperationBanner('⚠️ 检测到需要短信验证，请手动完成验证后重新发布', 'warning');
+    // 🔑 检查是否是"账号有风险"或"手机验证"类型的提示
+    const isAccountRiskWarning = text.includes('账号有风险') ||
+                                 text.includes('完成安全验证') ||
+                                 text.includes('检查到您账号有风险');
+
+    const isSmsVerification = text.includes('手机验证') ||
+                             text.includes('短信验证') ||
+                             text.includes('验证码');
+
+    // 🔑 新逻辑：两种情况都需要人工介入
+    if (isAccountRiskWarning || isSmsVerification) {
+      const warningType = isAccountRiskWarning ? '账号风险提示' : '手机验证';
+      console.log(`[百家号发布] ⚠️ 检测到${warningType}，需要人工介入`);
+
+      // 显示醒目的横幅提示（红色警告）
+      if (typeof showOperationBanner === 'function') {
+        const message = isAccountRiskWarning
+          ? '⚠️ 账号需要安全验证，请手动完成验证后点击发布按钮。窗口将保持打开，请勿关闭！'
+          : '⚠️ 需要输入手机验证码，请完成验证后手动点击发布。窗口将保持打开，请勿关闭！';
+        showOperationBanner(message, 'error');
+      }
+
+      // 🔑 立即上报错误（让后台知道卡在这里了）
+      const publishId = window.__AUTH_DATA__?.message?.video?.dyPlatform?.id;
+      if (publishId) {
+        const errorMessage = isAccountRiskWarning
+          ? '账号需要安全验证，请手动完成'
+          : '需要手机验证码，请手动完成';
+        console.log('[百家号发布] 📤 上报错误:', errorMessage);
+        await sendStatisticsError(publishId, errorMessage, '百家号发布');
+      } else {
+        console.log('[百家号发布] ⚠️ 无 publishId，跳过上报');
+      }
+
+      // 🔑 不关闭窗口，让用户自己处理
+      console.log('[百家号发布] 🛑 暂停自动发布流程，等待用户手动操作');
+      console.log('[百家号发布] 💡 用户需要：1) 完成验证 2) 手动点击发布按钮');
+      console.log('[百家号发布] 📌 如果发布成功，publish-success.js 会自动上报成功状态覆盖此错误');
+
+      // 保存 publishId 到 localStorage，供 publish-success.js 使用
+      if (publishId) {
+        try {
+          localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+          console.log('[百家号发布] 💾 已保存 publishId 到 localStorage，供成功页使用');
+
+          // 同时保存到 globalData
+          if (window.browserAPI && window.browserAPI.setGlobalData) {
+            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+            console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
+          }
+        } catch (e) {
+          console.error('[百家号发布] ❌ 保存 publishId 失败:', e);
+        }
+      }
+
+      // 不执行任何关闭操作，脚本到此结束，窗口保持打开
+      return;
     }
 
-    // 上报错误
+    // 🔴 理论上不会走到这里（所有验证类弹窗都被上面拦截了）
+    console.warn('[百家号发布] ⚠️ 未识别的验证类型，使用默认处理');
+    if (typeof showOperationBanner === 'function') {
+      showOperationBanner('⚠️ 检测到需要验证，请手动完成', 'warning');
+    }
+
     const publishId = window.__AUTH_DATA__?.message?.video?.dyPlatform?.id;
     if (publishId) {
-      console.log('[百家号发布] 📤 上报短信验证错误...');
-      await sendStatisticsError(publishId, '需要短信验证，请手动完成验证后重试', '百家号发布');
-    } else {
-      console.log('[百家号发布] ⚠️ 无 publishId，跳过上报');
+      await sendStatisticsError(publishId, '需要人工验证', '百家号发布');
     }
 
-    // 不立即关闭窗口，给用户5秒时间看到提示
-    console.log('[百家号发布] ⏳ 5秒后关闭窗口...');
-    await delay(5000);
-    await closeWindowWithMessage('需要短信验证，刷新数据', 1000);
+    // 默认也不关闭窗口
+    console.log('[百家号发布] 🛑 暂停流程，窗口保持打开');
   };
 
   // 获取窗口专属的发布成功数据 key
