@@ -236,62 +236,53 @@
         }
     }
 
-    async function pasteHtmlIntoEditor(editorEle, htmlContent, plainText = "") {
-        if (!editorEle || !htmlContent) {
-            return;
-        }
+    // 每次调用时重新查询编辑器节点，避免 Draft.js 重渲染后引用失效
+    function getFreshEditorEle(editorEle) {
+        return document.querySelector(".PostEditor .public-DraftEditor-content > div")
+            || document.querySelector(".public-DraftEditor-content > div")
+            || editorEle;
+    }
 
-        editorEle.focus();
+    async function pasteHtmlIntoEditor(editorEle, htmlContent, plainText = "") {
+        if (!htmlContent) return false;
+
+        // 🔑 每次粘贴前重新查询，Draft.js 重渲染后旧引用会失效
+        const fresh = getFreshEditorEle(editorEle);
+        if (!fresh) return false;
+
+        // 记录粘贴前长度，用增量验证
+        const beforeLength = (fresh.innerText || fresh.textContent || "").trim().length;
+        console.log("[知乎发布] 📋 粘贴前长度:", beforeLength);
+
+        fresh.focus();
         await delay(200);
 
-        // 📏 记录预期内容长度（用于验证）
         const expectedPlainText = plainText || extractPlainTextFromHtml(htmlContent);
         const expectedLength = expectedPlainText.trim().length;
-        console.log("[知乎发布] 📏 预期内容长度:", expectedLength, "字符");
+        console.log("[知乎发布] 📏 预期增加:", expectedLength, "字符");
 
         const clipboardData = new DataTransfer();
         clipboardData.setData("text/html", htmlContent);
         clipboardData.setData("text/plain", expectedPlainText);
 
-        const pasteEvent = new ClipboardEvent("paste", {
-            clipboardData,
-            bubbles: true,
-            cancelable: true
-        });
-
-        editorEle.dispatchEvent(pasteEvent);
+        fresh.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
         console.log("[知乎发布] ✅ 已触发粘贴事件");
 
-        // 🔑 等待并验证内容是否完整粘贴
-        // Draft.js 可能需要更长时间处理大段内容
-        let actualLength = 0;
-        let retryCount = 0;
-        const maxRetries = 3;
-        const waitTimes = [800, 2000, 3000]; // 递增等待时间
-
-        while (retryCount < maxRetries) {
-            await delay(waitTimes[retryCount]);
-
-            // 获取编辑器实际内容
-            const actualText = (editorEle.innerText || editorEle.textContent || "").trim();
-            actualLength = actualText.length;
-
-            console.log(`[知乎发布] 📏 第${retryCount + 1}次验证: 实际长度=${actualLength}, 预期长度=${expectedLength}`);
-
-            // 验证：实际长度 >= 预期长度的 80%（允许格式差异）
-            if (actualLength >= expectedLength * 0.8) {
-                console.log("[知乎发布] ✅ 内容验证通过！实际/预期比例:", (actualLength / expectedLength * 100).toFixed(1) + "%");
-                return; // 验证通过，返回
-            }
-
-            retryCount++;
-            if (retryCount < maxRetries) {
-                console.warn(`[知乎发布] ⚠️ 内容可能未完全粘贴（${actualLength}/${expectedLength}），等待更长时间...`);
+        // 验证增量（每次验证也重新查询）
+        for (let i = 0; i < 3; i++) {
+            await delay([800, 2000, 3000][i]);
+            const cur = getFreshEditorEle(editorEle);
+            const afterLength = (cur.innerText || cur.textContent || "").trim().length;
+            const increase = afterLength - beforeLength;
+            console.log(`[知乎发布] 第${i+1}次验证: 增加=${increase}, 预期=${expectedLength}, 总长=${afterLength}`);
+            if (increase >= expectedLength * 0.8) {
+                console.log("[知乎发布] ✅ 验证通过:", (increase/expectedLength*100).toFixed(1) + "%");
+                return true;
             }
         }
 
-        // 验证失败，记录警告但不抛出错误（因为是回退方案中调用）
-        console.error(`[知乎发布] ❌ 内容验证失败！实际长度${actualLength}，预期长度${expectedLength}，仅达到${(actualLength / expectedLength * 100).toFixed(1)}%`);
+        console.error("[知乎发布] ❌ 内容验证失败");
+        return false;
     }
 
     async function tryUploadImageByUrlToZhihu(img) {
@@ -948,10 +939,10 @@
                 }, 5, 1000);
 
                 try {
-                    // 内容（带重试）
-                    setTimeout(async () => {
-                        try {
-                            await retryOperation(async () => {
+                    // 内容（带重试，必须 await 完成后才能继续封面上传）
+                    await delay(window.getRandomDelayMs(200));
+                    try {
+                        await retryOperation(async () => {
                                 const editorIframeEle = await waitForElement(".PostEditor", 20000); // 🔑 增加到 20 秒
                                 const editorEle = editorIframeEle.querySelector(".public-DraftEditor-content > div");
                                 let htmlContent = dataObj.video.video.content;
@@ -1010,7 +1001,6 @@
                         } catch (e) {
                             console.log('[知乎发布] ❌ 内容填写失败:', e.message);
                         }
-                    }, window.getRandomDelayMs(200));
                 } catch (e) {
                     console.log('[知乎发布] ❌ 内容填写失败:', e.message)
                 }
