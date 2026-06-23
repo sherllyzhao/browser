@@ -2145,7 +2145,7 @@ if (typeof window.uploadVideo === "function"
             },
             wangyihao: {
                 apiPath: '/api/mediaauth/wyinfo',
-                domains: ['163.com', 'mp.163.com'],
+                domains: ['163.com'],  // 163.com 能匹配 .163.com 和 mp.163.com
                 getUserInfo: async () => {
                     const r = await fetch('https://mp.163.com/wemedia/navinfo.do', { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
                     const res = await r.json();
