@@ -12778,9 +12778,29 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
     || publishData?.element?.save_session_api
     || config.platformApis[accountInfo.platform];
 
-  let cookieDomains = config.platformDomains[accountInfo.platform] || [];
+  // 🔑 优先级1: 后台明确指定的域名列表（element.cookie_domains）
+  let cookieDomains = publishData?.element?.cookie_domains || publishData?.element?.cookieDomains || [];
 
-  // 🔑 动态补充父域名（带点）- 解决网易号等平台父域名 cookies 丢失问题
+  // 🔑 优先级2: 配置文件中的域名
+  if (!cookieDomains || cookieDomains.length === 0) {
+    cookieDomains = config.platformDomains[accountInfo.platform] || [];
+  }
+
+  // 🔑 优先级3: 从 element.cookies 中提取 domain 字段（单个域名）
+  const elementCookies = publishData?.element?.cookies;
+  if (elementCookies) {
+    try {
+      const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
+      if (cookiesData.domain) {
+        cookieDomains = Array.from(new Set([...(cookieDomains || []), cookiesData.domain]));
+        console.log('[Save Session] 从 element.cookies 合并 domain:', cookieDomains);
+      }
+    } catch (parseErr) {
+      console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
+    }
+  }
+
+  // 🔑 自动补充父域名（带点）- 解决网易号等平台父域名 cookies 丢失问题
   // 例如：['163.com', 'mp.163.com'] → 自动添加 '.163.com'
   const parentDomains = cookieDomains
     .filter(d => d && !d.startsWith('.')) // 过滤掉已有的父域名
@@ -12797,19 +12817,6 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
   if (parentDomains.length > 0) {
     cookieDomains = Array.from(new Set([...parentDomains, ...cookieDomains]));
     console.log('[Save Session] 🔧 已自动添加父域名:', parentDomains, '→ 完整列表:', cookieDomains);
-  }
-
-  const elementCookies = publishData?.element?.cookies;
-  if (elementCookies) {
-    try {
-      const cookiesData = typeof elementCookies === 'string' ? JSON.parse(elementCookies) : elementCookies;
-      if (cookiesData.domain) {
-        cookieDomains = Array.from(new Set([...(cookieDomains || []), cookiesData.domain]));
-        console.log('[Save Session] 从 element.cookies 合并 domain:', cookieDomains);
-      }
-    } catch (parseErr) {
-      console.error('[Save Session] 解析 element.cookies 失败:', parseErr);
-    }
   }
 
   if (!saveSessionApi) {
@@ -14083,16 +14090,38 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
     console.log(`[Account Manager] 临时 session 共有 ${tempCookies.length} 个 cookies`);
 
     // 确定要迁移的域名
-    const platformDomains = {
-      douyin: ['douyin.com'],
-      xiaohongshu: ['xiaohongshu.com'],
-      baijiahao: ['baidu.com'],
-      weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
-      shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
-      wangyihao: ['.163.com', '163.com', 'mp.163.com']  // ✅ 添加网易号
-    };
+    // 🔑 优先使用 config.platformDomains，如果没有则使用硬编码列表（向后兼容）
+    let domains = config.platformDomains[platform] || [];
 
-    const domains = platformDomains[platform] || [];
+    // 如果 config 没有配置，使用内置默认值
+    if (!domains || domains.length === 0) {
+      const platformDomains = {
+        douyin: ['douyin.com'],
+        xiaohongshu: ['xiaohongshu.com'],
+        baijiahao: ['baidu.com'],
+        weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
+        shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
+        wangyihao: ['.163.com', '163.com', 'mp.163.com']
+      };
+      domains = platformDomains[platform] || [];
+    }
+
+    // 🔑 自动补充父域名（与保存逻辑保持一致）
+    const parentDomains = domains
+      .filter(d => d && !d.startsWith('.'))
+      .map(d => {
+        const parts = d.split('.');
+        if (parts.length >= 2) {
+          return '.' + parts.slice(-2).join('.');
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    if (parentDomains.length > 0) {
+      domains = Array.from(new Set([...parentDomains, ...domains]));
+      console.log('[Account Manager] 🔧 已自动添加父域名:', parentDomains, '→ 完整列表:', domains);
+    }
 
     // 过滤并迁移 cookies
     const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
