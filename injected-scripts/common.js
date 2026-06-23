@@ -2839,16 +2839,30 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
             const url = await getStatisticsUrl(false);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
-            const response = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(scanData),
-            });
-            console.log(`[${platform || "发布"}] ✅ 成功统计接口请求成功`);
-            return { success: true, response };
+
+            // 使用 retryOperation 包裹：3次重试 + 校验 HTTP 状态与业务 code === 200
+            const result = await window.retryOperation(async () => {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(scanData),
+                    keepalive: true,
+                });
+                const text = await response.text();
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch (_) {}
+                const okFlag = response.ok && parsed && parsed.code === 200;
+                if (!okFlag) {
+                    throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                }
+                return { response, parsed };
+            }, 3, 1000);
+
+            console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认 code=200`);
+            return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
             window.releaseStatisticsReportLock(reportLock.key, publishId);
-            console.error(`[${platform || "发布"}] ❌ 成功统计接口请求失败:`, e);
+            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败(已重试 3 次):`, e.message);
             return { success: false, error: e };
         }
     };
@@ -2923,16 +2937,30 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
             const url = await getStatisticsUrl(true);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
-            const response = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(scanData),
-            });
-            console.log(`[${platform || "发布"}] ✅ 失败统计接口请求成功`);
-            return { success: true, response };
+
+            // 使用 retryOperation 包裹：3次重试 + 校验 HTTP 状态与业务 code === 200
+            const result = await window.retryOperation(async () => {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(scanData),
+                    keepalive: true,
+                });
+                const text = await response.text();
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch (_) {}
+                const okFlag = response.ok && parsed && parsed.code === 200;
+                if (!okFlag) {
+                    throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                }
+                return { response, parsed };
+            }, 3, 1000);
+
+            console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认 code=200`);
+            return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
             window.releaseStatisticsReportLock(reportLock.key, publishId);
-            console.error(`[${platform || "发布"}] ❌ 失败统计接口请求失败:`, e);
+            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败(已重试 3 次):`, e.message);
             return { success: false, error: e };
         }
     };
