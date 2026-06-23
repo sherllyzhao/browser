@@ -43,6 +43,52 @@
     window.__WYH_SCRIPT_LOADED__ = true;
 
     // ===========================
+    // 🔑 检测登录态，如果无效则自动清理旧 Cookies
+    // ===========================
+    (async function checkAndCleanInvalidCookies() {
+        try {
+            console.log('[网易号发布] 🔍 检测登录态...');
+            const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const userInfoRes = await userInfoResult.json();
+
+            if (userInfoRes.code !== 1) {
+                console.warn('[网易号发布] ⚠️ 登录态无效，code:', userInfoRes.code, 'msg:', userInfoRes.msg);
+                console.log('[网易号发布] 🧹 自动清理旧 Cookies...');
+
+                // 清理 163.com 域名的所有 cookies
+                if (window.browserAPI?.clearDomainCookies) {
+                    const clearResult = await window.browserAPI.clearDomainCookies('163.com');
+                    if (clearResult.success) {
+                        console.log(`[网易号发布] ✅ 已清理 ${clearResult.deletedCount} 个旧 Cookies`);
+
+                        // 提示用户需要重新登录
+                        const shouldReload = confirm(
+                            '检测到登录状态已失效，已自动清理旧数据。\n\n' +
+                            '请点击"确定"跳转到登录页重新登录。'
+                        );
+                        if (shouldReload) {
+                            window.location.href = 'https://mp.163.com/subscribe_v4/index.html';
+                        }
+                        return; // 停止脚本执行
+                    } else {
+                        console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
+                    }
+                } else {
+                    console.warn('[网易号发布] ⚠️ clearDomainCookies API 不可用，无法自动清理');
+                }
+            } else {
+                console.log('[网易号发布] ✅ 登录态有效，用户:', userInfoRes.data?.tname);
+            }
+        } catch (err) {
+            console.error('[网易号发布] ❌ 检测登录态失败:', err);
+        }
+    })();
+
+    // ===========================
     // 🔑 网易号白屏检测和自动恢复（使用公共函数）
     // ===========================
     if (typeof window.checkBlankPageAndReload === 'function') {
