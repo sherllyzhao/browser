@@ -66,13 +66,16 @@
                         console.log(`[网易号发布] ✅ 已清理 ${clearResult.deletedCount} 个旧 Cookies`);
 
                         // 提示用户需要重新登录
-                        const shouldReload = confirm(
+                        alert(
                             '检测到登录状态已失效，已自动清理旧数据。\n\n' +
-                            '请点击"确定"跳转到登录页重新登录。'
+                            '页面即将刷新，请重新登录。'
                         );
-                        if (shouldReload) {
-                            window.location.href = 'https://mp.163.com/subscribe_v4/index.html';
-                        }
+
+                        // 延迟500ms后刷新页面，让浏览器有时间完成清理
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 500);
+
                         return; // 停止脚本执行
                     } else {
                         console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
