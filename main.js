@@ -12779,6 +12779,26 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
     || config.platformApis[accountInfo.platform];
 
   let cookieDomains = config.platformDomains[accountInfo.platform] || [];
+
+  // 🔑 动态补充父域名（带点）- 解决网易号等平台父域名 cookies 丢失问题
+  // 例如：['163.com', 'mp.163.com'] → 自动添加 '.163.com'
+  const parentDomains = cookieDomains
+    .filter(d => d && !d.startsWith('.')) // 过滤掉已有的父域名
+    .map(d => {
+      // 提取根域名：mp.163.com → 163.com → .163.com
+      const parts = d.split('.');
+      if (parts.length >= 2) {
+        return '.' + parts.slice(-2).join('.');
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (parentDomains.length > 0) {
+    cookieDomains = Array.from(new Set([...parentDomains, ...cookieDomains]));
+    console.log('[Save Session] 🔧 已自动添加父域名:', parentDomains, '→ 完整列表:', cookieDomains);
+  }
+
   const elementCookies = publishData?.element?.cookies;
   if (elementCookies) {
     try {
@@ -14068,7 +14088,8 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
       xiaohongshu: ['xiaohongshu.com'],
       baijiahao: ['baidu.com'],
       weixin: ['weixin.qq.com', 'mp.weixin.qq.com'],
-      shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com']
+      shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
+      wangyihao: ['.163.com', '163.com', 'mp.163.com']  // ✅ 添加网易号
     };
 
     const domains = platformDomains[platform] || [];
