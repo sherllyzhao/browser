@@ -904,9 +904,9 @@
                 return;
             }
 
-            setTimeout(async () => {
-                // 标题（带重试和验证）
-                await retryOperation(async () => {
+            await delay(window.getRandomDelayMs(10000));
+            // 标题（带重试和验证）
+            await retryOperation(async () => {
                     const titleEle = await waitForElement(".WriteIndex-titleInput textarea", 10000); // 🔑 增加到 10 秒
 
                     // 先触发focus事件
@@ -1000,13 +1000,19 @@
                             }, 3, 1000);
                         } catch (e) {
                             console.log('[知乎发布] ❌ 内容填写失败:', e.message);
+                            // 🔑 内容填写失败时，停止错误监听器，避免影响后续封面上传
+                            stopErrorListener();
                         }
                 } catch (e) {
-                    console.log('[知乎发布] ❌ 内容填写失败:', e.message)
+                    console.log('[知乎发布] ❌ 内容填写失败:', e.message);
+                    stopErrorListener();
                 }
 
-                // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
+                // 🔴 内容填写完成后，重启错误监听器（清除之前的错误状态）
+                stopErrorListener();
+                await delay(500);
                 startErrorListener();
+                console.log('[知乎发布] 🔄 已重启错误监听器，开始封面上传');
 
                 // 设置封面（使用主进程下载绕过跨域）
                 await (async () => {
@@ -1014,16 +1020,16 @@
                         const { blob, contentType } = await downloadFile(pathImage, "image/png");
                         var file = new File([blob], dataObj?.video?.formData?.title + ".png", { type: contentType || "image/png" });
 
-                        setTimeout(async () => {
-                            // 选中本地上传（点击"选择封面"按钮）
-                            setTimeout(async () => {
-                                // 等待封面选择区域出现
-                                await waitForElement(".UploadPicture-wrapper");
-                                await delay(500); // 等待渲染完成
+                        await delay(window.getRandomDelayMs(1000));
+                        // 选中本地上传（点击"选择封面"按钮）
+                        await delay(window.getRandomDelayMs(2000));
+                        // 等待封面选择区域出现
+                        await waitForElement(".UploadPicture-wrapper");
+                        await delay(500); // 等待渲染完成
 
-                                // 查找并点击"选择封面"按钮
-                                const coverBtn = document.querySelector(".UploadPicture-wrapper");
-                                console.log("🚀 ~  ~ coverBtn: ", coverBtn);
+                        // 查找并点击"选择封面"按钮
+                        const coverBtn = document.querySelector(".UploadPicture-wrapper");
+                        console.log("🚀 ~  ~ coverBtn: ", coverBtn);
 
                                 //检查是否已经有图片
                                 const coverWrapperEle = coverBtn.parentElement;
@@ -1049,17 +1055,17 @@
                                 }
                                 await delay(1000); // 等待渲染完成
 
-                                setTimeout(async () => {
-                                    const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
-                                    const dataTransfer = new DataTransfer();
-                                    // 创建 DataTransfer 对象模拟文件上传
-                                    dataTransfer.items.add(file);
-                                    input.files = dataTransfer.files;
-                                    const event = new Event("change", { bubbles: true });
-                                    input.dispatchEvent(event);
+                                await delay(window.getRandomDelayMs(1000));
+                                const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
+                                const dataTransfer = new DataTransfer();
+                                // 创建 DataTransfer 对象模拟文件上传
+                                dataTransfer.items.add(file);
+                                input.files = dataTransfer.files;
+                                const event = new Event("change", { bubbles: true });
+                                input.dispatchEvent(event);
 
-                                    // 封装上传检测与重试逻辑
-                                    const tryUploadImage = async (retryCount = 0) => {
+                                // 封装上传检测与重试逻辑
+                                const tryUploadImage = async (retryCount = 0) => {
                                         const maxRetries = 3;
 
                                         // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
@@ -1284,12 +1290,8 @@
                                     };
 
                                     // 启动上传检测（延迟2秒等待上传开始）
-                                    setTimeout(async () => {
-                                        await tryUploadImage(0);
-                                    }, window.getRandomDelayMs(2000));
-                                }, window.getRandomDelayMs(1000));
-                            }, window.getRandomDelayMs(2000));
-                        }, window.getRandomDelayMs(1000));
+                                    await delay(window.getRandomDelayMs(2000));
+                                    await tryUploadImage(0);
                     } catch (error) {
                         console.log("[知乎发布] ❌ 封面下载失败:", error);
                         stopErrorListener();
@@ -1303,9 +1305,8 @@
 
                 fillFormRunning = false;
                 // alert('Automation process completed');
-            }, window.getRandomDelayMs(10000));
         } catch (error) {
-            // 捕获填写表单过程中的任何错误（仅捕获 setTimeout 调度前的同步错误）
+            // 捕获填写表单过程中的任何错误
             console.error("[知乎发布] fillFormData 错误:", error);
             // 发送错误上报
             const publishId = dataObj?.video?.dyPlatform?.id;

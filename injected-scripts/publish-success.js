@@ -19,6 +19,30 @@
   'use strict';
 
   // ===========================
+  // 🔑 排除编辑页和草稿页，避免误触发
+  // ===========================
+  const currentUrl = window.location.href;
+  const currentPath = window.location.pathname;
+
+  // 知乎编辑页：/write 或 /p/xxx/edit
+  // 其他平台的编辑页关键词
+  const editPagePatterns = [
+    '/write',
+    '/edit',
+    '/draft',
+    '/publish',
+    '/upload',
+    '/addarticle'
+  ];
+
+  if (editPagePatterns.some(pattern => currentPath.includes(pattern))) {
+    console.log(`[发布成功] ⏭️ 检测到编辑页 URL (${currentPath})，跳过执行`);
+    return;
+  }
+
+  console.log(`[发布成功] ✅ 非编辑页 URL (${currentPath})，继续执行`);
+
+  // ===========================
   // 🔑 检查 common.js 依赖并提供降级实现
   // ===========================
   if (typeof window.getRandomDelayMs !== "function") {

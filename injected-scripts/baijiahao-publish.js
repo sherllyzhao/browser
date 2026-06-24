@@ -203,9 +203,9 @@
     console.log('[百家号发布] 📱 检测到需要短信验证或安全验证');
     console.log('[百家号发布] 📄 弹窗内容:', text);
 
-    // 停止错误监听器和短信检测器
-    stopErrorListener();
+    // 🔑 只停止短信检测器，保持错误监听器运行（监听后续的发布错误）
     stopSmsVerificationDetector();
+    console.log('[百家号发布] ✅ 错误监听器继续运行，监听用户手动发布后的错误');
 
     // 🔑 检查是否是"账号有风险"或"手机验证"类型的提示
     const isAccountRiskWarning = text.includes('账号有风险') ||
@@ -654,6 +654,7 @@
                 for (const img of images) {
                   const originalSrc = img.src;
                   if (!originalSrc || originalSrc.startsWith('data:')) {
+                    console.log('[百家号发布] ⏭️ 跳过空/base64图片:', originalSrc ? originalSrc.substring(0, 50) : 'null');
                     continue; // 跳过空 src 或 base64 图片
                   }
 
@@ -678,23 +679,98 @@
                       credentials: 'include' // 带上 cookies
                     });
 
+                    // 🔴 检查 HTTP 状态码
+                    if (!response.ok) {
+                      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
                     const result = await response.json();
                     console.log('[百家号发布] 📥 上传结果:', result);
 
                     if (result.errno === 0 && result.data && result.data.bos_url) {
                       // 替换为百家号服务器的图片地址
+                      const oldSrc = img.src;
                       img.src = result.data.bos_url;
-                      console.log('[百家号发布] ✅ 图片替换成功:', result.data.src.substring(0, 50));
+                      console.log('[百家号发布] ✅ 图片替换成功:', {
+                        原图: oldSrc.substring(0, 80),
+                        新图: result.data.bos_url.substring(0, 80),
+                        完整响应: result.data
+                      });
                     } else {
-                      console.log('[百家号发布] ⚠️ 图片上传失败，保留原地址');
+                      // 🔴 图片上传失败，记录详细错误信息
+                      const errorDetail = {
+                        errno: result.errno,
+                        error_msg: result.error_msg || result.message || '未知错误',
+                        原图URL: originalSrc.substring(0, 100),
+                        响应状态: response.status,
+                        完整响应: result
+                      };
+                      console.error('[百家号发布] ❌ 图片上传失败，详细信息:', errorDetail);
+
+                      // 🔴 将失败的图片信息保存，后续可能需要整体上报
+                      if (!window.__BJH_FAILED_IMAGES__) {
+                        window.__BJH_FAILED_IMAGES__ = [];
+                      }
+                      window.__BJH_FAILED_IMAGES__.push(errorDetail);
                     }
                   } catch (e) {
-                    console.error('[百家号发布] ❌ 图片上传异常:', e.message);
+                    // 🔴 区分网络错误和其他错误
+                    const isNetworkError = e.message.includes('fetch') ||
+                                          e.message.includes('network') ||
+                                          e.message.includes('Failed to fetch') ||
+                                          e.message.includes('HTTP');
+
+                    console.error('[百家号发布] ❌ 图片上传异常:', {
+                      错误类型: isNetworkError ? '网络错误' : '其他错误',
+                      错误: e.message,
+                      堆栈: e.stack,
+                      原图: originalSrc.substring(0, 100)
+                    });
+
+                    // 记录异常的图片
+                    if (!window.__BJH_FAILED_IMAGES__) {
+                      window.__BJH_FAILED_IMAGES__ = [];
+                    }
+                    window.__BJH_FAILED_IMAGES__.push({
+                      原图URL: originalSrc.substring(0, 100),
+                      错误类型: isNetworkError ? '网络错误' : '上传异常',
+                      错误信息: e.message
+                    });
                   }
                 }
 
                 // 获取处理后的 HTML
                 htmlContent = tempDiv.innerHTML;
+
+                // 🔴 检查是否有失败的图片
+                if (window.__BJH_FAILED_IMAGES__ && window.__BJH_FAILED_IMAGES__.length > 0) {
+                  console.error('[百家号发布] ❌ 有', window.__BJH_FAILED_IMAGES__.length, '张图片上传失败');
+                  console.error('[百家号发布] 📋 失败详情:', window.__BJH_FAILED_IMAGES__);
+
+                  // 停止流程并上报错误
+                  stopErrorListener();
+                  stopSmsVerificationDetector();
+                  const publishId = dataObj.video?.dyPlatform?.id;
+                  if (publishId) {
+                    // 🔴 格式化错误信息
+                    const firstError = window.__BJH_FAILED_IMAGES__[0];
+                    let errorMsg = '';
+
+                    if (firstError.error_msg) {
+                      // 百家号接口返回的错误
+                      errorMsg = `图片上传失败(${window.__BJH_FAILED_IMAGES__.length}张): ${firstError.error_msg}`;
+                    } else if (firstError.错误信息) {
+                      // 异常捕获的错误
+                      errorMsg = `图片上传异常(${window.__BJH_FAILED_IMAGES__.length}张): ${firstError.错误信息}`;
+                    } else {
+                      errorMsg = `图片上传失败(${window.__BJH_FAILED_IMAGES__.length}张)`;
+                    }
+
+                    await sendStatisticsError(publishId, errorMsg, '百家号发布');
+                  }
+                  await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
+                  return; // 终止流程
+                }
 
                 // 🔑 直接 innerHTML 赋值（最稳，paste 事件会被编辑器拦截清洗导致内容丢失）
                 editorEle.focus();

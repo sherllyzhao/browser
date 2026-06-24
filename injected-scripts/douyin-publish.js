@@ -420,7 +420,16 @@ function isDouyinPhoneVerifyMessage(message) {
 }
 
 function getDouyinPhoneVerifyMessage() {
-  const selectors = ['#uc-second-verify', '.uc-ui-verify-sms-verify'];
+  // 🔑 扩展选择器列表，覆盖更多弹窗变体
+  const selectors = [
+    '#uc-second-verify',
+    '.uc-ui-verify-sms-verify',
+    '.second-verify-panel',           // 新增：主弹窗容器
+    '.uc-ui-layout_content',          // 新增：布局容器
+    '.uc-ui-verify-new_header',       // 新增：弹窗标题
+    '[class*="second-verify"]',       // 新增：通配符匹配
+    '[class*="sms-verify"]',          // 新增：通配符匹配
+  ];
   const bodyText = normalizeDouyinPublishText(document.body?.innerText || document.body?.textContent || '');
 
   for (const selector of selectors) {
@@ -438,12 +447,15 @@ function getDouyinPhoneVerifyMessage() {
 
       const text = normalizeDouyinPublishText(element.textContent || element.innerText || '');
       if (text && isDouyinPhoneVerifyMessage(text)) {
+        console.log('[抖音发布] 🔍 通过选择器检测到手机验证弹窗:', selector, '内容:', text.substring(0, 100));
         return text;
       }
     }
   }
 
+  // 🔑 回退方案：检查整个 body 文本
   if (isDouyinPhoneVerifyMessage(bodyText)) {
+    console.log('[抖音发布] 🔍 通过 body 文本检测到手机验证弹窗:', bodyText.substring(0, 100));
     return bodyText;
   }
 
@@ -524,38 +536,66 @@ async function publishApi(dataObj) {
 
     const reportDouyinPhoneVerifyFailure = async (reason = 'phone-verify', rawMessage = '') => {
       if (phoneVerifyReported) {
-        return true;
+        // 🔑 已上报过手机验证错误，返回 false 让轮询继续（不退出）
+        console.log('[抖音发布] ⚠️ 手机验证错误已上报过，跳过重复上报，继续监听后续错误');
+        return false;
+      }
+
+      // 🔑 先检查用户是否正在操作，如果是就等他停下来
+      if (typeof window.checkUserActivity === 'function') {
+        console.log('[抖音发布] 🔍 检测到手机验证弹窗，先检查用户是否正在操作...');
+        await window.checkUserActivity();
+        console.log('[抖音发布] ✅ 用户操作检查完成，继续处理验证弹窗');
       }
 
       phoneVerifyReported = true;
-      hasProcessed = true;
+      // 🔑 不要设置 hasProcessed = true，让轮询可以继续检测后续错误
       const normalizedRawMessage = normalizeDouyinPublishText(rawMessage);
       console.warn('[抖音发布] 📱 检测到手机号认证弹窗，准备上报失败:', {
         reason,
         rawMessage: normalizedRawMessage,
       });
 
-      try {
-        await clearDouyinPublishSuccessData(windowId);
-      } catch (clearError) {
-        console.error('[抖音发布] ❌ 清除发布数据失败:', clearError);
+      // 🔑 显示醒目的横幅提示（红色警告）
+      if (typeof showOperationBanner === 'function') {
+        showOperationBanner('⚠️ 需要输入手机验证码，请完成验证后手动点击发布。窗口将保持打开，请勿关闭！', 'error');
       }
 
+      // 🔑 立即上报错误（让后台知道卡在这里了）
       try {
-        await sendStatisticsError(publishId, '需要手机号认证', '抖音发布');
+        await sendStatisticsError(publishId, '需要手机号认证，请手动完成', '抖音发布');
+        console.log('[抖音发布] 📤 手机验证错误已上报');
       } catch (reportError) {
         console.error('[抖音发布] ❌ 手机号认证失败上报异常:', reportError);
       }
 
-      publishRunning = false;
+      // 🔑 保存 publishId 到 localStorage，供 publish-success.js 使用
+      if (publishId) {
+        try {
+          const windowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
+          localStorage.setItem(windowKey, JSON.stringify({ publishId: publishId }));
+          console.log('[抖音发布] 💾 已保存 publishId 到 localStorage:', windowKey);
 
-      try {
-        await closeWindowWithMessage('发布失败，刷新数据', 1000);
-      } catch (closeError) {
-        console.error('[抖音发布] ❌ 关闭窗口失败:', closeError);
+          // 同时保存到 globalData
+          if (window.browserAPI && window.browserAPI.setGlobalData) {
+            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, {publishId: publishId});
+            console.log('[抖音发布] 💾 已保存 publishId 到 globalData');
+          }
+        } catch (e) {
+          console.error('[抖音发布] ❌ 保存 publishId 失败:', e);
+        }
       }
 
-      return true;
+      // 🔑 不设置 publishRunning = false，让脚本保持运行状态
+
+      // 🔑 不关闭窗口，让轮询继续运行，监听用户手动发布后的错误
+      console.log('[抖音发布] 🛑 暂停自动发布流程，但继续监听后续错误');
+      console.log('[抖音发布] 💡 用户需要：1) 完成手机验证 2) 手动点击发布按钮');
+      console.log('[抖音发布] 📌 轮询继续运行，如果发布失败会检测到新错误并上报');
+      console.log('[抖音发布] 📌 如果发布成功，publish-success.js 会自动上报成功状态覆盖此错误');
+
+      // 🔑 返回 false 表示"不要退出轮询"
+      return false;
     };
 
     const publishHelperStatus = {
@@ -755,8 +795,13 @@ async function publishApi(dataObj) {
       (isDouyinPhoneVerifyMessage(clickResult.message) ? clickResult.message : '');
     if (initialPhoneVerifyMessage) {
       console.log('[抖音发布] 📱 点击后检测到手机号认证弹窗:', initialPhoneVerifyMessage);
-      await reportDouyinPhoneVerifyFailure('post-click', initialPhoneVerifyMessage);
-      return;
+      const shouldExit = await reportDouyinPhoneVerifyFailure('post-click', initialPhoneVerifyMessage);
+      // 🔑 如果返回 true，说明需要退出（旧逻辑兼容）；如果返回 false，继续轮询
+      if (shouldExit) {
+        return;
+      }
+      // 如果返回 false，不 return，继续执行后续的轮询逻辑
+      console.log('[抖音发布] 📱 手机验证错误已上报，继续轮询监听后续错误...');
     }
 
     // 开发环境弹窗显示平台提示信息
@@ -799,8 +844,13 @@ async function publishApi(dataObj) {
       const phoneVerifyMessage = getDouyinPhoneVerifyMessage();
       if (phoneVerifyMessage) {
         console.log('[抖音发布] 📱 轮询检测到手机号认证弹窗:', phoneVerifyMessage);
-        await reportDouyinPhoneVerifyFailure('polling', phoneVerifyMessage);
-        return;
+        const shouldExit = await reportDouyinPhoneVerifyFailure('polling', phoneVerifyMessage);
+        // 🔑 如果返回 true，说明需要退出（旧逻辑兼容）；如果返回 false，继续轮询
+        if (shouldExit) {
+          return;
+        }
+        // 如果返回 false（手机验证已上报），继续轮询监听后续错误
+        console.log('[抖音发布] 📱 继续轮询，监听用户手动发布后的错误...');
       }
 
       // 检查 URL 是否变化
