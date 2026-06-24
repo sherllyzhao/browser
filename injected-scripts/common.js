@@ -2828,41 +2828,59 @@ if (typeof window.uploadVideo === "function"
     };
 
     // 发送统计接口（发布成功时调用）
-    window.sendStatistics = async function (publishId, platform = "") {
-        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
-        if (!reportLock.acquired) {
-            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
+    window.sendStatistics = async function (publishId, platform = "", options = {}) {
+        // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
+        const url = await getStatisticsUrl(false);
+        const isGeo = url.includes('/api/geo/') || options.skipDedup === true;
+
+        let reportLock = null;
+        if (!isGeo) {
+            reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+            if (!reportLock.acquired) {
+                return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
+            }
         }
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
-            console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}`);
-            const url = await getStatisticsUrl(false);
+            console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}${isGeo ? " [GEO-每次记录]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
-            // 使用 retryOperation 包裹：3次重试 + 校验 HTTP 状态与业务 code === 200
+            // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
+            const retryCount = isGeo ? 1 : 3;
+            const retryDelay = isGeo ? 0 : 1000;
             const result = await window.retryOperation(async () => {
-                const response = await fetch(url, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(scanData),
-                    keepalive: true,
-                });
-                const text = await response.text();
-                let parsed = null;
-                try { parsed = JSON.parse(text); } catch (_) {}
-                const okFlag = response.ok && parsed && parsed.code === 200;
-                if (!okFlag) {
-                    throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(scanData),
+                        keepalive: true,
+                        signal: controller.signal,
+                    });
+                    const text = await response.text();
+                    let parsed = null;
+                    try { parsed = JSON.parse(text); } catch (_) {}
+                    const okFlag = response.ok && parsed && parsed.code === 200;
+                    if (!okFlag) {
+                        throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                    }
+                    return { response, parsed };
+                } finally {
+                    clearTimeout(timeoutId);
                 }
-                return { response, parsed };
-            }, 3, 1000);
+            }, retryCount, retryDelay);
 
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认 code=200`);
             return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
-            window.releaseStatisticsReportLock(reportLock.key, publishId);
-            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败(已重试 3 次):`, e.message);
+            if (reportLock) {
+                window.releaseStatisticsReportLock(reportLock.key, publishId);
+            }
+            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
             return { success: false, error: e };
         }
     };
@@ -2877,10 +2895,17 @@ if (typeof window.uploadVideo === "function"
     //   - {Object} categorizeContext - 传给 categorizeFailure 的上下文提示（如 { buttonDisabled: true }）
     //   - {Object} diagnosis - 诊断信息（如表单/按钮诊断结果）
     //   - {string} failure_category - 显式指定失败分类（覆盖自动推断）
-    window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null) {
-        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
-        if (!reportLock.acquired) {
-            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
+    window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null, options = {}) {
+        // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
+        const url = await getStatisticsUrl(true);
+        const isGeo = url.includes('/api/geo/') || options.skipDedup === true;
+
+        let reportLock = null;
+        if (!isGeo) {
+            reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+            if (!reportLock.acquired) {
+                return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
+            }
         }
 
         // 使用 PublishLogger 记录错误
@@ -2934,33 +2959,44 @@ if (typeof window.uploadVideo === "function"
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
         try {
-            console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}`);
-            const url = await getStatisticsUrl(true);
+            console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}${isGeo ? " [GEO-每次记录]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
-            // 使用 retryOperation 包裹：3次重试 + 校验 HTTP 状态与业务 code === 200
+            // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
+            const retryCount = isGeo ? 1 : 3;
+            const retryDelay = isGeo ? 0 : 1000;
             const result = await window.retryOperation(async () => {
-                const response = await fetch(url, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(scanData),
-                    keepalive: true,
-                });
-                const text = await response.text();
-                let parsed = null;
-                try { parsed = JSON.parse(text); } catch (_) {}
-                const okFlag = response.ok && parsed && parsed.code === 200;
-                if (!okFlag) {
-                    throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(scanData),
+                        keepalive: true,
+                        signal: controller.signal,
+                    });
+                    const text = await response.text();
+                    let parsed = null;
+                    try { parsed = JSON.parse(text); } catch (_) {}
+                    const okFlag = response.ok && parsed && parsed.code === 200;
+                    if (!okFlag) {
+                        throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                    }
+                    return { response, parsed };
+                } finally {
+                    clearTimeout(timeoutId);
                 }
-                return { response, parsed };
-            }, 3, 1000);
+            }, retryCount, retryDelay);
 
             console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认 code=200`);
             return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
-            window.releaseStatisticsReportLock(reportLock.key, publishId);
-            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败(已重试 3 次):`, e.message);
+            if (reportLock) {
+                window.releaseStatisticsReportLock(reportLock.key, publishId);
+            }
+            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
             return { success: false, error: e };
         }
     };
