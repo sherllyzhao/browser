@@ -959,6 +959,14 @@
                                                                 scheduledReleasesBtn.dispatchEvent(clickEvent);
                                                                 console.log('[搜狐号发布] ✅ 已点击定时发布（模拟鼠标事件）');
                                                                 await delay(2000);
+                                                                const tipDialog = document.querySelector('.alert-dialog');
+                                                                if(tipDialog){
+                                                                    const tipText = tipDialog.innerText;
+                                                                    if(tipText && tipText.includes('确认发布文章么')){
+                                                                        tipDialog.querySelector('button.sure-btn').click();
+                                                                    }
+                                                                }
+                                                                await delay(2000);
                                                                 //  检测有没有定时发布弹窗
                                                                 const scheduledReleasesModal = document.querySelector('.pushtimeout-dialog');
                                                                 if (scheduledReleasesModal) {
