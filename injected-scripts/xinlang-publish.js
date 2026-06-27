@@ -1577,6 +1577,20 @@
 
         removeLeadingEmptyNodes(tempCleaner);
 
+        // 🔢 修复有序列表序号：被段落打断的多个 <ol> 经 insertHTML/innerHTML 原生渲染时会各自从 1 开始，
+        //    这里按文档顺序用 start 属性接续编号，并清除 <li value> 强制值（只影响 html 路径）
+        (function fixOrderedListNumbering(root) {
+            let counter = 1;
+            root.querySelectorAll('ol').forEach((ol) => {
+                if (ol.closest('li')) return; // 跳过嵌套子列表，保留其独立编号
+                ol.setAttribute('start', String(counter));
+                ol.querySelectorAll(':scope > li').forEach((li) => {
+                    li.removeAttribute('value');
+                    counter++;
+                });
+            });
+        })(tempCleaner);
+
         function getListItemPrefix(node) {
             const parentTag = node.parentElement?.tagName;
             if (parentTag === 'OL') {

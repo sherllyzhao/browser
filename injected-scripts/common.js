@@ -1962,6 +1962,36 @@ if (typeof window.uploadVideo === "function"
     };
 
     // ===========================
+    // 📡 统计上报底层单次请求（供 sendStatistics/sendStatisticsError 重试与离线补报队列复用）
+    // ⚠️ 逻辑须与 sendStatistics / sendStatisticsError 内联 fetch 保持一致：
+    //    10s 超时 + keepalive + 业务码校验（response.ok && parsed.code === 200）
+    // 失败抛错（触发上层 retryOperation 重试或补报队列保留），成功返回 { response, parsed }
+    // ===========================
+    window.postStatisticsRequest = async function (url, scanData, timeoutMs = 10000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(scanData),
+                keepalive: true,
+                signal: controller.signal,
+            });
+            const text = await response.text();
+            let parsed = null;
+            try { parsed = JSON.parse(text); } catch (_) {}
+            const okFlag = response.ok && parsed && parsed.code === 200;
+            if (!okFlag) {
+                throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+            }
+            return { response, parsed };
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    };
+
+    // ===========================
     // 🔐 关闭前保存会话到后台（与 creator.js 走同一接口和 body 格式）
     // 用于发布窗口关闭前主动上报最新登录信息，避免主进程的轻量 {id, cookies} 格式被后台拒绝
     // 返回: { success, status, code, message, uid, nickname, cookiesLen, response, error }
@@ -2875,12 +2905,21 @@ if (typeof window.uploadVideo === "function"
             }, retryCount, retryDelay);
 
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认 code=200`);
+            // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
+            window.flushFailedStatReports?.().catch(() => {});
             return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
             if (reportLock) {
                 window.releaseStatisticsReportLock(reportLock.key, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 成功统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
+            // 🔑 落盘到离线补报队列，后台恢复后自动补发，避免数据永久丢失
+            await window.enqueueFailedStatReport?.({ url, scanData, resultType: "success", platform, publishId });
+            // 🔑 能走到 sendStatistics 即代表「内容已发布成功」，仅统计上报失败 → 提示用户别误以为白发
+            window.showPublishToast?.(
+                "内容已发布成功！仅数据统计上报失败，已自动加入补报队列稍后重试，不影响发布结果。",
+                "warning"
+            );
             return { success: false, error: e };
         }
     };
@@ -2991,13 +3030,185 @@ if (typeof window.uploadVideo === "function"
             }, retryCount, retryDelay);
 
             console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认 code=200`);
+            // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
+            window.flushFailedStatReports?.().catch(() => {});
             return { success: true, response: result.response, code: result.parsed.code };
         } catch (e) {
             if (reportLock) {
                 window.releaseStatisticsReportLock(reportLock.key, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 失败统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
+            // 🔑 落盘到离线补报队列，后台恢复后自动补发（错误上报失败属内容未发成功场景，静默入队不弹 toast）
+            await window.enqueueFailedStatReport?.({ url, scanData, resultType: "error", platform, publishId });
             return { success: false, error: e };
+        }
+    };
+
+    // ===========================
+    // 📦 统计上报「离线补报队列」
+    // 背景：sendStatistics/sendStatisticsError 重试 3 次仍失败（后台挂掉/长时间无响应）时，
+    //       原逻辑只 console.error 后丢弃 → 数据永久丢失。
+    // 方案：把失败的上报落盘到 global-storage（持久化、重启不丢），后台恢复后自动补发。
+    // 防多窗口竞态：多账号会并发开多个发布窗口，故「每条独立 key」而非单数组，
+    //              靠 setGlobalData 单键写入天然隔离，避免「读-改-写」互相覆盖。
+    // ===========================
+    const STAT_PENDING_PREFIX = "STAT_PENDING_";
+    const STAT_MAX_ATTEMPTS = 10;                      // 单条补发累计超过 10 次则丢弃（死信）
+    const STAT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   // 单条超过 7 天则丢弃（死信）
+
+    // 入队：把一条彻底失败的上报存入补报队列
+    // @param {Object} item - { url, scanData, resultType('success'|'error'), platform, publishId }
+    window.enqueueFailedStatReport = async function (item) {
+        try {
+            if (!window.browserAPI?.setGlobalData) {
+                console.warn("[统计补报] ⚠️ browserAPI.setGlobalData 不可用，无法入队");
+                return false;
+            }
+            if (!item || !item.url || !item.scanData) {
+                console.warn("[统计补报] ⚠️ 入队数据不完整，跳过");
+                return false;
+            }
+            const resultType = item.resultType || "unknown";
+            // publishId 缺失时用时间戳兜底，保证 key 唯一不互相覆盖
+            const pid = item.publishId || `noid_${Date.now()}`;
+            const key = `${STAT_PENDING_PREFIX}${pid}_${resultType}`;
+            const record = {
+                url: item.url,
+                scanData: item.scanData,
+                resultType,
+                platform: item.platform || "",
+                publishId: item.publishId || "",
+                createdAt: Date.now(),
+                attempts: 0,
+            };
+            await window.browserAPI.setGlobalData(key, record);
+            console.log(`[统计补报] 📥 已落盘待补报：${key}`);
+            return true;
+        } catch (e) {
+            console.warn("[统计补报] ⚠️ 入队失败:", e.message);
+            return false;
+        }
+    };
+
+    // 补发：读取队列逐条重发，成功移除 / 失败累计 / 超限丢弃。带并发锁防重入，单条异常不影响其它条。
+    window.flushFailedStatReports = async function () {
+        if (window.__STAT_FLUSH_RUNNING__) return;
+        if (!window.browserAPI?.getAllGlobalData || typeof window.postStatisticsRequest !== "function") return;
+        window.__STAT_FLUSH_RUNNING__ = true;
+        try {
+            const all = await window.browserAPI.getAllGlobalData();
+            if (!all || typeof all !== "object") return;
+            const keys = Object.keys(all).filter(k => k.startsWith(STAT_PENDING_PREFIX));
+            if (keys.length === 0) return;
+            console.log(`[统计补报] 🔁 待补报 ${keys.length} 条，开始补发...`);
+
+            for (const key of keys) {
+                try {
+                    let item = all[key];
+                    // 兼容历史被序列化成字符串的情况
+                    if (typeof item === "string") {
+                        try { item = JSON.parse(item); } catch (_) { item = null; }
+                    }
+                    // 坏数据 / 缺字段：直接清除
+                    if (!item || !item.url || !item.scanData) {
+                        await window.browserAPI.removeGlobalData(key);
+                        continue;
+                    }
+                    // 死信检查：超次数 / 超时长 → 丢弃
+                    const age = Date.now() - (item.createdAt || 0);
+                    if ((item.attempts || 0) >= STAT_MAX_ATTEMPTS || age > STAT_MAX_AGE_MS) {
+                        console.warn(`[统计补报] 🗑️ 丢弃死信：${key}（attempts=${item.attempts || 0}, age≈${Math.round(age / 86400000)}天）`);
+                        await window.browserAPI.removeGlobalData(key);
+                        continue;
+                    }
+                    // 尝试补发
+                    try {
+                        await window.postStatisticsRequest(item.url, item.scanData);
+                        await window.browserAPI.removeGlobalData(key);
+                        console.log(`[统计补报] ✅ 补发成功并移除：${key}`);
+                    } catch (e) {
+                        item.attempts = (item.attempts || 0) + 1;
+                        item.lastTriedAt = Date.now();
+                        await window.browserAPI.setGlobalData(key, item);
+                        console.warn(`[统计补报] ⚠️ 补发失败（第 ${item.attempts} 次）：${key} - ${e.message}`);
+                    }
+                } catch (perItemErr) {
+                    console.warn(`[统计补报] ⚠️ 处理 ${key} 异常:`, perItemErr.message);
+                }
+            }
+        } catch (e) {
+            console.warn("[统计补报] ⚠️ flush 异常:", e.message);
+        } finally {
+            window.__STAT_FLUSH_RUNNING__ = false;
+        }
+    };
+
+    // ===========================
+    // 💬 页面内浮动提示条（用于「发布成功但统计上报失败」等需让用户知晓的场景）
+    // 参考 hidePageAndShowMask 的 DOM 注入风格；纯展示，绝不抛错影响主流程。
+    // @param {string} message  - 提示文案
+    // @param {string} type     - success | warning | error | info（决定背景色）
+    // @param {number} duration - 自动消失时长（ms），默认 6000
+    // ===========================
+    window.showPublishToast = function (message, type = "success", duration = 6000) {
+        try {
+            const TOAST_ID = "__publish_toast__";
+            // 幂等：先清掉旧的
+            const old = document.getElementById(TOAST_ID);
+            if (old) old.remove();
+
+            const colorMap = {
+                success: "#52c41a",
+                warning: "#faad14",
+                error: "#ff4d4f",
+                info: "#1890ff",
+            };
+            const bg = colorMap[type] || colorMap.success;
+
+            const toast = document.createElement("div");
+            toast.id = TOAST_ID;
+            toast.textContent = message;
+            toast.style.cssText = [
+                "position:fixed",
+                "top:24px",
+                "left:50%",
+                "transform:translateX(-50%) translateY(-12px)",
+                "max-width:80vw",
+                "padding:12px 20px",
+                "background:" + bg,
+                "color:#fff",
+                "font-size:14px",
+                "line-height:1.5",
+                "border-radius:8px",
+                "box-shadow:0 4px 16px rgba(0,0,0,0.2)",
+                "z-index:2147483647",
+                "opacity:0",
+                "transition:opacity .3s ease, transform .3s ease",
+                "pointer-events:none",
+                "white-space:pre-wrap",
+                "text-align:center",
+            ].join(";");
+
+            // body 未就绪时降级挂到 documentElement
+            const mount = document.body || document.documentElement;
+            mount.appendChild(toast);
+
+            // 强制下一帧淡入
+            requestAnimationFrame(() => {
+                toast.style.opacity = "1";
+                toast.style.transform = "translateX(-50%) translateY(0)";
+            });
+
+            // duration 后淡出并移除
+            setTimeout(() => {
+                try {
+                    toast.style.opacity = "0";
+                    toast.style.transform = "translateX(-50%) translateY(-12px)";
+                    setTimeout(() => { try { toast.remove(); } catch (_) {} }, 350);
+                } catch (_) {}
+            }, duration);
+        } catch (e) {
+            console.warn("[showPublishToast] ⚠️ 显示提示失败:", e.message);
         }
     };
 
@@ -4528,3 +4739,13 @@ if (typeof hideOperationBanner === "undefined") window.hideOperationBanner && (h
 
     console.log("[ProtocolBlock] ✅ 前端协议拦截已启用");
 })();
+
+// ===========================
+// 🔁 启动补报：脚本加载后延迟 5s 触发一次离线补报队列 flush
+// 每次打开发布窗口都会执行，正好借这个时机把之前积压（后台曾挂掉）的失败上报补回来
+// ===========================
+setTimeout(() => {
+    try {
+        window.flushFailedStatReports?.().catch(() => {});
+    } catch (_) {}
+}, 5000);

@@ -97,6 +97,16 @@
     if (!/[<>]/.test(html)) return html.trim();
     const temp = document.createElement('div');
     temp.innerHTML = html;
+    // 🔢 innerText 不含有序列表序号标记（marker 是伪元素），这里给 li 注入全局连续序号文本前缀，
+    //    避免被段落打断的多个 <ol> 拍平成纯文本后丢失序号
+    let olCounter = 1;
+    temp.querySelectorAll('ol').forEach((ol) => {
+      if (ol.closest('li')) return; // 跳过嵌套子列表
+      ol.querySelectorAll(':scope > li').forEach((li) => {
+        li.insertBefore(document.createTextNode(olCounter + '. '), li.firstChild);
+        olCounter++;
+      });
+    });
     return (temp.innerText || temp.textContent || '').trim();
   };
 
@@ -812,9 +822,26 @@
       return;
     }
 
+    // 🔢 给被段落打断的多个 <ol> 用 start 属性接续编号，修复 insertHTML/paste 原生渲染时序号全 1
+    const addOrderedListStart = (html) => {
+      if (!html || !/[<>]/.test(html)) return html;
+      const d = document.createElement('div');
+      d.innerHTML = html;
+      let counter = 1;
+      d.querySelectorAll('ol').forEach((ol) => {
+        if (ol.closest('li')) return; // 跳过嵌套子列表
+        ol.setAttribute('start', String(counter));
+        ol.querySelectorAll(':scope > li').forEach((li) => {
+          li.removeAttribute('value');
+          counter++;
+        });
+      });
+      return d.innerHTML;
+    };
+
     // 保留原始 HTML 用于 paste（ProseMirror 原生处理 paste 事件会正确更新内部 state）
     const htmlForPaste = htmlContent
-      ? htmlContent
+      ? addOrderedListStart(htmlContent)
       : `<p>${(introText || '').split('\n').filter(Boolean).join('</p><p>')}</p>`;
 
     await retryOperation(async () => {

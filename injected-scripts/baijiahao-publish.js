@@ -739,6 +739,21 @@
                   }
                 }
 
+                // 🔢 修复有序列表序号：被段落打断的多个 <ol> 直接 innerHTML 注入时会各自从 1 开始，
+                //    这里按文档顺序用 start 属性接续编号，并清除 <li value> 强制值
+                (function fixOrderedListNumbering(root) {
+                  let counter = 1;
+                  root.querySelectorAll('ol').forEach((ol) => {
+                    // 跳过嵌套在 li 内的子列表（应保留其独立编号），只处理顶层有序列表
+                    if (ol.closest('li')) return;
+                    ol.setAttribute('start', String(counter));
+                    ol.querySelectorAll(':scope > li').forEach((li) => {
+                      li.removeAttribute('value'); // 清除强制值，避免覆盖 start
+                      counter++;
+                    });
+                  });
+                })(tempDiv);
+
                 // 获取处理后的 HTML
                 htmlContent = tempDiv.innerHTML;
 

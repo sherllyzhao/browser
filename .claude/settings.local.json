@@ -142,7 +142,8 @@
       "Bash(awk -F: '$1>=10440 && $1<=10540')",
       "Bash(awk -F: '$1>=1960 && $1<=2005')",
       "Bash(node \"D:/浏览器/运营助手/.omc/tmp-scope-check.js\"; rm -f \"D:/浏览器/运营助手/.omc/tmp-probe.js\" \"D:/浏览器/运营助手/.omc/tmp-scope-check.js\")",
-      "mcp__plugin_oh-my-claudecode_omc-tools__lsp_diagnostics"
+      "mcp__plugin_oh-my-claudecode_omc-tools__lsp_diagnostics",
+      "PowerShell(node __test_stat_queue.mjs 2>&1)"
     ],
     "deny": [],
     "ask": [],
