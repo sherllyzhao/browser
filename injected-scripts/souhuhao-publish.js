@@ -1398,26 +1398,73 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
             return false;
         }
 
-        // 3. 在所有选项中查找匹配的
+        // 3. 虚拟列表只渲染可视区选项，需自动探测滚动容器、边滚动边查找
         const targetStr = String(targetValue).trim();
-        let foundOption = null;
 
-        for (const option of options) {
-            const optionText = option.textContent.trim();
-            console.log('[搜狐号发布] 🔎 检查选项:', optionText);
+        // 探测真正可滚动的容器：优先 ul 自身，否则向上找带 overflow 的祖先
+        const getScrollContainer = (ul) => {
+            if (ul.scrollHeight - ul.clientHeight > 5) return ul;
+            let p = ul.parentElement;
+            for (let i = 0; i < 6 && p && p !== document.body; i++) {
+                const oy = getComputedStyle(p).overflowY;
+                if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight - p.clientHeight > 5) {
+                    return p;
+                }
+                p = p.parentElement;
+            }
+            return ul; // 兜底
+        };
 
-            if (optionText === targetStr) {
-                foundOption = option;
-                console.log('[搜狐号发布] ✅ 找到匹配的选项:', optionText);
-                break;
+        // 在当前已渲染的可见选项里按文本查找目标
+        const findOption = () => {
+            return Array.from(virtualList.querySelectorAll('li'))
+                .filter(el => el.offsetParent !== null)
+                .find(el => el.textContent.trim() === targetStr) || null;
+        };
+
+        const scroller = getScrollContainer(virtualList);
+        let foundOption = findOption();
+
+        // 没找到 → 从顶部开始逐屏向下滚动，边滚边重新读 DOM 查找
+        if (!foundOption) {
+            scroller.scrollTop = 0;
+            await window.delay(120);
+            foundOption = findOption();
+
+            const step = Math.max(60, Math.floor(scroller.clientHeight * 0.8));
+            let guard = 0;
+            while (!foundOption && guard < 100) {
+                const prevTop = scroller.scrollTop;
+                scroller.scrollTop = prevTop + step;
+                await window.delay(120); // 等虚拟列表重渲染
+                foundOption = findOption();
+
+                // scrollTop 不再变化说明已到底，最后再找一次后退出
+                if (scroller.scrollTop === prevTop) {
+                    foundOption = foundOption || findOption();
+                    break;
+                }
+                guard++;
             }
         }
 
         if (!foundOption) {
-            console.error('[搜狐号发布] ❌ 未找到目标选项:', targetStr);
-            console.log('[搜狐号发布] 📋 所有选项:', options.map(o => o.textContent.trim()).join(', '));
+            const visibleTexts = Array.from(virtualList.querySelectorAll('li'))
+                .filter(el => el.offsetParent !== null)
+                .map(o => o.textContent.trim()).join(', ');
+            console.error('[搜狐号发布] ❌ 滚动到底仍未找到目标选项:', targetStr);
+            console.log('[搜狐号发布] 📋 当前可见选项:', visibleTexts);
+
+            // 弹窗提示用户选项不全，询问是否手动调整
+            const userChoice = confirm(`[搜狐号发布] 找不到时间选项 "${targetStr}"\n\n下拉可能只提供了部分时间。当前可用选项：\n${visibleTexts}\n\n是否需要手动调整时间后重试？`);
+            if (userChoice) {
+                console.log('[搜狐号发布] ⏸️ 脚本已暂停，请手动调整时间');
+                alert('[搜狐号发布] 请在下拉中手动选择可用的时间，然后点击"确定"让脚本继续。');
+            }
             return false;
         }
+
+        console.log('[搜狐号发布] ✅ 找到匹配的选项:', foundOption.textContent.trim());
 
         // 4. 滚动到视图并点击
         foundOption.scrollIntoView({ behavior: 'auto', block: 'nearest' });
