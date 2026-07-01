@@ -2104,7 +2104,7 @@ if (typeof window.uploadVideo === "function"
         const platformConfigs = {
             tengxunhao: {
                 apiPath: '/api/mediaauth/txinfo',
-                domains: ['qq.com', 'om.qq.com', 'aqq.qq.com'],
+                domains: ['qq.com', 'om.qq.com', 'image.om.qq.com', 'aqq.qq.com', 'account.qq.com', 'ptlogin2.qq.com'],
                 getUserInfo: async () => {
                     const r = await fetch('https://om.qq.com/maccountsetting/basicinfo/?relogin=1', {
                         method: 'GET',

@@ -26,7 +26,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-09-ai-declaration-radio-confirm-v19";
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-09-ai-declaration-radio-confirm-v20";
     if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
         console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
@@ -81,6 +81,9 @@
     // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
     let currentWindowId = null;
 
+    const TXH_BODY_IMAGE_UPLOAD_URL = "https://image.om.qq.com/cpom_pimage/ContentImageUploadViaUrl";
+    const TXH_BODY_IMAGE_UPLOAD_APPID = "LA6zXi1lWzAioIzdiAD6iM10aHar1HF6";
+
     // ===========================
     // 🔴 使用公共错误监听器（来自 common.js）
     // ===========================
@@ -88,23 +91,25 @@
 
     // 初始化错误监听器
     const initErrorListener = () => {
-        if (typeof createErrorListener === "function" && ERROR_LISTENER_CONFIGS?.tengxun) {
+        if (typeof createErrorListener === "function" && typeof ERROR_LISTENER_CONFIGS !== "undefined" && ERROR_LISTENER_CONFIGS?.tengxun) {
             errorListener = createErrorListener(ERROR_LISTENER_CONFIGS.tengxun);
             console.log("[腾讯号发布] ✅ 使用公共错误监听器配置");
-        } else {
+        } else if (typeof createErrorListener === "function") {
             // 回退方案：使用本地配置
             errorListener = createErrorListener({
                 logPrefix: "[腾讯号发布]",
                 selectors: [{ containerClass: "omui-message", textSelector: ".omui-message__desc", recursiveSelector: ".omui-message" }],
             });
             console.log("[腾讯号发布] ⚠️ 使用本地错误监听器配置");
+        } else {
+            console.error("[腾讯号发布] ❌ createErrorListener 未定义，无法监听上传错误");
         }
     };
 
     // 兼容旧代码的函数别名
     const startErrorListener = () => {
         if (!errorListener) initErrorListener();
-        errorListener.start();
+        errorListener?.start?.();
     };
     const stopErrorListener = () => errorListener?.stop();
     const clearLatestErrors = () => errorListener?.clear?.();
@@ -116,6 +121,604 @@
         console.log("[腾讯号发布] 🔑 使用 localStorage key:", key);
         return key;
     };
+
+    async function reportTxhFailure(dataObj, statusText, closeMessage = "发布失败，刷新数据") {
+        stopErrorListener();
+        const publishId = dataObj?.video?.dyPlatform?.id;
+        if (publishId) {
+            await sendStatisticsError(publishId, statusText, "腾讯号发布");
+        }
+        await closeWindowWithMessage(closeMessage, 1000);
+    }
+
+    function nodeHasMeaningfulContent(node) {
+        if (!node) return false;
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            return !!node.textContent.trim();
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return false;
+        }
+
+        const meaningfulTags = new Set(["IMG", "VIDEO", "IFRAME", "CANVAS", "SVG", "HR", "BR"]);
+        if (meaningfulTags.has(node.tagName)) {
+            return true;
+        }
+
+        return Array.from(node.childNodes).some(child => nodeHasMeaningfulContent(child));
+    }
+
+    function trimLeadingEmptyNodes(container) {
+        if (!container) return false;
+
+        while (container.firstChild) {
+            const child = container.firstChild;
+
+            if (child.nodeType === Node.TEXT_NODE) {
+                const trimmedText = child.textContent.trim();
+                if (!trimmedText) {
+                    container.removeChild(child);
+                    continue;
+                }
+
+                child.textContent = trimmedText;
+                return true;
+            }
+
+            if (child.nodeType !== Node.ELEMENT_NODE) {
+                container.removeChild(child);
+                continue;
+            }
+
+            if (!nodeHasMeaningfulContent(child)) {
+                container.removeChild(child);
+                continue;
+            }
+
+            const meaningfulTags = new Set(["IMG", "VIDEO", "IFRAME", "CANVAS", "SVG", "HR", "BR"]);
+            if (!meaningfulTags.has(child.tagName)) {
+                trimLeadingEmptyNodes(child);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    function normalizeTxhHtmlContent(htmlContent) {
+        const tempCleaner = document.createElement("div");
+        tempCleaner.innerHTML = htmlContent || "";
+        trimLeadingEmptyNodes(tempCleaner);
+        return tempCleaner.innerHTML.trim();
+    }
+
+    function extractPlainTextFromHtml(htmlContent) {
+        const textWrapper = document.createElement("div");
+        textWrapper.innerHTML = htmlContent || "";
+        return textWrapper.textContent || "";
+    }
+
+    function pickTxhUploadedImageSrc(originalUrl, imageData) {
+        if (!imageData?.url || !imageData?.size) {
+            throw new Error("腾讯号正文图片接口返回缺少 url/size");
+        }
+
+        const isGif = Number(imageData.type) === 1 || String(originalUrl || "").toLowerCase().includes(".gif");
+        let imageSrc = imageData.url;
+
+        if (imageData.size?.[641]) {
+            imageSrc = imageData.size[641].imageUrl || `${imageData.url}/641`;
+        }
+
+        if (isGif && imageData.size?.[0]) {
+            const isPublic = imageData.url.includes("//inews.gtimg.com");
+            imageSrc = imageData.size[0].imageUrl || (isPublic ? `${imageData.url}/0` : originalUrl);
+        }
+
+        return imageSrc;
+    }
+
+    function getTxhCookieNamesFromString(cookieString) {
+        return Array.from(new Set(String(cookieString || "")
+            .split(";")
+            .map(item => item.trim().split("=")[0])
+            .filter(Boolean)))
+            .sort();
+    }
+
+    async function logTxhUploadCookieNamesOnce() {
+        if (window.__TXH_UPLOAD_COOKIE_NAMES_LOGGED__) {
+            return;
+        }
+        window.__TXH_UPLOAD_COOKIE_NAMES_LOGGED__ = true;
+
+        try {
+            const diagnostics = {
+                pageCookieNames: getTxhCookieNamesFromString(document.cookie)
+            };
+            if (window.browserAPI?.getDomainCookies) {
+                for (const domain of ["qq.com", "om.qq.com", "image.om.qq.com", "account.qq.com", "ptlogin2.qq.com"]) {
+                    try {
+                        const result = await window.browserAPI.getDomainCookies(domain);
+                        diagnostics[domain] = {
+                            source: result?.source || "unknown",
+                            count: result?.count || 0,
+                            names: getTxhCookieNamesFromString(result?.cookies || ""),
+                            summary: result?.summary || []
+                        };
+                    } catch (error) {
+                        diagnostics[domain] = `读取失败: ${error?.message || error}`;
+                    }
+                }
+            }
+            console.log("[腾讯号发布] 🔎 正文图片上传前 Cookie 名称诊断（仅名称）:", diagnostics);
+        } catch (error) {
+            console.warn("[腾讯号发布] ⚠️ Cookie 名称诊断失败:", error?.message || error);
+        }
+    }
+
+    async function uploadTxhBodyImageUrl(imageUrl) {
+        await logTxhUploadCookieNamesOnce();
+
+        const payload = {
+            auth: {
+                appid: TXH_BODY_IMAGE_UPLOAD_APPID,
+                endpoint: 1
+            },
+            relogin: 1,
+            reqData: {
+                appid: TXH_BODY_IMAGE_UPLOAD_APPID,
+                endpoint: 1,
+                isRetImgAttr: 1,
+                isUpOrg: 1,
+                opCode: 151,
+                urls: [imageUrl]
+            }
+        };
+
+        const response = await fetch(TXH_BODY_IMAGE_UPLOAD_URL, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+                Accept: "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const responseText = await response.text();
+        let result = null;
+        try {
+            result = responseText ? JSON.parse(responseText) : null;
+        } catch (error) {
+            throw new Error(`腾讯号正文图片接口响应不是 JSON: ${responseText.slice(0, 120)}`);
+        }
+
+        if (!response.ok) {
+            throw new Error(`腾讯号正文图片接口 HTTP ${response.status}: ${responseText.slice(0, 120)}`);
+        }
+
+        if (!((Number(result?.code) === 0 || result?.success) && result?.data)) {
+            console.error("[腾讯号发布] ❌ 正文图片 URL 上传接口失败:", result);
+            throw new Error(result?.msg || result?.message || "腾讯号正文图片 URL 上传失败");
+        }
+
+        const imageData = result.data[imageUrl] || Object.values(result.data || {})[0];
+        if (!imageData) {
+            console.error("[腾讯号发布] ❌ 正文图片 URL 上传接口缺少图片数据:", result.data);
+            throw new Error("腾讯号正文图片 URL 上传失败(no data)");
+        }
+
+        const src = pickTxhUploadedImageSrc(imageUrl, imageData);
+        console.log("[腾讯号发布] ✅ 正文图片 URL 上传成功:", { imageUrl, src });
+        return { src, raw: imageData };
+    }
+
+    async function replaceTxhBodyImagesViaUrlApi(htmlContent) {
+        const container = document.createElement("div");
+        container.innerHTML = normalizeTxhHtmlContent(htmlContent);
+        const images = Array.from(container.querySelectorAll("img"));
+
+        if (!images.length) {
+            return { html: container.innerHTML.trim(), replacedCount: 0 };
+        }
+
+        const uploadCache = new Map();
+        let replacedCount = 0;
+
+        for (const img of images) {
+            const originalSrc = img.getAttribute("src") || img.src || "";
+            if (!originalSrc || originalSrc.startsWith("data:")) {
+                continue;
+            }
+
+            if (!uploadCache.has(originalSrc)) {
+                uploadCache.set(originalSrc, uploadTxhBodyImageUrl(originalSrc));
+            }
+
+            const uploadResult = await uploadCache.get(originalSrc);
+            img.setAttribute("src", uploadResult.src);
+            replacedCount += 1;
+        }
+
+        return { html: container.innerHTML.trim(), replacedCount };
+    }
+
+    function splitNodeByImages(node) {
+        if (!node) return [];
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            const normalizedText = String(node.textContent || "").replace(/\u00a0/g, " ");
+            return normalizedText.trim() ? [{ type: "nodes", nodes: [node.cloneNode(true)] }] : [];
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE) return [];
+
+        if (node.tagName === "IMG") {
+            const src = node.getAttribute("src") || node.src || "";
+            return src ? [{ type: "image", src, alt: node.getAttribute("alt") || "" }] : [];
+        }
+
+        if (!node.querySelector("img")) {
+            return [{ type: "nodes", nodes: [node.cloneNode(true)] }];
+        }
+
+        const segments = [];
+        let currentWrapper = node.cloneNode(false);
+        let hasCurrentChildren = false;
+
+        const flushCurrentWrapper = () => {
+            if (!hasCurrentChildren) {
+                currentWrapper = node.cloneNode(false);
+                return;
+            }
+            segments.push({ type: "nodes", nodes: [currentWrapper] });
+            currentWrapper = node.cloneNode(false);
+            hasCurrentChildren = false;
+        };
+
+        for (const child of Array.from(node.childNodes)) {
+            const childSegments = splitNodeByImages(child);
+            for (const segment of childSegments) {
+                if (segment.type === "image") {
+                    flushCurrentWrapper();
+                    segments.push(segment);
+                    continue;
+                }
+
+                segment.nodes.forEach(segNode => {
+                    currentWrapper.appendChild(segNode);
+                    hasCurrentChildren = true;
+                });
+            }
+        }
+
+        flushCurrentWrapper();
+        return segments;
+    }
+
+    function buildTxhContentSegmentsFromHtml(htmlContent) {
+        const tempContainer = document.createElement("div");
+        tempContainer.innerHTML = normalizeTxhHtmlContent(htmlContent);
+
+        const segments = [];
+        let htmlNodesBuffer = [];
+
+        const flushHtmlBuffer = () => {
+            if (!htmlNodesBuffer.length) return;
+
+            const htmlWrapper = document.createElement("div");
+            htmlNodesBuffer.forEach(node => {
+                htmlWrapper.appendChild(node.cloneNode(true));
+            });
+
+            const html = htmlWrapper.innerHTML.trim();
+            if (html) {
+                segments.push({
+                    type: "html",
+                    html,
+                    plainText: htmlWrapper.textContent || ""
+                });
+            }
+
+            htmlNodesBuffer = [];
+        };
+
+        for (const child of Array.from(tempContainer.childNodes)) {
+            const childSegments = splitNodeByImages(child);
+            for (const segment of childSegments) {
+                if (segment.type === "image") {
+                    flushHtmlBuffer();
+                    segments.push(segment);
+                    continue;
+                }
+
+                htmlNodesBuffer.push(...segment.nodes);
+            }
+        }
+
+        flushHtmlBuffer();
+        return segments;
+    }
+
+    function resolveTxhImageExtension(pathImage, contentType) {
+        const normalizedType = String(contentType || "").toLowerCase();
+        const contentTypeMap = {
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+            "image/svg+xml": ".svg",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg"
+        };
+
+        if (contentTypeMap[normalizedType]) return contentTypeMap[normalizedType];
+
+        if (pathImage && pathImage.includes(".")) {
+            const urlExt = pathImage.split(".").pop().split("?")[0].toLowerCase();
+            if (/^[a-z0-9]{1,5}$/.test(urlExt)) {
+                return `.${urlExt}`;
+            }
+        }
+
+        return ".jpg";
+    }
+
+    async function createTxhFileFromImageUrl(imageUrl, baseName, index) {
+        if (typeof downloadFile !== "function") {
+            throw new Error("downloadFile 未定义，无法上传正文图片");
+        }
+
+        const { blob, contentType } = await downloadFile(imageUrl, "image/jpeg");
+        const extension = resolveTxhImageExtension(imageUrl, contentType);
+        const safeBaseName = String(baseName || "txh-image")
+            .replace(/[\\/:*?"<>|]+/g, " ")
+            .trim() || "txh-image";
+        const fileName = `${safeBaseName}-image-${index}${extension}`;
+
+        return new File([blob], fileName, { type: contentType || "image/jpeg" });
+    }
+
+    function getTxhArticleImageElements(editorRoot) {
+        return Array.from(editorRoot?.querySelectorAll?.("img") || []);
+    }
+
+    function getTxhEditorImageFailureText(editorRoot) {
+        const containers = [
+            editorRoot,
+            editorRoot?.closest('[class*=editor_container], [class*=editorContainer], [class*=ExEditor]')
+        ].filter(Boolean);
+
+        for (const container of containers) {
+            const text = (container.innerText || container.textContent || "").replace(/\s+/g, " ").trim();
+            const match = text.match(/(?:图片|素材|文件|上传).{0,30}(?:失败|重试|异常|错误)|(?:失败|重试).{0,30}(?:图片|素材|文件|上传)/);
+            if (match?.[0]) {
+                return match[0];
+            }
+        }
+
+        return "";
+    }
+
+    function isProbablyCoverUploadTarget(element) {
+        if (!element) return true;
+
+        const explicitCoverArea = element.closest('[class*=articleCoverWrap-], [class*=articleCover], [class*=addCoverBtn-]');
+        if (explicitCoverArea) return true;
+
+        const possibleCoverArea = element.closest('[class*=cover], [class*=Cover]');
+        if (possibleCoverArea && !possibleCoverArea.closest('[class*=editor], [class*=Editor], [class*=ExEditor]')) {
+            return true;
+        }
+
+        const dialog = element.closest(".omui-dialog");
+        const dialogText = (dialog?.querySelector(".omui-dialog-header")?.textContent || dialog?.textContent || "").trim();
+        return !!(dialog && /封面|首图|题图/.test(dialogText));
+    }
+
+    function getTxhBodyImageInputs(editorRoot) {
+        const editorContainer = editorRoot?.closest('[class*=editor_container], [class*=editorContainer], [class*=ExEditor]') || editorRoot?.parentElement;
+        const inputs = Array.from(document.querySelectorAll("input[type='file']"));
+
+        return inputs.filter(input => {
+            if (!input || input.disabled || isProbablyCoverUploadTarget(input)) {
+                return false;
+            }
+
+            const accept = String(input.getAttribute("accept") || "").toLowerCase();
+            const isImageAccept = !accept || accept.includes("image") || accept.includes("png") || accept.includes("jpg") || accept.includes("jpeg");
+            if (!isImageAccept) return false;
+
+            const dialog = input.closest(".omui-dialog");
+            const inEditor = !editorContainer || editorContainer.contains(input) || !!input.closest('[class*=editor], [class*=Editor], [class*=ExEditor]');
+            return inEditor || !!dialog;
+        });
+    }
+
+    function logTxhBodyImageInputCandidates(editorRoot) {
+        const inputs = Array.from(document.querySelectorAll("input[type='file']"));
+        const editorContainer = editorRoot?.closest('[class*=editor_container], [class*=editorContainer], [class*=ExEditor]') || editorRoot?.parentElement;
+        const candidates = inputs.map((input, index) => {
+            const wrapper = input.closest(".omui-dialog, .cheetah-upload, [class*=editor], [class*=Editor], [class*=ExEditor], [class*=articleCoverWrap-]");
+            return {
+                index,
+                accept: input.getAttribute("accept") || "",
+                disabled: !!input.disabled,
+                inEditor: !!(editorContainer && editorContainer.contains(input)),
+                inDialog: !!input.closest(".omui-dialog"),
+                rejectedAsCover: isProbablyCoverUploadTarget(input),
+                wrapperClass: wrapper?.className || "",
+                wrapperText: (wrapper?.textContent || "").trim().slice(0, 80)
+            };
+        });
+        console.log("[腾讯号发布] 🔎 正文图片 input 候选:", candidates);
+    }
+
+    async function ensureTxhBodyImageInput(editorRoot) {
+        const findInput = () => getTxhBodyImageInputs(editorRoot)[0] || null;
+        let uploadInput = findInput();
+        if (uploadInput) return uploadInput;
+
+        const editorContainer = editorRoot?.closest('[class*=editor_container], [class*=editorContainer], [class*=ExEditor]') || document;
+        const buttonScope = editorContainer === document ? document : editorContainer.ownerDocument;
+        const imageButtons = Array.from(buttonScope.querySelectorAll('button, [role="button"], [title], [aria-label], [class*=toolbar], [class*=Toolbar]')).filter(element => {
+            if (!element || isProbablyCoverUploadTarget(element)) {
+                return false;
+            }
+
+            const inEditorArea = editorContainer === document || editorContainer.contains(element) || !!element.closest('[class*=editor], [class*=Editor], [class*=ExEditor]');
+            const inDialog = !!element.closest(".omui-dialog");
+            if (!inEditorArea && !inDialog) return false;
+
+            const text = [
+                element.textContent,
+                element.getAttribute("title"),
+                element.getAttribute("aria-label"),
+                element.getAttribute("class")
+            ].filter(Boolean).join(" ");
+
+            return /图片|插图|image|pic/i.test(text);
+        });
+
+        for (const button of imageButtons.slice(0, 3)) {
+            try {
+                button.click();
+                await delay(500);
+                uploadInput = findInput();
+                if (uploadInput) return uploadInput;
+            } catch (error) {
+                console.warn("[腾讯号发布] ⚠️ 触发正文图片按钮失败:", error?.message || error);
+            }
+        }
+
+        logTxhBodyImageInputCandidates(editorRoot);
+
+        uploadInput = await retryOperation(async () => {
+            const input = findInput();
+            if (!input) {
+                throw new Error("未找到正文图片上传 input");
+            }
+            return input;
+        }, 5, 500);
+
+        return uploadInput;
+    }
+
+    async function waitForTxhArticleImageUpload(editorRoot, beforeCount, timeout = 45000) {
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < timeout) {
+            const latestError = getLatestError();
+            if (latestError) {
+                throw new Error(latestError);
+            }
+
+            const editorImageFailureText = getTxhEditorImageFailureText(editorRoot);
+            if (editorImageFailureText) {
+                throw new Error(editorImageFailureText);
+            }
+
+            const images = getTxhArticleImageElements(editorRoot);
+            if (images.length > beforeCount) {
+                const lastImage = images[images.length - 1];
+                const src = lastImage?.getAttribute("src") || lastImage?.src || "";
+                if (src && !src.startsWith("data:")) {
+                    await delay(800);
+                    return lastImage;
+                }
+            }
+
+            await delay(500);
+        }
+
+        throw new Error("正文图片上传超时");
+    }
+
+    async function uploadImageThroughTxhEditor(imageUrl, editorRoot, baseName, index, total) {
+        if (typeof uploadFileToInput !== "function") {
+            throw new Error("uploadFileToInput 未定义，无法上传正文图片");
+        }
+
+        const file = await createTxhFileFromImageUrl(imageUrl, baseName, index);
+        const beforeCount = getTxhArticleImageElements(editorRoot).length;
+        const uploadInput = await ensureTxhBodyImageInput(editorRoot);
+
+        if (!uploadInput) {
+            throw new Error("未找到正文图片上传 input");
+        }
+
+        editorRoot.focus();
+        await delay(200);
+
+        const uploadTriggered = await uploadFileToInput(uploadInput, file);
+        if (!uploadTriggered) {
+            throw new Error("正文图片上传触发失败");
+        }
+
+        console.log(`[腾讯号发布] 🖼️ 正在通过编辑器原生上传正文图片 ${index}/${total}:`, imageUrl);
+        await waitForTxhArticleImageUpload(editorRoot, beforeCount, 45000);
+        await delay(800);
+    }
+
+    async function pasteHtmlIntoTxhEditor(editorRoot, htmlContent, plainText = "") {
+        if (!htmlContent) return true;
+
+        const beforeLength = (editorRoot.innerText || editorRoot.textContent || "").trim().length;
+        const expectedPlainText = plainText || extractPlainTextFromHtml(htmlContent);
+        const expectedLength = expectedPlainText.trim().length;
+
+        editorRoot.focus();
+        await delay(200);
+
+        const clipboardData = new DataTransfer();
+        clipboardData.setData("text/html", htmlContent);
+        clipboardData.setData("text/plain", expectedPlainText);
+        editorRoot.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+
+        if (expectedLength === 0) return true;
+
+        for (let i = 0; i < 3; i++) {
+            await delay([800, 1800, 3000][i]);
+            const afterLength = (editorRoot.innerText || editorRoot.textContent || "").trim().length;
+            const increase = afterLength - beforeLength;
+            console.log(`[腾讯号发布] 📏 分段粘贴验证${i + 1}: 增加=${increase}, 预期=${expectedLength}`);
+            if (increase >= expectedLength * 0.8) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    async function insertContentWithTxhEditorFallback(editorRoot, htmlContent, baseName) {
+        const segments = buildTxhContentSegmentsFromHtml(htmlContent);
+        const totalImages = segments.filter(segment => segment.type === "image").length;
+        let uploadedImages = 0;
+
+        console.log("[腾讯号发布] 🔄 使用编辑器原生图片上传模式，分段数:", segments.length, "图片数:", totalImages);
+
+        for (const segment of segments) {
+            if (segment.type === "html") {
+                const pasted = await pasteHtmlIntoTxhEditor(editorRoot, segment.html, segment.plainText);
+                if (!pasted) {
+                    throw new Error("正文文本分段粘贴失败");
+                }
+                continue;
+            }
+
+            if (!segment.src) {
+                console.warn("[腾讯号发布] ⚠️ 跳过空图片地址的内容段");
+                continue;
+            }
+
+            uploadedImages += 1;
+            await uploadImageThroughTxhEditor(segment.src, editorRoot, baseName, uploadedImages, totalImages);
+        }
+    }
 
     const normalizePublishTipText = text => (text || "").replace(/\s+/g, " ").trim();
 
@@ -1335,156 +1938,106 @@
                 );
 
                 try {
-                    // 内容（带重试）
-                    setTimeout(async () => {
-                        try {
-                            await retryOperation(
-                                async () => {
-                                    const editorIframeEle = await waitForElement("class^=editor_container", 20000); // 🔑 增加到 20 秒
-                                    const editorEle = editorIframeEle.querySelector(".ExEditor-basic");
+                    // 内容（带重试）：优先直接粘贴原 HTML，让腾讯编辑器自己的粘贴链路处理正文图片。
+                    // 如果编辑器未生成图片或出现上传失败，再回退到本地文件上传路径。
+                    startErrorListener();
+                    clearLatestErrors();
+                    await window.delay(window.getRandomDelayMs(200));
+                    await retryOperation(
+                        async () => {
+                            const editorIframeEle = await waitForElement("class^=editor_container", 20000);
+                            const editorEle = editorIframeEle.querySelector(".ExEditor-basic");
+                            if (!editorEle) {
+                                throw new Error("未找到富文本编辑器 .ExEditor-basic");
+                            }
 
-                                    editorEle.focus();
-                                    editorEle.innerHTML = "";
-                                    console.log("[腾讯号发布] ✅ 已清空富文本编辑器");
+                            const rawHtmlContent = dataObj.video?.video?.content || "";
+                            const originalHtmlContent = normalizeTxhHtmlContent(rawHtmlContent);
+                            let htmlContent = originalHtmlContent;
+                            const expectedPlainText = extractPlainTextFromHtml(htmlContent);
+                            const expectedLength = expectedPlainText.trim().length;
+                            const expectedImageCount = buildTxhContentSegmentsFromHtml(originalHtmlContent)
+                                .filter(segment => segment.type === "image" && segment.src)
+                                .length;
+                            clearLatestErrors();
 
-                                    let htmlContent = dataObj.video.video.content;
+                            const clearEditor = async () => {
+                                editorEle.focus();
+                                editorEle.innerHTML = "";
+                                editorEle.dispatchEvent(new InputEvent("input", {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    inputType: "deleteContentBackward"
+                                }));
+                                await delay(500);
+                            };
 
-                                    // 解析 HTML 中的图片，通过腾讯号 dumpproxy 接口上传
-                                    const tempDiv = document.createElement("div");
-                                    tempDiv.innerHTML = htmlContent;
-                                    const images = tempDiv.querySelectorAll("img");
+                            await clearEditor();
+                            console.log("[腾讯号发布] ✅ 已清空富文本编辑器");
+                            console.log("[腾讯号发布] 🧹 已清理开头空白，预期长度:", expectedLength, "预期图片:", expectedImageCount);
 
-                                    console.log("[腾讯号发布] 🖼️ 发现", images.length, "张图片需要处理");
+                            const clipboardData = new DataTransfer();
+                            clipboardData.setData("text/html", htmlContent);
+                            clipboardData.setData("text/plain", expectedPlainText);
 
-                                    // 获取转换后的 HTML
-                                    htmlContent = tempDiv.innerHTML;
+                            editorEle.focus();
+                            await delay(500);
+                            editorEle.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+                            console.log("[腾讯号发布] ✅ 已触发整体粘贴事件");
 
-                                    // 🔴 清理开头的空白 - 直接删除文字内容之前的所有HTML
-                                    const tempCleaner = document.createElement("div");
-                                    tempCleaner.innerHTML = htmlContent;
+                            let actualLength = 0;
+                            let actualImageCount = 0;
+                            let contentFailureText = "";
+                            for (let i = 0; i < 3; i++) {
+                                await window.delay([1500, 2500, 3500][i]);
+                                actualLength = (editorEle.innerText || editorEle.textContent || "").trim().length;
+                                actualImageCount = getTxhArticleImageElements(editorEle).length;
+                                console.log(`[腾讯号发布] 📏 第${i + 1}次验证: 实际长度=${actualLength}/${expectedLength}, 图片=${actualImageCount}/${expectedImageCount}`);
 
-                                    // 递归删除所有开头的空节点，直到找到第一个有非空文本的节点
-                                    function removeLeadingEmptyNodes(node) {
-                                        while (node.firstChild) {
-                                            const child = node.firstChild;
-                                            if (child.nodeType === 3) {
-                                                // 文本节点
-                                                const trimmedText = child.textContent.trim();
-                                                if (trimmedText) {
-                                                    // 有内容，保留但删除前面的空白
-                                                    child.textContent = trimmedText + "\u200B"; // 用零宽字符保留格式
-                                                    return true; // 找到了内容，停止
-                                                } else {
-                                                    node.removeChild(child);
-                                                }
-                                            } else if (child.nodeType === 1) {
-                                                // 元素节点
-                                                // 先检查这个节点是否有非空文本
-                                                if (child.textContent.trim()) {
-                                                    // 有内容，递归处理这个节点
-                                                    if (removeLeadingEmptyNodes(child)) {
-                                                        return true; // 找到了内容，停止
-                                                    }
-                                                    // 如果递归后仍然是空的，删除它
-                                                    if (!child.textContent.trim()) {
-                                                        node.removeChild(child);
-                                                    } else {
-                                                        return true; // 有内容，停止
-                                                    }
-                                                } else {
-                                                    // 完全空节点，删除
-                                                    node.removeChild(child);
-                                                }
-                                            } else {
-                                                // 注释、文档等其他节点，直接删除
-                                                node.removeChild(child);
-                                            }
-                                        }
-                                        return false;
-                                    }
+                                contentFailureText = getLatestError() || getTxhEditorImageFailureText(editorEle);
+                                if (contentFailureText) {
+                                    console.warn("[腾讯号发布] ⚠️ 检测到正文图片上传失败状态，准备切换原生上传:", contentFailureText);
+                                    break;
+                                }
 
-                                    removeLeadingEmptyNodes(tempCleaner);
-                                    htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, "").trim();
-                                    console.log("[腾讯号发布] 🧹 已清理开头所有空白内容");
-
-                                    // 让编辑器获得焦点
-                                    editorEle.focus();
-                                    await delay(500); // 🔑 增加到 500ms
-
-                                    // 用键盘事件全选+删除（保持编辑器状态同步）
-                                    editorEle.dispatchEvent(new KeyboardEvent('keydown', {
-                                        key: 'a',
-                                        code: 'KeyA',
-                                        ctrlKey: true,
-                                        bubbles: true
-                                    }));
-                                    await delay(200); // 🔑 增加到 200ms
-                                    editorEle.dispatchEvent(new KeyboardEvent('keydown', {
-                                        key: 'Backspace',
-                                        code: 'Backspace',
-                                        bubbles: true
-                                    }));
-                                    await delay(500); // 🔑 增加到 500ms
-
-                                    // 通过粘贴事件插入内容（让编辑器自己处理）
-                                    const pasteEvent = new ClipboardEvent("paste", {
-                                        clipboardData: new DataTransfer(),
-                                        bubbles: true,
-                                        cancelable: true,
-                                    });
-
-                                    // 📏 记录预期内容长度（用于验证）
-                                    const expectedPlainText = tempDiv.textContent || '';
-                                    const expectedLength = expectedPlainText.trim().length;
-                                    console.log('[腾讯号发布] 📏 预期内容长度:', expectedLength, '字符');
-
-                                    // 设置粘贴的 HTML 和纯文本内容
-                                    pasteEvent.clipboardData.setData("text/html", htmlContent);
-                                    pasteEvent.clipboardData.setData("text/plain", expectedPlainText);
-
-                                    editorEle.dispatchEvent(pasteEvent);
-                                    console.log('[腾讯号发布] ✅ 已触发粘贴事件');
-
-                                    // 🔑 等待并验证内容是否完整粘贴
-                                    let actualLength = 0;
-                                    let retryCount = 0;
-                                    const maxRetries = 3;
-                                    const waitTimes = [1500, 2500, 3500]; // 递增等待时间
-
-                                    while (retryCount < maxRetries) {
-                                        await window.delay(waitTimes[retryCount]);
-
-                                        const actualText = (editorEle.innerText || editorEle.textContent || '').trim();
-                                        actualLength = actualText.length;
-
-                                        console.log(`[腾讯号发布] 📏 第${retryCount + 1}次验证: 实际长度=${actualLength}, 预期长度=${expectedLength}`);
-
-                                        if (actualLength >= expectedLength * 0.8) {
-                                            console.log('[腾讯号发布] ✅ 内容验证通过！实际/预期比例:', (actualLength / expectedLength * 100).toFixed(1) + '%');
-                                            break;
-                                        }
-
-                                        retryCount++;
-                                        if (retryCount < maxRetries) {
-                                            console.warn(`[腾讯号发布] ⚠️ 内容可能未完全粘贴（${actualLength}/${expectedLength}），等待更长时间...`);
-                                        }
-                                    }
-
-                                    if (actualLength < expectedLength * 0.8) {
-                                        console.error(`[腾讯号发布] ❌ 内容验证失败！实际长度${actualLength}，预期长度${expectedLength}，仅达到${(actualLength / expectedLength * 100).toFixed(1)}%`);
-                                    }
-
+                                const textPassed = expectedLength === 0 || actualLength >= expectedLength * 0.8;
+                                const imagePassed = expectedImageCount === 0 || actualImageCount >= expectedImageCount;
+                                if (textPassed && imagePassed) {
+                                    console.log("[腾讯号发布] ✅ 内容验证通过");
+                                    console.log("[腾讯号发布] 🖼️ 当前编辑器图片:", getTxhArticleImageElements(editorEle).map(img => img.getAttribute("src") || img.src || ""));
                                     console.log("[腾讯号发布] ✅ 内容填写完成");
-                                },
-                                3,
-                                1000,
-                            );
-                        } catch (e) {
-                            console.log("[腾讯号发布] ❌ 内容填写失败:", e.message);
-                        }
-                    }, window.getRandomDelayMs(200));
+                                    return;
+                                }
+                            }
+
+                            if (expectedImageCount > 0 && (actualImageCount < expectedImageCount || contentFailureText)) {
+                                console.warn("[腾讯号发布] ⚠️ 整体粘贴未生成足够图片素材，切换原生图片上传模式");
+                                clearLatestErrors();
+                                await clearEditor();
+                                await insertContentWithTxhEditorFallback(editorEle, originalHtmlContent, dataObj.video?.formData?.title || dataObj.video?.video?.title || "txh");
+
+                                await delay(2000);
+                                actualLength = (editorEle.innerText || editorEle.textContent || "").trim().length;
+                                actualImageCount = getTxhArticleImageElements(editorEle).length;
+                                contentFailureText = getLatestError() || getTxhEditorImageFailureText(editorEle);
+                                const textPassed = expectedLength === 0 || actualLength >= expectedLength * 0.8;
+                                const imagePassed = actualImageCount >= expectedImageCount && !contentFailureText;
+                                console.log(`[腾讯号发布] 📏 原生上传后验证: 实际长度=${actualLength}/${expectedLength}, 图片=${actualImageCount}/${expectedImageCount}, 错误=${contentFailureText || "无"}`);
+                                if (textPassed && imagePassed) {
+                                    console.log("[腾讯号发布] ✅ 原生上传模式内容填写完成");
+                                    return;
+                                }
+                            }
+
+                            throw new Error(`正文验证失败: 长度 ${actualLength}/${expectedLength}, 图片 ${actualImageCount}/${expectedImageCount}${contentFailureText ? `，错误 ${contentFailureText}` : ""}`);
+                        },
+                        3,
+                        1000,
+                    );
                 } catch (e) {
                     console.log("[腾讯号发布] ❌ 内容填写失败:", e.message);
+                    await reportTxhFailure(dataObj, e.message || "正文图片上传失败", "正文图片上传失败，刷新数据");
+                    return;
                 }
 
                 // 设置封面为单图模式

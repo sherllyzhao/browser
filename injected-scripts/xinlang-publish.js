@@ -149,6 +149,181 @@
     };
     const stopErrorListener = () => errorListener?.stop();
 
+    const XINLANG_BODY_IMAGE_UPLOAD_URL = 'https://card.weibo.com/article/v5/aj/editor/plugins/asyncuploadimg';
+    const XINLANG_BODY_IMAGE_INFO_URL = 'https://card.weibo.com/article/v5/aj/editor/plugins/asyncimginfo';
+
+    function createXinlangRequestId() {
+        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+        const bytes = new Uint8Array(24);
+        if (window.crypto?.getRandomValues) {
+            window.crypto.getRandomValues(bytes);
+        } else {
+            for (let i = 0; i < bytes.length; i++) {
+                bytes[i] = Math.floor(Math.random() * 256);
+            }
+        }
+
+        return Array.from(bytes, (value, index) => {
+            const char = chars[value % chars.length];
+            return (index === 4 || index === 16) ? `-${char}` : char;
+        }).join('');
+    }
+
+    async function resolveXinlangUploadUid(dataObj) {
+        const candidates = [
+            dataObj?.uid,
+            dataObj?.platformUid,
+            dataObj?.account_info?.uid,
+            dataObj?.account_info?.platformUid,
+            dataObj?.video?.uid,
+            dataObj?.video?.platformUid,
+            dataObj?.video?.account_info?.uid,
+            dataObj?.video?.account_info?.platformUid,
+            dataObj?.video?.dyPlatform?.uid,
+            dataObj?.video?.dyPlatform?.platformUid,
+            dataObj?.video?.mediaAuth?.uid,
+            dataObj?.video?.media_auth?.uid,
+            window.$CONFIG?.uid,
+            window.$CONFIG?.oid,
+            localStorage.getItem('uid'),
+            localStorage.getItem('platformUid')
+        ];
+
+        try {
+            if (window.browserAPI?.getCurrentAccount) {
+                const accountResult = await window.browserAPI.getCurrentAccount();
+                const account = accountResult?.success ? accountResult.account : accountResult?.account;
+                candidates.push(account?.platformUid, account?.uid, account?.userId);
+            }
+        } catch (error) {
+            console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
+        }
+
+        const uid = candidates
+            .map(value => String(value || '').trim())
+            .find(value => /^\d+$/.test(value));
+
+        if (!uid) {
+            throw new Error('未获取到新浪图片接口 uid');
+        }
+
+        return uid;
+    }
+
+    async function fetchXinlangImageJson(apiUrl, uid, imageUrl) {
+        const query = new URLSearchParams({
+            uid: String(uid),
+            _rid: createXinlangRequestId()
+        });
+        const body = new URLSearchParams();
+        body.append('urls[0]', imageUrl);
+
+        const response = await fetch(`${apiUrl}?${query.toString()}`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+            },
+            body
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        return await response.json();
+    }
+
+    async function tryUploadImageByUrlToXinlang(img, dataObj) {
+        const originalSrc = img?.getAttribute('src') || img?.src || '';
+        if (!originalSrc || originalSrc.startsWith('data:')) {
+            return {skipped: true};
+        }
+
+        if (/\/large\/article\//.test(originalSrc) || originalSrc.includes('r.sinaimg.cn')) {
+            console.log('[新浪发布] ⏭️ 跳过已有平台图片:', originalSrc.substring(0, 100));
+            return {skipped: true};
+        }
+
+        const uid = await resolveXinlangUploadUid(dataObj);
+        console.log('[新浪发布] 📤 正文图片代传开始:', originalSrc.substring(0, 200));
+
+        const uploadResult = await fetchXinlangImageJson(XINLANG_BODY_IMAGE_UPLOAD_URL, uid, originalSrc);
+        console.log('[新浪发布] 📥 asyncuploadimg 返回:', uploadResult);
+        if (uploadResult?.code !== 100000 || uploadResult?.data?.result !== true) {
+            throw new Error(`asyncuploadimg 失败: ${uploadResult?.msg || JSON.stringify(uploadResult)}`);
+        }
+
+        for (let attempt = 1; attempt <= 8; attempt++) {
+            await delay(attempt === 1 ? 600 : 1000);
+            const infoResult = await fetchXinlangImageJson(XINLANG_BODY_IMAGE_INFO_URL, uid, originalSrc);
+            console.log(`[新浪发布] 📥 asyncimginfo 第${attempt}次返回:`, infoResult);
+
+            if (infoResult?.code !== 100000) {
+                throw new Error(`asyncimginfo 失败: ${infoResult?.msg || JSON.stringify(infoResult)}`);
+            }
+
+            const imageInfo = Array.isArray(infoResult?.data)
+                ? (infoResult.data.find(item => item?.origin_url === originalSrc) || infoResult.data[0])
+                : null;
+
+            if (imageInfo?.task_status === 'TaskFail' || imageInfo?.task_status_code < 0) {
+                throw new Error(`asyncimginfo 图片处理失败: ${JSON.stringify(imageInfo)}`);
+            }
+
+            if (imageInfo?.url && (!imageInfo.task_status || imageInfo.task_status === 'TaskSucc' || imageInfo.task_status_code === 1)) {
+                img.setAttribute('src', imageInfo.url);
+                img.removeAttribute('srcset');
+                img.removeAttribute('data-src');
+                img.removeAttribute('data-original');
+                console.log('[新浪发布] ✅ 正文图片替换成功:', {
+                    原图: originalSrc.substring(0, 100),
+                    新图: imageInfo.url.substring(0, 100),
+                    width: imageInfo.width,
+                    height: imageInfo.height
+                });
+                return {success: true, src: imageInfo.url};
+            }
+        }
+
+        throw new Error('asyncimginfo 等待图片处理超时');
+    }
+
+    async function replaceImagesWithXinlangUrls(tempDiv, dataObj) {
+        const images = Array.from(tempDiv.querySelectorAll('img'));
+        let handledImageCount = 0;
+        console.log('[新浪发布] 🖼️ 发现', images.length, '张正文图片需要处理');
+
+        for (const img of images) {
+            const originalSrc = img?.getAttribute('src') || img?.src || '';
+            if (!originalSrc || originalSrc.startsWith('data:')) {
+                console.log('[新浪发布] ⏭️ 跳过空/base64图片:', originalSrc ? originalSrc.substring(0, 80) : 'null');
+                continue;
+            }
+
+            try {
+                const result = await tryUploadImageByUrlToXinlang(img, dataObj);
+                if (result?.success) {
+                    handledImageCount += 1;
+                }
+            } catch (error) {
+                console.warn('[新浪发布] ⚠️ 正文图片代传失败:', {
+                    src: originalSrc,
+                    message: error?.message || error
+                });
+                return {
+                    success: false,
+                    failedSrc: originalSrc,
+                    failedReason: error?.message || String(error),
+                    handledImageCount
+                };
+            }
+        }
+
+        return {success: true, handledImageCount};
+    }
+
     // 🔴 全文本扫描"参数错误/点击重试"等关键错误词（错误监听器选择器没覆盖到时的兜底）
     const PARAM_ERROR_KEYWORDS = ['参数错误', '点击重试', '系统繁忙', '请求失败', '操作失败'];
     const detectXinlangParamError = () => {
@@ -1545,6 +1720,12 @@
         const tempCleaner = document.createElement('div');
         tempCleaner.innerHTML = htmlContent;
 
+        function hasPublishMedia(node) {
+            if (!node || node.nodeType !== 1) return false;
+            const tagName = node.tagName ? node.tagName.toLowerCase() : '';
+            return tagName === 'img' || tagName === 'video' || !!node.querySelector?.('img,video');
+        }
+
         function removeLeadingEmptyNodes(node) {
             while (node.firstChild) {
                 const child = node.firstChild;
@@ -1556,6 +1737,10 @@
                     }
                     node.removeChild(child);
                 } else if (child.nodeType === 1) {
+                    if (hasPublishMedia(child)) {
+                        return true;
+                    }
+
                     if (child.textContent.trim()) {
                         if (removeLeadingEmptyNodes(child)) {
                             return true;
@@ -1696,11 +1881,23 @@
         };
     }
 
-    async function fillXinlangEditorContent(rawHtml) {
+    async function fillXinlangEditorContent(rawHtml, dataObj) {
         const editorEle = await waitForElement('.wb-editor', 20000);
 
+        let resolvedHtml = rawHtml || '';
+        if (resolvedHtml) {
+            const imageContainer = document.createElement('div');
+            imageContainer.innerHTML = resolvedHtml;
+            const replaceResult = await replaceImagesWithXinlangUrls(imageContainer, dataObj);
+            if (!replaceResult?.success) {
+                throw new Error(`正文图片代传失败: ${replaceResult?.failedReason || replaceResult?.failedSrc || '未知错误'}`);
+            }
+            console.log('[新浪发布] ✅ 正文图片代传完成，成功处理', replaceResult.handledImageCount, '张图片');
+            resolvedHtml = imageContainer.innerHTML;
+        }
+
         // 🔴 先 prepare 拿到期望的 plainText，便于和现有内容比对
-        const prepared = prepareXinlangEditorContent(rawHtml);
+        const prepared = prepareXinlangEditorContent(resolvedHtml);
         const htmlContent = prepared.html;
         const plainText = prepared.text;
         const richFeatures = prepared.features || {};
@@ -1738,6 +1935,7 @@
 
         console.log('[新浪发布] 🧹 已清理开头所有空白内容');
         console.log('[新浪发布] 🎨 正文样式特征:', richFeatures);
+        console.log('[新浪发布] 🖼️ 预期正文图片数量:', richFeatures.images || 0);
 
         const applyAndVerify = async (name, writer, inputType = 'insertFromPaste') => {
             clearXinlangEditor(editorEle);
@@ -1748,19 +1946,29 @@
             await delay(1500);
 
             const afterText = getXinlangEditorText(editorEle);
+            const afterImageCount = editorEle.querySelectorAll('img').length;
+            const expectedImageCount = Number(richFeatures.images || 0);
+            const pastedImageUrls = Array.from(editorEle.querySelectorAll('img'))
+                .map(img => img.getAttribute('src') || img.src || '')
+                .filter(Boolean);
             const expectedLen = (plainText || '').length;
             const actualLen = afterText.length;
             // 🔴 严格校验：至少达到目标长度 80%，且不少于 5 字；避免只填了第一段就被判为成功
             const minLen = expectedLen <= 5 ? expectedLen : Math.max(5, Math.floor(expectedLen * 0.8));
-            if (afterText && actualLen >= minLen) {
-                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}`);
+            const textPassed = expectedLen === 0 || (!!afterText && actualLen >= minLen);
+            const imagePassed = expectedImageCount === 0 || afterImageCount >= expectedImageCount;
+            if (pastedImageUrls.length) {
+                console.log('[新浪发布] 🖼️ 当前编辑器图片 URL:', pastedImageUrls);
+            }
+            if (textPassed && imagePassed) {
+                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}，图片: ${afterImageCount}/${expectedImageCount}`);
                 return true;
             }
 
             if (afterText) {
-                console.warn(`[新浪发布] ⚠️ ${name} 正文长度不足 (${actualLen}/${expectedLen})，尝试下一种策略`);
+                console.warn(`[新浪发布] ⚠️ ${name} 正文未通过验证（长度 ${actualLen}/${expectedLen}，图片 ${afterImageCount}/${expectedImageCount}），尝试下一种策略`);
             } else {
-                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空`);
+                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空，图片 ${afterImageCount}/${expectedImageCount}`);
             }
             return false;
         };
@@ -2076,7 +2284,7 @@
 
                 try {
                     await retryOperation(async () => {
-                        await fillXinlangEditorContent(dataObj?.video?.video?.content || dataObj?.video?.video?.intro || '');
+                        await fillXinlangEditorContent(dataObj?.video?.video?.content || dataObj?.video?.video?.intro || '', dataObj);
                     }, 3, 1000);
                 } catch (contentError) {
                     console.error("[新浪发布] ❌ 内容填写失败:", contentError.message);

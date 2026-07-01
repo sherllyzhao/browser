@@ -23,7 +23,7 @@
         };
     }
 
-    const TENGXVNHAO_SESSION_DOMAINS = ['qq.com', 'om.qq.com', 'aqq.qq.com'];
+    const TENGXVNHAO_SESSION_DOMAINS = ['qq.com', 'om.qq.com', 'image.om.qq.com', 'aqq.qq.com', 'account.qq.com', 'ptlogin2.qq.com'];
 
     const getPublishWindowData = async () => {
         try {

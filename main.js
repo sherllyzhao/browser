@@ -278,6 +278,63 @@ function buildStandardUserAgent() {
 }
 const STANDARD_USER_AGENT = buildStandardUserAgent();
 const TAGGED_USER_AGENT = `${STANDARD_USER_AGENT} zh.Cloud-browse/1.0`;
+const TENGXUNHAO_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0';
+const TENGXUNHAO_SEC_CH_UA = '"Chromium";v="148", "Microsoft Edge";v="148", "Not=A?Brand";v="24"';
+
+function isTengxunhaoRiskControlHost(hostname = '') {
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return false;
+  return host === 'om.qq.com'
+    || host.endsWith('.om.qq.com')
+    || host === 'image.om.qq.com'
+    || host.endsWith('.image.om.qq.com')
+    || host === 'account.qq.com'
+    || host.endsWith('.account.qq.com')
+    || host === 'aqq.qq.com'
+    || host.endsWith('.aqq.qq.com')
+    || host === 'ptlogin2.qq.com'
+    || host.endsWith('.ptlogin2.qq.com');
+}
+
+function shouldUseTengxunhaoUserAgentForUrl(rawUrl = '') {
+  try {
+    return isTengxunhaoRiskControlHost(new URL(rawUrl).hostname);
+  } catch (_) {
+    const urlText = String(rawUrl || '').toLowerCase();
+    return urlText.includes('om.qq.com')
+      || urlText.includes('image.om.qq.com')
+      || urlText.includes('account.qq.com')
+      || urlText.includes('aqq.qq.com')
+      || urlText.includes('ptlogin2.qq.com');
+  }
+}
+
+function isTengxunhaoContextForRequest(details = {}) {
+  const requestWebContents = getWebContentsByRequest(details);
+  if (browserView?.webContents && requestWebContents && requestWebContents.id === browserView.webContents.id) {
+    return false;
+  }
+  if (!requestWebContents) {
+    return false;
+  }
+
+  const ownerWindow = BrowserWindow.fromWebContents(requestWebContents);
+  const context = ownerWindow ? windowContextMap.get(ownerWindow.id) : null;
+  const publishData = ownerWindow ? getWindowPublishData(ownerWindow.id) : null;
+  const platform = normalizePlatformName(context?.platform || publishData?.platform || '');
+  if (platform === 'tengxunhao') {
+    return true;
+  }
+  return shouldUseTengxunhaoUserAgentForUrl(details.url || '');
+}
+
+function applyTengxunhaoClientHintHeaders(requestHeaders, rawUrl = '') {
+  setHeaderCaseInsensitive(requestHeaders, 'User-Agent', TENGXUNHAO_USER_AGENT);
+  setHeaderCaseInsensitive(requestHeaders, 'sec-ch-ua', TENGXUNHAO_SEC_CH_UA);
+  setHeaderCaseInsensitive(requestHeaders, 'sec-ch-ua-mobile', '?0');
+  setHeaderCaseInsensitive(requestHeaders, 'sec-ch-ua-platform', '"Windows"');
+  setHeaderCaseInsensitive(requestHeaders, 'Accept-Language', 'zh-CN,zh;q=0.9');
+}
 
 function shouldUseStandardUserAgentForUrl(rawUrl = '') {
   const shouldUseStandardUserAgentForHostname = (hostname = '') => {
@@ -309,6 +366,11 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
 
 function applyScopedWindowUserAgent(targetWebContents, rawUrl, label = 'Window') {
   if (!targetWebContents || targetWebContents.isDestroyed()) return;
+  if (shouldUseTengxunhaoUserAgentForUrl(rawUrl)) {
+    targetWebContents.setUserAgent(TENGXUNHAO_USER_AGENT);
+    console.log(`[${label}] User-Agent 已设置为腾讯号专用 UA:`, rawUrl || '-');
+    return;
+  }
   const useStandardUserAgent = shouldUseStandardUserAgentForUrl(rawUrl);
   const userAgent = useStandardUserAgent ? STANDARD_USER_AGENT : TAGGED_USER_AGENT;
   targetWebContents.setUserAgent(userAgent);
@@ -554,8 +616,10 @@ function installSessionNetworkDiagnostics(targetSession) {
 
   targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const requestHeaders = { ...(details.requestHeaders || {}) };
-    if (shouldUseStandardUserAgentForRequest(details)) {
-      requestHeaders['User-Agent'] = STANDARD_USER_AGENT;
+    if (isTengxunhaoContextForRequest(details)) {
+      applyTengxunhaoClientHintHeaders(requestHeaders, details.url || '');
+    } else if (shouldUseStandardUserAgentForRequest(details)) {
+      setHeaderCaseInsensitive(requestHeaders, 'User-Agent', STANDARD_USER_AGENT);
     }
     appendNetworkDiagnosticLog(targetSession, 'INFO', 'send-headers', details, {
       requestHeaders: sanitizeDiagnosticHeaders(requestHeaders)
@@ -984,7 +1048,61 @@ function assignCookieSameSite(cookieDetails, rawSameSite) {
 }
 
 function isHostOnlyCookie(cookie) {
-  return !!cookie?.domain && !String(cookie.domain).startsWith('.');
+  if (!cookie?.domain) {
+    return false;
+  }
+  if (cookie.hostOnly === true) {
+    return true;
+  }
+  if (cookie.hostOnly === false) {
+    return false;
+  }
+  return !String(cookie.domain).startsWith('.');
+}
+
+function shouldForceTengxunhaoDomainCookie(cookie, options = {}) {
+  const platform = normalizePlatformName(options.platform || '');
+  if (platform !== 'tengxunhao') {
+    return false;
+  }
+
+  const name = String(cookie?.name || '');
+  const domain = normalizeSessionCookieDomain(cookie?.domain || '');
+  if (!domain || (domain !== 'qq.com' && domain !== 'om.qq.com')) {
+    return false;
+  }
+
+  const exactNames = new Set([
+    'userid',
+    'omaccesstoken',
+    'omtoken',
+    'sraccesstoken',
+    'srcaccessToken',
+    'srcopenid',
+    'csrfToken',
+    'TSID',
+    'wxky',
+    'omgid',
+    'pac_uid',
+    'ts_uid',
+    'ts_refer',
+    'logintype'
+  ]);
+  return exactNames.has(name) || name.startsWith('_qimei_');
+}
+
+function buildCookieDomainForSet(cookie, options = {}) {
+  const rawDomain = String(cookie?.domain || '');
+  if (!rawDomain) {
+    return '';
+  }
+  if (rawDomain.startsWith('.')) {
+    return rawDomain;
+  }
+  if (cookie.hostOnly === false || shouldForceTengxunhaoDomainCookie(cookie, options)) {
+    return `.${rawDomain}`;
+  }
+  return rawDomain;
 }
 
 function buildCookieUrlForSet(cookie) {
@@ -993,7 +1111,7 @@ function buildCookieUrlForSet(cookie) {
   return `${cookie?.secure ? 'https' : 'http'}://${host}${pathName}`;
 }
 
-function buildCookieSetDetails(cookie, expirationDate = undefined) {
+function buildCookieSetDetails(cookie, expirationDate = undefined, options = {}) {
   const cookieDetails = {
     url: buildCookieUrlForSet(cookie),
     name: cookie.name,
@@ -1002,8 +1120,8 @@ function buildCookieSetDetails(cookie, expirationDate = undefined) {
     secure: !!cookie.secure,
     httpOnly: !!cookie.httpOnly
   };
-  if (!isHostOnlyCookie(cookie) && cookie.domain) {
-    cookieDetails.domain = cookie.domain;
+  if ((!isHostOnlyCookie(cookie) || shouldForceTengxunhaoDomainCookie(cookie, options)) && cookie.domain) {
+    cookieDetails.domain = buildCookieDomainForSet(cookie, options);
   }
   assignCookieSameSite(cookieDetails, cookie.sameSite);
   if (expirationDate !== undefined) {
@@ -1229,6 +1347,24 @@ function matchesGenericCookieDomain(cookieDomain, targetDomain) {
     || normalizedTargetDomain.includes(normalizedCookieDomain);
 }
 
+function summarizeCookieNamesByDomain(cookies = []) {
+  const grouped = new Map();
+  for (const cookie of cookies || []) {
+    if (!cookie || !cookie.name) continue;
+    const domain = cookie.domain || '(no-domain)';
+    if (!grouped.has(domain)) {
+      grouped.set(domain, new Set());
+    }
+    grouped.get(domain).add(cookie.name);
+  }
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([domain, names]) => ({
+      domain,
+      names: Array.from(names).sort()
+    }));
+}
+
 function shouldMigrateCookieForDomain(cookieDomain, requestedDomain) {
   if (isShipinhaoSessionMigrationDomain(requestedDomain)) {
     return SHIPINHAO_SESSION_COOKIE_DOMAINS.some(domain => matchesShipinhaoSessionCookieDomain(cookieDomain, domain));
@@ -1392,6 +1528,37 @@ function createShipinhaoLoginResetGuard(targetWindow, windowLabel) {
   };
 }
 
+function summarizeTengxunhaoCredentialCookies(cookies = []) {
+  const names = new Set((cookies || [])
+    .filter(cookie => cookie && cookie.value)
+    .map(cookie => cookie.name));
+  return {
+    foundNames: Array.from(names).filter(name => [
+      'userid',
+      'omaccesstoken',
+      'omtoken',
+      'sraccesstoken',
+      'uin',
+      'p_uin',
+      'skey',
+      'p_skey'
+    ].includes(name)).sort(),
+    hasUserId: names.has('userid'),
+    hasOmAccessToken: names.has('omaccesstoken'),
+    hasSrAccessToken: names.has('sraccesstoken'),
+    hasLegacyQQLogin: (names.has('uin') || names.has('p_uin')) && (names.has('skey') || names.has('p_skey'))
+  };
+}
+
+function hasRequiredTengxunhaoCredentialCookies(cookies = []) {
+  const summary = summarizeTengxunhaoCredentialCookies(cookies);
+  const hasOmLogin = summary.hasUserId && (summary.hasOmAccessToken || summary.hasSrAccessToken);
+  return {
+    valid: hasOmLogin || summary.hasLegacyQQLogin,
+    summary
+  };
+}
+
 // 🛡️ 检查 windowSession 中是否已有「有效登录态 cookie」
 // 任一 platformLoginCookies 配置项存在即视为已登录
 async function hasValidLoginCookies(windowSession, platform) {
@@ -1402,6 +1569,15 @@ async function hasValidLoginCookies(windowSession, platform) {
   }
   try {
     const cookies = await windowSession.cookies.get({});
+    if (normalizePlatformName(platform) === 'tengxunhao') {
+      const txhCredential = hasRequiredTengxunhaoCredentialCookies(cookies);
+      if (txhCredential.valid) {
+        console.log('[hasValidLoginCookies] ✅ 腾讯号本地 session 含完整登录凭证:', txhCredential.summary.foundNames);
+        return true;
+      }
+      console.log('[hasValidLoginCookies] ⚠️ 腾讯号本地 session 凭证不完整:', txhCredential.summary.foundNames, '至少需要 userid + (omaccesstoken 或 sraccesstoken)');
+      return false;
+    }
     const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
     const hit = loginCookieNames.find(name => cookieNames.has(name));
     if (hit) {
@@ -1424,6 +1600,15 @@ function sessionDataHasValidLoginCookies(sessionData, platform) {
   }
 
   const cookies = extractSessionCookiesArray(sessionData);
+  if (normalizePlatformName(platform) === 'tengxunhao') {
+    const txhCredential = hasRequiredTengxunhaoCredentialCookies(cookies);
+    if (txhCredential.valid) {
+      console.log('[sessionDataHasValidLoginCookies] ✅ 腾讯号 sessionData 含完整登录凭证:', txhCredential.summary.foundNames);
+      return true;
+    }
+    console.log('[sessionDataHasValidLoginCookies] ⚠️ 腾讯号 sessionData 凭证不完整:', txhCredential.summary.foundNames, '至少需要 userid + (omaccesstoken 或 sraccesstoken)');
+    return false;
+  }
   const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
   const hit = loginCookieNames.find(name => cookieNames.has(name));
   if (hit) {
@@ -1657,7 +1842,22 @@ function pickSessionStorageForOrigin(storagePayload, targetOrigin = '', targetUr
   return storagePayload;
 }
 
-function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData) {
+function countSessionCookieNames(sessionData, cookieNames) {
+  if (!Array.isArray(cookieNames) || cookieNames.length === 0) {
+    return 0;
+  }
+  const targetNames = new Set(cookieNames);
+  const foundNames = new Set();
+  const cookies = extractSessionCookiesArray(sessionData);
+  for (const cookie of cookies) {
+    if (cookie && cookie.value && targetNames.has(cookie.name)) {
+      foundNames.add(cookie.name);
+    }
+  }
+  return foundNames.size;
+}
+
+function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData, platform = '') {
   const parsedCached = parseSessionData(cachedSessionData);
   if (!parsedCached) {
     return {
@@ -1681,6 +1881,30 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
   const cachedCookies = extractSessionCookiesArray(parsedCached);
   const incomingCookies = extractSessionCookiesArray(parsedIncoming);
   const hasComparableTimestamps = cachedTimestamp > 0 && incomingTimestamp > 0;
+
+  if (platform === 'tengxunhao') {
+    const txhCredentialNames = ['userid', 'omaccesstoken', 'omtoken', 'sraccesstoken'];
+    const incomingTxhCredentialCount = countSessionCookieNames(parsedIncoming, txhCredentialNames);
+    const cachedTxhCredentialCount = countSessionCookieNames(parsedCached, txhCredentialNames);
+    const shouldPreferIncomingTxhSession = incomingTxhCredentialCount > 0
+      && (
+        incomingTxhCredentialCount > cachedTxhCredentialCount
+        || (incomingTxhCredentialCount === cachedTxhCredentialCount && incomingCookies.length > cachedCookies.length)
+        || (incomingTxhCredentialCount === cachedTxhCredentialCount && incomingTimestamp > 0 && incomingTimestamp >= cachedTimestamp)
+      );
+    if (shouldPreferIncomingTxhSession) {
+      console.log('[Window Manager] 🔄 腾讯号优先使用后台会话：检测到图片上传所需登录 cookie', {
+        incomingTxhCredentialCount,
+        cachedTxhCredentialCount,
+        incomingCookieCount: incomingCookies.length,
+        cachedCookieCount: cachedCookies.length
+      });
+      return {
+        sessionData: incomingSessionData,
+        source: 'incoming-session-tengxunhao-credentials'
+      };
+    }
+  }
 
   if (!cachedHasStorage && incomingHasStorage) {
     const mergedSessionData = cloneSerializable(parsedIncoming) || {};
@@ -2141,6 +2365,122 @@ function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
   } catch (_) {
     return currentUrl.startsWith(expectedUrl);
   }
+}
+
+function normalizePlatformName(platform = '') {
+  const rawPlatform = String(platform || '').trim();
+  if (rawPlatform === 'tengxvnhao') return 'tengxunhao';
+  return (config.platformNameMap && config.platformNameMap[rawPlatform]) || rawPlatform;
+}
+
+function isTengxunhaoLoginUrl(rawUrl = '') {
+  if (!rawUrl) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    if ((host === 'om.qq.com' || host.endsWith('.om.qq.com')) && pathname.includes('/userauth')) {
+      return true;
+    }
+    return host === 'account.qq.com' || host.endsWith('.account.qq.com');
+  } catch (_) {
+    const lower = String(rawUrl || '').toLowerCase();
+    return lower.includes('om.qq.com') && lower.includes('/userauth');
+  }
+}
+
+function isTengxunhaoPublishUrl(rawUrl = '') {
+  if (!rawUrl) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    return (host === 'om.qq.com' || host.endsWith('.om.qq.com'))
+      && pathname.startsWith('/main/creation/article');
+  } catch (_) {
+    const lower = String(rawUrl || '').toLowerCase();
+    return lower.startsWith('https://om.qq.com/main/creation/article');
+  }
+}
+
+function getTengxunhaoRecoverTargetUrl(context) {
+  if (context && isTengxunhaoPublishUrl(context.expectedPageUrl)) {
+    return context.expectedPageUrl;
+  }
+  return (config.platformPublishUrls && config.platformPublishUrls.txh)
+    || 'https://om.qq.com/main/creation/article';
+}
+
+async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reason = 'unknown') {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { redirected: false };
+  }
+  if (!isTengxunhaoLoginUrl(currentURL)) {
+    return { redirected: false };
+  }
+
+  const windowId = targetWindow.id;
+  const context = windowContextMap.get(windowId) || null;
+  if (!context || context.bootstrapInProgress) {
+    return { redirected: false };
+  }
+
+  const publishData = getWindowPublishData(windowId);
+  const rawPlatform = context?.platform || publishData?.platform || '';
+  const platform = normalizePlatformName(rawPlatform);
+  const isPublishWindow = context?.purpose === 'publish' || !!publishData;
+  if (!isPublishWindow || platform !== 'tengxunhao') {
+    return { redirected: false };
+  }
+
+  if (context?.tengxunhaoLoginRecoverInFlight) {
+    return { redirected: true, deduped: true };
+  }
+  if ((context?.tengxunhaoLoginRecoverCount || 0) >= 3) {
+    console.warn(`[Tengxunhao Login Recover] ⚠️ 登录页恢复已达到上限，停止自动回跳: windowId=${windowId}, url=${currentURL}`);
+    return { redirected: false, limitReached: true };
+  }
+
+  let hasLogin = false;
+  try {
+    hasLogin = await hasValidLoginCookies(targetWindow.webContents.session, 'tengxunhao');
+  } catch (error) {
+    console.warn('[Tengxunhao Login Recover] ⚠️ 登录态检查异常:', error.message);
+  }
+  if (!hasLogin) {
+    return { redirected: false };
+  }
+
+  const targetUrl = getTengxunhaoRecoverTargetUrl(context);
+  context.tengxunhaoLoginRecoverInFlight = true;
+  context.tengxunhaoLoginRecoverCount = (context.tengxunhaoLoginRecoverCount || 0) + 1;
+  console.warn(`[Tengxunhao Login Recover] 🔁 检测到腾讯号登录页已有有效 cookie，回跳发布页: windowId=${windowId}, reason=${reason}, target=${targetUrl}`);
+
+  try {
+    try {
+      const cacheSyncResult = await syncLatestSessionCacheFromWindow(targetWindow, windowId, `tengxunhao-login-recover:${reason}`);
+      console.log('[Tengxunhao Login Recover] 本地最新会话缓存同步结果:', cacheSyncResult);
+    } catch (cacheSyncErr) {
+      console.warn('[Tengxunhao Login Recover] ⚠️ 本地最新会话缓存同步异常:', cacheSyncErr.message);
+    }
+
+    if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+      await targetWindow.webContents.loadURL(targetUrl);
+    }
+  } catch (error) {
+    console.error('[Tengxunhao Login Recover] ❌ 回跳发布页失败:', error.message);
+  } finally {
+    setTimeout(() => {
+      const latest = windowContextMap.get(windowId);
+      if (latest) {
+        latest.tengxunhaoLoginRecoverInFlight = false;
+      }
+    }, 1500);
+  }
+
+  return { redirected: true };
 }
 
 function sanitizeDebugPrefix(prefixRaw = 'debug') {
@@ -8482,11 +8822,22 @@ ipcMain.handle('navigate-to-local-page', async (event, pageName) => {
 // 获取指定域名的所有 Cookies（包括 HttpOnly）
 ipcMain.handle('get-domain-cookies', async (event, domain) => {
   try {
-    if (!browserView || browserView.webContents.isDestroyed()) {
-      return { success: false, error: 'browserView 不可用' };
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    let ses = null;
+    let sessionSource = '';
+
+    if (senderWindow && !senderWindow.webContents.isDestroyed()) {
+      ses = senderWindow.webContents.session;
+      sessionSource = `子窗口(${senderWindow.id})`;
+    } else if (browserView && !browserView.webContents.isDestroyed()) {
+      ses = browserView.webContents.session;
+      sessionSource = 'BrowserView';
     }
 
-    const ses = browserView.webContents.session;
+    if (!ses) {
+      return { success: false, error: 'session 不可用' };
+    }
+
     const cookies = await ses.cookies.get({});
 
     // 过滤指定域名的 cookies
@@ -8502,8 +8853,9 @@ ipcMain.handle('get-domain-cookies', async (event, domain) => {
       return `${c.name}=${value}`;
     }).join('; ');
 
-    console.log(`[Get Cookies] 获取 ${domain} 的 cookies: ${domainCookies.length} 个`);
-    return { success: true, cookies: cookieString, count: domainCookies.length };
+    const cookieSummary = summarizeCookieNamesByDomain(domainCookies);
+    console.log(`[Get Cookies] 从 ${sessionSource} 获取 ${domain} 的 cookies: ${domainCookies.length} 个`, cookieSummary);
+    return { success: true, cookies: cookieString, count: domainCookies.length, source: sessionSource, summary: cookieSummary };
   } catch (err) {
     console.error('[Get Cookies] 获取失败:', err);
     return { success: false, error: err.message };
@@ -9855,7 +10207,7 @@ async function openManagedChildWindow(url, options = {}) {
 
       const backendAccountId = getPublishBackendAccountId(options.publishData);
       const cachedSessionData = getLatestSessionCache(options.platform, backendAccountId);
-      const sessionRestore = buildEffectiveSessionRestoreData(cachedSessionData, options.sessionData);
+      const sessionRestore = buildEffectiveSessionRestoreData(cachedSessionData, options.sessionData, options.platform);
       const effectiveSessionData = sessionRestore.sessionData;
       const effectiveSessionSource = sessionRestore.source;
       options.sessionData = effectiveSessionData;
@@ -10170,7 +10522,18 @@ async function openManagedChildWindow(url, options = {}) {
             console.log(`[Window Manager][${__wmTs()}] 开始恢复 ${cookiesArray.length} 个新 cookies...`);
 
             let restoredCount = 0;
-            const keyCookieNames = ['sessionid', 'sessionid_ss', 'pass_ticket', 'wxuin', 'web_session', 'BDUSS', 'STOKEN', 'uuid_v2'];
+            const keyCookieNames = Array.from(new Set([
+              'sessionid',
+              'sessionid_ss',
+              'pass_ticket',
+              'wxuin',
+              'web_session',
+              'BDUSS',
+              'STOKEN',
+              'uuid_v2',
+              ...((config.platformLoginCookies && config.platformLoginCookies[options.platform]) || []),
+              ...((config.platformIdentityCookies && config.platformIdentityCookies[options.platform]) || [])
+            ]));
             const foundKeyCookies = [];
             for (let cookieItem of cookiesArray) {
               try {
@@ -10193,7 +10556,8 @@ async function openManagedChildWindow(url, options = {}) {
 
                 const cookieDetails = buildCookieSetDetails(
                   cookie,
-                  cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+                  cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+                  { platform: options.platform }
                 );
                 await windowSession.cookies.set(cookieDetails);
                 restoredCount++;
@@ -10241,7 +10605,8 @@ async function openManagedChildWindow(url, options = {}) {
                             if (!cookie.name || !cookie.domain) continue;
                             const cookieDetails = buildCookieSetDetails(
                                 cookie,
-                                cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60)
+                                cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60),
+                                { platform: options.platform }
                             );
                             await windowSession.cookies.set(cookieDetails);
                             retryWrite++;
@@ -11022,6 +11387,10 @@ async function openManagedChildWindow(url, options = {}) {
         console.log('[New Window API] 跳过 bootstrap 页面注入:', currentURL);
         return;
       }
+      const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, currentURL, 'dom-ready');
+      if (loginRecovered.redirected) {
+        return;
+      }
       const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'dom-ready');
       if (recovered.redirected) {
         return;
@@ -11042,6 +11411,10 @@ async function openManagedChildWindow(url, options = {}) {
       const currentContext = windowContextMap.get(newWindow.id);
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 页面加载完成，跳过通知和注入:', currentURL);
+        return;
+      }
+      const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, currentURL, 'did-finish-load');
+      if (loginRecovered.redirected) {
         return;
       }
       const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'did-finish-load');
@@ -11076,6 +11449,10 @@ async function openManagedChildWindow(url, options = {}) {
         console.log('[New Window API] bootstrap 导航完成，跳过导航守卫:', navUrl);
         return;
       }
+      const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, navUrl, 'did-navigate');
+      if (loginRecovered.redirected) {
+        return;
+      }
       await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate');
     }));
 
@@ -11096,6 +11473,10 @@ async function openManagedChildWindow(url, options = {}) {
       const currentContext = windowContextMap.get(newWindow.id);
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap SPA 导航，跳过脚本注入:', navUrl);
+        return;
+      }
+      const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, navUrl, 'did-navigate-in-page');
+      if (loginRecovered.redirected) {
         return;
       }
       const recovered = await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate-in-page');
@@ -11663,7 +12044,14 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
 
     for (const cookie of cookiesToMigrate) {
       try {
-        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
+        const restorePlatform = normalizeSessionCookieDomain(domain) === 'om.qq.com'
+          || normalizeSessionCookieDomain(domain) === 'image.om.qq.com'
+          || normalizeSessionCookieDomain(domain) === 'aqq.qq.com'
+          || normalizeSessionCookieDomain(domain) === 'account.qq.com'
+          || normalizeSessionCookieDomain(domain) === 'ptlogin2.qq.com'
+          ? 'tengxunhao'
+          : '';
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow, { platform: restorePlatform });
         await persistentSession.cookies.set(newCookie);
         migratedCount++;
         console.log(`[Cookie Migration] ✓ 迁移: ${cookie.name} @ ${cookie.domain}`);
@@ -11723,7 +12111,7 @@ ipcMain.handle('migrate-cookies-to-account-session', async (event, domain, platf
         : matchesGenericCookieDomain(cookie.domain, domain);
     });
 
-    console.log(`[Cookie Migration] 找到 ${domainCookies.length} 个 ${migrationDomains.join(', ')} 的 cookies`);
+    console.log(`[Cookie Migration] 找到 ${domainCookies.length} 个 ${migrationDomains.join(', ')} 的 cookies`, summarizeCookieNamesByDomain(domainCookies));
     if (domainCookies.length === 0) {
       return { success: false, error: `没有找到 ${domain} 的 cookies` };
     }
@@ -11750,7 +12138,7 @@ ipcMain.handle('migrate-cookies-to-account-session', async (event, domain, platf
     const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
     for (const cookie of dedupedDomainCookies) {
       try {
-        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow, { platform });
         await targetSession.cookies.set(newCookie);
         migratedCount++;
       } catch (err) {
@@ -12514,10 +12902,12 @@ async function getFullSessionDataFromWebContents(webContents, domain) {
       path: c.path,
       secure: c.secure,
       httpOnly: c.httpOnly,
+      hostOnly: c.hostOnly,
+      session: c.session,
       sameSite: c.sameSite,
       expirationDate: targetExpiration
     }));
-    console.log(`[Session Data] Cookies: ${cookiesArray.length} 个`);
+    console.log(`[Session Data] Cookies: ${cookiesArray.length} 个`, summarizeCookieNamesByDomain(domainCookies));
 
     let storageData = { localStorage: {}, sessionStorage: {} };
     try {
@@ -12855,6 +13245,8 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
     path: cookie.path,
     secure: cookie.secure,
     httpOnly: cookie.httpOnly,
+    hostOnly: cookie.hostOnly,
+    session: cookie.session,
     sameSite: cookie.sameSite,
     expirationDate: snapshotExpirationDate
   }));
@@ -14137,7 +14529,7 @@ ipcMain.handle('migrate-to-new-account', async (event, platform, accountInfo) =>
 
     for (const cookie of filteredTempCookies) {
       try {
-        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow);
+        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow, { platform });
         await targetSession.cookies.set(newCookie);
         migratedCount++;
       } catch (err) {
@@ -14479,7 +14871,8 @@ ipcMain.handle('restore-account-session', async (event, platform, accountId, ses
         try {
           const cookieDetails = buildCookieSetDetails(
             cookie,
-            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+            { platform }
           );
           await targetSession.cookies.set(cookieDetails);
           results.cookies.restored++;

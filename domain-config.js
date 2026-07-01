@@ -79,7 +79,7 @@ const DOMAINS = {
     authRedirect:      'account.china9.cn',
 
     // 远程脚本 baseUrl
-    remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/',
+    remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/v2/',
     //remoteScriptsBase: 'http://localhost:5173/injected-scripts/',
 
     // 统计接口特殊域名映射
@@ -269,7 +269,7 @@ const platformDomains = {
   shipinhao: ['channels.weixin.qq.com', 'weixin.qq.com', 'mp.weixin.qq.com', 'wx.qq.com', 'qq.com'],
   wangyihao: ['.163.com', '163.com', 'mp.163.com'],
   sohuhao: ['sohu.com', 'mp.sohu.com'],
-  tengxunhao: ['qq.com', 'om.qq.com', 'aqq.qq.com'],
+  tengxunhao: ['qq.com', 'om.qq.com', 'image.om.qq.com', 'aqq.qq.com', 'account.qq.com', 'ptlogin2.qq.com'],
   xinlang: ['sina.com.cn', 'weibo.com', 'sina.cn'],
   zhihu: ['zhihu.com', 'www.zhihu.com']
 };
@@ -289,7 +289,7 @@ const platformIdentityCookies = {
   shipinhao: ['wxuin'],
   wangyihao: ['P_INFO'],
   sohuhao: ['passport', 'ppinf'],
-  tengxunhao: ['uin', 'p_uin'],
+  tengxunhao: ['userid', 'omgid', 'uin', 'p_uin'],
   xinlang: ['SUB'],
   zhihu: ['d_c0']
 };
@@ -305,7 +305,7 @@ const platformLoginCookies = {
   shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload'],
   wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
   sohuhao: ['sct', 'passport', 'ppinf', 'pprdig'],
-  tengxunhao: ['uin', 'p_uin', 'skey', 'p_skey'],
+  tengxunhao: ['userid', 'omaccesstoken', 'omtoken', 'sraccesstoken', 'uin', 'p_uin', 'skey', 'p_skey'],
   xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
   zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
