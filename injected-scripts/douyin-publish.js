@@ -323,6 +323,48 @@ let hasProcessed = false;
 // ===========================
 // 7. 发布视频到抖音
 // ===========================
+function isDouyinLoginExpiredMessage(message) {
+  const text = String(message || '').trim().toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  const loginExpiredKeywords = [
+    '登录过期',
+    '登录已过期',
+    '登陆过期',
+    '需要重新登录',
+    'login expired',
+    'need to login',
+    'please login',
+    '授权已过期',
+    '权限已过期',
+    '会话已过期'
+  ];
+
+  return loginExpiredKeywords.some(keyword => text.includes(keyword));
+}
+
+function isDouyinNetworkErrorMessage(message) {
+  const text = String(message || '').trim().toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  const networkErrorKeywords = [
+    '网络错误',
+    'network error',
+    'net::',
+    'failed to fetch',
+    '连接失败',
+    '请求失败',
+    'timeout',
+    '超时'
+  ];
+
+  return networkErrorKeywords.some(keyword => text.includes(keyword));
+}
+
 function isDouyinPublishSuccessMessage(message) {
   const text = String(message || '').trim();
   if (!text) {
@@ -813,6 +855,27 @@ async function publishApi(dataObj) {
     // 直接认为发布已提交，等待页面跳转到成功页
     // 成功统计由 publish-success.js 在成功页发送
     console.log('[抖音发布] ✅ 发布已提交，消息:', clickResult.message);
+
+    // 🔑 新增：捕获登录过期或网络错误
+    if (isDouyinLoginExpiredMessage(clickResult.message)) {
+      console.error('[抖音发布] 🚨 检测到登录过期消息:', clickResult.message);
+      const reported = await sendStatisticsError(publishId, '检测到登录过期提示：' + clickResult.message, '抖音发布');
+      publishRunning = false;
+      if (reported) {
+        await closeWindowWithMessage('登录已过期，请重新授权', 2000);
+        return;
+      }
+    }
+
+    if (isDouyinNetworkErrorMessage(clickResult.message)) {
+      console.error('[抖音发布] 🚨 检测到网络错误消息:', clickResult.message);
+      const reported = await sendStatisticsError(publishId, '检测到网络错误提示：' + clickResult.message, '抖音发布');
+      publishRunning = false;
+      if (reported) {
+        await closeWindowWithMessage('网络错误，请检查网络连接', 2000);
+        return;
+      }
+    }
 
     // 标记已完成
     hasProcessed = true;

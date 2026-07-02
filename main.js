@@ -1159,6 +1159,40 @@ function parseSessionData(value) {
   return parsed;
 }
 
+// 🔑 抖音等平台的嵌套 cookies 结构兜底提取
+// 处理形如 {cookies: [...]} 或 {domain: {cookies: [...]}} 等嵌套结构
+function tryExtractNestedCookies(obj, depth = 0) {
+  if (depth > 3) {
+    return [];
+  }
+
+  if (!obj || typeof obj !== 'object') {
+    return [];
+  }
+
+  const cookies = [];
+
+  // 直接检查该层是否有 cookies 字段
+  if (Array.isArray(obj.cookies)) {
+    cookies.push(...obj.cookies);
+  }
+
+  // 递归检查所有嵌套值
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === 'cookies') {
+      continue; // 已处理过
+    }
+    if (value && typeof value === 'object') {
+      const nestedCookies = tryExtractNestedCookies(value, depth + 1);
+      if (nestedCookies.length > 0) {
+        cookies.push(...nestedCookies);
+      }
+    }
+  }
+
+  return cookies;
+}
+
 function extractSessionCookiesArray(sessionData) {
   const parsed = parseSessionData(sessionData);
   if (!parsed) {
@@ -10499,21 +10533,41 @@ async function openManagedChildWindow(url, options = {}) {
             // 网易号等平台使用多域名存储 cookies
             const keys = Object.keys(sessionData);
             let isMultiDomain = false;
+            let emptyDomainCount = 0;
+
             for (const key of keys) {
               const val = sessionData[key];
               if (val && typeof val === 'object' && val.cookies && Array.isArray(val.cookies)) {
                 isMultiDomain = true;
                 cookiesArray = cookiesArray.concat(val.cookies);
                 console.log(`[Window Manager] 从域名 ${key} 提取到 ${val.cookies.length} 个 cookies`);
+              } else if (val && typeof val === 'object') {
+                // 🔑 增强处理：某些平台的结构中，domain 本身可能是嵌套的
+                // 例如抖音可能是 {domain1: {domain2: {cookies: [...]}}} 或混合结构
+                const nestedCookies = tryExtractNestedCookies(val);
+                if (nestedCookies.length > 0) {
+                  isMultiDomain = true;
+                  cookiesArray = cookiesArray.concat(nestedCookies);
+                  console.log(`[Window Manager] 从嵌套域名 ${key} 提取到 ${nestedCookies.length} 个 cookies`);
+                } else {
+                  emptyDomainCount++;
+                }
               }
             }
             if (isMultiDomain) {
-              console.log(`[Window Manager] 检测到数据格式5（多域名）: 共 ${cookiesArray.length} 个 cookies`);
+              console.log(`[Window Manager] 检测到数据格式5（多域名）: 共 ${cookiesArray.length} 个 cookies (空域名: ${emptyDomainCount})`);
             } else {
-              console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式, keys:', keys);
+              // 🔑 最后的兜底：尝试从顶级 cookies 字段提取（如果直接有的话）
+              if (sessionData.cookies && Array.isArray(sessionData.cookies)) {
+                cookiesArray = sessionData.cookies;
+                console.log(`[Window Manager] 从顶级 cookies 字段提取到 ${cookiesArray.length} 个 cookies`);
+              } else {
+                console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式, keys:', keys.slice(0, 5), keys.length > 5 ? '...' : '');
+                console.log('[Window Manager] sessionData 结构示例:', JSON.stringify(sessionData).substring(0, 200));
+              }
             }
           } else {
-            console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式');
+            console.warn('[Window Manager] ⚠️ 无法识别的 sessionData 格式，类型:', typeof sessionData, '是数组:', Array.isArray(sessionData));
           }
 
           cookiesArray = dedupeCookiesForSessionSave(options.platform, cookiesArray, 'window-restore');
@@ -10588,6 +10642,20 @@ async function openManagedChildWindow(url, options = {}) {
                 }
                 const verifyList = Array.from(verifyKeyNames);
                 console.log(`[Window Manager][${__wmTs()}] 🔎 校验：关键 cookie 实际存在:`, verifyList.length > 0 ? verifyList : '⚠️ 无');
+
+                // 🔑 关键修复：如果关键 cookie 为空，打印诊断信息帮助排查
+                if (foundKeyCookies.length > 0 && verifyList.length === 0) {
+                  console.error(`[Window Manager][${__wmTs()}] 🚨 关键 Cookie 丢失诊断：`);
+                  console.error(`  - 恢复时期望写入的关键 cookies: ${foundKeyCookies.join(', ')}`);
+                  console.error(`  - 校验时实际读回的关键 cookies: 无`);
+                  console.error(`  - 总 cookies 计数: 写入=${restoredCount}, 读回=${verifyCookies.length}`);
+                  console.error(`  - 可能原因: (1) 磁盘权限问题 (2) Session 分区路径错误 (3) Cookie 格式不兼容`);
+
+                  // 打印前5个实际存在的 cookies（用于排查）
+                  if (verifyCookies.length > 0) {
+                    console.error(`  - 实际存在的前 5 个 cookies: ${verifyCookies.slice(0, 5).map(c => c.name).join(', ')}`);
+                  }
+                }
 
                 // 阈值：实际数小于期望数的 50%，或者恢复过程中发现关键 cookie 但读回后丢失，触发重试一次
                 const shouldRetry = (verifyCookies.length < Math.max(1, Math.floor(restoredCount * 0.5)))
