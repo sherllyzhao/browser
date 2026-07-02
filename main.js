@@ -158,6 +158,8 @@ let autoSaveInterval = null;
 let destroyedWindowCleanupInterval = null;
 let mainWindowCloseForceTimer = null;
 const windowContextMap = new Map();
+const SOHUHAO_RECENT_AUTH_COOKIE_MIGRATION_TTL_MS = 60 * 60 * 1000;
+let recentSohuhaoPersistentCredentialMigration = null;
 // 🩹 视频号白屏自愈 reload 放行标记（按 windowId）：经 shipinhao-blank-self-heal-reload 通道
 // 发起的受控 reload 临时加入，使其绕过 shouldBlockShipinhaoLoginSelfReload 的登录页同页 reload 拦截；
 // 由 handler 侧 5s 超时自动清除，避免标记残留误放行后续正常 reload。
@@ -1593,17 +1595,73 @@ function hasRequiredTengxunhaoCredentialCookies(cookies = []) {
   };
 }
 
+function summarizeSohuhaoCredentialCookies(cookies = []) {
+  const names = new Set((cookies || [])
+    .filter(cookie => cookie && cookie.value)
+    .map(cookie => cookie.name));
+  const hasPpinf = names.has('ppinf');
+  const hasPprdig = names.has('pprdig');
+  return {
+    foundNames: Array.from(names).filter(name => [
+      'sct',
+      'passport',
+      'ppinf',
+      'pprdig',
+      'ppmdig'
+    ].includes(name)).sort(),
+    hasSct: names.has('sct'),
+    hasPpinf,
+    hasPprdig,
+    hasPpmdig: names.has('ppmdig'),
+    hasIdentity: names.has('passport') || hasPpinf,
+    hasPpinfPprdigPair: hasPpinf && hasPprdig
+  };
+}
+
+function hasRequiredSohuhaoCredentialCookies(cookies = []) {
+  const summary = summarizeSohuhaoCredentialCookies(cookies);
+  return {
+    valid: summary.hasSct || summary.hasPpinfPprdigPair,
+    summary
+  };
+}
+
+function getCookieRestoreExpirationDate(cookie, fallbackSeconds = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60) {
+  const expirationDate = Number(cookie && cookie.expirationDate);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(expirationDate) || expirationDate <= nowSeconds + 60) {
+    return fallbackSeconds;
+  }
+  return expirationDate;
+}
+
+function buildCookieValueSignature(cookies = [], names = []) {
+  const targetNames = new Set(names);
+  return (cookies || [])
+    .filter(cookie => cookie && cookie.value && targetNames.has(cookie.name))
+    .map(cookie => [
+      cookie.name,
+      String(cookie.domain || '').toLowerCase(),
+      cookie.path || '/',
+      cookie.secure ? '1' : '0',
+      cookie.value
+    ].join('|'))
+    .sort()
+    .join('\n');
+}
+
 // 🛡️ 检查 windowSession 中是否已有「有效登录态 cookie」
 // 任一 platformLoginCookies 配置项存在即视为已登录
 async function hasValidLoginCookies(windowSession, platform) {
   if (!windowSession || !platform) return false;
-  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[platform];
+  const normalizedPlatform = normalizePlatformName(platform);
+  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform];
   if (!Array.isArray(loginCookieNames) || loginCookieNames.length === 0) {
     return false;
   }
   try {
     const cookies = await windowSession.cookies.get({});
-    if (normalizePlatformName(platform) === 'tengxunhao') {
+    if (normalizedPlatform === 'tengxunhao') {
       const txhCredential = hasRequiredTengxunhaoCredentialCookies(cookies);
       if (txhCredential.valid) {
         console.log('[hasValidLoginCookies] ✅ 腾讯号本地 session 含完整登录凭证:', txhCredential.summary.foundNames);
@@ -1612,13 +1670,22 @@ async function hasValidLoginCookies(windowSession, platform) {
       console.log('[hasValidLoginCookies] ⚠️ 腾讯号本地 session 凭证不完整:', txhCredential.summary.foundNames, '至少需要 userid + (omaccesstoken 或 sraccesstoken)');
       return false;
     }
+    if (normalizedPlatform === 'sohuhao') {
+      const sohuCredential = hasRequiredSohuhaoCredentialCookies(cookies);
+      if (sohuCredential.valid) {
+        console.log('[hasValidLoginCookies] ✅ 搜狐号本地 session 含会话凭证:', sohuCredential.summary.foundNames);
+        return true;
+      }
+      console.log('[hasValidLoginCookies] ⚠️ 搜狐号本地 session 凭证不完整:', sohuCredential.summary.foundNames, '至少需要 sct 或 ppinf+pprdig');
+      return false;
+    }
     const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
     const hit = loginCookieNames.find(name => cookieNames.has(name));
     if (hit) {
-      console.log(`[hasValidLoginCookies] ✅ 本地 session 已登录（命中 cookie: ${hit}）, platform=${platform}`);
+      console.log(`[hasValidLoginCookies] ✅ 本地 session 已登录（命中 cookie: ${hit}）, platform=${normalizedPlatform}`);
       return true;
     }
-    console.log(`[hasValidLoginCookies] ⚠️ 本地 session 未检测到登录态, platform=${platform}, 期望任一: [${loginCookieNames.join(', ')}]`);
+    console.log(`[hasValidLoginCookies] ⚠️ 本地 session 未检测到登录态, platform=${normalizedPlatform}, 期望任一: [${loginCookieNames.join(', ')}]`);
     return false;
   } catch (err) {
     console.warn('[hasValidLoginCookies] 取 cookies 失败:', err.message);
@@ -1628,13 +1695,14 @@ async function hasValidLoginCookies(windowSession, platform) {
 
 function sessionDataHasValidLoginCookies(sessionData, platform) {
   if (!platform) return false;
-  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[platform];
+  const normalizedPlatform = normalizePlatformName(platform);
+  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform];
   if (!Array.isArray(loginCookieNames) || loginCookieNames.length === 0) {
     return false;
   }
 
   const cookies = extractSessionCookiesArray(sessionData);
-  if (normalizePlatformName(platform) === 'tengxunhao') {
+  if (normalizedPlatform === 'tengxunhao') {
     const txhCredential = hasRequiredTengxunhaoCredentialCookies(cookies);
     if (txhCredential.valid) {
       console.log('[sessionDataHasValidLoginCookies] ✅ 腾讯号 sessionData 含完整登录凭证:', txhCredential.summary.foundNames);
@@ -1643,15 +1711,128 @@ function sessionDataHasValidLoginCookies(sessionData, platform) {
     console.log('[sessionDataHasValidLoginCookies] ⚠️ 腾讯号 sessionData 凭证不完整:', txhCredential.summary.foundNames, '至少需要 userid + (omaccesstoken 或 sraccesstoken)');
     return false;
   }
+  if (normalizedPlatform === 'sohuhao') {
+    const sohuCredential = hasRequiredSohuhaoCredentialCookies(cookies);
+    if (sohuCredential.valid) {
+      console.log('[sessionDataHasValidLoginCookies] ✅ 搜狐号 sessionData 含会话凭证:', sohuCredential.summary.foundNames);
+      return true;
+    }
+    console.log('[sessionDataHasValidLoginCookies] ⚠️ 搜狐号 sessionData 凭证不完整:', sohuCredential.summary.foundNames, '至少需要 sct 或 ppinf+pprdig');
+    return false;
+  }
   const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
   const hit = loginCookieNames.find(name => cookieNames.has(name));
   if (hit) {
-    console.log(`[sessionDataHasValidLoginCookies] ✅ sessionData 含登录凭证（命中 cookie: ${hit}）, platform=${platform}`);
+    console.log(`[sessionDataHasValidLoginCookies] ✅ sessionData 含登录凭证（命中 cookie: ${hit}）, platform=${normalizedPlatform}`);
     return true;
   }
 
-  console.log(`[sessionDataHasValidLoginCookies] ⚠️ sessionData 未检测到登录凭证, platform=${platform}, 期望任一: [${loginCookieNames.join(', ')}]`);
+  console.log(`[sessionDataHasValidLoginCookies] ⚠️ sessionData 未检测到登录凭证, platform=${normalizedPlatform}, 期望任一: [${loginCookieNames.join(', ')}]`);
   return false;
+}
+
+function isRecentSohuhaoPersistentCredentialMigration() {
+  if (!recentSohuhaoPersistentCredentialMigration) {
+    return false;
+  }
+  const migratedAt = Number(recentSohuhaoPersistentCredentialMigration.timestamp || 0);
+  return migratedAt > 0 && (Date.now() - migratedAt) <= SOHUHAO_RECENT_AUTH_COOKIE_MIGRATION_TTL_MS;
+}
+
+async function hydrateSohuhaoAccountSessionFromRecentPersistentSession(targetSession, accountId, reason = 'publish-open') {
+  const resultBase = {
+    migrated: false,
+    reason,
+    accountId: accountId || null,
+    recentMigration: isRecentSohuhaoPersistentCredentialMigration()
+  };
+
+  if (!targetSession) {
+    return { ...resultBase, skipped: true, skipReason: 'invalid-target-session' };
+  }
+  if (!isRecentSohuhaoPersistentCredentialMigration()) {
+    return { ...resultBase, skipped: true, skipReason: 'no-recent-sohuhao-auth-migration' };
+  }
+  if (!browserView || browserView.webContents.isDestroyed()) {
+    return { ...resultBase, skipped: true, skipReason: 'browser-view-unavailable' };
+  }
+
+  const sourceSession = browserView.webContents.session;
+  if (!sourceSession || sourceSession === targetSession) {
+    return { ...resultBase, skipped: true, skipReason: 'source-is-target-or-unavailable' };
+  }
+
+  const targetAlreadyValid = await hasValidLoginCookies(targetSession, 'sohuhao');
+  if (targetAlreadyValid) {
+    return { ...resultBase, skipped: true, skipReason: 'target-already-valid' };
+  }
+
+  const sourceCookies = await sourceSession.cookies.get({});
+  const sourceCredential = hasRequiredSohuhaoCredentialCookies(sourceCookies);
+  if (!sourceCredential.valid) {
+    return {
+      ...resultBase,
+      skipped: true,
+      skipReason: 'persistent-session-missing-real-credential',
+      sourceFoundNames: sourceCredential.summary.foundNames
+    };
+  }
+
+  const cookiesToCopy = dedupeCookiesForSessionSave(
+    'sohuhao',
+    sourceCookies.filter(cookie => shouldMigrateCookieForDomain(cookie.domain, 'sohu.com')),
+    'sohuhao-recent-persistent-to-account'
+  );
+
+  if (cookiesToCopy.length === 0) {
+    return { ...resultBase, skipped: true, skipReason: 'no-sohuhao-domain-cookies-to-copy' };
+  }
+
+  const oldTargetCookies = await targetSession.cookies.get({});
+  let deletedCount = 0;
+  for (const cookie of oldTargetCookies) {
+    if (!shouldMigrateCookieForDomain(cookie.domain, 'sohu.com')) {
+      continue;
+    }
+    try {
+      const cookieDomain = normalizeSessionCookieDomain(cookie.domain);
+      const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path || '/'}`;
+      await targetSession.cookies.remove(cookieUrl, cookie.name);
+      deletedCount++;
+    } catch (err) {
+      console.warn(`[搜狐号账号 session 兜底] 删除旧 cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+    }
+  }
+
+  const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+  let migratedCount = 0;
+  for (const cookie of cookiesToCopy) {
+    try {
+      const cookieDetails = buildCookieSetDetails(cookie, getCookieRestoreExpirationDate(cookie, oneYearFromNow), { platform: 'sohuhao' });
+      await targetSession.cookies.set(cookieDetails);
+      migratedCount++;
+    } catch (err) {
+      console.warn(`[搜狐号账号 session 兜底] 写入 cookie 失败: ${cookie.name} @ ${cookie.domain}`, err.message);
+    }
+  }
+
+  await flushSessionStorageData(targetSession, 'Sohuhao recent auth hydrate account session');
+
+  const finalCookies = await targetSession.cookies.get({});
+  const finalCredential = hasRequiredSohuhaoCredentialCookies(finalCookies);
+  const migrationResult = {
+    ...resultBase,
+    migrated: finalCredential.valid,
+    deletedCount,
+    migratedCount,
+    copiedCount: cookiesToCopy.length,
+    sourceFoundNames: sourceCredential.summary.foundNames,
+    finalFoundNames: finalCredential.summary.foundNames,
+    fingerprints: buildCookieFingerprints(finalCookies, 'sohuhao')
+  };
+
+  console.log('[搜狐号账号 session 兜底] 最近授权 cookie 已尝试同步到发布账号 session:', migrationResult);
+  return migrationResult;
 }
 
 async function flushSessionStorageData(targetSession, label, options = {}) {
@@ -1721,7 +1902,8 @@ async function persistWindowSessionBeforeClose(targetWindow, label) {
 //   null  - 无法验证（任一侧缺身份 cookie），由调用方决定保守策略
 async function matchAccountIdentity(windowSession, sessionData, platform) {
   if (!windowSession || !platform) return null;
-  const identityNames = config.platformIdentityCookies && config.platformIdentityCookies[platform];
+  const normalizedPlatform = normalizePlatformName(platform);
+  const identityNames = config.platformIdentityCookies && config.platformIdentityCookies[normalizedPlatform];
   if (!Array.isArray(identityNames) || identityNames.length === 0) {
     return null;
   }
@@ -1892,6 +2074,7 @@ function countSessionCookieNames(sessionData, cookieNames) {
 }
 
 function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData, platform = '') {
+  const normalizedPlatform = normalizePlatformName(platform);
   const parsedCached = parseSessionData(cachedSessionData);
   if (!parsedCached) {
     return {
@@ -1916,7 +2099,7 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
   const incomingCookies = extractSessionCookiesArray(parsedIncoming);
   const hasComparableTimestamps = cachedTimestamp > 0 && incomingTimestamp > 0;
 
-  if (platform === 'tengxunhao') {
+  if (normalizedPlatform === 'tengxunhao') {
     const txhCredentialNames = ['userid', 'omaccesstoken', 'omtoken', 'sraccesstoken'];
     const incomingTxhCredentialCount = countSessionCookieNames(parsedIncoming, txhCredentialNames);
     const cachedTxhCredentialCount = countSessionCookieNames(parsedCached, txhCredentialNames);
@@ -1936,6 +2119,34 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
       return {
         sessionData: incomingSessionData,
         source: 'incoming-session-tengxunhao-credentials'
+      };
+    }
+  }
+
+  if (normalizedPlatform === 'sohuhao') {
+    const sohuCredentialNames = ['sct', 'pprdig', 'ppmdig'];
+    const incomingSohuCredential = hasRequiredSohuhaoCredentialCookies(incomingCookies);
+    const cachedSohuCredential = hasRequiredSohuhaoCredentialCookies(cachedCookies);
+    const incomingSohuSignature = buildCookieValueSignature(incomingCookies, sohuCredentialNames);
+    const cachedSohuSignature = buildCookieValueSignature(cachedCookies, sohuCredentialNames);
+    const shouldPreferIncomingSohuSession = incomingSohuCredential.valid
+      && (
+        !cachedSohuCredential.valid
+        || incomingSohuSignature !== cachedSohuSignature
+        || incomingCookies.length > cachedCookies.length
+        || (incomingTimestamp > 0 && incomingTimestamp >= cachedTimestamp)
+      );
+    if (shouldPreferIncomingSohuSession) {
+      console.log('[Window Manager] 🔄 搜狐号优先使用后台会话：检测到新授权会话 cookie 与本地缓存不同或更完整', {
+        incomingFoundNames: incomingSohuCredential.summary.foundNames,
+        cachedFoundNames: cachedSohuCredential.summary.foundNames,
+        incomingCookieCount: incomingCookies.length,
+        cachedCookieCount: cachedCookies.length,
+        credentialSignatureChanged: incomingSohuSignature !== cachedSohuSignature
+      });
+      return {
+        sessionData: incomingSessionData,
+        source: 'incoming-session-sohuhao-credentials'
       };
     }
   }
@@ -2037,9 +2248,10 @@ function cookieValueFingerprint(value) {
 }
 
 function buildCookieFingerprints(cookies, platform) {
+  const normalizedPlatform = normalizePlatformName(platform);
   const names = new Set([
-    ...((config.platformLoginCookies && config.platformLoginCookies[platform]) || []),
-    ...((config.platformIdentityCookies && config.platformIdentityCookies[platform]) || []),
+    ...((config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform]) || []),
+    ...((config.platformIdentityCookies && config.platformIdentityCookies[normalizedPlatform]) || []),
   ]);
   const result = {};
   for (const c of (cookies || [])) {
@@ -2404,7 +2616,15 @@ function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
 function normalizePlatformName(platform = '') {
   const rawPlatform = String(platform || '').trim();
   if (rawPlatform === 'tengxvnhao') return 'tengxunhao';
-  return (config.platformNameMap && config.platformNameMap[rawPlatform]) || rawPlatform;
+  if (rawPlatform === 'souhuhao') return 'sohuhao';
+  if (config.platformNameMap && config.platformNameMap[rawPlatform]) {
+    return config.platformNameMap[rawPlatform];
+  }
+  if (config.platformPublishUrls && Object.prototype.hasOwnProperty.call(config.platformPublishUrls, rawPlatform)) {
+    const mapped = config.platformNameMap && config.platformNameMap[rawPlatform];
+    return mapped || rawPlatform;
+  }
+  return rawPlatform;
 }
 
 function isTengxunhaoLoginUrl(rawUrl = '') {
@@ -2445,6 +2665,46 @@ function getTengxunhaoRecoverTargetUrl(context) {
   }
   return (config.platformPublishUrls && config.platformPublishUrls.txh)
     || 'https://om.qq.com/main/creation/article';
+}
+
+function isSohuhaoLoginUrl(rawUrl = '') {
+  if (!rawUrl) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    if ((host === 'mp.sohu.com' || host.endsWith('.mp.sohu.com')) && pathname.includes('/mpfe/v4/login')) {
+      return true;
+    }
+    return host === 'passport.sohu.com' || host.endsWith('.passport.sohu.com');
+  } catch (_) {
+    const lower = String(rawUrl || '').toLowerCase();
+    return lower.includes('mp.sohu.com') && lower.includes('/mpfe/v4/login');
+  }
+}
+
+function isSohuhaoPublishUrl(rawUrl = '') {
+  if (!rawUrl) return false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    return (host === 'mp.sohu.com' || host.endsWith('.mp.sohu.com'))
+      && pathname.startsWith('/mpfe/v4/contentmanagement/news/addarticle');
+  } catch (_) {
+    const lower = String(rawUrl || '').toLowerCase();
+    return lower.startsWith('https://mp.sohu.com/mpfe/v4/contentmanagement/news/addarticle');
+  }
+}
+
+function getSohuhaoRecoverTargetUrl(context) {
+  if (context && isSohuhaoPublishUrl(context.expectedPageUrl)) {
+    return context.expectedPageUrl;
+  }
+  return (config.platformPublishUrls && config.platformPublishUrls.shh)
+    || 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle';
 }
 
 async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reason = 'unknown') {
@@ -2510,6 +2770,76 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
       const latest = windowContextMap.get(windowId);
       if (latest) {
         latest.tengxunhaoLoginRecoverInFlight = false;
+      }
+    }, 1500);
+  }
+
+  return { redirected: true };
+}
+
+async function maybeRecoverSohuhaoLoginWindow(targetWindow, currentURL, reason = 'unknown') {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { redirected: false };
+  }
+  if (!isSohuhaoLoginUrl(currentURL)) {
+    return { redirected: false };
+  }
+
+  const windowId = targetWindow.id;
+  const context = windowContextMap.get(windowId) || null;
+  if (!context || context.bootstrapInProgress) {
+    return { redirected: false };
+  }
+
+  const publishData = getWindowPublishData(windowId);
+  const rawPlatform = context?.platform || publishData?.platform || '';
+  const platform = normalizePlatformName(rawPlatform);
+  const isPublishWindow = context?.purpose === 'publish' || !!publishData;
+  if (!isPublishWindow || platform !== 'sohuhao') {
+    return { redirected: false };
+  }
+
+  if (context?.sohuhaoLoginRecoverInFlight) {
+    return { redirected: true, deduped: true };
+  }
+  if ((context?.sohuhaoLoginRecoverCount || 0) >= 3) {
+    console.warn(`[Sohuhao Login Recover] ⚠️ 登录页恢复已达到上限，停止自动回跳: windowId=${windowId}, url=${currentURL}`);
+    return { redirected: false, limitReached: true };
+  }
+
+  let hasLogin = false;
+  try {
+    hasLogin = await hasValidLoginCookies(targetWindow.webContents.session, 'sohuhao');
+  } catch (error) {
+    console.warn('[Sohuhao Login Recover] ⚠️ 登录态检查异常:', error.message);
+  }
+  if (!hasLogin) {
+    return { redirected: false };
+  }
+
+  const targetUrl = getSohuhaoRecoverTargetUrl(context);
+  context.sohuhaoLoginRecoverInFlight = true;
+  context.sohuhaoLoginRecoverCount = (context.sohuhaoLoginRecoverCount || 0) + 1;
+  console.warn(`[Sohuhao Login Recover] 🔁 检测到搜狐号登录页已有有效 cookie，回跳发布页: windowId=${windowId}, reason=${reason}, target=${targetUrl}`);
+
+  try {
+    try {
+      const cacheSyncResult = await syncLatestSessionCacheFromWindow(targetWindow, windowId, `sohuhao-login-recover:${reason}`);
+      console.log('[Sohuhao Login Recover] 本地最新会话缓存同步结果:', cacheSyncResult);
+    } catch (cacheSyncErr) {
+      console.warn('[Sohuhao Login Recover] ⚠️ 本地最新会话缓存同步异常:', cacheSyncErr.message);
+    }
+
+    if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+      await targetWindow.webContents.loadURL(targetUrl);
+    }
+  } catch (error) {
+    console.error('[Sohuhao Login Recover] ❌ 回跳发布页失败:', error.message);
+  } finally {
+    setTimeout(() => {
+      const latest = windowContextMap.get(windowId);
+      if (latest) {
+        latest.sohuhaoLoginRecoverInFlight = false;
       }
     }, 1500);
   }
@@ -10245,6 +10575,30 @@ async function openManagedChildWindow(url, options = {}) {
       const effectiveSessionData = sessionRestore.sessionData;
       const effectiveSessionSource = sessionRestore.source;
       options.sessionData = effectiveSessionData;
+      let sohuhaoRecentAuthHydrateResult = null;
+      if (normalizePlatformName(options.platform) === 'sohuhao') {
+        try {
+          sohuhaoRecentAuthHydrateResult = await hydrateSohuhaoAccountSessionFromRecentPersistentSession(
+            windowSession,
+            options.accountId,
+            'publish-open-before-session-restore'
+          );
+          if (sohuhaoRecentAuthHydrateResult.migrated) {
+            appendPublishSessionDiagLog('publish-session-sohuhao-recent-auth-hydrated', {
+              platform: options.platform || null,
+              accountId: options.accountId || null,
+              backendAccountId: backendAccountId || null,
+              source: effectiveSessionSource,
+              url,
+              result: sohuhaoRecentAuthHydrateResult
+            });
+          } else if (!sohuhaoRecentAuthHydrateResult.skipped) {
+            console.warn('[Window Manager] ⚠️ 搜狐号最近授权 cookie 兜底迁移未形成有效登录态:', sohuhaoRecentAuthHydrateResult);
+          }
+        } catch (hydrateErr) {
+          console.warn('[Window Manager] ⚠️ 搜狐号最近授权 cookie 兜底迁移异常:', hydrateErr.message);
+        }
+      }
       if (cachedSessionData) {
         console.log(`[Window Manager] ✅ 命中本地最新会话缓存: platform=${options.platform}, backendAccountId=${backendAccountId}`);
       }
@@ -10278,7 +10632,7 @@ async function openManagedChildWindow(url, options = {}) {
         const windowLabel = `窗口[即将创建]`; // 🔴 修复：此时 newWindow 还未创建，使用临时标识符
 
         // 🚀 优化1：检查是否已恢复过相同的 sessionData（避免重复恢复）
-        if (isSessionAlreadyRestored(partitionName, effectiveSessionData)) {
+        if (isSessionAlreadyRestored(partitionName, effectiveSessionData, options.platform)) {
           console.log(`[Window Manager][${windowLabel}] 🎯 Session 已恢复过相同数据，直接跳过（性能优化）`);
           publishLoadingWindow?.finishStep?.(0);
           publishLoadingWindow?.finishStep?.(1);
@@ -10294,8 +10648,16 @@ async function openManagedChildWindow(url, options = {}) {
         const incomingHasLogin = sessionDataHasValidLoginCookies(effectiveSessionData, options.platform);
         // 后台快照比本地缓存更新（或本地无缓存），且含真实登录凭证 → 强制走后台恢复
         // 修复：去掉 !!cachedSessionData 限制，避免「本地无缓存时 incoming 快照被本地旧 sessionid 阻断」
-        const shouldForceIncomingSessionRestore = incomingHasLogin
+        let shouldForceIncomingSessionRestore = incomingHasLogin
           && String(effectiveSessionSource || '').startsWith('incoming');
+        if (
+          normalizePlatformName(options.platform) === 'sohuhao'
+          && sohuhaoRecentAuthHydrateResult
+          && sohuhaoRecentAuthHydrateResult.migrated
+        ) {
+          shouldForceIncomingSessionRestore = false;
+          console.log('[Window Manager] 🛡️ 搜狐号刚从授权弹窗持久化 session 补齐账号 session，保留本地新登录态，不再用传入快照强制覆盖');
+        }
         const restoreDiag = { localHasLogin: null, identityMatch: undefined };
         try {
           const localHasLogin = await hasValidLoginCookies(windowSession, options.platform);
@@ -10379,8 +10741,9 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.finishStep?.(1);
           publishLoadingWindow?.activateStep?.(2);
           // 🚀 优化：标记本地登录态有效，避免后续窗口重复检查
-          markSessionRestored(partitionName, effectiveSessionData);
+          markSessionRestored(partitionName, effectiveSessionData, options.platform);
         } else {
+          let shouldMarkSessionRestoreCache = true;
           try {
             // 1. 清空该账号的所有 cookies
             const cookies = await windowSession.cookies.get({});
@@ -10585,8 +10948,8 @@ async function openManagedChildWindow(url, options = {}) {
               'BDUSS',
               'STOKEN',
               'uuid_v2',
-              ...((config.platformLoginCookies && config.platformLoginCookies[options.platform]) || []),
-              ...((config.platformIdentityCookies && config.platformIdentityCookies[options.platform]) || [])
+              ...((config.platformLoginCookies && config.platformLoginCookies[normalizePlatformName(options.platform)]) || []),
+              ...((config.platformIdentityCookies && config.platformIdentityCookies[normalizePlatformName(options.platform)]) || [])
             ]));
             const foundKeyCookies = [];
             for (let cookieItem of cookiesArray) {
@@ -10610,7 +10973,7 @@ async function openManagedChildWindow(url, options = {}) {
 
                 const cookieDetails = buildCookieSetDetails(
                   cookie,
-                  cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+                  getCookieRestoreExpirationDate(cookie),
                   { platform: options.platform }
                 );
                 await windowSession.cookies.set(cookieDetails);
@@ -10673,7 +11036,7 @@ async function openManagedChildWindow(url, options = {}) {
                             if (!cookie.name || !cookie.domain) continue;
                             const cookieDetails = buildCookieSetDetails(
                                 cookie,
-                                cookie.expirationDate || (Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60),
+                                getCookieRestoreExpirationDate(cookie),
                                 { platform: options.platform }
                             );
                             await windowSession.cookies.set(cookieDetails);
@@ -10699,6 +11062,20 @@ async function openManagedChildWindow(url, options = {}) {
             } catch (diagErr) {
               console.warn('[SessionDiag] 恢复结果日志失败:', diagErr.message);
             }
+
+            if (normalizePlatformName(options.platform) === 'sohuhao') {
+              try {
+                const actualCookies = await windowSession.cookies.get({});
+                const restoredSohuCredential = hasRequiredSohuhaoCredentialCookies(actualCookies);
+                if (!restoredSohuCredential.valid) {
+                  shouldMarkSessionRestoreCache = false;
+                  console.warn('[Window Manager] ⚠️ 搜狐号恢复后仍缺真实登录凭证，不记录恢复缓存:', restoredSohuCredential.summary.foundNames, '至少需要 sct 或 ppinf+pprdig');
+                }
+              } catch (sohuVerifyErr) {
+                shouldMarkSessionRestoreCache = false;
+                console.warn('[Window Manager] ⚠️ 搜狐号恢复后登录态校验异常，不记录恢复缓存:', sohuVerifyErr.message);
+              }
+            }
           }
 
           // 🔑 强制刷新到磁盘，确保数据完全持久化
@@ -10715,7 +11092,11 @@ async function openManagedChildWindow(url, options = {}) {
           publishLoadingWindow?.activateStep?.(2);
 
           // 🚀 优化：记录恢复状态到缓存，避免后续窗口重复恢复
-          markSessionRestored(partitionName, effectiveSessionData);
+          if (shouldMarkSessionRestoreCache) {
+            markSessionRestored(partitionName, effectiveSessionData, options.platform);
+          } else {
+            console.log(`[Session Cache][${partitionName}] ⚠️ 本次恢复未形成有效登录态，跳过恢复缓存记录`);
+          }
 
           console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
           } catch (err) {
@@ -11138,18 +11519,19 @@ async function openManagedChildWindow(url, options = {}) {
           const targetPlatform = accountInfo?.platform
             || publishDataForSave?.platform
             || null;
+          const normalizedTargetPlatform = normalizePlatformName(targetPlatform);
           let hasRealLogin = true;
-          if (targetPlatform === 'shipinhao' && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+          if (['shipinhao', 'sohuhao'].includes(normalizedTargetPlatform) && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
             try {
               hasRealLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
             } catch (loginCheckErr) {
               hasRealLogin = false;
-              console.warn('[Window Manager] ⚠️ 关闭前视频号登录态预检异常:', loginCheckErr.message);
+              console.warn(`[Window Manager] ⚠️ 关闭前 ${normalizedTargetPlatform} 登录态预检异常:`, loginCheckErr.message);
             }
           }
 
-          if (targetPlatform === 'shipinhao' && !hasRealLogin) {
-            console.log('[Window Manager] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过脚本保存和后台保存');
+          if (['shipinhao', 'sohuhao'].includes(normalizedTargetPlatform) && !hasRealLogin) {
+            console.log(`[Window Manager] 🚫 ${normalizedTargetPlatform} 发布窗口关闭前未检测到真实登录态，跳过脚本保存和后台保存`);
             await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:close-skip-login`);
             isSavingSession = false;
             newWindow.destroy();
@@ -11459,6 +11841,10 @@ async function openManagedChildWindow(url, options = {}) {
       if (loginRecovered.redirected) {
         return;
       }
+      const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, currentURL, 'dom-ready');
+      if (sohuLoginRecovered.redirected) {
+        return;
+      }
       const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'dom-ready');
       if (recovered.redirected) {
         return;
@@ -11483,6 +11869,10 @@ async function openManagedChildWindow(url, options = {}) {
       }
       const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, currentURL, 'did-finish-load');
       if (loginRecovered.redirected) {
+        return;
+      }
+      const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, currentURL, 'did-finish-load');
+      if (sohuLoginRecovered.redirected) {
         return;
       }
       const recovered = await maybeRecoverPublishWindow(newWindow, currentURL, 'did-finish-load');
@@ -11521,6 +11911,10 @@ async function openManagedChildWindow(url, options = {}) {
       if (loginRecovered.redirected) {
         return;
       }
+      const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, navUrl, 'did-navigate');
+      if (sohuLoginRecovered.redirected) {
+        return;
+      }
       await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate');
     }));
 
@@ -11545,6 +11939,10 @@ async function openManagedChildWindow(url, options = {}) {
       }
       const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, navUrl, 'did-navigate-in-page');
       if (loginRecovered.redirected) {
+        return;
+      }
+      const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, navUrl, 'did-navigate-in-page');
+      if (sohuLoginRecovered.redirected) {
         return;
       }
       const recovered = await maybeRecoverPublishWindow(newWindow, navUrl, 'did-navigate-in-page');
@@ -12119,7 +12517,7 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
           || normalizeSessionCookieDomain(domain) === 'ptlogin2.qq.com'
           ? 'tengxunhao'
           : '';
-        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow, { platform: restorePlatform });
+        const newCookie = buildCookieSetDetails(cookie, getCookieRestoreExpirationDate(cookie, oneYearFromNow), { platform: restorePlatform });
         await persistentSession.cookies.set(newCookie);
         migratedCount++;
         console.log(`[Cookie Migration] ✓ 迁移: ${cookie.name} @ ${cookie.domain}`);
@@ -12136,6 +12534,30 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
 
     console.log(`[Cookie Migration] ========== 迁移完成 ==========`);
     console.log(`[Cookie Migration] ✅ 共迁移 ${migratedCount}/${domainCookies.length} 个 cookies`);
+
+    if (shouldMigrateCookieForDomain(domain, 'sohu.com')) {
+      try {
+        const persistentCookies = await persistentSession.cookies.get({});
+        const sohuCredential = hasRequiredSohuhaoCredentialCookies(persistentCookies);
+        const authFlagKey = `auth_mode_window_${senderWindow.id}`;
+        if (sohuCredential.valid) {
+          recentSohuhaoPersistentCredentialMigration = {
+            timestamp: Date.now(),
+            sourceWindowId: senderWindow.id,
+            sourceIsAuthWindow: !!globalStorage[authFlagKey],
+            domain,
+            migratedCount,
+            foundNames: sohuCredential.summary.foundNames,
+            fingerprints: buildCookieFingerprints(persistentCookies, 'sohuhao')
+          };
+          console.log('[Cookie Migration] ✅ 已记录最近搜狐号授权 cookie 迁移标记:', recentSohuhaoPersistentCredentialMigration);
+        } else {
+          console.warn('[Cookie Migration] ⚠️ 搜狐号迁移后持久化 session 仍缺真实登录凭证，不记录最近授权标记:', sohuCredential.summary.foundNames);
+        }
+      } catch (sohuMarkErr) {
+        console.warn('[Cookie Migration] ⚠️ 记录搜狐号最近授权迁移标记失败:', sohuMarkErr.message);
+      }
+    }
 
     return { success: true, migratedCount, totalFound: domainCookies.length, domains: migrationDomains };
   } catch (err) {
@@ -12206,7 +12628,7 @@ ipcMain.handle('migrate-cookies-to-account-session', async (event, domain, platf
     const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
     for (const cookie of dedupedDomainCookies) {
       try {
-        const newCookie = buildCookieSetDetails(cookie, cookie.expirationDate || oneYearFromNow, { platform });
+        const newCookie = buildCookieSetDetails(cookie, getCookieRestoreExpirationDate(cookie, oneYearFromNow), { platform });
         await targetSession.cookies.set(newCookie);
         migratedCount++;
       } catch (err) {
@@ -13320,6 +13742,15 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
   }));
   cookiesArray = dedupeCookiesForSessionSave(accountInfo.platform, cookiesArray, 'window-close:platformCookies');
 
+  const normalizedSavePlatform = normalizePlatformName(accountInfo.platform);
+  if (normalizedSavePlatform === 'sohuhao') {
+    const sohuCredential = hasRequiredSohuhaoCredentialCookies(cookiesArray);
+    if (!sohuCredential.valid) {
+      console.log('[Save Session] 🚫 搜狐号缺少真实登录凭证，跳过保存，避免坏快照覆盖缓存:', sohuCredential.summary);
+      return { success: false, error: '搜狐号缺少真实登录凭证，跳过保存' };
+    }
+  }
+
   let fullSessionSnapshot = null;
   try {
     const sessionDomains = cookieDomains.length > 0 ? cookieDomains : [platformCookies[0]?.domain].filter(Boolean);
@@ -13644,40 +14075,35 @@ const sessionRestoreCache = new Map();
 /**
  * 计算 sessionData 的指纹（用于判断是否需要重复恢复）
  * @param {object|string} sessionData - 会话数据
+ * @param {string} platform - 平台名，用于选择平台关键登录 cookie
  * @returns {string} 指纹字符串
  */
-function getSessionDataFingerprint(sessionData) {
+function getSessionDataFingerprint(sessionData, platform) {
   try {
-    let cookiesArray = [];
-    let data = sessionData;
-
-    // 解析 sessionData
-    if (typeof data === 'string') {
-      data = JSON.parse(data);
-      if (typeof data === 'string') {
-        data = JSON.parse(data);
-      }
-    }
-
-    // 提取 cookies
-    if (Array.isArray(data)) {
-      if (data.length > 0 && data[0]?.cookies) {
-        cookiesArray = data[0].cookies;
-      } else {
-        cookiesArray = data;
-      }
-    } else if (data?.cookies) {
-      cookiesArray = data.cookies;
-    }
+    const cookiesArray = extractSessionCookiesArray(sessionData);
+    const normalizedPlatform = normalizePlatformName(platform);
+    const defaultCookieNames = ['sessionid', 'sessionid_ss', 'web_session', 'BDUSS', 'pass_ticket', 'wxuin'];
+    const platformLoginCookieNames = (config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform]) || [];
+    const platformIdentityCookieNames = (config.platformIdentityCookies && config.platformIdentityCookies[normalizedPlatform]) || [];
+    const fingerprintCookieNames = Array.from(new Set([
+      ...defaultCookieNames,
+      ...platformLoginCookieNames,
+      ...platformIdentityCookieNames
+    ]));
 
     // 计算指纹：关键 cookie 的 name+value 组合
     const keyCookies = cookiesArray
-      .filter(c => ['sessionid', 'sessionid_ss', 'web_session', 'BDUSS', 'pass_ticket', 'wxuin'].includes(c.name))
-      .map(c => `${c.name}:${String(c.value || '').substring(0, 8)}`)
+      .filter(c => c && c.value && fingerprintCookieNames.includes(c.name))
+      .map(c => [
+        c.name,
+        String(c.domain || '').toLowerCase(),
+        c.path || '/',
+        cookieValueFingerprint(c.value)
+      ].join(':'))
       .sort()
       .join('|');
 
-    return keyCookies || 'empty';
+    return keyCookies || '';
   } catch (err) {
     return 'error';
   }
@@ -13687,13 +14113,18 @@ function getSessionDataFingerprint(sessionData) {
  * 检查 session 是否已恢复过相同的 sessionData
  * @param {string} partitionName - session 分区名
  * @param {object|string} sessionData - 会话数据
+ * @param {string} platform - 平台名
  * @returns {boolean} 是否已恢复
  */
-function isSessionAlreadyRestored(partitionName, sessionData) {
+function isSessionAlreadyRestored(partitionName, sessionData, platform) {
   const cache = sessionRestoreCache.get(partitionName);
   if (!cache) return false;
 
-  const currentFingerprint = getSessionDataFingerprint(sessionData);
+  const currentFingerprint = getSessionDataFingerprint(sessionData, platform);
+  if (!currentFingerprint || currentFingerprint === 'error') {
+    console.log(`[Session Cache][${partitionName}] ⚠️ 当前 sessionData 无可用关键 cookie 指纹，跳过缓存命中判断`);
+    return false;
+  }
   const cachedFingerprint = cache.fingerprint;
   const cacheAge = Date.now() - cache.timestamp;
 
@@ -13711,9 +14142,14 @@ function isSessionAlreadyRestored(partitionName, sessionData) {
  * 记录 session 恢复状态
  * @param {string} partitionName - session 分区名
  * @param {object|string} sessionData - 会话数据
+ * @param {string} platform - 平台名
  */
-function markSessionRestored(partitionName, sessionData) {
-  const fingerprint = getSessionDataFingerprint(sessionData);
+function markSessionRestored(partitionName, sessionData, platform) {
+  const fingerprint = getSessionDataFingerprint(sessionData, platform);
+  if (!fingerprint || fingerprint === 'error') {
+    console.log(`[Session Cache][${partitionName}] ⚠️ sessionData 无可用关键 cookie 指纹，不记录恢复缓存`);
+    return;
+  }
   sessionRestoreCache.set(partitionName, {
     fingerprint,
     timestamp: Date.now()
@@ -14721,7 +15157,7 @@ ipcMain.handle('restore-session-data', async (event, sessionDataStr) => {
         try {
           const cookieDetails = buildCookieSetDetails(
             cookie,
-            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+            getCookieRestoreExpirationDate(cookie)
           );
           await ses.cookies.set(cookieDetails);
           results.cookies.restored++;
@@ -14939,7 +15375,7 @@ ipcMain.handle('restore-account-session', async (event, platform, accountId, ses
         try {
           const cookieDetails = buildCookieSetDetails(
             cookie,
-            cookie.expirationDate || Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+            getCookieRestoreExpirationDate(cookie),
             { platform }
           );
           await targetSession.cookies.set(cookieDetails);

@@ -1961,11 +1961,36 @@ if (typeof window.uploadVideo === "function"
         return `${apiDomain}/api/mediaauth/${endpoint}`;
     };
 
+    function evaluateStatisticsResponse(response, parsed) {
+        if (!response || !response.ok) {
+            return { ok: false, code: parsed ? parsed.code : undefined };
+        }
+
+        if (!parsed || typeof parsed !== "object") {
+            return { ok: true, code: response.status, reason: "http-ok-without-json" };
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(parsed, "code")) {
+            return { ok: true, code: response.status, reason: "http-ok-without-code" };
+        }
+
+        const numericCode = Number(parsed.code);
+        return {
+            ok: Number.isFinite(numericCode) && numericCode === 200,
+            code: parsed.code,
+            reason: "business-code"
+        };
+    }
+
+    function formatStatisticsResponseError(response, parsed) {
+        return `status=${response ? response.status : "N/A"} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`;
+    }
+
     // ===========================
     // 📡 统计上报底层单次请求（供 sendStatistics/sendStatisticsError 重试与离线补报队列复用）
     // ⚠️ 逻辑须与 sendStatistics / sendStatisticsError 内联 fetch 保持一致：
-    //    10s 超时 + keepalive + 业务码校验（response.ok && parsed.code === 200）
-    // 失败抛错（触发上层 retryOperation 重试或补报队列保留），成功返回 { response, parsed }
+    //    10s 超时 + keepalive + 响应校验（HTTP 2xx 且没有明确业务失败码）
+    // 失败抛错（触发上层 retryOperation 重试或补报队列保留），成功返回 { response, parsed, evaluation }
     // ===========================
     window.postStatisticsRequest = async function (url, scanData, timeoutMs = 10000) {
         const controller = new AbortController();
@@ -1981,11 +2006,11 @@ if (typeof window.uploadVideo === "function"
             const text = await response.text();
             let parsed = null;
             try { parsed = JSON.parse(text); } catch (_) {}
-            const okFlag = response.ok && parsed && parsed.code === 200;
-            if (!okFlag) {
-                throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+            const evaluation = evaluateStatisticsResponse(response, parsed);
+            if (!evaluation.ok) {
+                throw new Error(formatStatisticsResponseError(response, parsed));
             }
-            return { response, parsed };
+            return { response, parsed, evaluation };
         } finally {
             clearTimeout(timeoutId);
         }
@@ -2898,20 +2923,20 @@ if (typeof window.uploadVideo === "function"
                     const text = await response.text();
                     let parsed = null;
                     try { parsed = JSON.parse(text); } catch (_) {}
-                    const okFlag = response.ok && parsed && parsed.code === 200;
-                    if (!okFlag) {
-                        throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                    const evaluation = evaluateStatisticsResponse(response, parsed);
+                    if (!evaluation.ok) {
+                        throw new Error(formatStatisticsResponseError(response, parsed));
                     }
-                    return { response, parsed };
+                    return { response, parsed, evaluation };
                 } finally {
                     clearTimeout(timeoutId);
                 }
             }, retryCount, retryDelay);
 
-            console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认 code=200`);
+            console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
             window.flushFailedStatReports?.().catch(() => {});
-            return { success: true, response: result.response, code: result.parsed.code };
+            return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
                 window.releaseStatisticsReportLock(reportLock.key, publishId);
@@ -3031,20 +3056,20 @@ if (typeof window.uploadVideo === "function"
                     const text = await response.text();
                     let parsed = null;
                     try { parsed = JSON.parse(text); } catch (_) {}
-                    const okFlag = response.ok && parsed && parsed.code === 200;
-                    if (!okFlag) {
-                        throw new Error(`status=${response.status} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`);
+                    const evaluation = evaluateStatisticsResponse(response, parsed);
+                    if (!evaluation.ok) {
+                        throw new Error(formatStatisticsResponseError(response, parsed));
                     }
-                    return { response, parsed };
+                    return { response, parsed, evaluation };
                 } finally {
                     clearTimeout(timeoutId);
                 }
             }, retryCount, retryDelay);
 
-            console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认 code=200`);
+            console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
             window.flushFailedStatReports?.().catch(() => {});
-            return { success: true, response: result.response, code: result.parsed.code };
+            return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
                 window.releaseStatisticsReportLock(reportLock.key, publishId);

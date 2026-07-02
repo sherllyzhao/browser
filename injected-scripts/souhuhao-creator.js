@@ -121,6 +121,120 @@
         getAuthData: () => window.__AUTH_DATA__,
     };
 
+    function parseMaybeJson(value) {
+        if (typeof value !== 'string') {
+            return value;
+        }
+        const trimmed = value.trim();
+        if (!trimmed || !['{', '['].includes(trimmed[0])) {
+            return value;
+        }
+        try {
+            return JSON.parse(trimmed);
+        } catch (_) {
+            return value;
+        }
+    }
+
+    function readNestedValue(source, path) {
+        if (!source || !path) {
+            return undefined;
+        }
+        return path.split('.').reduce((current, key) => {
+            if (current === null || typeof current === 'undefined') {
+                return undefined;
+            }
+            const parsedCurrent = parseMaybeJson(current);
+            if (Array.isArray(parsedCurrent)) {
+                return parsedCurrent.map(item => readNestedValue(item, key)).filter(value => typeof value !== 'undefined');
+            }
+            if (typeof parsedCurrent !== 'object') {
+                return undefined;
+            }
+            return parsedCurrent[key];
+        }, parseMaybeJson(source));
+    }
+
+    function collectAccountSessionIds(...sources) {
+        const ids = new Set();
+        const directPaths = [
+            'id',
+            'uid',
+            'account_id',
+            'accountId',
+            'backend_account_id',
+            'backendAccountId',
+            'media_auth_id',
+            'mediaAuthId',
+            'mediaAuthID',
+            'account_info.id',
+            'accountInfo.id',
+            'element.account_info.id',
+            'element.accountInfo.id',
+            'element.media_auth_id',
+            'element.mediaAuthId',
+            'dyPlatform.id',
+            'element.dyPlatform.id'
+        ];
+        const nestedKeys = [
+            'data',
+            'result',
+            'record',
+            'info',
+            'account',
+            'auth',
+            'mediaAuth',
+            'media_auth',
+            'account_info',
+            'accountInfo',
+            'element',
+            'item',
+            'body'
+        ];
+
+        const addValue = (value) => {
+            const parsed = parseMaybeJson(value);
+            if (Array.isArray(parsed)) {
+                parsed.forEach(addValue);
+                return;
+            }
+            if (parsed === null || typeof parsed === 'undefined') {
+                return;
+            }
+            if (typeof parsed === 'object') {
+                return;
+            }
+            const id = String(parsed).trim();
+            if (id) {
+                ids.add(id);
+            }
+        };
+
+        const collectFromObject = (source, depth = 0) => {
+            const parsedSource = parseMaybeJson(source);
+            if (!parsedSource || depth > 4) {
+                return;
+            }
+            if (Array.isArray(parsedSource)) {
+                parsedSource.forEach(item => collectFromObject(item, depth + 1));
+                return;
+            }
+            if (typeof parsedSource !== 'object') {
+                return;
+            }
+
+            directPaths.forEach(path => addValue(readNestedValue(parsedSource, path)));
+            nestedKeys.forEach(key => {
+                if (Object.prototype.hasOwnProperty.call(parsedSource, key)) {
+                    collectFromObject(parsedSource[key], depth + 1);
+                }
+            });
+        };
+
+        sources.forEach(source => collectFromObject(source));
+        return Array.from(ids);
+    }
+
     // ===========================
     // 4. 显示调试信息横幅
     // ===========================
@@ -353,6 +467,30 @@
                                         console.log(`[搜狐号授权] ✅ sohu.com 全域 Cookies 迁移成功，共迁移 ${migrateFullResult.migratedCount} 个`);
                                     } else {
                                         console.error('[搜狐号授权] ⚠️ sohu.com 全域 Cookies 迁移失败:', migrateFullResult.error);
+                                    }
+
+                                    // 🔑 多账号发布窗口使用 persist:sohuhao_<后台账号ID> 独立 session。
+                                    // 授权窗口是临时 session，仅迁移到主 BrowserView 不够，必须同步到账号 session。
+                                    const accountSessionIds = collectAccountSessionIds(currentAccount, messageData, apiResult);
+                                    console.log('[搜狐号授权] 账号 session 候选 ID:', accountSessionIds);
+                                    if (accountSessionIds.length > 0 && window.browserAPI.migrateCookiesToAccountSession) {
+                                        for (const accountSessionId of accountSessionIds) {
+                                            const migrateAccountMpResult = await window.browserAPI.migrateCookiesToAccountSession('mp.sohu.com', 'sohuhao', accountSessionId);
+                                            if (migrateAccountMpResult.success) {
+                                                console.log(`[搜狐号授权] ✅ mp.sohu.com Cookies 已迁移到账号 session: ${accountSessionId}, 共 ${migrateAccountMpResult.migratedCount} 个`);
+                                            } else {
+                                                console.error(`[搜狐号授权] ⚠️ mp.sohu.com Cookies 迁移到账号 session 失败: ${accountSessionId}`, migrateAccountMpResult.error);
+                                            }
+
+                                            const migrateAccountFullResult = await window.browserAPI.migrateCookiesToAccountSession('sohu.com', 'sohuhao', accountSessionId);
+                                            if (migrateAccountFullResult.success) {
+                                                console.log(`[搜狐号授权] ✅ sohu.com 全域 Cookies 已迁移到账号 session: ${accountSessionId}, 共 ${migrateAccountFullResult.migratedCount} 个`);
+                                            } else {
+                                                console.error(`[搜狐号授权] ⚠️ sohu.com 全域 Cookies 迁移到账号 session 失败: ${accountSessionId}`, migrateAccountFullResult.error);
+                                            }
+                                        }
+                                    } else {
+                                        console.warn('[搜狐号授权] ⚠️ 无法迁移到账号 session：缺少后台账号ID或 migrateCookiesToAccountSession');
                                     }
                                 } catch (migrateError) {
                                     console.error('[搜狐号授权] ⚠️ Cookies 迁移异常:', migrateError);

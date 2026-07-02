@@ -304,7 +304,7 @@ const platformLoginCookies = {
   baijiahao: ['BDUSS', 'STOKEN'],
   shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload'],
   wangyihao: ['P_INFO', 'S_INFO', 'NTES_SESS'],
-  sohuhao: ['sct', 'passport', 'ppinf', 'pprdig'],
+  sohuhao: ['sct', 'passport', 'ppinf', 'pprdig', 'ppmdig'],
   tengxunhao: ['userid', 'omaccesstoken', 'omtoken', 'sraccesstoken', 'uin', 'p_uin', 'skey', 'p_skey'],
   xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
   zhihu: ['z_c0', 'd_c0', '_xsrf']

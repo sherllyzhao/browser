@@ -199,7 +199,12 @@
                         console.log("🚀 ~  ~ messageData: ", messageData);
 
                         try {
-                            await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+                            const fillResult = await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+                            if (fillResult === false) {
+                                console.warn('[搜狐号发布] 🚫 表单流程已中止，不再进入 publishApi 等待');
+                                isProcessing = false;
+                                return;
+                            }
                         } catch (e) {
                             console.log('[搜狐号发布] ❌ 填写表单数据失败:', e);
                         }
@@ -323,7 +328,12 @@
                 };
 
                 try {
-                    await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+                    const fillResult = await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+                    if (fillResult === false) {
+                        console.warn('[搜狐号发布] 🚫 表单流程已中止，不再进入 publishApi 等待');
+                        isProcessing = false;
+                        return;
+                    }
                 } catch (e) {
                     console.log('[搜狐号发布] ❌ 填写表单数据失败:', e);
                 }
@@ -439,6 +449,29 @@
         return false;
     }
 
+    function isSohuLoginPage() {
+        try {
+            const url = new URL(window.location.href);
+            return url.hostname === 'mp.sohu.com' && url.pathname.includes('/mpfe/v4/login');
+        } catch (_) {
+            return String(window.location.href || '').includes('/mpfe/v4/login');
+        }
+    }
+
+    async function stopIfLoginPage(dataObj, source = 'unknown') {
+        if (!isSohuLoginPage()) {
+            return false;
+        }
+
+        const message = '搜狐号登录态失效，请重新授权后再发布';
+        console.warn(`[搜狐号发布] 🚫 当前位于登录页，停止发布流程，source=${source}, url=${window.location.href}`);
+        if (typeof hideOperationBanner === 'function') {
+            hideOperationBanner();
+        }
+        await failPublishAndClose(dataObj, message, `${message}（检测到登录页）`);
+        return true;
+    }
+
     function readPublishFeedbackText() {
         const isVisible = (el) => {
             if (!el) {
@@ -493,6 +526,11 @@
         fillFormRunning = true;
 
         try {
+            if (await stopIfLoginPage(dataObj, 'fillFormData')) {
+                fillFormRunning = false;
+                return false;
+            }
+
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
                 // alert('No cover image found');
