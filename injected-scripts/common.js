@@ -1991,6 +1991,10 @@ if (typeof window.uploadVideo === "function"
         }
     };
 
+    window.isGeoStatisticsReport = function (url, options = {}) {
+        return String(url || '').includes('/api/geo/') || options.skipDedup === true;
+    };
+
     // ===========================
     // 🔐 关闭前保存会话到后台（与 creator.js 走同一接口和 body 格式）
     // 用于发布窗口关闭前主动上报最新登录信息，避免主进程的轻量 {id, cookies} 格式被后台拒绝
@@ -2861,7 +2865,7 @@ if (typeof window.uploadVideo === "function"
     window.sendStatistics = async function (publishId, platform = "", options = {}) {
         // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
         const url = await getStatisticsUrl(false);
-        const isGeo = url.includes('/api/geo/') || options.skipDedup === true;
+        const isGeo = window.isGeoStatisticsReport(url, options);
 
         let reportLock = null;
         if (!isGeo) {
@@ -2913,13 +2917,21 @@ if (typeof window.uploadVideo === "function"
                 window.releaseStatisticsReportLock(reportLock.key, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 成功统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
-            // 🔑 落盘到离线补报队列，后台恢复后自动补发，避免数据永久丢失
-            await window.enqueueFailedStatReport?.({ url, scanData, resultType: "success", platform, publishId });
-            // 🔑 能走到 sendStatistics 即代表「内容已发布成功」，仅统计上报失败 → 提示用户别误以为白发
-            window.showPublishToast?.(
-                "内容已发布成功！仅数据统计上报失败，已自动加入补报队列稍后重试，不影响发布结果。",
-                "warning"
-            );
+            if (isGeo) {
+                console.warn(`[${platform || "发布"}] ⚠️ GEO 统计失败不入补报队列，避免 keepalive 已到达服务端后补报造成重复记录`);
+                window.showPublishToast?.(
+                    "内容已发布成功！GEO 统计上报失败，为避免重复记录未加入补报队列，不影响发布结果。",
+                    "warning"
+                );
+            } else {
+                // 🔑 落盘到离线补报队列，后台恢复后自动补发，避免数据永久丢失
+                await window.enqueueFailedStatReport?.({ url, scanData, resultType: "success", platform, publishId });
+                // 🔑 能走到 sendStatistics 即代表「内容已发布成功」，仅统计上报失败 → 提示用户别误以为白发
+                window.showPublishToast?.(
+                    "内容已发布成功！仅数据统计上报失败，已自动加入补报队列稍后重试，不影响发布结果。",
+                    "warning"
+                );
+            }
             return { success: false, error: e };
         }
     };
@@ -2937,7 +2949,7 @@ if (typeof window.uploadVideo === "function"
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null, options = {}) {
         // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
         const url = await getStatisticsUrl(true);
-        const isGeo = url.includes('/api/geo/') || options.skipDedup === true;
+        const isGeo = window.isGeoStatisticsReport(url, options);
 
         let reportLock = null;
         if (!isGeo) {
@@ -3038,8 +3050,12 @@ if (typeof window.uploadVideo === "function"
                 window.releaseStatisticsReportLock(reportLock.key, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 失败统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
-            // 🔑 落盘到离线补报队列，后台恢复后自动补发（错误上报失败属内容未发成功场景，静默入队不弹 toast）
-            await window.enqueueFailedStatReport?.({ url, scanData, resultType: "error", platform, publishId });
+            if (isGeo) {
+                console.warn(`[${platform || "发布"}] ⚠️ GEO 失败统计不入补报队列，避免 keepalive 已到达服务端后补报造成重复记录`);
+            } else {
+                // 🔑 落盘到离线补报队列，后台恢复后自动补发（错误上报失败属内容未发成功场景，静默入队不弹 toast）
+                await window.enqueueFailedStatReport?.({ url, scanData, resultType: "error", platform, publishId });
+            }
             return { success: false, error: e };
         }
     };
@@ -3066,6 +3082,10 @@ if (typeof window.uploadVideo === "function"
             }
             if (!item || !item.url || !item.scanData) {
                 console.warn("[统计补报] ⚠️ 入队数据不完整，跳过");
+                return false;
+            }
+            if (window.isGeoStatisticsReport?.(item.url)) {
+                console.warn("[统计补报] ⚠️ GEO 统计不入补报队列，避免重复记录");
                 return false;
             }
             const resultType = item.resultType || "unknown";
@@ -3111,6 +3131,11 @@ if (typeof window.uploadVideo === "function"
                     }
                     // 坏数据 / 缺字段：直接清除
                     if (!item || !item.url || !item.scanData) {
+                        await window.browserAPI.removeGlobalData(key);
+                        continue;
+                    }
+                    if (window.isGeoStatisticsReport?.(item.url)) {
+                        console.warn(`[统计补报] 🗑️ 清理历史 GEO 待补报项，避免重复记录：${key}`);
                         await window.browserAPI.removeGlobalData(key);
                         continue;
                     }
