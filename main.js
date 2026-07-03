@@ -2123,6 +2123,102 @@ async function hydrateSohuhaoAuthAccountSessionFromSharedSession(targetSession, 
   );
 }
 
+async function hydrateSohuhaoAuthAccountSessionFromPayload(payload, targetSession, accountId, reason = 'auth-data-payload') {
+  const resultBase = {
+    hydrated: false,
+    skipped: false,
+    reason,
+    accountId: normalizeAccountIdValue(accountId) || null,
+    sourceLabel: 'auth-data-payload'
+  };
+
+  if (!targetSession) {
+    return { ...resultBase, skipped: true, skipReason: 'invalid-target-session' };
+  }
+
+  const parsedPayload = parseMaybeJsonObject(payload);
+  const candidateSessionPayloads = [
+    parsedPayload?.cookies,
+    parsedPayload?.element?.cookies,
+    parsedPayload?.sessionData,
+    parsedPayload?.element?.sessionData,
+    parsedPayload?.data?.cookies,
+    parsedPayload?.data?.sessionData,
+    parsedPayload
+  ];
+
+  let sourceCookies = [];
+  for (const candidate of candidateSessionPayloads) {
+    const candidateCookies = extractSessionCookiesArray(candidate)
+      .filter(cookie => cookie && cookie.name && cookie.domain && shouldMigrateCookieForDomain(cookie.domain, 'sohu.com'));
+    if (candidateCookies.length > sourceCookies.length) {
+      sourceCookies = candidateCookies;
+    }
+  }
+
+  sourceCookies = dedupeCookiesForSessionSave('sohuhao', sourceCookies, `${reason}:payload`);
+  const sourceCredential = hasRequiredSohuhaoCredentialCookies(sourceCookies);
+  if (!sourceCredential.valid) {
+    return {
+      ...resultBase,
+      skipped: true,
+      skipReason: 'payload-missing-real-credential',
+      sourceCookieCount: sourceCookies.length,
+      sourceFoundNames: sourceCredential.summary.foundNames
+    };
+  }
+
+  const oldTargetCookies = await targetSession.cookies.get({});
+  let deletedCount = 0;
+  for (const cookie of oldTargetCookies) {
+    if (!shouldMigrateCookieForDomain(cookie.domain, 'sohu.com')) {
+      continue;
+    }
+    try {
+      const cookieDomain = normalizeSessionCookieDomain(cookie.domain);
+      const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookieDomain}${cookie.path || '/'}`;
+      await targetSession.cookies.remove(cookieUrl, cookie.name);
+      deletedCount++;
+    } catch (err) {
+      console.warn('[搜狐号 auth-data payload 预热] 删除目标账号旧 cookie 失败:', cookie.name, cookie.domain, err.message);
+    }
+  }
+
+  try {
+    await targetSession.clearStorageData({
+      storages: ['localstorage', 'sessionstorage', 'indexdb', 'cachestorage', 'serviceworkers', 'websql', 'filesystem']
+    });
+  } catch (storageErr) {
+    console.warn('[搜狐号 auth-data payload 预热] 清理目标账号旧 storage 失败:', storageErr.message);
+  }
+
+  const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+  let migratedCount = 0;
+  for (const cookie of sourceCookies) {
+    try {
+      await targetSession.cookies.set(buildCookieSetDetails(cookie, getCookieRestoreExpirationDate(cookie, oneYearFromNow), { platform: 'sohuhao' }));
+      migratedCount++;
+    } catch (err) {
+      console.warn('[搜狐号 auth-data payload 预热] 写入目标账号 cookie 失败:', cookie.name, cookie.domain, err.message);
+    }
+  }
+
+  await flushSessionStorageData(targetSession, `Sohuhao Auth Payload Hydrate:${reason}`);
+
+  const finalCookies = await targetSession.cookies.get({});
+  const finalCredential = hasRequiredSohuhaoCredentialCookies(finalCookies);
+  return {
+    ...resultBase,
+    hydrated: finalCredential.valid,
+    deletedCount,
+    migratedCount,
+    copiedCount: sourceCookies.length,
+    sourceFoundNames: sourceCredential.summary.foundNames,
+    finalFoundNames: finalCredential.summary.foundNames,
+    fingerprints: buildCookieFingerprints(finalCookies, 'sohuhao')
+  };
+}
+
 async function buildCookieOnlySessionDataFromSession(targetSession, platform, primaryDomain, source = 'session-cookie-snapshot') {
   if (!targetSession || !targetSession.cookies) {
     return null;
@@ -10895,17 +10991,31 @@ async function routeSohuhaoAuthDataToAccountWindow(message, sourceSession = null
   let routeHydrateResult = null;
   try {
     const targetSession = getAccountSession('sohuhao', resolvedAccount.accountId);
-    const hydrateSourceSession = sourceSession
-      || (browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.session : null);
-    routeHydrateResult = await hydrateSohuhaoAuthAccountSessionFromSourceSession(
-      hydrateSourceSession,
+    const payloadHydrateResult = await hydrateSohuhaoAuthAccountSessionFromPayload(
+      payload,
       targetSession,
       resolvedAccount.accountId,
-      'route-auth-data-before-open',
-      sourceSession ? 'home-to-content-sender' : 'browser-view-fallback',
-      { forceReplace: true }
+      'route-auth-data-before-open'
     );
-    console.log('[IPC] 搜狐号 auth-data 路由前强制预热账号 session 结果:', routeHydrateResult);
+    if (payloadHydrateResult?.hydrated) {
+      routeHydrateResult = payloadHydrateResult;
+      console.log('[IPC] 搜狐号 auth-data payload 已直接写入账号 session:', routeHydrateResult);
+    } else {
+      const hydrateSourceSession = sourceSession
+        || (browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.session : null);
+      routeHydrateResult = await hydrateSohuhaoAuthAccountSessionFromSourceSession(
+        hydrateSourceSession,
+        targetSession,
+        resolvedAccount.accountId,
+        'route-auth-data-before-open',
+        sourceSession ? 'home-to-content-sender' : 'browser-view-fallback',
+        { forceReplace: true }
+      );
+      console.log('[IPC] 搜狐号 auth-data payload 不足，sender session 预热账号 session 结果:', {
+        payloadHydrateResult,
+        routeHydrateResult
+      });
+    }
 
     if (routeHydrateResult?.hydrated) {
       try {
