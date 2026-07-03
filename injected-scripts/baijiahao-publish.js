@@ -110,6 +110,46 @@
   let smsVerificationObserver = null;
   let smsDetected = false; // 防止重复上报
 
+  // 记录已自动关闭过的"手机号是否可用于验证"弹窗，避免重复点击
+  let phoneVerifyPromptClosed = false;
+
+  /**
+   * 检测并自动关闭"手机号是否可用于验证"确认弹窗
+   * 这是百度的手机号绑定/授权确认弹窗（非安全风控拦截），点「取消」关闭即可继续发布
+   * @param {string} text - 触发节点的文本内容
+   * @returns {boolean} 是否命中并处理了该弹窗（命中后应跳过后续短信/风险判断）
+   */
+  const tryClosePhoneVerifyPrompt = (text) => {
+    // 关键词：手机号 + 验证，覆盖"手机号是否可用于验证""是否将手机号用于验证"等表述
+    const isPhoneVerifyPrompt = /手机号[\s\S]*验证|验证[\s\S]*手机号/.test(text) &&
+                                !text.includes('验证码') &&
+                                !text.includes('短信');
+    if (!isPhoneVerifyPrompt) return false;
+
+    console.log('[百家号发布] 🔔 检测到"手机号是否可用于验证"确认弹窗，尝试自动点击「取消」');
+
+    // 在所有可见弹窗按钮里找「取消」
+    const btns = document.querySelectorAll('.cheetah-modal button, .cheetah-dialog button, .cheetah-modal-wrap button');
+    let cancelBtn = null;
+    for (const btn of btns) {
+      const t = (btn.textContent || '').trim();
+      if (t === '取消' || t === '暂不' || t === '不用了') {
+        cancelBtn = btn;
+        break;
+      }
+    }
+
+    if (cancelBtn) {
+      cancelBtn.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
+      phoneVerifyPromptClosed = true;
+      console.log('[百家号发布] ✅ 已自动关闭手机号验证弹窗，继续发布流程');
+      return true;
+    }
+
+    console.log('[百家号发布] ⚠️ 未找到「取消」按钮，暂不处理（避免误点）');
+    return true; // 已命中该弹窗类型，仍跳过后续暂停逻辑，避免被误判为风险拦截
+  };
+
   /**
    * 检测短信验证弹窗和安全风险提示
    * 使用 MutationObserver 监听页面变化，检测是否出现短信验证或安全风险相关的元素
@@ -138,6 +178,11 @@
           for (const node of mutation.addedNodes) {
             if (node.nodeType === 1) { // Element node
               const text = node.textContent || '';
+
+              // 🔑 优先处理"手机号是否可用于验证"确认弹窗：自动点「取消」关闭，继续发布
+              if (!phoneVerifyPromptClosed && tryClosePhoneVerifyPrompt(text)) {
+                break; // 已处理该弹窗，跳过后续短信/风险判断，不暂停流程
+              }
 
               // 检查是否包含关键字
               const matchedKeyword = keywords.find(keyword => text.includes(keyword));

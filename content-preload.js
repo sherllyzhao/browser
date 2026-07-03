@@ -1122,25 +1122,121 @@ function resolveMaxConcurrentPublishWindows(platformConfig) {
   return DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS;
 }
 
+function normalizePublishAccountId(value) {
+  if (value === undefined || value === null || typeof value === 'object') {
+    return '';
+  }
+  return String(value).trim();
+}
+
+function collectSohuhaoPlatformUidCandidates(element) {
+  return [
+    element?.uid,
+    element?.platformUid,
+    element?.platform_uid,
+    element?.account_info?.uid,
+    element?.accountInfo?.uid,
+    element?.account_info?.platformUid,
+    element?.accountInfo?.platformUid,
+    element?.account_info?.platform_uid,
+    element?.accountInfo?.platform_uid,
+    element?.media_auth?.uid,
+    element?.mediaAuth?.uid,
+    element?.media_auth?.platformUid,
+    element?.mediaAuth?.platformUid
+  ].map(normalizePublishAccountId).filter(Boolean);
+}
+
+function isSohuhaoAccountInfoBackendCandidate(element, id) {
+  const normalizedId = normalizePublishAccountId(id);
+  if (!normalizedId) {
+    return false;
+  }
+  const platformUidCandidates = collectSohuhaoPlatformUidCandidates(element);
+  return platformUidCandidates.length === 0 || !platformUidCandidates.includes(normalizedId);
+}
+
+function resolvePublishBackendAccountId(element, platformFullName) {
+  const backendCandidates = [
+    { path: 'backend_account_id', value: element?.backend_account_id },
+    { path: 'backendAccountId', value: element?.backendAccountId },
+    { path: 'media_auth.id', value: element?.media_auth?.id },
+    { path: 'mediaAuth.id', value: element?.mediaAuth?.id },
+    { path: 'media_auth_id', value: element?.media_auth_id },
+    { path: 'mediaAuthId', value: element?.mediaAuthId }
+  ];
+  const accountInfoCandidates = [
+    { path: 'account_info.id', value: element?.account_info?.id },
+    { path: 'accountInfo.id', value: element?.accountInfo?.id }
+  ];
+  const fallbackCandidates = platformFullName === 'sohuhao' ? [] : [
+    { path: 'dyPlatform.id', value: element?.dyPlatform?.id },
+    { path: 'id', value: element?.id }
+  ];
+  const candidates = platformFullName === 'sohuhao'
+    ? backendCandidates
+    : [...accountInfoCandidates, ...backendCandidates, ...fallbackCandidates];
+
+  for (const candidate of candidates) {
+    const id = normalizePublishAccountId(candidate.value);
+    if (id) {
+      return { id, sourcePath: candidate.path, candidates };
+    }
+  }
+
+  if (platformFullName === 'sohuhao') {
+    for (const candidate of accountInfoCandidates) {
+      const id = normalizePublishAccountId(candidate.value);
+      if (id && isSohuhaoAccountInfoBackendCandidate(element, id)) {
+        return { id, sourcePath: `${candidate.path}:conditional`, candidates: [...backendCandidates, ...accountInfoCandidates] };
+      }
+    }
+  }
+
+  return { id: '', sourcePath: '', candidates };
+}
+
 function buildPublishWindowJob(element, index, total, platformMap, platformFullNameMap, urlMap) {
   const platform = platformMap[element.account_info.media.id];
   const platformFullName = platformFullNameMap[platform];
-  const backendAccountId = String(
-    element?.account_info?.id
-    || element?.accountInfo?.id
-    || element?.media_auth_id
-    || element?.mediaAuthId
-    || element?.dyPlatform?.id
-    || element?.id
-    || ''
-  ).trim();
+  const backendAccountIdResult = resolvePublishBackendAccountId(element, platformFullName);
+  const backendAccountId = backendAccountIdResult.id;
   const publishTarget = detectPublishContentType(element);
   const platformUrls = urlMap[platform] || {};
   const url = platformUrls[publishTarget.contentType] || platformUrls.article || platformUrls.video;
   console.log(`🚀 [${index + 1}/${total}] platform: ${platform}, contentType: ${publishTarget.contentType}, ext: ${publishTarget.extension || 'unknown'}, url: ${url}`);
+  if (platformFullName === 'sohuhao') {
+    console.log('[BrowserAPI] 📋 搜狐号账号ID候选:', {
+      resolvedBackendAccountId: backendAccountId || 'none',
+      sourcePath: backendAccountIdResult.sourcePath || 'none',
+      candidates: backendAccountIdResult.candidates.map(candidate => ({
+        path: candidate.path,
+        value: normalizePublishAccountId(candidate.value) || 'none'
+      })),
+      ignoredFallbacks: {
+        accountInfoId: normalizePublishAccountId(element?.account_info?.id || element?.accountInfo?.id) || 'none',
+        dyPlatformId: normalizePublishAccountId(element?.dyPlatform?.id) || 'none',
+        elementId: normalizePublishAccountId(element?.id) || 'none'
+      },
+      accountName: element?.account_info?.name || element?.accountInfo?.name || element?.account_info?.nickname || element?.accountInfo?.nickname || 'unknown'
+    });
+  }
 
   if (!url) {
     console.error(`❌ [${index + 1}] 未找到发布地址: platform=${platform}, contentType=${publishTarget.contentType}`);
+    return null;
+  }
+
+  if (platformFullName === 'sohuhao' && !backendAccountId && !element.cookies) {
+    console.error('[BrowserAPI] ❌ 搜狐号缺少后台授权记录ID且未携带 cookies，已阻止使用共享 session 打开，避免串号:', {
+      index: index + 1,
+      accountName: element?.account_info?.name || element?.accountInfo?.name || 'unknown',
+      ignoredFallbacks: {
+        accountInfoId: normalizePublishAccountId(element?.account_info?.id || element?.accountInfo?.id) || 'none',
+        dyPlatformId: normalizePublishAccountId(element?.dyPlatform?.id) || 'none',
+        elementId: normalizePublishAccountId(element?.id) || 'none'
+      }
+    });
     return null;
   }
 
@@ -1164,7 +1260,10 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
 
   const shouldUseMultiAccountSession = ENABLE_MULTI_ACCOUNT
     && platformFullName
-    && (element.cookies || (platformFullName === 'shipinhao' && backendAccountId));
+    && (
+      element.cookies
+      || ((platformFullName === 'shipinhao' || platformFullName === 'sohuhao') && backendAccountId)
+    );
 
   if (shouldUseMultiAccountSession) {
     const uniqueSessionId = `${platformFullName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
@@ -1177,6 +1276,8 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
     if (element.cookies) {
       openOptions.sessionData = element.cookies;
       console.log(`[BrowserAPI] 📋 检测到 cookies 数据，共 ${cookiesArray.length} 个`);
+    } else if (platformFullName === 'sohuhao' && backendAccountId) {
+      console.log(`[BrowserAPI] 📋 搜狐号未带后台 cookies，使用账号持久 session / 本地最新缓存兜底: accountId=${sessionAccountId}`);
     } else {
       console.log(`[BrowserAPI] 📋 视频号未带后台 cookies，使用账号持久 session / 本地最新缓存兜底: accountId=${sessionAccountId}`);
     }
@@ -1216,6 +1317,7 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
     openOptions.windowContext = {
       purpose: 'publish',
       platform,
+      accountId: backendAccountId || '',
       contentType: publishTarget.contentType,
       expectedPageUrl: url,
       safeOrigin: publishUrl.origin,
@@ -1227,6 +1329,7 @@ function buildPublishWindowJob(element, index, total, platformMap, platformFullN
     openOptions.windowContext = {
       purpose: 'publish',
       platform,
+      accountId: backendAccountId || '',
       contentType: publishTarget.contentType,
       expectedPageUrl: url,
       safeOrigin: '',
@@ -1733,6 +1836,15 @@ contextBridge.exposeInMainWorld('browserAPI', {
   //       accountId - 账号 ID
   // 返回: { success: true, deletedCount: 10 }
   clearAccountCookies: (platform, accountId) => ipcRenderer.invoke('clear-account-cookies', platform, accountId),
+
+  // 清理授权窗口检测到的账号串号 session/cache
+  // 参数: platform - 平台名称
+  //       accountId - 后台授权记录 ID
+  //       reason - 清理原因
+  clearAccountAuthSession: (platform, accountId, reason) => ipcRenderer.invoke('clear-account-auth-session', platform, accountId, reason),
+
+  // 搜狐号授权窗口重开到账号 session 前，把当前窗口登录 cookie 预热进目标账号 session（不写缓存）
+  prepareSohuhaoAuthAccountSession: (accountId, reason) => ipcRenderer.invoke('prepare-sohuhao-auth-account-session', accountId, reason),
 
   // 手动保存会话数据到后台（开发调试用）
   // 在不关闭窗口的情况下保存最新 cookies 到后台
