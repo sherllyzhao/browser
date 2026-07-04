@@ -24,6 +24,26 @@
         cookiesDomain: 'mp.sohu.com'
     };
 
+    // 🔑 搜狐号登录 Cookie 所在域名（迁移时按这些域名过滤）
+    const SOUHUHAO_SESSION_DOMAINS = ['sohu.com', 'mp.sohu.com'];
+
+    // 读取当前窗口对应的发布数据（若授权是在发布窗口内重新扫码，则能拿到发布账号上下文）
+    const getPublishWindowData = async () => {
+        try {
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.getGlobalData) {
+                return null;
+            }
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) {
+                return null;
+            }
+            return await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+        } catch (err) {
+            console.warn('[搜狐号授权] ⚠️ 读取窗口发布数据失败:', err);
+            return null;
+        }
+    };
+
     // ===========================
     // 防止脚本重复注入
     // ===========================
@@ -82,6 +102,12 @@
         transferId,
         timestamp: Date.now()
     };
+
+    // 缓存发布窗口数据（若存在，说明是在发布窗口内重新授权，后续用于回写对应账号 session）
+    let cachedPublishWindowData = await getPublishWindowData();
+    if (cachedPublishWindowData) {
+        console.log('[搜狐号授权] 📦 已缓存发布窗口数据，后续将用于回写账号 session');
+    }
 
     // ===========================
     // 2. 发送消息到父窗口的辅助函数（使用 common.js）
@@ -293,16 +319,48 @@
                                 // 标记已完成（防止重复发送）
                                 hasProcessed = true;
 
-                                // 🔑 迁移登录 Cookies 到持久化 session
-                                // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
-                                // 这样发布时才能用新授权的账号
+                                // 🔑 迁移登录 Cookies 到发布时使用的 session
+                                // 授权窗口使用临时 session，必须把登录状态写到发布窗口会读取的 session：
+                                //   - 发布窗口用的是账号独立 session：persist:souhuhao_<account_info.id>
+                                //   - 因此优先迁移到该账号 session，发布时才不会掉登录/用错账号
+                                //   - 若没有发布账号上下文（首次独立授权），回退迁移到持久化 session
                                 try {
-                                    console.log('[搜狐号授权] 🔄 开始迁移 Cookies 到持久化 session...');
-                                    const migrateResult = await window.browserAPI.migrateCookiesToPersistent('mp.sohu.com');
-                                    if (migrateResult.success) {
-                                        console.log(`[搜狐号授权] ✅ Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
+                                    const publishData = cachedPublishWindowData || await getPublishWindowData();
+                                    const publishAccountId = publishData?.element?.account_info?.id
+                                        || publishData?.element?.accountInfo?.id
+                                        || '';
+                                    const publishPlatform = publishData?.platform || 'souhuhao';
+
+                                    if (publishAccountId && window.browserAPI?.migrateCookiesToAccountSession) {
+                                        console.log('[搜狐号授权] 🔄 迁移 Cookies 到当前发布账号 session...', {
+                                            publishPlatform,
+                                            publishAccountId,
+                                            domains: SOUHUHAO_SESSION_DOMAINS
+                                        });
+                                        let totalMigrated = 0;
+                                        for (const domain of SOUHUHAO_SESSION_DOMAINS) {
+                                            const migrateResult = await window.browserAPI.migrateCookiesToAccountSession(domain, publishPlatform, String(publishAccountId));
+                                            if (migrateResult.success) {
+                                                totalMigrated += migrateResult.migratedCount || 0;
+                                                console.log(`[搜狐号授权] ✅ ${domain} 已写回当前发布账号 session，迁移 ${migrateResult.migratedCount || 0} 个 cookies`);
+                                            } else {
+                                                console.error(`[搜狐号授权] ⚠️ ${domain} 写回当前发布账号 session 失败:`, migrateResult.error);
+                                            }
+                                        }
+                                        console.log(`[搜狐号授权] ✅ 当前发布账号 session 回写完成，共迁移 ${totalMigrated} 个 cookies`);
                                     } else {
-                                        console.error('[搜狐号授权] ⚠️ Cookies 迁移失败:', migrateResult.error);
+                                        console.log('[搜狐号授权] ℹ️ 未获取到发布账号上下文，回退迁移到持久化 session');
+                                        let totalMigrated = 0;
+                                        for (const domain of SOUHUHAO_SESSION_DOMAINS) {
+                                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                                            if (migrateResult.success) {
+                                                totalMigrated += migrateResult.migratedCount || 0;
+                                                console.log(`[搜狐号授权] ✅ ${domain} Cookies 迁移成功，迁移 ${migrateResult.migratedCount} 个`);
+                                            } else {
+                                                console.error(`[搜狐号授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                                            }
+                                        }
+                                        console.log(`[搜狐号授权] ✅ 多域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
                                     }
                                 } catch (migrateError) {
                                     console.error('[搜狐号授权] ⚠️ Cookies 迁移异常:', migrateError);
