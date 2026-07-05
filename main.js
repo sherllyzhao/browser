@@ -162,7 +162,11 @@ const SOHUHAO_RECENT_AUTH_COOKIE_MIGRATION_TTL_MS = 60 * 60 * 1000;
 let recentSohuhaoPersistentCredentialMigration = null;
 
 function normalizeAccountIdValue(accountId) {
-  if (accountId === undefined || accountId === null) {
+  // 🔑 拒绝数组/对象（与 content-preload.js 的 normalizePublishAccountId 对齐）
+  // 旧版前端 payload 里 element.media_auth_id 是数组（如 [123, 456]），
+  // String() 会把它变成 "123,456"，导致多账号发布时所有窗口共享同一个
+  // backendAccountId → 会话缓存/保存接口串号（客户号恢复成别人的登录）
+  if (accountId === undefined || accountId === null || typeof accountId === 'object') {
     return '';
   }
   return String(accountId).trim();

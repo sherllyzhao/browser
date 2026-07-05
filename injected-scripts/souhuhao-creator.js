@@ -186,7 +186,8 @@
                 'element.nickname',
                 'element.nickName',
                 'element.name',
-                'element.title',
+                // ⚠️ 不要加 'element.title'：发布数据里 title 是文章标题，不是账号名，
+                // 会导致身份校验误判"账号不匹配"而阻止正常授权
                 'element.account_info.account_name',
                 'element.accountInfo.accountName',
                 'element.account_info.nickname',
