@@ -421,6 +421,19 @@
             };
         }
 
+        // 🔑 把授权数据持久化给新窗口：三次延时重发可能全部早于新窗口监听器注册
+        // （新窗口加载慢/落在登录页需重新扫码时必然错过），导致 shinfo 上报被跳过。
+        // 新窗口脚本注入时会读取此缓存自愈（见脚本尾部"待处理授权数据自愈"逻辑）
+        try {
+            await window.browserAPI.setGlobalData(
+                `sohuhao_pending_auth_data_window_${openResult.windowId}`,
+                typeof messageData === 'string' ? messageData : JSON.stringify(messageData)
+            );
+            console.log('[搜狐号授权] 📦 授权数据已缓存给新窗口:', openResult.windowId);
+        } catch (persistErr) {
+            console.warn('[搜狐号授权] ⚠️ 缓存授权数据给新窗口失败:', persistErr.message);
+        }
+
         if (window.browserAPI.sendToOtherPage) {
             [3000, 6000, 9000].forEach(delayMs => {
                 setTimeout(() => {
@@ -507,6 +520,28 @@
                         // 更新全局变量
                         if (message.data) {
                             const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+                            await processSohuhaoAuthData(messageData);
+                        }
+
+                        // 重置处理标志（无论成功或失败）
+                        isProcessing = false;
+                        console.log('[搜狐号授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+                    }
+                } catch (error) {
+                    console.error('[搜狐号授权] ❌ 消息处理出错:', error);
+                    isProcessing = false;
+                }
+            });
+
+            console.log('[搜狐号授权] ✅ 消息监听器注册成功');
+        }
+    }
+
+    // ===========================
+    // 5.5 授权数据处理主流程（消息路径与"待处理授权数据自愈"路径共用）
+    // 读写外层闭包的 isProcessing / hasProcessed 标志
+    // ===========================
+    async function processSohuhaoAuthData(messageData) {
                             window.__AUTH_DATA__ = {
                                 ...window.__AUTH_DATA__,
                                 message: messageData,
@@ -523,6 +558,27 @@
                             }
 
                             const currentAccount = localStorage.getItem('currentAccount') ? JSON.parse(localStorage.getItem('currentAccount')) : null;
+
+                            // 🔑 未登录（如 relaunch 后新窗口落在登录页）：缓存授权数据后退出，
+                            // 等用户登录、页面跳转脚本重新注入时由"自愈"逻辑自动继续上报。
+                            // 此前会带着 null 硬闯后续流程（TypeError 被外层 catch 吞掉），shinfo 静默丢失
+                            if (!currentAccount) {
+                                try {
+                                    const myWindowId = await window.browserAPI.getWindowId();
+                                    if (myWindowId && window.browserAPI.setGlobalData) {
+                                        await window.browserAPI.setGlobalData(
+                                            `sohuhao_pending_auth_data_window_${myWindowId}`,
+                                            typeof messageData === 'string' ? messageData : JSON.stringify(messageData)
+                                        );
+                                    }
+                                    console.warn('[搜狐号授权] ⚠️ 当前未登录，已缓存授权数据，登录后将自动继续上报 shinfo');
+                                } catch (cacheErr) {
+                                    console.warn('[搜狐号授权] ⚠️ 缓存待处理授权数据失败:', cacheErr.message);
+                                }
+                                isProcessing = false;
+                                return;
+                            }
+
                             let authIdentityCheck = null;
                             try {
                                 authIdentityCheck = assertSohuhaoAuthAccountMatches(messageData, currentAccount);
@@ -605,16 +661,23 @@
                             const statisticsData = statisticsRes.data;
                             console.log("🚀 ~  ~ statisticsData: ", statisticsData); */
 
-                            await delay(1000);
-                            const eleClass = await waitForElement('.read-info-info-item:nth-of-type(2) .number-icon');
-                            console.log("🚀 ~  ~ eleClass: ", eleClass);
-                            const eleClassList = eleClass.classList;
+                            // 🔑 作品数元素获取降级：拿不到不阻断 shinfo 上报
+                            // （此前 waitForElement 超时会 throw 被外层 catch 吞掉，
+                            // 造成"授权成功但后台没保存 cookies"的间歇性问题）
                             let videoCount = 0;
-                            eleClassList.forEach(item => {
-                                if (item.startsWith('mp-iconnumber_')) {
-                                    videoCount = parseInt(item.replace('mp-iconnumber_', ''));
-                                }
-                            });
+                            try {
+                                await delay(1000);
+                                const eleClass = await waitForElement('.read-info-info-item:nth-of-type(2) .number-icon', 15000);
+                                console.log("🚀 ~  ~ eleClass: ", eleClass);
+                                const eleClassList = eleClass.classList;
+                                eleClassList.forEach(item => {
+                                    if (item.startsWith('mp-iconnumber_')) {
+                                        videoCount = parseInt(item.replace('mp-iconnumber_', ''));
+                                    }
+                                });
+                            } catch (videoCountError) {
+                                console.warn('[搜狐号授权] ⚠️ 获取作品数元素失败，作品数按 0 上报:', videoCountError && videoCountError.message);
+                            }
 
                             const scanData = {
                                 data: JSON.stringify({
@@ -679,6 +742,14 @@
 
                                 // 标记已完成（防止重复发送）
                                 hasProcessed = true;
+
+                                // 🔑 清理自愈缓存，避免下次页面注入重复上报
+                                try {
+                                    const myWindowId = await window.browserAPI.getWindowId();
+                                    if (myWindowId && window.browserAPI.removeGlobalData) {
+                                        await window.browserAPI.removeGlobalData(`sohuhao_pending_auth_data_window_${myWindowId}`);
+                                    }
+                                } catch (_) {}
 
                                 // 🔑 迁移登录 Cookies 到持久化 session
                                 // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
@@ -752,20 +823,6 @@
                             } else {
                                 throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                             }
-                        }
-
-                        // 重置处理标志（无论成功或失败）
-                        isProcessing = false;
-                        console.log('[搜狐号授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
-                    }
-                } catch (error) {
-                    console.error('[搜狐号授权] ❌ 消息处理出错:', error);
-                    isProcessing = false;
-                }
-            });
-
-            console.log('[搜狐号授权] ✅ 消息监听器注册成功');
-        }
     }
 
     // 自动执行授权流程
@@ -777,6 +834,48 @@
     // 页面加载完成后向父窗口发送消息
     console.log('[搜狐号授权] 页面加载完成，发送 页面加载完成 消息');
     sendMessageToParent('页面加载完成');
+
+    // ===========================
+    // 6.5 待处理授权数据自愈
+    // 场景：relaunch 新窗口错过三次 auth-data 重发、或收到消息时尚未登录。
+    // 授权数据已缓存在 globalData，本次注入若已登录则自动继续 shinfo 上报。
+    // ===========================
+    (async () => {
+        const nativeDelay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        try {
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.getGlobalData) return;
+            const myWindowId = await window.browserAPI.getWindowId();
+            if (!myWindowId || myWindowId === 'main') return;
+            const pendingKey = `sohuhao_pending_auth_data_window_${myWindowId}`;
+            const pendingRaw = await window.browserAPI.getGlobalData(pendingKey);
+            if (!pendingRaw) return;
+
+            // currentAccount 由页面框架异步写入，轮询等待最多 20 秒
+            let waitedMs = 0;
+            while (!localStorage.getItem('currentAccount') && waitedMs < 20000) {
+                await nativeDelay(1000);
+                waitedMs += 1000;
+            }
+            if (!localStorage.getItem('currentAccount')) {
+                console.log('[搜狐号授权] ⏳ 检测到待处理授权数据但尚未登录，等待登录后页面跳转自动继续');
+                return;
+            }
+            if (isProcessing || hasProcessed) return;
+
+            console.log('[搜狐号授权] 🔁 检测到待处理授权数据且已登录，自动继续授权上报 shinfo');
+            isProcessing = true;
+            let pendingData = pendingRaw;
+            if (typeof pendingRaw === 'string') {
+                try { pendingData = JSON.parse(pendingRaw); } catch (_) { pendingData = pendingRaw; }
+            }
+            await processSohuhaoAuthData(pendingData);
+            isProcessing = false;
+            console.log('[搜狐号授权] 🔁 自愈处理完成, hasProcessed=', hasProcessed);
+        } catch (pendingErr) {
+            isProcessing = false;
+            console.error('[搜狐号授权] ❌ 待处理授权数据自愈失败:', pendingErr);
+        }
+    })();
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本初始化完成');

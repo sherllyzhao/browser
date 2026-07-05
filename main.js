@@ -1736,20 +1736,48 @@ function hasRequiredTengxunhaoCredentialCookies(cookies = []) {
   };
 }
 
+// 🔑 判断搜狐凭证 cookie 是否已过期：
+// 1. cookie 层 expirationDate 已过去（无该字段的会话 cookie 视为未过期）
+// 2. ppinf 值内嵌过期时间（格式 "2|签发|过期|payload"）——搜狐服务端按值内时间校验，
+//    即使恢复时把 cookie 层续命，服务端也会判过期并清除，因此必须解析值内时间
+function isSohuhaoCredentialCookieExpired(cookie, nowSeconds) {
+  const expirationDate = Number(cookie && cookie.expirationDate);
+  if (Number.isFinite(expirationDate) && expirationDate > 0 && expirationDate <= nowSeconds) {
+    return true;
+  }
+  if (cookie && cookie.name === 'ppinf' && typeof cookie.value === 'string') {
+    const parts = cookie.value.split('|');
+    if (parts.length >= 3) {
+      const embeddedExpires = Number(parts[2]);
+      if (Number.isFinite(embeddedExpires) && embeddedExpires > 0 && embeddedExpires <= nowSeconds) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+const SOHUHAO_CREDENTIAL_COOKIE_NAMES = ['sct', 'passport', 'ppinf', 'pprdig', 'ppmdig'];
+
 function summarizeSohuhaoCredentialCookies(cookies = []) {
-  const names = new Set((cookies || [])
-    .filter(cookie => cookie && cookie.value)
-    .map(cookie => cookie.name));
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const names = new Set();
+  const expiredNames = new Set();
+  for (const cookie of (cookies || [])) {
+    if (!cookie || !cookie.value) continue;
+    // 🔑 过期的凭证 cookie 不计入有效凭证（实测后台旧快照 ppinf/pprdig 早已过期，
+    // 若只按名字判定会把"名存实亡"的快照当有效会话，压过本地最新授权兜底）
+    if (SOHUHAO_CREDENTIAL_COOKIE_NAMES.includes(cookie.name) && isSohuhaoCredentialCookieExpired(cookie, nowSeconds)) {
+      expiredNames.add(cookie.name);
+      continue;
+    }
+    names.add(cookie.name);
+  }
   const hasPpinf = names.has('ppinf');
   const hasPprdig = names.has('pprdig');
   return {
-    foundNames: Array.from(names).filter(name => [
-      'sct',
-      'passport',
-      'ppinf',
-      'pprdig',
-      'ppmdig'
-    ].includes(name)).sort(),
+    foundNames: Array.from(names).filter(name => SOHUHAO_CREDENTIAL_COOKIE_NAMES.includes(name)).sort(),
+    expiredNames: Array.from(expiredNames).sort(),
     hasSct: names.has('sct'),
     hasPpinf,
     hasPprdig,
@@ -1762,7 +1790,11 @@ function summarizeSohuhaoCredentialCookies(cookies = []) {
 function hasRequiredSohuhaoCredentialCookies(cookies = []) {
   const summary = summarizeSohuhaoCredentialCookies(cookies);
   return {
-    valid: summary.hasSct || summary.hasPpinfPprdigPair || summary.hasPpmdig,
+    // 🔑 ppmdig 不能单独作为登录凭证：搜狐登出后 sct/passport/ppinf/pprdig 都会被清，
+    // 但 ppmdig（摘要签名）会残留。若把"只有 ppmdig"判为有效，登出快照会被当成
+    // 登录态保存/恢复，造成"重新授权也救不回来"的掉登录循环（实测登出态快照
+    // 仅剩 SUV/tgw_l7_route/ppmdig 等访客 cookie，没有任何真实凭证）。
+    valid: summary.hasSct || summary.hasPpinfPprdigPair,
     summary
   };
 }
@@ -1817,7 +1849,7 @@ async function hasValidLoginCookies(windowSession, platform) {
         console.log('[hasValidLoginCookies] ✅ 搜狐号本地 session 含会话凭证:', sohuCredential.summary.foundNames);
         return true;
       }
-      console.log('[hasValidLoginCookies] ⚠️ 搜狐号本地 session 凭证不完整:', sohuCredential.summary.foundNames, '至少需要 sct、ppmdig 或 ppinf+pprdig');
+      console.log('[hasValidLoginCookies] ⚠️ 搜狐号本地 session 凭证不完整:', sohuCredential.summary.foundNames, '已过期凭证:', sohuCredential.summary.expiredNames, '至少需要 sct、ppmdig 或 ppinf+pprdig');
       return false;
     }
     const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
@@ -1858,7 +1890,7 @@ function sessionDataHasValidLoginCookies(sessionData, platform) {
       console.log('[sessionDataHasValidLoginCookies] ✅ 搜狐号 sessionData 含会话凭证:', sohuCredential.summary.foundNames);
       return true;
     }
-    console.log('[sessionDataHasValidLoginCookies] ⚠️ 搜狐号 sessionData 凭证不完整:', sohuCredential.summary.foundNames, '至少需要 sct、ppmdig 或 ppinf+pprdig');
+    console.log('[sessionDataHasValidLoginCookies] ⚠️ 搜狐号 sessionData 凭证不完整:', sohuCredential.summary.foundNames, '已过期凭证:', sohuCredential.summary.expiredNames, '至少需要 sct 或 ppinf+pprdig（ppmdig 为登出残留，不算凭证；过期凭证已剔除）');
     return false;
   }
   const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
@@ -2830,7 +2862,10 @@ function getExpectedSohuhaoPublishIdentity(publishData) {
       element?.nickname,
       element?.nickName,
       element?.name,
-      element?.title,
+      // ⚠️ 不要加 element?.title：发布数据里 title 是文章/视频标题，不是账号名。
+      // GEO 等入口的 element 没有顶层账号名字段，会一路落到 title（如"建站通介绍"），
+      // 与实际登录昵称必然不等 → 守卫误判串号 → 清空刚恢复的登录态 → 必掉登录。
+      // 账号名应取 account_info.nickname/title（account_info 下的 title 才是账号名语义）
       accountInfo?.account_name,
       accountInfo?.accountName,
       accountInfo?.nickname,
@@ -3352,6 +3387,14 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
         sessionData: incomingSessionData,
         source: 'incoming-session-sohuhao-credentials'
       };
+    }
+    if (!incomingSohuCredential.valid && incomingCookies.length > 0) {
+      console.warn('[Window Manager] ⚠️ 后台搜狐号会话凭证无效（过期凭证已剔除），不优先使用后台会话:', {
+        incomingFoundNames: incomingSohuCredential.summary.foundNames,
+        incomingExpiredNames: incomingSohuCredential.summary.expiredNames,
+        cachedFoundNames: cachedSohuCredential.summary.foundNames,
+        cachedExpiredNames: cachedSohuCredential.summary.expiredNames
+      });
     }
   }
 
@@ -12260,6 +12303,23 @@ async function openManagedChildWindow(url, options = {}) {
               if (isMultiAccountMode) {
                 const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
                 restoreDiag.identityMatch = identityMatch;
+                // 🔑 登录凭证值签名比对：身份 cookie（P_INFO/SUB/d_c0 等）跨登录不变，
+                // 同一账号重新授权后 identityMatch 仍为 true，会把新授权快照挡在门外，
+                // 导致本地过期分区永远无法被新登录覆盖（刚授权完发布就掉登录）。
+                // 登录凭证 cookie（sessionid 等）每次登录都会变：签名不同 = 发生过新登录 → 必须恢复。
+                let incomingLoginSignatureDiffers = false;
+                try {
+                  const loginSignatureNames = (config.platformLoginCookies && config.platformLoginCookies[normalizePlatformName(options.platform)]) || [];
+                  if (incomingHasLogin && loginSignatureNames.length > 0) {
+                    const localCookiesForSignature = await windowSession.cookies.get({});
+                    const localLoginSignature = buildCookieValueSignature(localCookiesForSignature, loginSignatureNames);
+                    const incomingLoginSignature = buildCookieValueSignature(extractSessionCookiesArray(parseSessionData(effectiveSessionData)) || [], loginSignatureNames);
+                    incomingLoginSignatureDiffers = !!incomingLoginSignature && incomingLoginSignature !== localLoginSignature;
+                    restoreDiag.loginSignatureDiffers = incomingLoginSignatureDiffers;
+                  }
+                } catch (signatureErr) {
+                  console.warn('[Window Manager] ⚠️ 登录凭证签名比对失败，按原逻辑处理:', signatureErr.message);
+                }
                 if (identityMatch === false) {
                   console.log(`[Window Manager] 🔄 多账号模式检测到本地 session 与后台 sessionData 身份不一致，走清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
                 } else if (
@@ -12270,10 +12330,12 @@ async function openManagedChildWindow(url, options = {}) {
                   console.log(`[Window Manager] 🔄 搜狐号多账号无法证明本地 session 属于当前账号，使用账号会话快照覆盖 (platform=${options.platform}, accountId=${options.accountId}, source=${effectiveSessionSource})`);
                 } else if (shouldForceIncomingSessionRestore) {
                   console.log(`[Window Manager] 🔄 多账号模式比较结果选择后台/传入会话 (${effectiveSessionSource})，不跳过 sessionData 恢复`);
+                } else if (incomingLoginSignatureDiffers) {
+                  console.log(`[Window Manager] 🔄 多账号模式检测到登录凭证签名与本地不同（发生过新登录/重新授权），走清空恢复 (platform=${options.platform}, accountId=${options.accountId}, source=${effectiveSessionSource})`);
                 } else {
                   shouldSkipSessionRestore = true;
                   const matchDesc = identityMatch === true ? '身份匹配' : '身份无法验证（保守保留本地）';
-                  console.log(`[Window Manager] 🛡️ 多账号模式本地登录态有效且${matchDesc}，跳过 sessionData 清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
+                  console.log(`[Window Manager] 🛡️ 多账号模式本地登录态有效且${matchDesc}（登录凭证签名一致），跳过 sessionData 清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
                 }
               } else {
                 const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
@@ -15553,6 +15615,28 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
   if (platformCookies.length === 0) {
     console.log('[Save Session] ⚠️ 未找到平台相关 cookies，跳过保存');
     return { success: false, error: '未找到平台相关 cookies' };
+  }
+
+  // 🛡️ 死登录不回存：窗口 session 里没有该平台的登录凭证 cookie（如掉登录后被平台清掉），
+  // 说明当前是登出/失效状态。此时若继续保存，会把死状态写进本地会话缓存（时间戳最新）
+  // 并 POST 覆盖后台刚授权的新快照，造成"重新授权也救不回来"的毒化循环。
+  const saveGuardPlatform = normalizePlatformName(accountInfo.platform);
+  if (saveGuardPlatform === 'sohuhao') {
+    // 搜狐特化：登出后 ppmdig 仍残留，名单任一命中会被穿透，必须用严格凭证口径
+    const sohuSaveCredential = hasRequiredSohuhaoCredentialCookies(platformCookies);
+    if (!sohuSaveCredential.valid) {
+      console.warn(`[Save Session] 🛡️ 搜狐号窗口 session 缺少真实会话凭证（找到: ${sohuSaveCredential.summary.foundNames.join(', ') || '无'}，需要 sct 或 ppinf+pprdig），判定为登出状态，跳过保存，避免死 cookies 覆盖后台/本地缓存 (accountId=${accountInfo.accountId})`);
+      return { success: false, error: '窗口登录态无效，跳过保存防止污染' };
+    }
+  } else {
+    const saveGuardLoginNames = (config.platformLoginCookies && config.platformLoginCookies[saveGuardPlatform]) || [];
+    if (saveGuardLoginNames.length > 0) {
+      const hasLoginCredential = platformCookies.some(cookie => cookie.value && saveGuardLoginNames.includes(cookie.name));
+      if (!hasLoginCredential) {
+        console.warn(`[Save Session] 🛡️ 窗口 session 缺少登录凭证 cookie（期望任一: ${saveGuardLoginNames.join(', ')}），判定为登出状态，跳过保存，避免死 cookies 覆盖后台/本地缓存 (platform=${accountInfo.platform}, accountId=${accountInfo.accountId})`);
+        return { success: false, error: '窗口登录态无效，跳过保存防止污染' };
+      }
+    }
   }
 
   let cookiesArray = platformCookies.map(cookie => ({
