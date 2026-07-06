@@ -169,6 +169,38 @@
         }).join('');
     }
 
+    // 🔑 兜底：本地候选全部落空时，跨域调 mp.sina.com.cn 用户信息接口实时获取 uid
+    // card.weibo.com 跨域受 CORS 限制，走主进程 proxyFetch（携带本窗口 session 的 cookies）
+    // 授权脚本 xinlang-creator.js 就是用这个接口拿 uid 的，返回结构 data.userInfo.uid
+    async function fetchXinlangUidFromBaseinfo() {
+        try {
+            if (!window.browserAPI?.proxyFetch) {
+                console.warn('[新浪发布] ⚠️ proxyFetch 不可用，无法接口兜底获取 uid');
+                return '';
+            }
+            const result = await window.browserAPI.proxyFetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
+            const uid = (result?.success && result?.ok)
+                ? String(result?.data?.data?.userInfo?.uid || '').trim()
+                : '';
+            if (/^\d+$/.test(uid)) {
+                console.log('[新浪发布] ✅ 已从 getbaseinfo 接口兜底获取图片接口 uid');
+                try { localStorage.setItem('uid', uid); } catch (_) {}
+                return uid;
+            }
+            console.warn('[新浪发布] ⚠️ getbaseinfo 接口未返回有效 uid，疑似登录态失效:', {
+                status: result?.status,
+                code: result?.data?.code,
+                msg: result?.data?.msg
+            });
+        } catch (error) {
+            console.warn('[新浪发布] ⚠️ getbaseinfo 接口兜底获取 uid 异常:', error?.message || error);
+        }
+        return '';
+    }
+
     async function resolveXinlangUploadUid(dataObj) {
         const candidates = [
             dataObj?.uid,
@@ -199,12 +231,17 @@
             console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
         }
 
-        const uid = candidates
+        let uid = candidates
             .map(value => String(value || '').trim())
             .find(value => /^\d+$/.test(value));
 
         if (!uid) {
-            throw new Error('未获取到新浪图片接口 uid');
+            // 本地候选全部落空（发布数据没带 uid、$CONFIG 未注入、账号元数据缺失），走接口实时兜底
+            uid = await fetchXinlangUidFromBaseinfo();
+        }
+
+        if (!uid) {
+            throw new Error('未获取到新浪图片接口 uid（接口兜底也失败，疑似登录态失效，请重新授权）');
         }
 
         return uid;

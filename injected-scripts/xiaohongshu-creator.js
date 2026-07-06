@@ -251,5 +251,61 @@
     console.log('  - sendAuthCode(code): 发送授权码');
     console.log('═══════════════════════════════════════');
 
+    // ===========================
+    // 7. 授权登录守望
+    // 场景：授权窗口打开 /new/home 时本脚本已注入并置 __DOUYIN_SCRIPT_LOADED__；
+    // 未登录时小红书走 SPA 路由跳到 /login，用户登录后 SPA 跳回 /new/home，
+    // 脚本重注入会被防重标志挡住 return，而 auth-data 已在未登录时消费失败，
+    // 父页面只在收到『页面加载完成』时才发 auth-data，授权流程就此卡死。
+    // 这里监测「经过登录页 → 回到业务页」后 reload 一次，让脚本干净地重新注入：
+    // 重注入后重新发送『页面加载完成』，父页面会重发 auth-data 继续授权。
+    // 用业务页白名单而非「离开登录页」做条件，避免验证码等登录中间页误触发刷新。
+    // 整页跳转场景下本 window 连同定时器一起销毁，不会产生副作用。
+    // ===========================
+    (function watchXhsAuthLoginRecovery() {
+        if (window.__xhsAuthLoginRecoveryWatcher__) {
+            return;
+        }
+        const isOnXhsLoginPage = () => {
+            try {
+                const url = new URL(window.location.href);
+                return url.hostname === 'creator.xiaohongshu.com' && url.pathname.startsWith('/login');
+            } catch (_) {
+                return String(window.location.href || '').includes('creator.xiaohongshu.com/login');
+            }
+        };
+        const isOnXhsBusinessPage = () => {
+            try {
+                const url = new URL(window.location.href);
+                return url.hostname === 'creator.xiaohongshu.com' && url.pathname.startsWith('/new/home');
+            } catch (_) {
+                return false;
+            }
+        };
+
+        let passedLoginPage = isOnXhsLoginPage();
+        window.__xhsAuthLoginRecoveryWatcher__ = setInterval(() => {
+            if (hasProcessed) {
+                // 授权已完成，停止守望，避免授权成功后的页面跳转误触发 reload
+                clearInterval(window.__xhsAuthLoginRecoveryWatcher__);
+                window.__xhsAuthLoginRecoveryWatcher__ = null;
+                return;
+            }
+            if (isOnXhsLoginPage()) {
+                if (!passedLoginPage) {
+                    passedLoginPage = true;
+                    console.log('[小红书授权] 👀 检测到 SPA 跳转到登录页，等待用户登录后自动刷新继续授权');
+                }
+                return;
+            }
+            if (passedLoginPage && isOnXhsBusinessPage()) {
+                clearInterval(window.__xhsAuthLoginRecoveryWatcher__);
+                window.__xhsAuthLoginRecoveryWatcher__ = null;
+                console.log('[小红书授权] 🔄 检测到已登录并回到业务页（SPA 跳转），刷新页面让授权脚本重新注入继续授权');
+                window.location.reload();
+            }
+        }, 1000);
+    })();
+
 })();
 
