@@ -463,13 +463,57 @@
             return false;
         }
 
-        const message = '搜狐号登录态失效，请重新授权后再发布';
-        console.warn(`[搜狐号发布] 🚫 当前位于登录页，停止发布流程，source=${source}, url=${window.location.href}`);
+        // 🔑 检测到登录页：不上报失败、不关窗，窗口停在登录页等用户手动登录。
+        // 发布数据保留在 publish_data_window_${windowId}（发布完成后才清理），
+        // 登录成功跳回发布页后脚本重新注入，会自动读取数据继续发布；
+        // 主进程检测「登录页 → 业务页」导航后会自动保存新登录态到后台（publish-relogin-save）。
+        console.warn(`[搜狐号发布] 🔐 检测到登录页，暂停发布流程等待用户手动登录，source=${source}, url=${window.location.href}`);
         if (typeof hideOperationBanner === 'function') {
             hideOperationBanner();
         }
-        await failPublishAndClose(dataObj, message, `${message}（检测到登录页）`);
+        showLoginWaitTip();
+        watchLoginRecovery();
         return true;
+    }
+
+    // 登录等待提示条：fixed 顶部 + pointer-events:none，不遮挡、不拦截登录表单操作
+    function showLoginWaitTip() {
+        try {
+            if (document.getElementById('__sohu_login_wait_tip__')) {
+                return;
+            }
+            const tip = document.createElement('div');
+            tip.id = '__sohu_login_wait_tip__';
+            tip.textContent = '搜狐号登录已失效，请在本窗口重新登录，登录成功后将自动继续发布';
+            tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#fff7e6;color:#d46b08;border-bottom:1px solid #ffd591;font-size:14px;font-weight:600;text-align:center;pointer-events:none;';
+            (document.body || document.documentElement).appendChild(tip);
+        } catch (e) {
+            console.warn('[搜狐号发布] ⚠️ 显示登录提示条失败:', e.message);
+        }
+    }
+
+    // 🔑 监听登录恢复：SPA 路由跳离登录页时脚本重新注入会被 __SH_SCRIPT_LOADED__ 防重挡住，
+    // 这里 reload 一次让脚本干净地重新注入，从 globalData 恢复发布数据继续发布。
+    // 用业务页白名单而非「离开登录页」做条件，避免短信验证等登录中间页误触发刷新打断用户。
+    // 整页跳转场景下本 window 连同定时器一起销毁，不会产生副作用。
+    function watchLoginRecovery() {
+        if (window.__sohuLoginRecoveryWatcher__) {
+            return;
+        }
+        console.log('[搜狐号发布] 👀 开始监听登录恢复，用户登录成功后将自动刷新继续发布');
+        window.__sohuLoginRecoveryWatcher__ = setInterval(() => {
+            let onBusinessPage = false;
+            try {
+                const url = new URL(window.location.href);
+                onBusinessPage = url.hostname === 'mp.sohu.com' && url.pathname.startsWith('/mpfe/v4/contentManagement');
+            } catch (_) {}
+            if (onBusinessPage) {
+                clearInterval(window.__sohuLoginRecoveryWatcher__);
+                window.__sohuLoginRecoveryWatcher__ = null;
+                console.log('[搜狐号发布] 🔄 检测到已登录并进入业务页（用户已重新登录），刷新页面以继续发布流程');
+                window.location.reload();
+            }
+        }, 1000);
     }
 
     function readPublishFeedbackText() {
@@ -552,6 +596,12 @@
             } */
 
             setTimeout(async () => {
+                // 🔑 延迟窗口内页面可能被搜狐弹回登录页，真正开始填表前再确认一次
+                if (await stopIfLoginPage(dataObj, 'fillFormData-delayed')) {
+                    fillFormRunning = false;
+                    return;
+                }
+
                 // 标题（带重试和验证）
                 try {
                     await retryOperation(async () => {
