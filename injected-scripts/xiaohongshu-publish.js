@@ -219,6 +219,11 @@ if (location.search.includes("published=true")) {
                             return;
                         }
 
+                        // 🔑 掉登录被弹回登录页时不消费发布数据，停窗等待用户手动登录后 reload 续发
+                        if (stopIfXhsLoginPage("message-entry")) {
+                            return;
+                        }
+
                         // 标记为正在处理
                         isProcessing = true;
                         console.log("[小红书发布] 📝 开始处理视频 ID:", videoId);
@@ -347,6 +352,11 @@ if (location.search.includes("published=true")) {
                     // 这样如果登录跳转后跳回来，数据仍然可用
                     // 使用 hasProcessed 标记防止重复处理
                     console.log("[小红书发布] 📝 保留 publish_data_window_" + windowId + " 数据，待发布完成后清理");
+
+                    // 🔑 掉登录被弹回登录页时不消费发布数据，停窗等待用户手动登录后 reload 续发
+                    if (stopIfXhsLoginPage("restore-entry")) {
+                        return;
+                    }
 
                     // 标记为正在处理
                     isProcessing = true;
@@ -724,6 +734,84 @@ if (location.search.includes("published=true")) {
         }
     }
 
+    // ===========================
+    // 🔐 登录页守卫：掉登录时小红书 SPA 路由跳到 /login，
+    // 发布流程必须停在登录页等用户手动登录，禁止直接上报失败关窗。
+    // 登录成功回到发布页后 reload 一次（绕过 __XHS_SCRIPT_LOADED__ 防重），
+    // 脚本重新注入后从 publish_data_window_${windowId} 恢复数据继续发布；
+    // 主进程「登录页→业务页」导航检测会自动保存新登录态到后台。
+    // ===========================
+    function isXhsLoginPage() {
+        try {
+            const url = new URL(window.location.href);
+            return url.hostname === "creator.xiaohongshu.com" && url.pathname.startsWith("/login");
+        } catch (_) {
+            return String(window.location.href || "").includes("creator.xiaohongshu.com/login");
+        }
+    }
+
+    // 登录等待提示条：fixed 顶部 + pointer-events:none，不遮挡、不拦截登录表单操作
+    function showXhsLoginWaitTip() {
+        try {
+            if (document.getElementById("__xhs_login_wait_tip__")) {
+                return;
+            }
+            const tip = document.createElement("div");
+            tip.id = "__xhs_login_wait_tip__";
+            tip.textContent = "小红书登录已失效，请在本窗口重新登录，登录成功后将自动继续发布";
+            tip.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#fff7e6;color:#d46b08;border-bottom:1px solid #ffd591;font-size:14px;font-weight:600;text-align:center;pointer-events:none;";
+            (document.body || document.documentElement).appendChild(tip);
+        } catch (e) {
+            console.warn("[小红书发布] ⚠️ 显示登录提示条失败:", e.message);
+        }
+    }
+
+    // 返回 true 表示当前在登录页，调用方应停止发布流程（不上报失败、不关窗）
+    function stopIfXhsLoginPage(source) {
+        if (!isXhsLoginPage()) {
+            return false;
+        }
+        console.warn(`[小红书发布] 🔐 检测到登录页，暂停发布流程等待用户手动登录，source=${source}, url=${window.location.href}`);
+        if (typeof hideOperationBanner === "function") {
+            hideOperationBanner();
+        }
+        showXhsLoginWaitTip();
+        watchXhsLoginRecovery();
+        return true;
+    }
+
+    // 🔑 监听登录恢复：SPA 跳回发布页时脚本重注入会被 __XHS_SCRIPT_LOADED__ 防重挡住，
+    // 这里 reload 一次让脚本干净地重新注入续发。
+    // 用发布页白名单而非「离开登录页」做条件，避免验证码等登录中间页误触发刷新打断用户。
+    function watchXhsLoginRecovery() {
+        if (window.__xhsLoginRecoveryWatcher__) {
+            return;
+        }
+        console.log("[小红书发布] 👀 开始监听登录恢复，用户登录成功后将自动刷新继续发布");
+        window.__xhsLoginRecoveryWatcher__ = setInterval(() => {
+            let onPublishPage = false;
+            try {
+                const url = new URL(window.location.href);
+                onPublishPage = url.hostname === "creator.xiaohongshu.com" && url.pathname.startsWith("/publish/publish");
+            } catch (_) {}
+            if (onPublishPage) {
+                clearInterval(window.__xhsLoginRecoveryWatcher__);
+                window.__xhsLoginRecoveryWatcher__ = null;
+                console.log("[小红书发布] 🔄 检测到已登录并回到发布页（用户已重新登录），刷新页面以继续发布流程");
+                window.location.reload();
+            }
+        }, 1000);
+    }
+
+    // 🔐 全程守望：填表/上传任意时刻被弹回登录页都能接住（幂等，重注入不会重复启动）
+    if (!window.__xhsLoginKickoutWatcher__) {
+        window.__xhsLoginKickoutWatcher__ = setInterval(() => {
+            if (isXhsLoginPage() && !window.__xhsLoginRecoveryWatcher__) {
+                stopIfXhsLoginPage("kickout-watcher");
+            }
+        }, 1500);
+    }
+
     // 填写表单数据
     async function fillFormData(dataObj) {
         // 防止重复执行
@@ -731,6 +819,12 @@ if (location.search.includes("published=true")) {
             return;
         }
         fillFormRunning = true;
+
+        // 🔑 掉登录被弹回登录页时不再继续填表，停窗等待用户手动登录
+        if (stopIfXhsLoginPage("fillFormData")) {
+            fillFormRunning = false;
+            return;
+        }
 
         // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
         const executeAllFormSteps = async () => {
@@ -1015,6 +1109,10 @@ if (location.search.includes("published=true")) {
             console.log('[小红书发布] ✅ 所有表单填写完成');
         } catch (finalError) {
             console.error('[小红书发布] ❌ 填表流程失败（外层重试2次后）:', finalError);
+            // 🔑 失败原因若是被弹回登录页，不上报失败、不关窗，停窗等待用户手动登录续发
+            if (stopIfXhsLoginPage("fillFormData-final-catch")) {
+                return;
+            }
             stopErrorListener?.();
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {

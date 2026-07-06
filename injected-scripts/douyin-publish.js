@@ -345,6 +345,58 @@ function isDouyinLoginExpiredMessage(message) {
   return loginExpiredKeywords.some(keyword => text.includes(keyword));
 }
 
+// ===========================
+// 🔐 登录过期停窗等待：检测到登录过期时不再上报失败关窗，
+// 停在当前窗口等用户手动登录，登录成功后 reload 让脚本重新注入，
+// 从 publish_data_window_${windowId} 恢复发布数据继续发布；
+// 主进程「登录页→业务页」导航检测会自动保存新登录态到后台。
+// 抖音掉登录常为同页弹登录框（URL 不变），所以用接口探测登录态而非 URL 判断。
+// ===========================
+function showDouyinLoginWaitTip() {
+  try {
+    if (document.getElementById('__douyin_login_wait_tip__')) {
+      return;
+    }
+    const tip = document.createElement('div');
+    tip.id = '__douyin_login_wait_tip__';
+    tip.textContent = '抖音登录已失效，请在本窗口重新登录，登录成功后将自动继续发布';
+    tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#fff7e6;color:#d46b08;border-bottom:1px solid #ffd591;font-size:14px;font-weight:600;text-align:center;pointer-events:none;';
+    (document.body || document.documentElement).appendChild(tip);
+  } catch (e) {
+    console.warn('[抖音发布] ⚠️ 显示登录提示条失败:', e.message);
+  }
+}
+
+function startDouyinPublishLoginWatch() {
+  if (window.__douyinPublishLoginWatcher__) {
+    return;
+  }
+  console.log('[抖音发布] 👀 开始探测登录态，用户重新登录成功后将自动刷新继续发布');
+  if (typeof hideOperationBanner === 'function') {
+    hideOperationBanner();
+  }
+  showDouyinLoginWaitTip();
+  window.__douyinPublishLoginWatcher__ = setInterval(async () => {
+    try {
+      const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
+        method: 'get'
+      });
+      if (!response.ok) {
+        return;
+      }
+      const apiData = await response.json();
+      if (apiData?.user && 'nickname' in apiData.user) {
+        clearInterval(window.__douyinPublishLoginWatcher__);
+        window.__douyinPublishLoginWatcher__ = null;
+        console.log('[抖音发布] 🔄 检测到已重新登录，刷新页面以继续发布流程');
+        window.location.reload();
+      }
+    } catch (_) {
+      // 未登录 / 网络抖动，继续探测
+    }
+  }, 3000);
+}
+
 function isDouyinNetworkErrorMessage(message) {
   const text = String(message || '').trim().toLowerCase();
   if (!text) {
@@ -856,15 +908,12 @@ async function publishApi(dataObj) {
     // 成功统计由 publish-success.js 在成功页发送
     console.log('[抖音发布] ✅ 发布已提交，消息:', clickResult.message);
 
-    // 🔑 新增：捕获登录过期或网络错误
+    // 🔑 捕获登录过期：不上报失败、不关窗，停窗等待用户手动登录后自动续发
     if (isDouyinLoginExpiredMessage(clickResult.message)) {
-      console.error('[抖音发布] 🚨 检测到登录过期消息:', clickResult.message);
-      const reported = await sendStatisticsError(publishId, '检测到登录过期提示：' + clickResult.message, '抖音发布');
+      console.warn('[抖音发布] 🔐 检测到登录过期消息，暂停发布流程等待用户手动登录:', clickResult.message);
       publishRunning = false;
-      if (reported) {
-        await closeWindowWithMessage('登录已过期，请重新授权', 2000);
-        return;
-      }
+      startDouyinPublishLoginWatch();
+      return;
     }
 
     if (isDouyinNetworkErrorMessage(clickResult.message)) {

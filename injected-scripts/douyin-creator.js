@@ -116,6 +116,47 @@
   let isProcessing = false;
   let hasProcessed = false;
 
+  // ===========================
+  // 🔐 授权登录守望
+  // 场景：授权窗口打开时账号未登录（或登录态失效），父页面发来 auth-data 后
+  // 拉用户信息接口失败，流程就此中断；抖音登录常为同页弹框/SPA 跳转，
+  // window 不销毁、脚本不会重注入，父页面也只在收到『页面加载完成』时才发 auth-data，
+  // 授权第一次就卡死，用户只能关窗重开。
+  // 这里改为每 3s 探测一次登录态，登录成功后 reload 让脚本干净地重新注入：
+  // 重注入后重新发送『页面加载完成』，父页面会重发 auth-data 继续授权。
+  // 整页跳转登录的场景本身就能自愈，守望定时器随 window 销毁，无副作用。
+  // ===========================
+  function startDouyinAuthLoginWatch() {
+    if (window.__douyinAuthLoginWatcher__ || hasProcessed) {
+      return;
+    }
+    console.log('[抖音授权] 👀 用户尚未登录，开始探测登录态，登录成功后将自动刷新继续授权');
+    window.__douyinAuthLoginWatcher__ = setInterval(async () => {
+      if (hasProcessed) {
+        clearInterval(window.__douyinAuthLoginWatcher__);
+        window.__douyinAuthLoginWatcher__ = null;
+        return;
+      }
+      try {
+        const response = await fetch('https://creator.douyin.com/web/api/media/user/info/', {
+          method: 'get'
+        });
+        if (!response.ok) {
+          return;
+        }
+        const apiData = await response.json();
+        if (apiData?.user && 'nickname' in apiData.user) {
+          clearInterval(window.__douyinAuthLoginWatcher__);
+          window.__douyinAuthLoginWatcher__ = null;
+          console.log('[抖音授权] 🔄 检测到已登录，刷新页面让授权脚本重新注入继续授权');
+          window.location.reload();
+        }
+      } catch (_) {
+        // 未登录 / 网络抖动，继续探测
+      }
+    }, 3000);
+  }
+
   if (!window.browserAPI) {
     console.error('[抖音授权] ❌ browserAPI 不可用！');
   } else {
@@ -286,6 +327,8 @@
         } catch (error) {
           console.error('[抖音授权] ❌ 消息处理出错:', error);
           isProcessing = false;
+          // 🔑 处理失败多为未登录（拉用户信息接口失败），启动登录守望等待用户登录后自动续走
+          startDouyinAuthLoginWatch();
         }
       });
 

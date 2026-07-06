@@ -759,6 +759,30 @@
                                 }
 
                                 removeLeadingEmptyNodes(tempCleaner);
+
+                                // 🔢 序号文本化：搜狐号用 Quill 编辑器，有序列表序号由 CSS counter 渲染，
+                                //    被段落打断的多个独立 <ol> 会各自从 1 开始（Quill 已知缺陷 #3922，
+                                //    且 Quill 忽略 <ol start>，粘贴后改 DOM 也会被 Delta 模型丢弃）。
+                                //    这里在粘贴前把顶层有序列表按文档顺序连续编号，序号写成实体文本
+                                //    "N. " 并将 <ol>/<li> 降级为普通段落 <p>，确保发布后序号正确。
+                                (function textifyOrderedLists(root) {
+                                    let counter = 1;
+                                    // 跳过嵌套在 li 内的子列表（保留其独立编号），仅处理顶层有序列表
+                                    const topOls = Array.from(root.querySelectorAll('ol')).filter((ol) => !ol.closest('li'));
+                                    topOls.forEach((ol) => {
+                                        const frag = document.createDocumentFragment();
+                                        ol.querySelectorAll(':scope > li').forEach((li) => {
+                                            const p = document.createElement('p');
+                                            p.innerHTML = counter + '. ' + li.innerHTML;
+                                            frag.appendChild(p);
+                                            counter++;
+                                        });
+                                        if (ol.parentNode) ol.parentNode.replaceChild(frag, ol);
+                                    });
+                                    if (counter > 1) {
+                                        console.log('[搜狐号发布] 🔢 有序列表序号已文本化，共', counter - 1, '项');
+                                    }
+                                })(tempCleaner);
                                 htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
                                 console.log('[搜狐号发布] 🧹 已清理开头所有空白内容');
 
