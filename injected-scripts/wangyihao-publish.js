@@ -786,6 +786,23 @@
                                 }
 
                                 removeLeadingEmptyNodes(tempCleaner);
+
+                                // 🔢 修复有序列表序号：被段落打断的多个 <ol> 经 paste 原生渲染时会各自从 1 开始，
+                                //    这里按文档顺序用 start 属性接续编号，Draft.js 会保留该属性
+                                (function fixOrderedListNumbering(root) {
+                                    let counter = 1;
+                                    root.querySelectorAll('ol').forEach((ol) => {
+                                        if (ol.closest('li')) return; // 跳过嵌套列表
+                                        ol.setAttribute('start', String(counter));
+                                        ol.querySelectorAll(':scope > li').forEach((li) => {
+                                            counter++;
+                                        });
+                                    });
+                                    if (counter > 1) {
+                                        console.log('[网易号发布] 🔢 有序列表序号已接续编号，共', counter - 1, '项');
+                                    }
+                                })(tempCleaner);
+
                                 htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
                                 console.log('[网易号发布] 🧹 已清理开头所有空白内容');
 

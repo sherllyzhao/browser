@@ -1954,6 +1954,26 @@
                             const rawHtmlContent = dataObj.video?.video?.content || "";
                             const originalHtmlContent = normalizeTxhHtmlContent(rawHtmlContent);
                             let htmlContent = originalHtmlContent;
+
+                            // 🔢 修复有序列表序号：被段落打断的多个 <ol> 经 paste 原生渲染时会各自从 1 开始，
+                            //    这里按文档顺序用 start 属性接续编号
+                            (function fixOrderedListNumbering(html) {
+                                const temp = document.createElement('div');
+                                temp.innerHTML = html;
+                                let counter = 1;
+                                temp.querySelectorAll('ol').forEach((ol) => {
+                                    if (ol.closest('li')) return; // 跳过嵌套列表
+                                    ol.setAttribute('start', String(counter));
+                                    ol.querySelectorAll(':scope > li').forEach((li) => {
+                                        counter++;
+                                    });
+                                });
+                                if (counter > 1) {
+                                    console.log('[腾讯号发布] 🔢 有序列表序号已接续编号，共', counter - 1, '项');
+                                    htmlContent = temp.innerHTML; // 更新到修复后的 HTML
+                                }
+                            })(htmlContent);
+
                             const expectedPlainText = extractPlainTextFromHtml(htmlContent);
                             const expectedLength = expectedPlainText.trim().length;
                             const expectedImageCount = buildTxhContentSegmentsFromHtml(originalHtmlContent)
