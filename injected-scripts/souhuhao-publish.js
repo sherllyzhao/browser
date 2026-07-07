@@ -63,6 +63,86 @@
         ], 3000, 3);
     }
 
+    // ===========================
+    // 🩹 渲染健康守卫：接住白屏检测漏掉的「乱码渲染」
+    // 场景：dbd0760 把搜狐窗口切到账号 session 后，首次冷加载偶发 CSS/SPA 抢跑，
+    // 搜狐把自己的 Vue scoped 样式（.xxx[data-v-abcdef]{...}）当纯文本渲染到页面，
+    // 编辑器等关键区域缺失 → 用户看到整页乱码、无填写区。
+    // checkBlankPageAndReload 用「bodyText 很少」判白屏，此时 bodyText 巨大（塞满 CSS 文本），
+    // 被判为「非白屏」→ 漏接。这里改用「乱码特征 + 编辑器缺失」判定，双确认后 reload 一次。
+    // 冷加载竞态多为一次性，重载后第二次渲染即正常（session cache:false，无缓存可清，纯时序问题）。
+    // 用 sessionStorage 计数上限防止真损坏时无限刷新。
+    // ===========================
+    (function watchSohuRenderHealth() {
+        const RELOAD_COUNT_KEY = '__sohu_publish_render_unhealthy_reload_count__';
+        const MAX_RELOAD = 2;
+
+        const isEditorPresent = () => !!(
+            document.querySelector('#editor')
+            || document.querySelector('.ql-editor')
+            || document.querySelector('.ne-editor')
+            || document.querySelector('.title-input')
+        );
+
+        // 乱码特征：搜狐 Vue scoped 选择器（.xxx[data-v-十六进制]）作为可见文本出现在页面，
+        // 或大量 CSS 规则块被当文本渲染。正常「加载中/白屏」页不会有这种文本，可精准区分「慢」与「坏」。
+        const hasGarbledCssText = () => {
+            try {
+                const bodyText = (document.body && document.body.innerText) || '';
+                if (bodyText.length < 200) {
+                    return false; // 文本太少 → 是白屏或加载中，交给 checkBlankPageAndReload，别在这误判
+                }
+                if (/\[data-v-[0-9a-f]{6,}\]/.test(bodyText)) {
+                    return true; // 命中搜狐 scoped 选择器文本，几乎可确诊乱码
+                }
+                // 兜底：大量 CSS 声明块被当文本（含多组 {...} 且带典型 CSS 属性名）
+                const braceBlocks = (bodyText.match(/\{[^{}]*\}/g) || []).length;
+                return braceBlocks >= 8
+                    && /(position|display|background|font-size|margin|padding)\s*:/.test(bodyText);
+            } catch (_) {
+                return false;
+            }
+        };
+
+        const doReloadIfUnhealthy = (phase) => {
+            // 健康（编辑器已出现）→ 清计数并停止
+            if (isEditorPresent()) {
+                try { sessionStorage.removeItem(RELOAD_COUNT_KEY); } catch (_) {}
+                console.log(`[搜狐号发布] ✅ 渲染健康守卫：编辑器已就绪（${phase}），页面正常`);
+                return true; // 表示已确认健康，无需再查
+            }
+            // 编辑器缺失但无乱码特征 → 可能只是加载慢，交给白屏检测/20s 等待，别抢着刷新
+            if (!hasGarbledCssText()) {
+                console.log(`[搜狐号发布] ⏳ 渲染健康守卫：编辑器暂未就绪且无乱码特征（${phase}），继续等待`);
+                return false;
+            }
+            // 编辑器缺失 + 命中乱码特征 → 确诊乱码渲染
+            let reloadCount = 0;
+            try { reloadCount = parseInt(sessionStorage.getItem(RELOAD_COUNT_KEY) || '0', 10) || 0; } catch (_) {}
+            if (reloadCount >= MAX_RELOAD) {
+                console.warn(`[搜狐号发布] 🛑 渲染健康守卫：已重载 ${reloadCount} 次仍乱码，停止自动刷新，避免死循环`);
+                return true;
+            }
+            try { sessionStorage.setItem(RELOAD_COUNT_KEY, String(reloadCount + 1)); } catch (_) {}
+            console.warn(`[搜狐号发布] 🔁 渲染健康守卫：检测到整页乱码渲染（编辑器缺失+CSS文本），刷新页面重试（第 ${reloadCount + 1}/${MAX_RELOAD} 次）`);
+            if (typeof window.hidePageAndShowMask === 'function') {
+                window.hidePageAndShowMask();
+            }
+            window.location.reload();
+            return true;
+        };
+
+        // 首查给 SPA 4s 渲染窗口；命中乱码再等 2s 复查双确认，避免 hydration 瞬态误刷
+        setTimeout(() => {
+            if (doReloadIfUnhealthy('first-check')) {
+                return;
+            }
+            setTimeout(() => {
+                doReloadIfUnhealthy('recheck');
+            }, 2000);
+        }, 4000);
+    })();
+
     // 显示操作提示横幅
     if (typeof showOperationBanner === 'function') {
         showOperationBanner('正在自动发布中，请勿操作此页面...');

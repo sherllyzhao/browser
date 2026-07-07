@@ -1729,7 +1729,10 @@
         }
 
         // 🔴 步骤3：兜底直接清空 DOM（确保至少视觉上是空的）
-        if (getXinlangEditorText(editorEle)) {
+        // ⚠️ 不能只看文本：编辑器可能只剩「无文本的残留图片」（如 src=null 的坏图），
+        //    getXinlangEditorText 仅统计文本会漏判，导致坏图残留、重填后新旧图混杂。
+        //    故文本或图片任一存在都执行清空。
+        if (getXinlangEditorText(editorEle) || editorEle.querySelector('img')) {
             editorEle.innerHTML = '';
             try {
                 editorEle.dispatchEvent(new InputEvent('input', {
@@ -1950,14 +1953,30 @@
             const expectedNormalized = normalize(plainText);
             const currentNormalized = normalize(currentText);
 
-            // 完全一致才跳过（已经填好了，避免脚本重复触发时再填一次）
-            if (expectedNormalized && currentNormalized === expectedNormalized) {
-                console.log(`[新浪发布] ⏭️ 编辑器内容已与期望一致（${currentText.length}字），跳过填写`);
+            const textConsistent = !!expectedNormalized && currentNormalized === expectedNormalized;
+
+            // 🔴 图片一致性校验：文本一致 ≠ 图片对位。
+            //    统计编辑器里"已是新浪图床域名"的合格图片数，必须 ≥ 期望图片数才算图片齐。
+            //    src=null / 外链(www.hrblsxh.cn) / 数量不足 都判为不齐 → 不跳过，强制重填。
+            const expectedImageCount = Number(richFeatures.images || 0);
+            const validEditorImageCount = Array.from(editorEle.querySelectorAll('img')).filter((img) => {
+                const s = img.getAttribute('src') || img.src || '';
+                return /r\.sinaimg\.cn|\/large\/article\//.test(s);
+            }).length;
+            const imageConsistent = expectedImageCount === 0 || validEditorImageCount >= expectedImageCount;
+
+            // 完全一致才跳过（文本一致 且 图片齐），避免脚本重复触发时再填一次
+            if (textConsistent && imageConsistent) {
+                console.log(`[新浪发布] ⏭️ 编辑器内容已与期望一致（${currentText.length}字，图片 ${validEditorImageCount}/${expectedImageCount}），跳过填写`);
                 return;
             }
 
-            // 内容不一致说明是上一篇残留或脏数据，必须强制清空重填
-            console.warn(`[新浪发布] ⚠️ 检测到残留内容（${currentText.length}字），与期望（${plainText.length}字）不一致，强制清空重填`);
+            // 文本不一致 或 图片不齐 → 必须强制清空重填
+            if (textConsistent && !imageConsistent) {
+                console.warn(`[新浪发布] ⚠️ 文本一致但图片不齐（编辑器合格图 ${validEditorImageCount}/${expectedImageCount}，多为 src 空或外链残留），强制清空重填`);
+            } else {
+                console.warn(`[新浪发布] ⚠️ 检测到残留内容（${currentText.length}字），与期望（${plainText.length}字）不一致，强制清空重填`);
+            }
             clearXinlangEditor(editorEle);
             await delay(300);
 
@@ -1982,32 +2001,53 @@
             // 🔴 给富文本编辑器更长时间异步解析多段 HTML（之前 800ms 太短，paste 多段时只能拿到第一段）
             await delay(1500);
 
-            const afterText = getXinlangEditorText(editorEle);
-            const afterImageCount = editorEle.querySelectorAll('img').length;
             const expectedImageCount = Number(richFeatures.images || 0);
-            const pastedImageUrls = Array.from(editorEle.querySelectorAll('img'))
-                .map(img => img.getAttribute('src') || img.src || '')
-                .filter(Boolean);
             const expectedLen = (plainText || '').length;
-            const actualLen = afterText.length;
             // 🔴 严格校验：至少达到目标长度 80%，且不少于 5 字；避免只填了第一段就被判为成功
             const minLen = expectedLen <= 5 ? expectedLen : Math.max(5, Math.floor(expectedLen * 0.8));
-            const textPassed = expectedLen === 0 || (!!afterText && actualLen >= minLen);
-            const imagePassed = expectedImageCount === 0 || afterImageCount >= expectedImageCount;
-            if (pastedImageUrls.length) {
-                console.log('[新浪发布] 🖼️ 当前编辑器图片 URL:', pastedImageUrls);
-            }
-            if (textPassed && imagePassed) {
-                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}，图片: ${afterImageCount}/${expectedImageCount}`);
-                return true;
+
+            // 🔴 只统计"有效新浪图床图片"，src=null / 外链的 <img> 不算数（旧版只数标签数量导致假通过）
+            const countValidImages = () => Array.from(editorEle.querySelectorAll('img')).filter((img) => {
+                const s = img.getAttribute('src') || img.src || '';
+                return /r\.sinaimg\.cn|\/large\/article\//.test(s);
+            }).length;
+
+            const checkPass = (label) => {
+                const afterText = getXinlangEditorText(editorEle);
+                const validImageCount = countValidImages();
+                const actualLen = afterText.length;
+                const textPassed = expectedLen === 0 || (!!afterText && actualLen >= minLen);
+                const imagePassed = expectedImageCount === 0 || validImageCount >= expectedImageCount;
+                console.log(`[新浪发布] 🖼️ ${label} 编辑器图片 URL:`, Array.from(editorEle.querySelectorAll('img')).map(i => i.getAttribute('src') || i.src || 'null'));
+                return { afterText, actualLen, validImageCount, textPassed, imagePassed };
+            };
+
+            // 第一次校验（写入后即时）
+            const first = checkPass('写入后');
+            if (!(first.textPassed && first.imagePassed)) {
+                if (first.afterText) {
+                    console.warn(`[新浪发布] ⚠️ ${name} 未通过即时校验（长度 ${first.actualLen}/${expectedLen}，有效图 ${first.validImageCount}/${expectedImageCount}），换下一策略`);
+                } else {
+                    console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空（有效图 ${first.validImageCount}/${expectedImageCount}）`);
+                }
+                return false;
             }
 
-            if (afterText) {
-                console.warn(`[新浪发布] ⚠️ ${name} 正文未通过验证（长度 ${actualLen}/${expectedLen}，图片 ${afterImageCount}/${expectedImageCount}），尝试下一种策略`);
-            } else {
-                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空，图片 ${afterImageCount}/${expectedImageCount}`);
+            // 🔴 关键：blur 触发编辑器 model 重渲染，再等 800ms 复查——图片若被受控编辑器丢弃这里会暴露
+            try {
+                editorEle.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            } catch (e) {
+                editorEle.dispatchEvent(new Event('blur', { bubbles: true }));
             }
-            return false;
+            await delay(800);
+            const second = checkPass('blur后');
+            if (!(second.textPassed && second.imagePassed)) {
+                console.warn(`[新浪发布] ⚠️ ${name} 即时通过但 blur 后图片/正文被丢弃（长度 ${second.actualLen}/${expectedLen}，有效图 ${second.validImageCount}/${expectedImageCount}），换下一策略`);
+                return false;
+            }
+
+            console.log(`[新浪发布] ✅ ${name} 正文设置成功且存活，长度: ${second.actualLen}/${expectedLen}，有效图: ${second.validImageCount}/${expectedImageCount}`);
+            return true;
         };
 
         const strategies = [
@@ -2289,8 +2329,15 @@
 
                                         // 🔑 验证是否成功设置
                                         const updatedValue = (introEle.value || '').trim();
-                                        if (updatedValue !== targetContent) {
+                                        // 平台对导语有字数上限，超长时会主动截断，此时 updatedValue 是 targetContent 的前缀，视为正常（不硬编码上限字数）
+                                        const introTruncatedByPlatform = updatedValue.length > 0
+                                            && updatedValue.length < targetContent.length
+                                            && targetContent.startsWith(updatedValue);
+                                        if (updatedValue !== targetContent && !introTruncatedByPlatform) {
                                             throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedValue.substring(0, 50)}..."`);
+                                        }
+                                        if (introTruncatedByPlatform) {
+                                            console.log(`[新浪发布] ℹ️ 导语超平台字数上限，已存入前 ${updatedValue.length} 字（目标 ${targetContent.length} 字），视为正常`);
                                         }
 
                                         console.log('[新浪发布] ✅ 简介填写完成');
