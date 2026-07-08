@@ -201,49 +201,68 @@
         return '';
     }
 
+    // 🔑 单次发布流程内缓存已解析的 uid，避免每张正文图片都重复调 getbaseinfo 接口。
+    // 发布窗口 = 单账号单 session，页面生命周期内 uid 不变；切换账号是换新窗口（脚本重注入、此变量重置），故安全。
+    let cachedXinlangUploadUid = '';
+
     async function resolveXinlangUploadUid(dataObj) {
-        const candidates = [
-            dataObj?.uid,
-            dataObj?.platformUid,
-            dataObj?.account_info?.uid,
-            dataObj?.account_info?.platformUid,
-            dataObj?.video?.uid,
-            dataObj?.video?.platformUid,
-            dataObj?.video?.account_info?.uid,
-            dataObj?.video?.account_info?.platformUid,
-            dataObj?.video?.dyPlatform?.uid,
-            dataObj?.video?.dyPlatform?.platformUid,
-            dataObj?.video?.mediaAuth?.uid,
-            dataObj?.video?.media_auth?.uid,
-            window.$CONFIG?.uid,
-            window.$CONFIG?.oid,
-            localStorage.getItem('uid'),
-            localStorage.getItem('platformUid')
-        ];
+        // 0. 内存缓存命中直接返回（同一发布流程多张图复用，只在首张图请求一次接口）
+        if (/^\d+$/.test(cachedXinlangUploadUid)) {
+            return cachedXinlangUploadUid;
+        }
 
-        try {
-            if (window.browserAPI?.getCurrentAccount) {
-                const accountResult = await window.browserAPI.getCurrentAccount();
-                const account = accountResult?.success ? accountResult.account : accountResult?.account;
-                candidates.push(account?.platformUid, account?.uid, account?.userId);
+        // 1. 【优先】getbaseinfo 权威源：与授权脚本 xinlang-creator.js 的 user.uid 完全同源
+        //    （result.data.userInfo.uid），保证 uid 是当前微博登录用户、card 图片接口认的那个，
+        //    杜绝后台发布数据里的「新浪号平台 uid」污染导致传错账号。命中后会写 localStorage('uid') 缓存。
+        let uid = await fetchXinlangUidFromBaseinfo();
+
+        // 2. getbaseinfo 不可用时（proxyFetch 缺失 / 接口超时 / 登录态异常）降级到本地候选。
+        //    降级链按可信度排序：$CONFIG.uid（card 页当前微博用户）> localStorage('uid')（上次 getbaseinfo 缓存）
+        //    > 后台发布数据 uid（可能是平台 uid，最不可信，排最后）。
+        if (!uid) {
+            const candidates = [
+                window.$CONFIG?.uid,
+                window.$CONFIG?.oid,
+                localStorage.getItem('uid'),
+                localStorage.getItem('platformUid'),
+                dataObj?.uid,
+                dataObj?.platformUid,
+                dataObj?.account_info?.uid,
+                dataObj?.account_info?.platformUid,
+                dataObj?.video?.uid,
+                dataObj?.video?.platformUid,
+                dataObj?.video?.account_info?.uid,
+                dataObj?.video?.account_info?.platformUid,
+                dataObj?.video?.dyPlatform?.uid,
+                dataObj?.video?.dyPlatform?.platformUid,
+                dataObj?.video?.mediaAuth?.uid,
+                dataObj?.video?.media_auth?.uid
+            ];
+
+            try {
+                if (window.browserAPI?.getCurrentAccount) {
+                    const accountResult = await window.browserAPI.getCurrentAccount();
+                    const account = accountResult?.success ? accountResult.account : accountResult?.account;
+                    candidates.push(account?.platformUid, account?.uid, account?.userId);
+                }
+            } catch (error) {
+                console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
             }
-        } catch (error) {
-            console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
-        }
 
-        let uid = candidates
-            .map(value => String(value || '').trim())
-            .find(value => /^\d+$/.test(value));
+            uid = candidates
+                .map(value => String(value || '').trim())
+                .find(value => /^\d+$/.test(value));
 
-        if (!uid) {
-            // 本地候选全部落空（发布数据没带 uid、$CONFIG 未注入、账号元数据缺失），走接口实时兜底
-            uid = await fetchXinlangUidFromBaseinfo();
+            if (uid) {
+                console.warn('[新浪发布] ⚠️ getbaseinfo 不可用，降级使用本地候选 uid（可能非当前微博用户，请留意传图账号）:', uid);
+            }
         }
 
         if (!uid) {
-            throw new Error('未获取到新浪图片接口 uid（接口兜底也失败，疑似登录态失效，请重新授权）');
+            throw new Error('未获取到新浪图片接口 uid（getbaseinfo 与本地候选均失败，疑似登录态失效，请重新授权）');
         }
 
+        cachedXinlangUploadUid = uid;   // 落内存缓存，本流程后续图片复用
         return uid;
     }
 
@@ -1921,6 +1940,33 @@
         };
     }
 
+    // 🔴 关键修复：新浪文章编辑器是 Tiptap/ProseMirror 受控编辑器，图片节点是自定义
+    //    figure 节点（parseHTML 命中 figure[data-type="figure"]）。直接 paste 裸 <img> 会被
+    //    PM 解析成 src=null 的空节点。这里把每个 <img> 包裹成 <figure data-type="figure"><img></figure>，
+    //    以命中它的 parseHTML，让 src 得以保留。
+    function wrapImagesAsXinlangFigures(html) {
+        if (!html) return html;
+        const box = document.createElement('div');
+        box.innerHTML = html;
+        const imgs = Array.from(box.querySelectorAll('img'));
+        imgs.forEach((img) => {
+            const src = img.getAttribute('src') || '';
+            if (!src) return;
+            if (img.closest('figure[data-type="figure"]')) return; // 已包裹则跳过
+            const figure = document.createElement('figure');
+            figure.setAttribute('data-type', 'figure');
+            const newImg = document.createElement('img');
+            newImg.setAttribute('src', src);
+            const w = img.getAttribute('width') || img.getAttribute('data-width');
+            const h = img.getAttribute('height') || img.getAttribute('data-height');
+            if (w) newImg.setAttribute('width', w);
+            if (h) newImg.setAttribute('height', h);
+            figure.appendChild(newImg);
+            img.replaceWith(figure);
+        });
+        return box.innerHTML;
+    }
+
     async function fillXinlangEditorContent(rawHtml, dataObj) {
         const editorEle = await waitForElement('.wb-editor', 20000);
 
@@ -1934,6 +1980,8 @@
             }
             console.log('[新浪发布] ✅ 正文图片代传完成，成功处理', replaceResult.handledImageCount, '张图片');
             resolvedHtml = imageContainer.innerHTML;
+            // 🔴 把裸 <img> 包成 Tiptap figure 节点结构，命中编辑器 parseHTML，避免 paste 后 src 丢失
+            resolvedHtml = wrapImagesAsXinlangFigures(resolvedHtml);
         }
 
         // 🔴 先 prepare 拿到期望的 plainText，便于和现有内容比对
@@ -1961,7 +2009,8 @@
             const expectedImageCount = Number(richFeatures.images || 0);
             const validEditorImageCount = Array.from(editorEle.querySelectorAll('img')).filter((img) => {
                 const s = img.getAttribute('src') || img.src || '';
-                return /r\.sinaimg\.cn|\/large\/article\//.test(s);
+                // 🔴 修正：真实新浪图床是 wxN.sinaimg.cn/large/xxx.jpg（无 article），旧正则匹配不到导致误判
+                return /sinaimg\.cn\/|\/large\/article\//i.test(s);
             }).length;
             const imageConsistent = expectedImageCount === 0 || validEditorImageCount >= expectedImageCount;
 
@@ -2009,7 +2058,8 @@
             // 🔴 只统计"有效新浪图床图片"，src=null / 外链的 <img> 不算数（旧版只数标签数量导致假通过）
             const countValidImages = () => Array.from(editorEle.querySelectorAll('img')).filter((img) => {
                 const s = img.getAttribute('src') || img.src || '';
-                return /r\.sinaimg\.cn|\/large\/article\//.test(s);
+                // 🔴 修正：真实新浪图床是 wxN.sinaimg.cn/large/xxx.jpg（无 article），旧正则匹配不到导致误判
+                return /sinaimg\.cn\/|\/large\/article\//i.test(s);
             }).length;
 
             const checkPass = (label) => {
