@@ -2437,43 +2437,33 @@
                         await closeXinlangCoverDialogs('cover-upload-attempt-start');
                         await delay(1000);
 
-                        // 🔴 先检查是否已经有封面（防止重复上传）
-                        const existingCover = document.querySelector(".cover-preview .cover-img");
-                        if (existingCover && existingCover.getAttribute("src")) {
-                            console.log("[新浪发布] ✅ 检测到已有封面图片，跳过上传步骤");
-                            // 继续发布流程
-                            await delay(2000);
-                            const publishBtns = document.querySelectorAll(".common-footer .footer-item button");
-                            let publishBtn = null;
-                            let saveBtn = null;
-                            if (publishBtns.length > 0) {
-                                publishBtns.forEach(btn => {
-                                    if (btn.textContent.trim() === "下一步") {
-                                        publishBtn = btn;
-                                    } else if (btn.textContent.trim().includes("保存")) {
-                                        saveBtn = btn;
-                                    }
-                                });
-                            }
-                            if (saveBtn) {
-                                saveBtn.click();
-                            }
-                            await delay(5000);
-                            if (publishBtn) {
-                                // 调用全局函数（传入必要的依赖）
-                                await window.__xinlangTryUploadImage(
-                                    dataObj,
-                                    sendStatisticsError,
-                                    sendStatistics,
-                                    closeWindowWithMessage,
-                                    selectScheduledTime
-                                );
-                            }
-                            return;
-                        }
-
+                        // 🔴 不再"检测到已有封面就跳过"：新浪进文章编辑器会自动塞一张默认/遗留封面(如随机猫图)，
+                        // 见到任何 .cover-img 有 src 就跳，会导致数据里的正确封面(video.video.cover)永远传不上去
+                        // （用户实测封面变成无关猫图 wx3.sinaimg.cn/…）。改为每次都上传数据里的正确封面，覆盖新浪的自动封面。
                         const {blob, contentType} = await downloadFile(pathImage, "image/png");
-                        var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
+                        // 🔴 生成安全文件名：极长的自动标题+写死.png 会导致文件名超长(255字节)或扩展名与真实类型不符，被新浪上传接口静默拒收
+                        // 1) 扩展名按真实 contentType 内联推导，兜底从 URL 尾缀，再兜底 .jpg
+                        const coverType = String(contentType || "").toLowerCase();
+                        let coverExt =
+                            coverType.includes("jpeg") || coverType.includes("jpg") ? ".jpg" :
+                            coverType.includes("png")  ? ".png"  :
+                            coverType.includes("webp") ? ".webp" :
+                            coverType.includes("gif")  ? ".gif"  :
+                            coverType.includes("bmp")  ? ".bmp"  : "";
+                        if (!coverExt && pathImage && pathImage.includes(".")) {
+                            const urlExt = pathImage.split(".").pop().split(/[?#]/)[0].toLowerCase();
+                            if (["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(urlExt)) {
+                                coverExt = urlExt === "jpeg" ? ".jpg" : `.${urlExt}`;
+                            }
+                        }
+                        if (!coverExt) coverExt = ".jpg";
+                        // 2) 标题去非法字符+空白转下划线+截断到40字，空标题兜底 cover
+                        const rawCoverTitle = (dataObj?.video?.formData?.title || "").toString();
+                        const safeCoverName =
+                            (rawCoverTitle.replace(/[\\/:*?"<>|\r\n\t]+/g, "_").replace(/\s+/g, "_").slice(0, 40).trim() || "cover");
+                        const coverFileName = `${safeCoverName}${coverExt}`;
+                        console.log("[新浪发布] 📄 封面文件名:", coverFileName, "| 类型:", contentType, "| 大小:", blob?.size);
+                        var file = new File([blob], coverFileName, {type: contentType || "image/png"});
                         // 选中本地上传（点击"选择封面"按钮）
                         await delay(1000);
 
