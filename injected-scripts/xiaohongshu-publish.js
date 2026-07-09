@@ -1386,30 +1386,18 @@ if (location.search.includes("published=true")) {
                 // 如果没有错误，发送统计请求
                 if (!hasError && publishId) {
                     try {
-                        const successUrl = await getStatisticsUrl();
-                        const scanData = window.buildStatisticsRequestData
-                            ? await window.buildStatisticsRequestData(publishId, "小红书发布")
-                            : { data: JSON.stringify({ id: publishId }) };
-                        console.log("[小红书发布] 📤 统计接口地址:", successUrl);
-                        console.log("[小红书发布] 📤 请求参数:", JSON.stringify(scanData));
+                        if (typeof sendStatistics !== "function") {
+                            throw new Error("sendStatistics 未定义，无法执行去重统计上报");
+                        }
 
-                        // 🔑 使用 fetch 的 keepalive 选项，确保页面跳转时请求不被中断
-                        // keepalive 会让浏览器在页面卸载后继续完成请求
-                        fetch(successUrl, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(scanData),
-                            keepalive: true,  // 关键：页面卸载后继续请求
-                        }).then(async response => {
-                            const text = await response.text();
-                            console.log("[小红书发布] ✅ 定时发布统计上报成功, 响应状态:", response.status);
-                            console.log("[小红书发布] ✅ 响应内容:", text);
-                        }).catch(e => {
-                            console.error("[小红书发布] ❌ 统计上报失败:", e);
-                        });
-
-                        // 不等待 fetch 完成，立即继续执行
-                        console.log("[小红书发布] 📊 统计请求已发送（keepalive 模式）");
+                        const statResult = await sendStatistics(publishId, "小红书发布");
+                        if (statResult?.skipped) {
+                            console.log("[小红书发布] ⏭️ 定时发布统计已由其它页面上报，跳过重复记录:", statResult.reason);
+                        } else if (statResult?.success) {
+                            console.log("[小红书发布] ✅ 定时发布统计上报成功");
+                        } else {
+                            console.error("[小红书发布] ❌ 定时发布统计上报未确认:", statResult?.error || statResult);
+                        }
                     } catch (e) {
                         console.error("[小红书发布] ❌ 统计上报失败:", e);
                     }
