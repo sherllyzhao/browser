@@ -2906,8 +2906,8 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 3;
-            const retryDelay = isGeo ? 0 : 1000;
+            const retryCount = isGeo ? 1 : 6;
+            const retryDelay = isGeo ? 0 : 600;
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -3039,8 +3039,8 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 3;
-            const retryDelay = isGeo ? 0 : 1000;
+            const retryCount = isGeo ? 1 : 6;
+            const retryDelay = isGeo ? 0 : 600;
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -3171,9 +3171,16 @@ if (typeof window.uploadVideo === "function"
                         await window.browserAPI.removeGlobalData(key);
                         continue;
                     }
-                    // 尝试补发
+                    // 尝试补发（单条带 3 次重试，应对后台部分节点间歇性失败：
+                    //   撞坏节点≈50%时，单次补发也≈50%成功，带3次重试后单条成功率大幅提升；
+                    //   与外层 attempts 累计形成「本轮内3重试 + 跨轮/跨窗口重试」双层兜底）
                     try {
-                        await window.postStatisticsRequest(item.url, item.scanData);
+                        const doPost = () => window.postStatisticsRequest(item.url, item.scanData);
+                        if (typeof window.retryOperation === "function") {
+                            await window.retryOperation(doPost, 3, 600);
+                        } else {
+                            await doPost();
+                        }
                         await window.browserAPI.removeGlobalData(key);
                         console.log(`[统计补报] ✅ 补发成功并移除：${key}`);
                     } catch (e) {
@@ -4799,3 +4806,17 @@ setTimeout(() => {
         window.flushFailedStatReports?.().catch(() => {});
     } catch (_) {}
 }, 5000);
+
+// ===========================
+// 🔁 周期性补报：只要发布窗口还开着，每 60s 尝试把积压的失败上报补回
+// 解决「发完即关窗，补报只能等下次开窗」的延迟问题。
+// 防重复注册：每次开窗都会执行本脚本，用全局标志确保 interval 只挂一次。
+// 开销极小：flushFailedStatReports 内部有 __STAT_FLUSH_RUNNING__ 并发锁 + 空队列早退。
+// ===========================
+if (!window.__STAT_FLUSH_INTERVAL__) {
+    window.__STAT_FLUSH_INTERVAL__ = setInterval(() => {
+        try {
+            window.flushFailedStatReports?.().catch(() => {});
+        } catch (_) {}
+    }, 60000);
+}
