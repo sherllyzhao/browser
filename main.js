@@ -11621,7 +11621,8 @@ ipcMain.handle('show-user-menu', async (event) => {
             finish({ selected: false, action: null });
             return;
           }
-          const display = acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
+          const companyDisplay = acc.companyName || acc.company_name || acc.company?.name || acc.company?.company_name || '';
+          const display = companyDisplay || acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
           const { response } = await dialog.showMessageBox(mainWindow, {
             type: 'question',
             buttons: ['取消', '确定切换'],
