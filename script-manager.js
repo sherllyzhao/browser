@@ -3,6 +3,32 @@ const path = require('path');
 const crypto = require('crypto');
 const { domains } = require('./domain-config');
 
+const CONTENT_MANAGE_OPEN_ONLY_URLS = new Set([
+  'https://me.weibo.com/content/article',
+  'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+  'https://om.qq.com/main',
+  'https://baijiahao.baidu.com/builder/rc/content?currentPage=1&pageSize=10&search=&type=&collection=&startDate=&endDate=',
+  'https://www.zhihu.com/creator/manage/creation/all',
+  'https://mp.163.com/subscribe_v4/index.html#/content-manage',
+  'https://creator.douyin.com/creator-micro/content/manage',
+  'https://creator.xiaohongshu.com/new/note-manager',
+  'https://channels.weixin.qq.com/platform/post/list',
+  'https://mp.toutiao.com/profile_v4/manage/content/all'
+].map(normalizeContentManageOpenOnlyUrl));
+
+function normalizeContentManageOpenOnlyUrl(url) {
+  const rawUrl = typeof url === 'string' ? url.trim() : '';
+  if (!rawUrl) {
+    return '';
+  }
+
+  try {
+    return new URL(rawUrl).href;
+  } catch (_) {
+    return rawUrl;
+  }
+}
+
 class ScriptManager {
   constructor(baseDir) {
     this.baseDir = baseDir;
@@ -21,6 +47,10 @@ class ScriptManager {
       return false;
     }
     return true;
+  }
+
+  shouldSkipContentManageOpenOnlyUrl(url) {
+    return CONTENT_MANAGE_OPEN_ONLY_URLS.has(normalizeContentManageOpenOnlyUrl(url));
   }
 
   // 初始化脚本目录和清单文件
@@ -302,6 +332,11 @@ class ScriptManager {
   // 从文件读取脚本（或生成远程加载器）
   async getScript(url) {
     try {
+      if (this.shouldSkipContentManageOpenOnlyUrl(url)) {
+        console.log('[ScriptManager] 跳过内容管理打开页脚本注入:', url);
+        return '';
+      }
+
       // 🔑 等待远程配置加载完成（如果正在加载）
       if (this.configLoadPromise && !this.configLoaded) {
         console.log('[ScriptManager] ⏳ 等待远程配置加载完成...');
