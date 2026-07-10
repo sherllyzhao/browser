@@ -2600,10 +2600,16 @@
 
                             // 上传图片（带重试）
                             let input;
-                            // 🔴 重新获取 uploadModal 与文件输入框（带重试，防止引用失效或DOM未渲染）
+                            // 🔴 优先复用已验证过的 uploadModal 引用（前面 tabs 切换、清空旧图都是在它范围内查询的），
+                            // 不再用 document.querySelector(".n-dialog") 重新在整个页面找第一个弹窗——
+                            // naive-ui 的 .n-dialog 是通用 class，页面上如果同时存在其它未关闭动画的弹窗残留，
+                            // querySelector 抓到的未必是含 input 的上传弹窗，导致误报"找不到文件输入框"。
+                            // 只有当 uploadModal 已脱离 DOM（比如被新浪自己关闭重建）时，才降级用可见弹窗兜底。
                             const maxFindRetries = 5;
                             for (let findAttempt = 1; findAttempt <= maxFindRetries; findAttempt++) {
-                                const currentModal = document.querySelector(".n-dialog");
+                                const currentModal = document.body.contains(uploadModal)
+                                    ? uploadModal
+                                    : getVisibleXinlangDialogs()[0];
                                 if (currentModal) {
                                     input = currentModal.querySelector("input[type='file']");
                                     if (input) {
