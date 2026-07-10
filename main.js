@@ -4427,6 +4427,8 @@ const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
 const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+const STARTUP_LOAD_DIALOG_RECHECK_MS = 2500;
+const STARTUP_LOAD_DIALOG_RECHECK_INTERVAL_MS = 500;
 const REFRESH_LOAD_READY_CHECK_DELAY = 600;
 const REFRESH_LOAD_MAX_WAIT_MS = 15000;
 
@@ -5139,6 +5141,45 @@ async function inspectBrowserViewReadiness() {
   `, true);
 }
 
+async function recheckStartupReadinessBeforeDialog(reason) {
+  const startedAt = Date.now();
+  let lastState = null;
+  let lastLoading = false;
+
+  while (Date.now() - startedAt <= STARTUP_LOAD_DIALOG_RECHECK_MS) {
+    if (!startupLoadGuard.active) {
+      return { ready: true, reason: 'guard-inactive', state: lastState };
+    }
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+      return { ready: false, reason: 'browserview-destroyed', state: lastState, isLoading: false };
+    }
+
+    lastLoading = browserView.webContents.isLoading();
+    if (lastLoading) {
+      lastState = { ready: false, reason: 'still-loading-before-dialog' };
+    } else {
+      try {
+        lastState = await inspectBrowserViewReadiness();
+      } catch (err) {
+        lastState = {
+          ready: false,
+          reason: 'recheck-error-before-dialog',
+          error: err && err.message ? err.message : String(err)
+        };
+      }
+      if (lastState && lastState.ready) {
+        console.log('[Startup Guard] ✅ 弹窗前复检通过，取消告警:', { reason, state: lastState });
+        return { ready: true, reason: 'visual-ready-before-dialog', state: lastState };
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, STARTUP_LOAD_DIALOG_RECHECK_INTERVAL_MS));
+  }
+
+  console.warn('[Startup Guard] ⚠️ 弹窗前复检仍未就绪:', { reason, state: lastState, isLoading: lastLoading });
+  return { ready: false, reason: 'still-not-ready-before-dialog', state: lastState, isLoading: lastLoading };
+}
+
 function retryStartupLoad(reason) {
   if (!startupLoadGuard.active) return false;
   if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
@@ -5180,11 +5221,18 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
       console.warn(`[Startup Guard] ⚠️ 首屏等待超时: ${elapsed}ms`);
       if (retryStartupLoad(`首屏等待超时 ${elapsed}ms`)) return;
 
+      const recheck = await recheckStartupReadinessBeforeDialog(`timeout:${reason}`);
+      if (recheck.ready) {
+        finishStartupLoadGuard('timeout-recheck-ready');
+        return;
+      }
+
       finishStartupLoadGuard('timeout');
+      const finalState = recheck.state || {};
       const result = await showPageErrorDialog({
         title: '页面加载较慢',
         message: '启动页加载超时，是否尝试恢复？',
-        detail: `触发点: ${reason}，等待时长: ${elapsed}ms`
+        detail: `触发点: ${reason}，等待时长: ${elapsed}ms，复检: ${finalState.reason || recheck.reason || 'unknown'}`
       });
 
       if (result.response === 0) {
@@ -5212,11 +5260,22 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
 
       if (retryStartupLoad(`首屏检查未通过 (${state.reason || 'unknown'})`)) return;
 
+      const recheck = await recheckStartupReadinessBeforeDialog(`visual-check-failed:${reason}`);
+      if (recheck.ready) {
+        finishStartupLoadGuard('visual-recheck-ready');
+        return;
+      }
+      if (recheck.isLoading) {
+        scheduleStartupReadinessCheck(`${reason}:dialog-recheck-loading`, 1200);
+        return;
+      }
+
       finishStartupLoadGuard('visual-check-failed');
+      const finalState = recheck.state || state;
       const result = await showPageErrorDialog({
         title: '页面可能空白',
         message: '启动后页面仍未正常渲染，是否尝试恢复？',
-        detail: `原因: ${state.reason || 'unknown'} | html=${state.htmlLength || 0} text=${state.textLength || 0} child=${state.childCount || 0}`
+        detail: `原因: ${finalState.reason || 'unknown'} | html=${finalState.htmlLength || 0} text=${finalState.textLength || 0} child=${finalState.childCount || 0}`
       });
 
       if (result.response === 0) {
