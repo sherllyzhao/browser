@@ -4184,16 +4184,21 @@ async function inspectSourceTextDocument(webContents) {
           .length;
 
         const cssPatterns = [
-          '@charset',
-          '@font-face',
-          ':hover{',
-          ':focus{',
-          '@media ',
-          '@keyframes ',
-          'text-decoration:none',
-          'background-color:transparent',
-          'display:block',
-          'position:absolute'
+          /@charset/i,
+          /@font-face/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /@keyframes\\s+/i,
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /border-radius\\s*:/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
         const jsonMarkers = [
           '"userAgent"',
@@ -4205,11 +4210,12 @@ async function inspectSourceTextDocument(webContents) {
           '"ctx"',
           '"register"'
         ];
-        const cssScore = cssPatterns.filter((pattern) => bodyText.includes(pattern)).length;
+        const cssScore = cssPatterns.filter((pattern) => pattern.test(bodyText)).length;
         const jsonScore = jsonMarkers.filter((pattern) => bodyText.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyText) || /^"[^"]+"\\s*:/.test(bodyText);
         const compactTextDocument = body.children.length <= 2 && visibleElementCount <= 3;
-        const isCssSource = compactTextDocument && cssScore >= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyText) && cssScore >= 2;
+        const isCssSource = compactTextDocument && (cssScore >= 4 || hasBrowserHeaderCss);
         const isJsonSource = compactTextDocument && bodyText.length > 800 && startsLikeJson && jsonScore >= 3;
 
         return {
@@ -5062,18 +5068,23 @@ async function inspectBrowserViewReadiness() {
           .length;
         const bodyTextPreview = (body.innerText || '').trim().slice(0, 5000);
         const cssTextPatterns = [
-          '@charset',
-          '@font-face',
-          ':hover{',
-          ':focus{',
-          '@media ',
-          '@keyframes ',
-          'text-decoration:none',
-          'background-color:transparent',
-          'display:block',
-          'position:absolute'
+          /@charset/i,
+          /@font-face/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /@keyframes\\s+/i,
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /border-radius\\s*:/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
-        const cssTextMatchCount = cssTextPatterns.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const cssTextMatchCount = cssTextPatterns.filter((pattern) => pattern.test(bodyTextPreview)).length;
         const jsonTextMarkers = [
           '"userAgent"',
           '"appViewConfig"',
@@ -5086,7 +5097,8 @@ async function inspectBrowserViewReadiness() {
         ];
         const jsonTextMarkerCount = jsonTextMarkers.filter((pattern) => bodyTextPreview.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyTextPreview) || /^"[^"]+"\\s*:/.test(bodyTextPreview);
-        const looksLikeCssSource = cssTextMatchCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyTextPreview) && cssTextMatchCount >= 2;
+        const looksLikeCssSource = (cssTextMatchCount >= 4 || hasBrowserHeaderCss) && childCount <= 2 && visibleSampleElements <= 3;
         const looksLikeJsonSource = bodyTextPreview.length > 800 && startsLikeJson && jsonTextMarkerCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
         if (looksLikeCssSource || looksLikeJsonSource) {
           return {
@@ -8057,22 +8069,38 @@ function createWindow() {
 
         const bodyText = document.body.innerText || '';
         const cssPatterns = [
-          'text-decoration:none',
-          'background-color:transparent',
-          'cursor:pointer',
-          'border-radius:',
-          'display:block',
-          'position:absolute',
-          ':hover{',
-          '@media '
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /cursor\\s*:\\s*pointer/i,
+          /border-radius\\s*:/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
 
-        let cssMatchCount = 0;
-        for (const pattern of cssPatterns) {
-          if (bodyText.includes(pattern)) cssMatchCount++;
-        }
+        const cssMatchCount = cssPatterns.filter(pattern => pattern.test(bodyText)).length;
+        const visibleElementCount = Array.from(document.querySelectorAll('body *'))
+          .slice(0, 80)
+          .filter((el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && Number(style.opacity || '1') !== 0
+              && rect.width >= 12
+              && rect.height >= 12;
+          })
+          .length;
+        const compactTextDocument = document.body.children.length <= 2 && visibleElementCount <= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyText) && cssMatchCount >= 2;
 
-        if (cssMatchCount >= 3) {
+        if (compactTextDocument && (cssMatchCount >= 4 || hasBrowserHeaderCss)) {
           // 页面异常，保持隐藏状态，添加遮罩 + loading动画
           if (!document.getElementById('__page_loading_mask__')) {
             const mask = document.createElement('div');
@@ -8082,7 +8110,13 @@ function createWindow() {
             document.documentElement.appendChild(mask);
           }
 
-          return { ready: false, reason: 'css-as-text', matchCount: cssMatchCount };
+          return {
+            ready: false,
+            reason: 'css-as-text',
+            matchCount: cssMatchCount,
+            childCount: document.body.children.length,
+            visibleElementCount
+          };
         }
 
         // 页面正常，移除预防性隐藏样式
@@ -8111,6 +8145,16 @@ function createWindow() {
 
         if (!pageState.ready) {
           console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+          const isMainBrowserView = browserView?.webContents
+            && !browserView.webContents.isDestroyed()
+            && browserView.webContents.id === webContents.id;
+          if (isMainBrowserView && pageState.reason === 'css-as-text') {
+            const recovered = await recoverBrowserViewFromSourceTextPage('script-injection-page-check', lastValidUrl);
+            if (recovered) {
+              return;
+            }
+          }
 
           // 最多重试2次，每次间隔1.5秒，然后刷新
           if (retryCount < 2) {
