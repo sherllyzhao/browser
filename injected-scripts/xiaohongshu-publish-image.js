@@ -646,20 +646,24 @@ if (location.search.includes("published=true")) {
               console.error('[小红书发布] ❌ 保存发布页URL失败:', e);
             } */
 
-                            // 查找是否有提示消息
-                            const tipsEle = await waitForElement(".progetto-sugger-warn .tips", 2000);
-                            console.log("🚀 ~  ~ tipsEle: ", tipsEle);
-                            if (tipsEle) {
-                                const tipsText = tipsEle.textContent.trim();
-                                console.log("[小红书发布] ✅ 提示消息:", tipsText);
-                                const canToError = tipsText.includes("未绑定手机号");
-                                if (canToError) {
-                                    console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
-                                    const publishId = messageData?.video?.dyPlatform?.id;
-                                    await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
-                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                    return;
+                            // 查找是否有提示消息（这是可选提示，不存在时不能中断首次发布流程）
+                            try {
+                                const tipsEle = await waitForElement(".progetto-sugger-warn .tips", 2000);
+                                console.log("🚀 ~  ~ tipsEle: ", tipsEle);
+                                if (tipsEle) {
+                                    const tipsText = tipsEle.textContent.trim();
+                                    console.log("[小红书发布] ✅ 提示消息:", tipsText);
+                                    const canToError = tipsText.includes("未绑定手机号");
+                                    if (canToError) {
+                                        console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
+                                        const publishId = messageData?.video?.dyPlatform?.id;
+                                        await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
+                                        await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                        return;
+                                    }
                                 }
+                            } catch (e) {
+                                console.log("[小红书发布] ℹ️ 未检测到发布前提示，继续发布流程:", e.message);
                             }
 
                             try {
