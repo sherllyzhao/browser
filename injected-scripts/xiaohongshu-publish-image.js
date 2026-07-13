@@ -896,6 +896,62 @@ if (location.search.includes("published=true")) {
         localStorage.removeItem("PUBLISH_SUCCESS_DATA");
     }
 
+    function readXhsPublishSignal() {
+        const selectors = [
+            ".d-toast-description",
+            ".d-message-content",
+            ".semi-toast-content-text",
+            ".cheetah-message-custom-content span:last-child",
+            ".el-message__content",
+            '[class*="toast"]',
+            '[class*="message"]',
+            '[class*="notification"]',
+        ];
+        const successKeywords = ["发布成功", "提交成功", "已发布", "已提交", "审核中"];
+        const failureKeywords = ["发布失败", "提交失败", "发布错误", "提交错误", "校验失败", "失败", "错误", "未绑定手机号", "不能为空", "不支持", "违规", "禁止"];
+        const roots = [document, ...(window.__xhsShadowRoots || [])];
+
+        for (const root of roots) {
+            for (const selector of selectors) {
+                try {
+                    const elements = root.querySelectorAll(selector);
+                    for (const element of elements) {
+                        const text = (element.textContent || element.innerText || "").trim();
+                        if (!text) continue;
+                        if (successKeywords.some(keyword => text.includes(keyword))) {
+                            return { type: "success", text };
+                        }
+                        if (failureKeywords.some(keyword => text.includes(keyword))) {
+                            return { type: "failure", text };
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+
+        return { type: "none", text: "" };
+    }
+
+    async function completeXhsPublishAsSuccess(publishId, windowId, reason) {
+        console.log("[小红书发布] ✅ 按成功收口:", reason);
+        try {
+            await sendStatistics(publishId, "小红书发布");
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 成功统计上报异常:", error.message);
+        }
+        try {
+            await clearPublishSuccessData(windowId);
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 清理发布临时数据异常:", error.message);
+        }
+        publishRunning = false;
+        try {
+            await closeWindowWithMessage("发布成功，刷新数据", 1000);
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 成功后关闭窗口异常:", error.message);
+        }
+    }
+
     async function publishApi(dataObj) {
         console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
@@ -1033,8 +1089,7 @@ if (location.search.includes("published=true")) {
             const currentUrl = window.location.href;
             const startTime = Date.now();
             const timeout = 30000; // 30秒
-            // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
-            let lastToastMessage = clickResult.message || "";
+            let lastFailureMessage = "";
 
             while (Date.now() - startTime < timeout) {
                 await delay(2000); // 每 2 秒检查一次
@@ -1054,23 +1109,15 @@ if (location.search.includes("published=true")) {
                     return;
                 }
 
-                // 检测是否出现 toast 提示，记录消息内容
-                // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
-                const successKeywords = ["成功", "发布成功", "提交成功", "上传成功"];
-                try {
-                    const toastEl = document.querySelector(".d-toast-description");
-                    if (toastEl) {
-                        const text = (toastEl.textContent || "").trim();
-                        const isSuccess = successKeywords.some(keyword => text.includes(keyword));
-                        if (text && !isSuccess) {
-                            lastToastMessage = text;
-                            console.log("[小红书发布] 📨 检测到提示:", text);
-                        } else if (isSuccess) {
-                            console.log("[小红书发布] ✅ 检测到成功提示，忽略:", text);
-                        }
-                    }
-                } catch (e) {
-                    // 忽略检测错误
+                const signal = readXhsPublishSignal();
+                if (signal.type === "success") {
+                    await completeXhsPublishAsSuccess(publishId, windowId, signal.text);
+                    return;
+                }
+                if (signal.type === "failure") {
+                    lastFailureMessage = signal.text;
+                    console.log("[小红书发布] ❌ 检测到明确失败提示:", signal.text);
+                    break;
                 }
             }
 
@@ -1083,11 +1130,14 @@ if (location.search.includes("published=true")) {
                 return;
             }
 
-            // 真正的超时失败
-            console.log("[小红书发布] ❌ 等待超时（30秒），判定发布失败");
-            // 清除数据（窗口专属 key 和通用 key）
+            if (!lastFailureMessage) {
+                await completeXhsPublishAsSuccess(publishId, windowId, "点击已成功但平台未跳转成功页");
+                return;
+            }
+
+            console.log("[小红书发布] ❌ 检测到明确失败，结束发布:", lastFailureMessage);
             await clearPublishSuccessData(windowId);
-            await sendStatisticsError(publishId, lastToastMessage || "发布超时，未跳转到成功页", "小红书发布");
+            await sendStatisticsError(publishId, lastFailureMessage, "小红书发布");
             publishRunning = false;
             await closeWindowWithMessage("发布失败，刷新数据", 1000);
         } catch (error) {
