@@ -484,6 +484,10 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
     const host = String(hostname || '').toLowerCase();
     return host === 'douyin.com'
       || host.endsWith('.douyin.com')
+      || host === 'zhihu.com'
+      || host.endsWith('.zhihu.com')
+      || host === 'zhimg.com'
+      || host.endsWith('.zhimg.com')
       || host === 'channels.weixin.qq.com'
       || host.endsWith('.channels.weixin.qq.com')
       || host === 'weixin.qq.com'
@@ -500,6 +504,8 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
   } catch (_) {
     const urlText = String(rawUrl || '').toLowerCase();
     return urlText.includes('douyin.com')
+      || urlText.includes('zhihu.com')
+      || urlText.includes('zhimg.com')
       || urlText.includes('channels.weixin.qq.com')
       || urlText.includes('weixin.qq.com')
       || urlText.includes('wx.qq.com')
