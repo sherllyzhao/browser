@@ -312,8 +312,8 @@
                             console.log('[头条授权] 📤 准备发送数据到接口...');
                             // 发送数据到服务器（根据环境选择域名）
                             const apiDomain = await getApiDomain();
-                            console.log('[头条授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/ttinfo`);
-                            const apiResponse = await fetch(`${apiDomain}/api/mediaauth/ttinfo`, {
+                            console.log('[头条授权] 📡 API 地址:', `${apiDomain}/api/mediaauth/jrttinfo`);
+                            const apiResponse = await fetch(`${apiDomain}/api/mediaauth/jrttinfo`, {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json'

@@ -5758,8 +5758,19 @@ function isToutiaoUrl(rawUrl = '') {
   }
 }
 
+function isToutiaoPublishUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isToutiaoHost(parsed.hostname)
+      && parsed.pathname.toLowerCase().includes('/profile_v4/graphic/publish');
+  } catch (_) {
+    return false;
+  }
+}
+
 function shouldSkipScriptInjection(url = '') {
-  return FORCE_BARE_TOUTIAO && isToutiaoUrl(url);
+  // 只保留发布页的 bare publish 兼容逻辑；授权入口和创作者首页必须允许脚本注入。
+  return FORCE_BARE_TOUTIAO && isToutiaoPublishUrl(url);
 }
 
 const childWindows = []; // 跟踪所有打开的子窗口
@@ -6934,11 +6945,16 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
         href: result?.href || currentURL
       });
       toutiaoBarePublishState.set(windowId, 'done');
-      setTimeout(() => {
-        if (!targetWindow.isDestroyed()) {
-          targetWindow.close();
-        }
-      }, 1200);
+      // 开发环境（npm start，app.isPackaged=false）保留发布窗口，方便调试；与 common.js closeWindowWithMessage 的豁免一致
+      if (isProduction) {
+        setTimeout(() => {
+          if (!targetWindow.isDestroyed()) {
+            targetWindow.close();
+          }
+        }, 1200);
+      } else {
+        console.log('[Toutiao Bare Publish] ⚠️ 开发环境，发布成功后跳过关闭窗口，方便调试');
+      }
       return;
     }
 
