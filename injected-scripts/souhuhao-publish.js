@@ -33,6 +33,117 @@
         cookiesDomain: 'mp.sohu.com'
     };
 
+    const CONTENT_MANAGE_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=content';
+    const FIRST_PAGE_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page';
+    const CONTENT_ENTRY_KEY = '__sohuhao_content_entry__';
+    const PUBLISH_DATA_RECOVER_COUNT_KEY = '__sohuhao_publish_data_recover_count__';
+    const REQUIRED_ELEMENT_MISS_COUNT_KEY = '__sohuhao_required_element_miss_count__';
+    const CONTENT_ENTRY_TTL_MS = 30000;
+    const MAX_PUBLISH_DATA_RECOVER_COUNT = 3;
+    const MAX_REQUIRED_ELEMENT_MISS_COUNT = 3;
+
+    const readFreshContentEntryMark = () => {
+        let rawMark = '';
+        try {
+            rawMark = sessionStorage.getItem(CONTENT_ENTRY_KEY) || '';
+        } catch (_) {}
+
+        if (!rawMark) {
+            return false;
+        }
+
+        const markedAt = Number(rawMark);
+        const isFreshMark = Number.isFinite(markedAt)
+            && markedAt > 0
+            && Date.now() - markedAt <= CONTENT_ENTRY_TTL_MS;
+
+        if (!isFreshMark) {
+            try {
+                sessionStorage.removeItem(CONTENT_ENTRY_KEY);
+            } catch (_) {}
+        }
+
+        return isFreshMark;
+    };
+
+    const cameFromContentEntry = () => {
+        try {
+            if (!document.referrer) {
+                return false;
+            }
+
+            const referrerUrl = new URL(document.referrer);
+            return referrerUrl.hostname === 'mp.sohu.com'
+                && referrerUrl.pathname === '/mpfe/v4/contentManagement/first/page'
+                && referrerUrl.searchParams.get('from') === 'content';
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const isFirstPageUrl = (href = window.location.href) => {
+        try {
+            const url = new URL(href);
+            return url.hostname === 'mp.sohu.com'
+                && url.pathname === '/mpfe/v4/contentManagement/first/page';
+        } catch (_) {
+            return String(href || '').startsWith(FIRST_PAGE_URL);
+        }
+    };
+
+    const recoverContentEntryIfNeeded = async () => {
+        const contentEntryMarked = readFreshContentEntryMark();
+
+        let windowContext = null;
+        try {
+            if (window.browserAPI && window.browserAPI.getWindowContext) {
+                windowContext = await window.browserAPI.getWindowContext();
+            }
+        } catch (error) {
+            console.warn('[搜狐号发布] ⚠️ 读取窗口上下文失败:', error.message);
+        }
+
+        let hasPublishData = false;
+        try {
+            if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+                const windowId = await window.browserAPI.getWindowId();
+                hasPublishData = !!(windowId && await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`));
+            }
+        } catch (error) {
+            console.warn('[搜狐号发布] ⚠️ 检查发布任务数据失败:', error.message);
+        }
+
+        if (hasPublishData || windowContext?.purpose === 'publish') {
+            return false;
+        }
+
+        let toPath = '';
+        try {
+            toPath = localStorage.getItem('toPath') || '';
+        } catch (_) {}
+
+        const shouldRecoverContentEntry = contentEntryMarked
+            || (toPath === PLATFORM_CONFIG.publishPagePath && cameFromContentEntry());
+        if (!shouldRecoverContentEntry) {
+            return false;
+        }
+
+        try {
+            localStorage.removeItem('toPath');
+            sessionStorage.removeItem(CONTENT_ENTRY_KEY);
+        } catch (error) {
+            console.warn('[搜狐号发布] ⚠️ 清理内容管理入口标记失败:', error.message);
+        }
+
+        console.log('[搜狐号发布] 检测到内容管理入口被 toPath 带到发布页，清除 toPath 并返回内容管理页');
+        window.location.replace(CONTENT_MANAGE_URL);
+        return true;
+    };
+
+    if (await recoverContentEntryIfNeeded()) {
+        return;
+    }
+
     // ===========================
     // 防止脚本重复注入
     // ===========================
@@ -161,6 +272,231 @@
 
     // 当前窗口 ID（用于构建窗口专属的 localStorage key，避免多窗口冲突）
     let currentWindowId = null;
+    let publishDataRecoverChecking = false;
+    let publishDataRecovering = false;
+    let requiredElementRecovering = false;
+
+    const hasPublishSuccessMarker = () => {
+        if (window.__sohuPublishSuccessFlag) {
+            return true;
+        }
+
+        try {
+            if (localStorage.getItem(getPublishSuccessKey()) || localStorage.getItem('PUBLISH_SUCCESS_DATA')) {
+                return true;
+            }
+            return !!(currentWindowId && localStorage.getItem(`PUBLISH_SUCCESS_DATA_${currentWindowId}`));
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const readActivePublishData = async () => {
+        try {
+            if (!window.browserAPI || !window.browserAPI.getWindowId || !window.browserAPI.getGlobalData) {
+                return null;
+            }
+
+            if (!currentWindowId) {
+                currentWindowId = await window.browserAPI.getWindowId();
+                console.log('[搜狐号发布] publish-data 监听器读取窗口 ID:', currentWindowId);
+            }
+
+            if (!currentWindowId) {
+                return null;
+            }
+
+            return await window.browserAPI.getGlobalData(`publish_data_window_${currentWindowId}`);
+        } catch (error) {
+            console.warn('[搜狐号发布] ⚠️ publish-data 监听器读取发布任务失败:', error.message);
+            return null;
+        }
+    };
+
+    const getPublishDataRecoverCount = () => {
+        try {
+            return Number(sessionStorage.getItem(PUBLISH_DATA_RECOVER_COUNT_KEY) || 0) || 0;
+        } catch (_) {
+            return 0;
+        }
+    };
+
+    const bumpPublishDataRecoverCount = () => {
+        const nextCount = getPublishDataRecoverCount() + 1;
+        try {
+            sessionStorage.setItem(PUBLISH_DATA_RECOVER_COUNT_KEY, String(nextCount));
+        } catch (_) {}
+        return nextCount;
+    };
+
+    const getRequiredElementMissCount = () => {
+        try {
+            return Number(sessionStorage.getItem(REQUIRED_ELEMENT_MISS_COUNT_KEY) || 0) || 0;
+        } catch (_) {
+            return 0;
+        }
+    };
+
+    const bumpRequiredElementMissCount = () => {
+        const nextCount = getRequiredElementMissCount() + 1;
+        try {
+            sessionStorage.setItem(REQUIRED_ELEMENT_MISS_COUNT_KEY, String(nextCount));
+        } catch (_) {}
+        return nextCount;
+    };
+
+    const clearRequiredElementMissCount = () => {
+        try {
+            sessionStorage.removeItem(REQUIRED_ELEMENT_MISS_COUNT_KEY);
+        } catch (_) {}
+    };
+
+    const isRequiredElementRecovering = () => requiredElementRecovering || window.__sohuRequiredElementRecovering__;
+
+    const jumpToFirstPageForPublishRecover = (reason) => {
+        if (isRequiredElementRecovering()) {
+            return true;
+        }
+
+        requiredElementRecovering = true;
+        window.__sohuRequiredElementRecovering__ = true;
+
+        try {
+            localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+        } catch (storageError) {
+            console.warn('[搜狐号发布] ⚠️ 缺失必需元素恢复时写入 toPath 失败:', storageError.message);
+        }
+
+        const recoverUrl = new URL(FIRST_PAGE_URL);
+        recoverUrl.searchParams.set('from', 'publish-recover');
+        recoverUrl.searchParams.set('reason', reason);
+        console.warn('[搜狐号发布] 🔄 必需元素连续缺失，跳转 firstPage 触发 publish-data 恢复:', recoverUrl.toString());
+        window.location.replace(recoverUrl.toString());
+        return true;
+    };
+
+    const handleRequiredElementMissing = async (selector, label, error) => {
+        const missCount = bumpRequiredElementMissCount();
+        console.warn(`[搜狐号发布] ⚠️ 必需元素缺失 ${missCount}/${MAX_REQUIRED_ELEMENT_MISS_COUNT}: ${label || selector}`, error?.message || error);
+
+        if (missCount < MAX_REQUIRED_ELEMENT_MISS_COUNT) {
+            return false;
+        }
+
+        const publishData = await readActivePublishData();
+        if (!publishData) {
+            console.warn('[搜狐号发布] ⚠️ 必需元素缺失已达上限，但当前窗口没有 publish-data，不执行恢复跳转');
+            return false;
+        }
+
+        return jumpToFirstPageForPublishRecover(`missing-required-element-${String(label || selector).replace(/[^a-zA-Z0-9_-]+/g, '-')}`);
+    };
+
+    const waitForRequiredElement = async (selector, timeout = 5000, label = selector) => {
+        try {
+            const element = await waitForElement(selector, timeout);
+            return element;
+        } catch (error) {
+            const recovering = await handleRequiredElementMissing(selector, label, error);
+            if (recovering) {
+                return null;
+            }
+            throw error;
+        }
+    };
+
+    const recoverPublishPageFromFirstPage = async (reason) => {
+        if (publishDataRecovering || publishDataRecoverChecking) {
+            return false;
+        }
+
+        publishDataRecoverChecking = true;
+        try {
+            if (!isFirstPageUrl()) {
+                return false;
+            }
+
+            if (hasPublishSuccessMarker()) {
+                console.log('[搜狐号发布] firstPage 已带发布成功标记，交给成功流程处理，不回跳发布页:', reason);
+                return false;
+            }
+
+            const publishData = await readActivePublishData();
+            if (!publishData) {
+                console.log('[搜狐号发布] firstPage 未读到当前窗口 publish-data，不执行发布页恢复:', reason);
+                return false;
+            }
+
+            const recoverCount = bumpPublishDataRecoverCount();
+            if (recoverCount > MAX_PUBLISH_DATA_RECOVER_COUNT) {
+                console.warn('[搜狐号发布] ⚠️ publish-data firstPage 恢复次数超过上限，停止回跳:', recoverCount);
+                return false;
+            }
+
+            try {
+                localStorage.setItem('toPath', PLATFORM_CONFIG.publishPagePath);
+            } catch (storageError) {
+                console.warn('[搜狐号发布] ⚠️ 写入 toPath 失败，继续跳转发布页:', storageError.message);
+            }
+
+            publishDataRecovering = true;
+            if (window.__sohuPublishDataFirstPageWatcherTimer__) {
+                clearInterval(window.__sohuPublishDataFirstPageWatcherTimer__);
+                window.__sohuPublishDataFirstPageWatcherTimer__ = null;
+            }
+
+            console.log('[搜狐号发布] 🔄 检测到当前窗口有 publish-data 且 URL 落到 firstPage，回跳发布页:', {
+                reason,
+                publishUrl: PLATFORM_CONFIG.publishPageUrl,
+                recoverCount
+            });
+            window.location.replace(PLATFORM_CONFIG.publishPageUrl);
+            return true;
+        } finally {
+            publishDataRecoverChecking = false;
+        }
+    };
+
+    const installPublishDataFirstPageWatcher = () => {
+        if (window.__sohuPublishDataFirstPageWatcher__) {
+            return;
+        }
+
+        window.__sohuPublishDataFirstPageWatcher__ = true;
+        const scheduleCheck = (reason) => {
+            if (publishDataRecovering || publishDataRecoverChecking || !isFirstPageUrl()) {
+                return;
+            }
+
+            setTimeout(() => {
+                recoverPublishPageFromFirstPage(reason).catch((error) => {
+                    console.warn('[搜狐号发布] ⚠️ publish-data firstPage 监听检查失败:', error.message);
+                });
+            }, 0);
+        };
+
+        ['pushState', 'replaceState'].forEach((methodName) => {
+            const originalMethod = history[methodName];
+            if (typeof originalMethod !== 'function') {
+                return;
+            }
+            history[methodName] = function (...args) {
+                const result = originalMethod.apply(this, args);
+                scheduleCheck(`history.${methodName}`);
+                return result;
+            };
+        });
+
+        window.addEventListener('popstate', () => scheduleCheck('popstate'));
+        window.addEventListener('hashchange', () => scheduleCheck('hashchange'));
+        window.__sohuPublishDataFirstPageWatcherTimer__ = setInterval(() => {
+            scheduleCheck('interval');
+        }, 500);
+        scheduleCheck('init');
+        console.log('[搜狐号发布] ✅ 已安装 publish-data firstPage URL 监听器');
+    };
+
+    installPublishDataFirstPageWatcher();
 
     // ===========================
     // 🔴 使用公共错误监听器（来自 common.js）
@@ -685,7 +1021,10 @@
                 // 标题（带重试和验证）
                 try {
                     await retryOperation(async () => {
-                        const titleEle = await waitForElement(".publish-title input", 5000);
+                        const titleEle = await waitForRequiredElement(".publish-title input", 5000, '标题输入框');
+                        if (!titleEle) {
+                            return;
+                        }
 
                         // 先触发focus事件
                         if (typeof titleEle.focus === 'function') {
@@ -718,6 +1057,10 @@
                 } catch (error) {
                     console.log('[搜狐号发布] ❌ 标题填写失败:', error.message);
                 }
+                if (isRequiredElementRecovering()) {
+                    fillFormRunning = false;
+                    return;
+                }
 
                 //设置简介（带重试）
                 try {
@@ -729,7 +1072,10 @@
                         }
 
                         console.log('[搜狐号发布] 开始填写简介...');
-                        const introEle = await waitForElement(".abstract textarea", 5000);
+                        const introEle = await waitForRequiredElement(".abstract textarea", 5000, '简介输入框');
+                        if (!introEle) {
+                            return;
+                        }
                         console.log('[搜狐号发布] 简介输入框元素:', introEle);
 
                         const targetIntro = dataObj.video.video.intro || '';
@@ -782,13 +1128,20 @@
                 } catch (error) {
                     console.log('[搜狐号发布] ❌ 简介填写失败:', error.message);
                 }
+                if (isRequiredElementRecovering()) {
+                    fillFormRunning = false;
+                    return;
+                }
 
                 try {
                     // 内容（带重试）
                     setTimeout(async () => {
                         try {
                             await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement("#editor", 20000); // 🔑 增加到 20 秒
+                                const editorIframeEle = await waitForRequiredElement("#editor", 20000, '正文编辑器'); // 🔑 增加到 20 秒
+                                if (!editorIframeEle) {
+                                    return;
+                                }
                                 const editorEle = editorIframeEle.querySelector('.ql-editor ')
                                 let htmlContent = dataObj.video.video.content;
 
@@ -925,14 +1278,30 @@
                         } catch (e) {
                             console.log('[搜狐号发布] ❌ 内容填写失败:', e.message);
                         }
+                        if (isRequiredElementRecovering()) {
+                            fillFormRunning = false;
+                            return;
+                        }
                     }, window.getRandomDelayMs(200));
                 } catch (e) {
                     console.log('[搜狐号发布] ❌ 内容填写失败:', e.message)
                 }
 
                 // 设置
-                const hasSettingsWrapEle = await waitForElement(".cover-button");
+                let hasSettingsWrapEle = null;
+                try {
+                    hasSettingsWrapEle = await waitForRequiredElement(".cover-button", 5000, '封面设置入口');
+                } catch (error) {
+                    console.log('[搜狐号发布] ❌ 封面设置入口检测失败:', error.message);
+                    fillFormRunning = false;
+                    return false;
+                }
+                if (isRequiredElementRecovering()) {
+                    fillFormRunning = false;
+                    return;
+                }
                 if (hasSettingsWrapEle) {
+                    clearRequiredElementMissCount();
                     // 🔴 启动全局错误监听器（已在 IIFE 顶层定义）
                     startErrorListener();
 
@@ -946,7 +1315,18 @@
                                 // 选中本地上传（点击"选择封面"按钮）
                                 setTimeout(async () => {
                                     // 等待封面选择区域出现
-                                    await waitForElement(".cover-button");
+                                    let coverButtonEle = null;
+                                    try {
+                                        coverButtonEle = await waitForRequiredElement(".cover-button", 5000, '封面选择区域');
+                                    } catch (error) {
+                                        console.log('[搜狐号发布] ❌ 封面选择区域检测失败:', error.message);
+                                        fillFormRunning = false;
+                                        return;
+                                    }
+                                    if (!coverButtonEle || isRequiredElementRecovering()) {
+                                        fillFormRunning = false;
+                                        return;
+                                    }
                                     await delay(500); // 等待渲染完成
 
                                     // 查找并点击"选择封面"按钮

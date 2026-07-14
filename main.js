@@ -3841,6 +3841,100 @@ function buildWindowContext(targetUrl, options = {}) {
   };
 }
 
+function normalizeSohuhaoAuthEntryUrl(targetUrl = '', options = {}) {
+  if (normalizePlatformName(options.platform) !== 'sohuhao' || options.windowContext?.purpose !== 'auth') {
+    return targetUrl;
+  }
+
+  try {
+    const parsed = new URL(targetUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page');
+    const isSohuMpfeRoot = parsed.hostname === 'mp.sohu.com' && /^\/mpfe\/v4\/?$/.test(parsed.pathname);
+    const isSohuFirstPage = parsed.hostname === 'mp.sohu.com'
+      && parsed.pathname === '/mpfe/v4/contentManagement/first/page';
+
+    if (!isSohuMpfeRoot && !isSohuFirstPage) {
+      return targetUrl;
+    }
+
+    const authUrl = new URL('https://mp.sohu.com/mpfe/v4/contentManagement/first/page');
+    parsed.searchParams.forEach((value, key) => {
+      if (key !== 'from') {
+        authUrl.searchParams.append(key, value);
+      }
+    });
+    authUrl.searchParams.set('from', 'auth');
+    return authUrl.toString();
+  } catch (_) {
+    return 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=auth';
+  }
+}
+
+function isSohuhaoAuthInjectablePageUrl(targetUrl = '') {
+  try {
+    const parsed = new URL(targetUrl || '');
+    return parsed.hostname === 'mp.sohu.com'
+      && (
+        /^\/mpfe\/v4\/?$/.test(parsed.pathname)
+        || parsed.pathname === '/mpfe/v4/login'
+        || parsed.pathname === '/mpfe/v4/contentManagement/first/page'
+      );
+  } catch (_) {
+    const urlText = String(targetUrl || '');
+    return urlText.includes('mp.sohu.com/mpfe/v4')
+      && (
+        urlText.includes('/login')
+        || urlText.includes('/contentManagement/first/page')
+        || /mp\.sohu\.com\/mpfe\/v4\/?(?:[?#].*)?$/.test(urlText)
+      );
+  }
+}
+
+function inferSohuhaoAuthWindowContext(windowId, targetUrl = '', context = null) {
+  const candidateUrl = targetUrl || context?.expectedPageUrl || '';
+  const normalizedPlatform = normalizePlatformName(context?.platform);
+
+  if (normalizedPlatform === 'sohuhao' && context?.purpose === 'auth') {
+    return context;
+  }
+
+  if (context?.purpose === 'auth' && isSohuhaoAuthInjectablePageUrl(candidateUrl)) {
+    return {
+      ...context,
+      platform: 'sohuhao',
+      expectedPageUrl: context.expectedPageUrl || candidateUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page'
+    };
+  }
+
+  if (windowId && globalStorage?.[`auth_mode_window_${windowId}`] && isSohuhaoAuthInjectablePageUrl(candidateUrl)) {
+    return {
+      ...(context || {}),
+      purpose: 'auth',
+      platform: 'sohuhao',
+      expectedPageUrl: context?.expectedPageUrl || candidateUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+      inferredFromAuthWindowFlag: true
+    };
+  }
+
+  return context;
+}
+
+function getSohuhaoAuthInjectionMatchUrl(actualUrl = '', context = null) {
+  const targetUrl = actualUrl || context?.expectedPageUrl || '';
+  const isSohuhaoAuthContext = normalizePlatformName(context?.platform) === 'sohuhao'
+    && context?.purpose === 'auth';
+  const isInferredSohuhaoAuthContext = context?.purpose === 'auth'
+    && isSohuhaoAuthInjectablePageUrl(targetUrl);
+
+  if (!isSohuhaoAuthContext && !isInferredSohuhaoAuthContext) {
+    return actualUrl;
+  }
+
+  return normalizeSohuhaoAuthEntryUrl(targetUrl, {
+    platform: 'sohuhao',
+    windowContext: context
+  });
+}
+
 function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
   if (!currentUrl || !expectedUrl) return false;
   if (currentUrl === expectedUrl) return true;
@@ -11132,6 +11226,39 @@ function findSohuhaoAuthWindowUrlForRelaunch() {
   return 'https://mp.sohu.com/mpfe/v4/';
 }
 
+async function ensureSohuhaoAuthWindowInjectableUrl(targetWindow, reason = 'auth-window-reuse') {
+  if (!targetWindow || targetWindow.isDestroyed() || !targetWindow.webContents || targetWindow.webContents.isDestroyed()) {
+    return false;
+  }
+
+  const context = windowContextMap.get(targetWindow.id) || null;
+  if (normalizePlatformName(context?.platform) !== 'sohuhao' || context?.purpose !== 'auth') {
+    return false;
+  }
+
+  const currentUrl = targetWindow.webContents.getURL() || context.expectedPageUrl || 'https://mp.sohu.com/mpfe/v4/';
+  const normalizedUrl = normalizeSohuhaoAuthEntryUrl(currentUrl, {
+    platform: 'sohuhao',
+    windowContext: context
+  });
+  if (normalizedUrl === currentUrl) {
+    return false;
+  }
+
+  context.expectedPageUrl = normalizedUrl;
+  context.safeOrigin = getUrlInfo(normalizedUrl).origin || 'https://mp.sohu.com';
+  context.bootstrapUrl = 'https://mp.sohu.com/';
+  windowContextMap.set(targetWindow.id, context);
+  console.log('[IPC] 🔧 搜狐号授权复用窗口当前是不可注入入口，重新导航到可注入 URL:', {
+    windowId: targetWindow.id,
+    reason,
+    currentUrl,
+    normalizedUrl
+  });
+  await targetWindow.webContents.loadURL(normalizedUrl);
+  return true;
+}
+
 function closeUnboundSohuhaoAuthWindows(exceptWindowId = null) {
   for (const childWindow of childWindows) {
     if (!childWindow || childWindow.isDestroyed() || !childWindow.webContents || childWindow.webContents.isDestroyed()) {
@@ -11280,6 +11407,12 @@ async function routeSohuhaoAuthDataToAccountWindow(message, sourceSession = null
 
   if (!targetWindow) {
     return { routed: false, reason: 'target-window-unavailable', accountId: resolvedAccount.accountId };
+  }
+
+  try {
+    await ensureSohuhaoAuthWindowInjectableUrl(targetWindow, 'route-auth-data-before-post-message');
+  } catch (injectableUrlErr) {
+    console.warn('[IPC] ⚠️ 搜狐号授权窗口可注入 URL 规范化失败，继续尝试投递消息:', injectableUrlErr.message);
   }
 
   const targetWindowId = targetWindow.id;
@@ -12181,6 +12314,21 @@ async function openManagedChildWindow(url, options = {}) {
     console.log('[Window Manager] 🔧 视频号登录显式重置 URL 追加 force_reset=1:', url);
   }
 
+  const normalizedSohuhaoAuthUrl = normalizeSohuhaoAuthEntryUrl(url, options);
+  if (normalizedSohuhaoAuthUrl !== url) {
+    url = normalizedSohuhaoAuthUrl;
+    options = {
+      ...options,
+      windowContext: {
+        ...options.windowContext,
+        expectedPageUrl: url,
+        safeOrigin: getUrlInfo(url).origin || 'https://mp.sohu.com',
+        bootstrapUrl: 'https://mp.sohu.com/'
+      }
+    };
+    console.log('[Window Manager] 🔧 搜狐号授权入口 URL 已规范化，确保脚本可注入:', url);
+  }
+
   const isShipinhaoPublishUrl = isShipinhaoPublishPageUrl(url);
 
   // ⏱ 全链路阶段性耗时基准时间
@@ -12977,7 +13125,10 @@ async function openManagedChildWindow(url, options = {}) {
     windowContextMap.set(newWindow.id, windowContext);
     console.log('[Window Manager] 窗口上下文:', windowContext);
     const showManagedWindow = (reason) => {
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentURL = !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()
+        ? newWindow.webContents.getURL()
+        : '';
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log(`[Window Manager] bootstrap 进行中，暂不显示窗口 (${reason})`);
         return;
@@ -13676,7 +13827,7 @@ async function openManagedChildWindow(url, options = {}) {
     newWindow.webContents.on('dom-ready', safeAsyncHandler('managed-window dom-ready inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] 跳过 bootstrap 页面注入:', currentURL);
         return;
@@ -13703,14 +13854,18 @@ async function openManagedChildWindow(url, options = {}) {
       }
 
       // 🔑 优先走统一注入函数，避免 dom-ready / did-finish-load / SPA 导航各自重复执行脚本。
-      await injectScriptForUrl(newWindow.webContents, currentURL);
+      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+      if (injectionUrl !== currentURL) {
+        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+      }
+      await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
 
     // 页面完全加载后通知首页 + 补充脚本注入（作为 dom-ready 的保底机制）
     newWindow.webContents.on('did-finish-load', safeAsyncHandler('managed-window did-finish-load inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 页面加载完成，跳过通知和注入:', currentURL);
         return;
@@ -13748,13 +13903,17 @@ async function openManagedChildWindow(url, options = {}) {
         console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
         await maybeRunBareToutiaoPublish(newWindow);
       } else {
-        await injectScriptForUrl(newWindow.webContents, currentURL);
+        const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+        if (injectionUrl !== currentURL) {
+          console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+        }
+        await injectScriptForUrl(newWindow.webContents, injectionUrl);
       }
     }));
 
     newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate recover', async (event, navUrl) => {
       console.log('[New Window API] Navigation:', navUrl);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, navUrl, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 导航完成，跳过导航守卫:', navUrl);
         return;
@@ -13814,7 +13973,11 @@ async function openManagedChildWindow(url, options = {}) {
         await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
-      await injectScriptForUrl(newWindow.webContents, navUrl);
+      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(navUrl, currentContext);
+      if (injectionUrl !== navUrl) {
+        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { navUrl, injectionUrl });
+      }
+      await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
 
     // 🔑 检查是否需要预设 storage（解决首次打开跳转首页/掉登录的问题）
@@ -14127,9 +14290,15 @@ ipcMain.handle('get-window-context', async (event) => {
       return { success: false, error: 'Cannot determine window' };
     }
 
+    const currentUrl = senderWindow.webContents && !senderWindow.webContents.isDestroyed()
+      ? senderWindow.webContents.getURL()
+      : '';
+    const storedContext = windowContextMap.get(senderWindow.id) || null;
+    const inferredContext = inferSohuhaoAuthWindowContext(senderWindow.id, currentUrl, storedContext);
+
     return {
       success: true,
-      context: windowContextMap.get(senderWindow.id) || null
+      context: inferredContext || null
     };
   } catch (err) {
     return { success: false, error: err.message };
