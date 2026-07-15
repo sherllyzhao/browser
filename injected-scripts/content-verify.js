@@ -255,9 +255,15 @@
 
     console.log(`${LOG} 🔍 验证模式启动 | 平台: ${displayName} | publishId: ${verifyData.publishId} | 匹配片段: "${fragment}"`);
 
-    // 轮询页面文本最多 30 秒（每 2 秒一次）
+    // 🔄 管理页是 SPA，列表不会自己刷新：内容在审核中/接口慢时首屏数据里没有这篇，
+    // 干等只会盯着同一份旧 DOM。策略：每轮轮询 20 秒，未命中就 location.reload() 拉新列表，
+    // 最多加载 3 轮（轮数存在 verifyData.verifyAttempts 里，reload 后脚本重进继续数）。
     const POLL_INTERVAL = 2000;
-    const POLL_TIMEOUT = 30000;
+    const POLL_TIMEOUT = 20000;
+    const MAX_PAGE_LOADS = 3;
+    const currentAttempt = Number(verifyData.verifyAttempts || 0) + 1;
+    console.log(`${LOG} 📄 第 ${currentAttempt}/${MAX_PAGE_LOADS} 轮列表检查`);
+
     const startTs = Date.now();
     let found = false;
     // 先等 3 秒让列表首屏渲染
@@ -269,7 +275,7 @@
           found = true;
           break;
         }
-        console.log(`${LOG} ⏳ 未命中，${POLL_INTERVAL / 1000}s 后重试（已等待 ${Math.round((Date.now() - startTs) / 1000)}s，页面文本 ${pageText.length} 字）`);
+        console.log(`${LOG} ⏳ 未命中，${POLL_INTERVAL / 1000}s 后重试（本轮已等待 ${Math.round((Date.now() - startTs) / 1000)}s，页面文本 ${pageText.length} 字）`);
       } catch (e) {
         console.warn(`${LOG} ⚠️ 文本采集异常:`, e && e.message);
       }
@@ -290,8 +296,24 @@
       await cleanupFlags(windowId);
       await delayFn(3000);
       await closeWindowSafely();
+    } else if (currentAttempt < MAX_PAGE_LOADS) {
+      // 本轮没找到 → 刷新页面拉最新列表，脚本重新注入后继续下一轮
+      console.warn(`${LOG} 🔄 第 ${currentAttempt} 轮未命中，刷新管理页拉取最新列表（还剩 ${MAX_PAGE_LOADS - currentAttempt} 轮）`);
+      try {
+        await window.browserAPI.setGlobalData(`CONTENT_VERIFY_DATA_${windowId}`, {
+          ...verifyData,
+          verifyAttempts: currentAttempt,
+        });
+        window.location.reload();
+        return;
+      } catch (e) {
+        console.warn(`${LOG} ⚠️ 更新轮数失败，无法安全刷新，按未找到收尾:`, e && e.message);
+        await cleanupFlags(windowId);
+        await delayFn(1000);
+        await closeWindowSafely();
+      }
     } else {
-      console.warn(`${LOG} ❌ ${POLL_TIMEOUT / 1000}s 内未在管理页找到 "${fragment}"，按约定不上报任何统计，静默关窗`);
+      console.warn(`${LOG} ❌ ${MAX_PAGE_LOADS} 轮列表检查均未找到 "${fragment}"（可能审核中），按约定不上报任何统计，静默关窗`);
       await cleanupFlags(windowId);
       await delayFn(1000);
       await closeWindowSafely();
@@ -388,36 +410,10 @@
   }
 
   if (matchedManagePlatform === platformKey) {
-    // 已在管理页：直接原地验证（复用验证模式逻辑最简单的方式是刷新一次让脚本以验证模式重进，
-    // 但刷新代价高；这里直接内联做一次轮询验证）
-    console.log(`${LOG} 📍 落地页即管理页，原地开始验证`);
-    const fragment = buildTitleFragment(title);
-    const startTs = Date.now();
-    let found = false;
-    await delayFn(3000);
-    while (Date.now() - startTs < 30000) {
-      try {
-        const pageText = normalizeText(collectPageText(document));
-        if (pageText.includes(fragment)) { found = true; break; }
-      } catch (_) {}
-      await delayFn(2000);
-    }
-    if (found) {
-      console.log(`${LOG} ✅ 管理页已找到刚发布的内容，完整再走一次成功流程`);
-      try {
-        if (typeof window.sendStatistics === 'function') {
-          await window.sendStatistics(newVerifyData.publishId, displayName, { skipDedup: true });
-        }
-      } catch (e) {
-        console.error(`${LOG} ❌ 验证成功统计上报异常:`, e && e.message);
-      }
-      notifyHome('发布成功，刷新数据');
-    } else {
-      console.warn(`${LOG} ❌ 30s 内未找到刚发布的内容，不上报，静默关窗`);
-    }
-    await cleanupFlags(windowId);
-    await delayFn(found ? 3000 : 1000);
-    await closeWindowSafely();
+    // 已在管理页：落地页的列表可能是跳转前的旧数据（SPA 不会自己刷新），
+    // 验证标记已写入 globalData，直接 reload 拉最新列表，脚本重进后以验证模式接管（含 3 轮刷新重试）
+    console.log(`${LOG} 📍 落地页即管理页，刷新拉取最新列表后进入验证模式`);
+    window.location.reload();
     return;
   }
 
