@@ -1239,6 +1239,8 @@ async function publishApi(dataObj) {
 
     // 点击成功
     console.log('[视频号发布] ✅ 发布按钮已点击');
+    // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
+    if (publishId) { window.sendOptimisticSuccess(publishId, '视频号发布').catch(() => {}); }
     console.log('[视频号发布] 📨 平台提示:', clickResult.message);
 
     // 开发环境弹窗显示平台提示信息
@@ -1250,10 +1252,10 @@ async function publishApi(dataObj) {
     // 点击后直接进入等待页面跳转的逻辑
 
     // 等待页面跳转到成功页，超时 30 秒
-    console.log('[视频号发布] ⏳ 等待跳转到成功页（30秒超时）...');
+    console.log('[视频号发布] ⏳ 等待跳转到成功页（90秒超时）...');
     const currentUrl = window.location.href;
     const startTime = Date.now();
-    const timeout = 30000; // 30秒
+    const timeout = 90000; // 90秒：对齐全平台，网慢兜底，避免误报超时失败
     // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
     let lastToastMessage = clickResult.message || '';
 
@@ -1307,8 +1309,28 @@ async function publishApi(dataObj) {
       return;
     }
 
+    // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐小红书：点击已提交、平台未跳转但也无明确失败提示）
+    //    视频号 lastToastMessage 可能含中性提示，故用失败关键词判定「明确失败」，只有命中才判失败，避免误报。
+    const SPH_FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
+    const sphHasExplicitFailure = lastToastMessage && SPH_FAIL_KEYWORDS.some(k => lastToastMessage.includes(k));
+    if (!sphHasExplicitFailure) {
+      console.log('[视频号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(publishDataKey);
+      hasProcessed = true;
+      publishRunning = false;
+      await sendStatistics(publishId, '视频号发布');
+      // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+      if (typeof window.gotoContentVerify === 'function'
+        && await window.gotoContentVerify('shipinhao', publishId, '视频号发布')) {
+        return;
+      }
+      await closeWindowWithMessage('发布成功，刷新数据', 1000);
+      return;
+    }
+
     // 真正的超时失败
-    console.log('[视频号发布] ❌ 等待超时（30秒），判定发布失败');
+    console.log('[视频号发布] ❌ 等待超时（90秒），判定发布失败');
     localStorage.removeItem(storageKey);
     localStorage.removeItem(publishDataKey);
     hasProcessed = true;

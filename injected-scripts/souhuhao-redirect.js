@@ -183,6 +183,23 @@ const MAX_PUBLISH_RECOVER_COUNT = 3;
         return false;
     };
 
+    // 🔎 内容验证模式守卫：验证标记存在时，成功标志的上报/关窗与发布页回跳都交给 content-verify.js，
+    // 这里直接退出，避免验证还没做完窗口就被关掉
+    try {
+        if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+            const verifyWindowIdEarly = await window.browserAPI.getWindowId();
+            if (verifyWindowIdEarly && verifyWindowIdEarly !== 'main') {
+                const verifyFlagEarly = await window.browserAPI.getGlobalData(`CONTENT_VERIFY_DATA_${verifyWindowIdEarly}`);
+                if (verifyFlagEarly) {
+                    console.log('[搜狐号重定向] ⏭️ 检测到内容验证标记，本脚本退出，交给 content-verify.js 处理');
+                    return;
+                }
+            }
+        }
+    } catch (verifyGuardEarlyError) {
+        console.warn('[搜狐号重定向] ⚠️ 内容验证标记检测失败，继续正常流程:', verifyGuardEarlyError.message);
+    }
+
     try {
         if (windowContext && !isPublishWindow) {
             console.log('[搜狐号重定向] 当前不是发布窗口，跳过发布成功标志检测');
@@ -291,6 +308,23 @@ const MAX_PUBLISH_RECOVER_COUNT = 3;
         if (!windowContext && window.browserAPI && window.browserAPI.getWindowContext) {
             windowContext = await window.browserAPI.getWindowContext();
             console.log('[搜狐号重定向] 窗口上下文:', windowContext);
+        }
+
+        // 🔎 内容验证模式守卫：发布成功后 content-verify.js 会带着验证标记跳回内容管理页，
+        // 此时绝不能再回跳发布页，否则和验证流程打架形成循环
+        try {
+            if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+                const verifyWindowId = await window.browserAPI.getWindowId();
+                if (verifyWindowId && verifyWindowId !== 'main') {
+                    const verifyFlag = await window.browserAPI.getGlobalData(`CONTENT_VERIFY_DATA_${verifyWindowId}`);
+                    if (verifyFlag) {
+                        console.log('[搜狐号重定向] ⏭️ 检测到内容验证标记，跳过发布页回跳，交给 content-verify.js 处理');
+                        return;
+                    }
+                }
+            }
+        } catch (verifyGuardError) {
+            console.warn('[搜狐号重定向] ⚠️ 内容验证标记检测失败，继续正常流程:', verifyGuardError.message);
         }
 
         const activePublishData = await hasActivePublishData();

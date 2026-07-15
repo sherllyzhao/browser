@@ -2493,6 +2493,9 @@
                                                                     });
                                                                     publishBtn.dispatchEvent(clickEvent);
                                                                     console.log("[腾讯号发布] ✅ 已点击发布（模拟鼠标事件）");
+                                                                    // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                                                    const txhOptId = dataObj.video?.dyPlatform?.id;
+                                                                    if (txhOptId) { window.sendOptimisticSuccess(txhOptId, '腾讯号发布').catch(() => {}); }
 
                                                                     // 腾讯的ai生成声明确认弹窗
                                                                     await AICreatePopup();

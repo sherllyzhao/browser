@@ -1217,6 +1217,9 @@
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 //return;
                                                 console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
+                                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                                const zhihuOptId = dataObj.video?.dyPlatform?.id;
+                                                if (zhihuOptId) { window.sendOptimisticSuccess(zhihuOptId, '知乎发布').catch(() => {}); }
 
                                                 // 🔴 等待 2 秒后检查是否有错误消息
                                                 await delay(2000);

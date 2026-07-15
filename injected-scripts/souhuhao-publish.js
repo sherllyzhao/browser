@@ -1652,6 +1652,9 @@
                                                                 cancelable: true
                                                             });
                                                             publishBtn.dispatchEvent(clickEvent);
+                                                            // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                                            const sohuOptId = dataObj?.video?.dyPlatform?.id;
+                                                            if (sohuOptId) { window.sendOptimisticSuccess(sohuOptId, '搜狐号发布').catch(() => {}); }
                                                             await checkPublishResult(dataObj, true);
                                                             console.log('[搜狐号发布] ✅ 已点击发布（模拟鼠标事件）');
                                                         }else{
@@ -1790,6 +1793,11 @@
                 console.warn('[搜狐号发布] ⚠️ 检测到成功但 publishId 为空，无法调用成功接口:', reason);
             }
             console.log('[搜狐号发布] ✅ 发布成功确认:', { reason, feedbackText });
+            // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+            if (typeof window.gotoContentVerify === 'function'
+                && await window.gotoContentVerify('sohuhao', markerData.publishId, '搜狐号发布')) {
+                return true;
+            }
             if (typeof closeWindowWithMessage === 'function') {
                 await closeWindowWithMessage('发布成功，刷新数据', 1000);
             } else if (typeof sendMessageToParent === 'function') {
@@ -1860,6 +1868,14 @@
             }
 
             await delay(1500);
+        }
+
+        // 🔑 超时无明确失败信号 → 视为发布成功（范式对齐小红书：点击已提交、平台未跳转但也无明确失败反馈）
+        //    循环内 getLatestError / 失败反馈都会提前 return 失败，走到这里说明全程无明确失败信号。
+        const sohuHasExplicitFailure = (lastFeedbackText && failurePattern.test(lastFeedbackText)) || !!getLatestError();
+        if (!sohuHasExplicitFailure) {
+            console.log('[搜狐号发布] ✅ 超时未检测到明确失败信号，点击已提交，视为发布成功');
+            return await handlePublishSuccess('timeout-no-failure', '点击已提交但平台未跳转成功页');
         }
 
         console.error('[搜狐号发布] ❌ 发布结果超时，未检测到成功跳转或错误提示');

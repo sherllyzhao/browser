@@ -1395,6 +1395,8 @@
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 console.log('[网易号发布] ✅ 已点击发布按钮');
+                                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                                if (publishId) { window.sendOptimisticSuccess(publishId, '网易号发布').catch(() => {}); }
 
                                                 // 检查是否有发文前检测提示
                                                 await delay(1000);

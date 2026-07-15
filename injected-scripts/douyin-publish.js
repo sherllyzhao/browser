@@ -875,6 +875,8 @@ async function publishApi(dataObj) {
     }
 
     console.log('[抖音发布] ✅ 发布按钮已点击');
+    // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
+    if (publishId) { window.sendOptimisticSuccess(publishId, '抖音发布').catch(() => {}); }
     console.log('[抖音发布] 📨 平台提示:', {
       message: clickResult.message,
       clickMode: clickResult.clickMode || '',
@@ -934,16 +936,21 @@ async function publishApi(dataObj) {
       const reported = await reportDouyinPublishSuccess(publishId, windowId, 'click-success-message');
       publishRunning = false;
       if (reported) {
+        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+        if (typeof window.gotoContentVerify === 'function'
+          && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
+          return;
+        }
         await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return;
       }
     }
 
     // 等待页面跳转到成功页，超时 30 秒
-    console.log('[抖音发布] ⏳ 等待跳转到成功页（30秒超时）...');
+    console.log('[抖音发布] ⏳ 等待跳转到成功页（90秒超时）...');
     const currentUrl = window.location.href;
     const startTime = Date.now();
-    const timeout = 30000; // 30秒
+    const timeout = 90000; // 90秒：对齐全平台，网慢兜底（配合点击乐观上报，避免误报超时失败）
     // 🔑 只保留真实平台提示，避免把“点击完成/点击成功”这类中性状态当失败原因上报
     let lastToastMessage = !isDouyinPublishSuccessMessage(clickResult.message)
       && !isDouyinNeutralPublishMessage(clickResult.message)
@@ -997,6 +1004,11 @@ async function publishApi(dataObj) {
             const reported = await reportDouyinPublishSuccess(publishId, windowId, 'poll-success-toast');
             publishRunning = false;
             if (reported) {
+              // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+              if (typeof window.gotoContentVerify === 'function'
+                && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
+                return;
+              }
               await closeWindowWithMessage('发布成功，刷新数据', 1000);
               return;
             }
@@ -1016,9 +1028,25 @@ async function publishApi(dataObj) {
       return;
     }
 
+    // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐小红书：点击已提交、平台未跳转但也无任何失败提示）
+    //    抖音轮询中只把「真实平台失败提示」记入 lastToastMessage（成功/中性提示已被过滤排除），
+    //    故 lastToastMessage 为空 = 全程未捕获明确失败 → 判成功，避免把「发成功了只是没跳转」误报为失败。
+    if (!lastToastMessage) {
+      console.log('[抖音发布] ✅ 超时未捕获任何失败提示，点击发布已提交，视为发布成功');
+      await reportDouyinPublishSuccess(publishId, windowId, 'timeout-no-failure');
+      publishRunning = false;
+      // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+      if (typeof window.gotoContentVerify === 'function'
+        && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
+        return;
+      }
+      await closeWindowWithMessage('发布成功，刷新数据', 1000);
+      return;
+    }
+
     // 真正的超时失败
     const timeoutFailureMessage = getDouyinTimeoutFailureMessage(lastToastMessage, clickResult.message);
-    console.log('[抖音发布] ❌ 等待超时（30秒），判定发布失败:', {
+    console.log('[抖音发布] ❌ 等待超时（90秒），判定发布失败:', {
       timeoutFailureMessage,
       lastToastMessage,
       clickMessage: clickResult.message || '',

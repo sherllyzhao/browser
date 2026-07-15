@@ -580,6 +580,11 @@ if (location.search.includes("published=true")) {
             console.warn("[小红书发布] ⚠️ 清理发布临时数据异常:", error.message);
         }
         publishRunning = false;
+        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+        if (typeof window.gotoContentVerify === 'function'
+            && await window.gotoContentVerify('xiaohongshu', publishId, '小红书发布')) {
+            return;
+        }
         try {
             await closeWindowWithMessage("发布成功，刷新数据", 1000);
         } catch (error) {
@@ -702,6 +707,8 @@ if (location.search.includes("published=true")) {
             }
 
             console.log("[小红书发布] ✅ 发布按钮已点击");
+            // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
+            if (publishId) { window.sendOptimisticSuccess(publishId, '小红书发布').catch(() => {}); }
             console.log("[小红书发布] 📨 平台提示:", clickResult.message);
 
             // 开发环境弹窗显示平台提示信息
@@ -721,10 +728,10 @@ if (location.search.includes("published=true")) {
             hasProcessed = true;
 
             // 等待页面跳转到成功页，超时 30 秒
-            console.log("[小红书发布] ⏳ 等待跳转到成功页（30秒超时）...");
+            console.log("[小红书发布] ⏳ 等待跳转到成功页（90秒超时）...");
             const currentUrl = window.location.href;
             const startTime = Date.now();
-            const timeout = 30000; // 30秒
+            const timeout = 90000; // 90秒：对齐全平台，网慢兜底，避免误报超时失败
             let lastFailureMessage = "";
 
             while (Date.now() - startTime < timeout) {

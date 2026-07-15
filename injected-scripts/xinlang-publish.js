@@ -847,6 +847,11 @@
 
                         // 关闭窗口
                         stopErrorListener();
+                        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                        if (typeof window.gotoContentVerify === 'function'
+                            && await window.gotoContentVerify('xinlang', publishIdForSuccess, '新浪发布')) {
+                            return;
+                        }
                         await closeWindowWithMessage("发布成功，刷新数据", 1000);
                         return;
                     }
@@ -983,6 +988,11 @@
 
                         // 关闭窗口
                         stopErrorListener();
+                        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                        if (typeof window.gotoContentVerify === 'function'
+                            && await window.gotoContentVerify('xinlang', publishIdForInstant, '新浪发布')) {
+                            return;
+                        }
                         await closeWindowWithMessage("发布成功，刷新数据", 1000);
                     }
                 } catch (dialogError) {
@@ -1376,6 +1386,11 @@
                         // 忽略清除失败
                     }
 
+                    // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                    if (typeof window.gotoContentVerify === 'function'
+                        && await window.gotoContentVerify('xinlang', publishId, '新浪发布')) {
+                        return;
+                    }
                     await closeWindowWithMessage("发布成功，刷新数据", 1000);
                 }
 

@@ -9641,7 +9641,64 @@ app.whenReady().then(async () => {
   // 设置日志文件（便携版和生产环境）
   if (isProduction) {
     const logPath = path.join(app.getPath('userData'), 'app.log');
-    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const logBackupPath = logPath + '.1';
+    const LOG_MAX_SIZE = 10 * 1024 * 1024;        // 单文件上限 10MB，超过则轮转为 app.log.1
+    const LOG_DISCARD_SIZE = 50 * 1024 * 1024;    // 历史文件超过 50MB 时备份已无排查价值，直接删除
+
+    // 启动时轮转：处理历史遗留的超大日志（曾出现 393MB 无轮转累积）
+    try {
+      const existing = fs.statSync(logPath);
+      if (existing.size > LOG_DISCARD_SIZE) {
+        fs.unlinkSync(logPath);
+      } else if (existing.size > LOG_MAX_SIZE) {
+        if (fs.existsSync(logBackupPath)) fs.unlinkSync(logBackupPath);
+        fs.renameSync(logPath, logBackupPath);
+      }
+    } catch (rotateError) {
+      // 文件不存在或被占用（如另一实例）时忽略，继续追加写入
+    }
+
+    let logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    let logWrittenBytes = 0;
+    try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) {}
+    let logRotating = false;
+
+    // Windows 无法重命名持有打开句柄的文件，必须先 end() 刷盘关闭 fd，再在回调里改名并重开新流。
+    // 轮转窗口（毫秒级）内的日志安全丢弃，不阻塞不抛错。
+    function rotateAppLog() {
+      if (logRotating) return;
+      logRotating = true;
+      const oldStream = logStream;
+      logStream = null;
+      oldStream.end(() => {
+        try {
+          if (fs.existsSync(logBackupPath)) fs.unlinkSync(logBackupPath);
+          fs.renameSync(logPath, logBackupPath);
+        } catch (renameError) {
+          // 改名失败（文件被占用等）则放弃本次轮转，继续追加到原文件
+        }
+        try {
+          logStream = fs.createWriteStream(logPath, { flags: 'a' });
+          try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) { logWrittenBytes = 0; }
+        } catch (reopenError) {
+          logStream = null; // 重开失败则本次会话不再写文件日志，控制台输出不受影响
+        }
+        logRotating = false;
+      });
+    }
+
+    function writeAppLog(line) {
+      try {
+        if (!logStream) return;
+        logStream.write(line);
+        logWrittenBytes += Buffer.byteLength(line);
+        if (logWrittenBytes > LOG_MAX_SIZE) {
+          rotateAppLog();
+        }
+      } catch (_) {
+        // 日志写入永远不能影响主流程
+      }
+    }
 
     // 保存原始 console 方法
     const originalLog = console.log;
@@ -9651,24 +9708,24 @@ app.whenReady().then(async () => {
     // 重定向 console 输出到文件和控制台
     console.log = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
       originalLog.apply(console, args);
     };
 
     console.error = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
       originalError.apply(console, args);
     };
 
     console.warn = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
       originalWarn.apply(console, args);
     };
 
     console.log('=================================');
-    console.log('📝 日志文件已启用');
+    console.log('📝 日志文件已启用（单文件上限 10MB，超出自动轮转为 app.log.1）');
     console.log('📂 日志路径:', logPath);
     console.log('=================================');
   }
