@@ -2727,18 +2727,133 @@ if (typeof window.uploadVideo === "function"
     // 流程：发布脚本成功收尾时调 gotoContentVerify → 存 CONTENT_VERIFY_DATA_${windowId} →
     //       跳转到平台内容管理页 → content-verify.js 在管理页轮询标题 → 命中才再走一次成功流程
     // ===========================
-    // 平台 key → 内容管理页 URL（与 scripts-config.json 中 content-verify.js 的注入 URL 对应）
+    // 平台 key → 内容管理页 URL
+    // 值为字符串：该 URL 对图文/视频通用（管理页首页能同时看到，或平台内容类型单一）
+    // 值为对象 { article, video }：图文和视频管理页不同，按内容类型取；
+    //   缺失的类型 = 不做二次验证（回退原关窗流程，保留调用前已上报的成功，绝不漏报）
     window.CONTENT_MANAGE_URLS = {
+        // 新浪：发布脚本只发图文（#editor 正文编辑器），管理页即文章列表，通用即可
         xinlang: "https://me.weibo.com/content/article",
-        sohuhao: "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+        // 搜狐：成功落地页与内容管理页同为 first/page（撞车）。发布脚本只发图文，文章列表通用。
+        // 🔑 带 ?from=verify 专属标记：与授权入口 ?from=auth、内容入口 ?from=content 隔离，
+        //    让 scripts-config 精确匹配只给「验证跳转」注入 content-verify.js，不误伤授权页
+        sohuhao: "https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=verify",
+        // 腾讯/百家号/知乎/网易/头条：发布脚本均为图文文章发布，管理页即文章列表，通用
         tengxunhao: "https://om.qq.com/main",
         baijiahao: "https://baijiahao.baidu.com/builder/rc/content?currentPage=1&pageSize=10&search=&type=&collection=&startDate=&endDate=",
         zhihu: "https://www.zhihu.com/creator/manage/creation/all",
         wangyihao: "https://mp.163.com/subscribe_v4/index.html#/content-manage",
-        douyin: "https://creator.douyin.com/creator-micro/content/manage",
-        xiaohongshu: "https://creator.xiaohongshu.com/new/note-manager",
-        shipinhao: "https://channels.weixin.qq.com/platform/post/list",
         toutiao: "https://mp.toutiao.com/profile_v4/manage/content/all",
+        // 抖音/西瓜：发布脚本上传视频文件，content/manage 为视频创作管理页
+        douyin: "https://creator.douyin.com/creator-micro/content/manage",
+        // 小红书：图文与视频笔记都走同一个 note-manager（用户确认），通用
+        xiaohongshu: "https://creator.xiaohongshu.com/new/note-manager",
+        // 视频号：只发视频，post/list 为视频列表
+        shipinhao: "https://channels.weixin.qq.com/platform/post/list",
+    };
+
+    // 判断当前是否已在某平台的内容管理页（宽松子串匹配，忽略 query/hash 差异）
+    // 用于撞车修复：成功落地页本身就是目标管理页时，location.href=同一URL 是空操作，需改用 reload
+    window.CONTENT_MANAGE_MATCHERS = {
+        xinlang: (u) => u.includes("me.weibo.com/content/"),
+        // 必须锚定 first/page：搜狐发布页 .../contentManagement/news/addarticle 也含 contentManagement，
+        // 只用 contentManagement 判断会把发布页误判为管理页 → 在发布页 reload 死循环重发
+        sohuhao: (u) => u.includes("mp.sohu.com/mpfe/v4/contentManagement/first/page"),
+        tengxunhao: (u) => u.includes("om.qq.com/main"),
+        baijiahao: (u) => u.includes("baijiahao.baidu.com/builder/rc/content"),
+        zhihu: (u) => u.includes("zhihu.com/creator/manage/creation"),
+        wangyihao: (u) => u.includes("mp.163.com") && u.includes("content-manage"),
+        douyin: (u) => u.includes("creator.douyin.com/creator-micro/content/manage"),
+        xiaohongshu: (u) => u.includes("creator.xiaohongshu.com/new/note-manager"),
+        shipinhao: (u) => u.includes("channels.weixin.qq.com/platform/post/list"),
+        toutiao: (u) => u.includes("mp.toutiao.com/profile_v4/manage/content")
+            || u.includes("mp.toutiao.com/profile_v4/graphic/manage"),
+    };
+
+    window.isOnContentManagePage = function (platformKey, url) {
+        const u = String(url || window.location.href || "");
+        // 优先用手写规则（处理搜狐 first/page 锚定这类需要精确控制的特例）
+        const matcher = window.CONTENT_MANAGE_MATCHERS && window.CONTENT_MANAGE_MATCHERS[platformKey];
+        if (matcher) {
+            try {
+                return !!matcher(u);
+            } catch (_) {
+                return false;
+            }
+        }
+        // 🆕 无手写规则时，自动用该平台在 CONTENT_MANAGE_URLS 配置的所有 URL 做子串匹配。
+        // 这样未来新增「同时发视频和文章、两页 URL 不同」的平台，只需在 CONTENT_MANAGE_URLS
+        // 填 {article, video}，撞车检测（成功页==管理页时改 reload）即自动生效，无需手写 matcher。
+        try {
+            const urls = window.getContentManageUrlsForPlatform(platformKey);
+            return urls.some((cfgUrl) => {
+                const path = stripUrlToMatchablePath(cfgUrl);
+                return path && u.includes(path);
+            });
+        } catch (_) {
+            return false;
+        }
+    };
+
+    // 取某平台在 CONTENT_MANAGE_URLS 配置的全部管理页 URL（字符串→[url]；对象→[article,video] 去空去重）
+    window.getContentManageUrlsForPlatform = function (platformKey) {
+        const entry = window.CONTENT_MANAGE_URLS && window.CONTENT_MANAGE_URLS[platformKey];
+        if (!entry) {
+            return [];
+        }
+        if (typeof entry === "string") {
+            return entry ? [entry] : [];
+        }
+        if (typeof entry === "object") {
+            const list = [];
+            for (const key of Object.keys(entry)) {
+                const val = entry[key];
+                if (val && typeof val === "string" && !list.includes(val)) {
+                    list.push(val);
+                }
+            }
+            return list;
+        }
+        return [];
+    };
+
+    // 把完整 URL 削成可用于 includes 子串匹配的「host+path」（去掉协议/query/hash，避免 query 差异导致漏判）
+    function stripUrlToMatchablePath(fullUrl) {
+        let s = String(fullUrl || "").trim();
+        if (!s) return "";
+        s = s.replace(/^https?:\/\//i, "");   // 去协议
+        s = s.split("?")[0];                    // 去 query
+        s = s.split("#")[0];                    // 去 hash（注意：网易/新浪等 hash 路由平台已用手写 matcher，不走这里）
+        return s.replace(/\/+$/, "");           // 去末尾斜杠
+    }
+
+    // 判断发布内容是视频还是图文/文章：有真实视频文件地址才算视频
+    window.detectPublishContentType = function (publishData) {
+        const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
+        if (!rawData || typeof rawData !== "object") {
+            return "article";
+        }
+        const videoUrl = rawData?.video?.video?.url;
+        if (videoUrl && String(videoUrl).trim()) {
+            return "video";
+        }
+        return "article";
+    };
+
+    // 按内容类型解析管理页 URL
+    // 对象配置时只取该类型对应的 URL，缺失返回 ""（绝不回退到另一类型的页面，避免视频跳到文章列表误判）
+    window.resolveContentManageUrl = function (platformKey, contentType) {
+        const entry = window.CONTENT_MANAGE_URLS && window.CONTENT_MANAGE_URLS[platformKey];
+        if (!entry) {
+            return "";
+        }
+        if (typeof entry === "string") {
+            return entry;
+        }
+        if (typeof entry === "object") {
+            return entry[contentType] || "";
+        }
+        return "";
     };
 
     // 从发布数据中提取内容标题（视频/图文/文章各有不同字段，按常见优先级取）
@@ -2762,16 +2877,11 @@ if (typeof window.uploadVideo === "function"
      * @param {string} platformKey - CONTENT_MANAGE_URLS 的 key（如 'toutiao'）
      * @param {string|number} publishId - 发布 ID
      * @param {string} displayName - 平台显示名（用于统计上报，如 '头条发布'）
-     * @returns {Promise<boolean>} true=已发起跳转（调用方不要再关窗）；false=无法验证（调用方走原关窗流程）
+     * @returns {Promise<boolean>} true=已发起验证（调用方不要再关窗）；false=无法验证（调用方走原关窗流程）
      */
     window.gotoContentVerify = async function (platformKey, publishId, displayName = "") {
         const logPrefix = `[内容验证][${displayName || platformKey}]`;
         try {
-            const manageUrl = window.CONTENT_MANAGE_URLS && window.CONTENT_MANAGE_URLS[platformKey];
-            if (!manageUrl) {
-                console.warn(`${logPrefix} ⚠️ 未配置管理页 URL，回退原流程`);
-                return false;
-            }
             if (!publishId) {
                 console.warn(`${logPrefix} ⚠️ publishId 为空，回退原流程`);
                 return false;
@@ -2794,21 +2904,37 @@ if (typeof window.uploadVideo === "function"
                 return false;
             }
 
+            const contentType = window.detectPublishContentType(publishData);
+            const manageUrl = window.resolveContentManageUrl(platformKey, contentType);
+            if (!manageUrl) {
+                console.warn(`${logPrefix} ⚠️ ${contentType} 类型未配置管理页 URL，跳过二次验证（成功已上报，安全），回退原流程`);
+                return false;
+            }
+
             const verifyData = {
                 platform: platformKey,
                 displayName: displayName || platformKey,
                 publishId: String(publishId),
                 title,
                 manageUrl,
+                contentType,
                 createdAt: Date.now(),
             };
             await window.browserAPI.setGlobalData(`CONTENT_VERIFY_DATA_${windowId}`, verifyData);
-            console.log(`${logPrefix} ✅ 验证标记已写入，跳转内容管理页:`, manageUrl, "| 标题:", title);
+            console.log(`${logPrefix} ✅ 验证标记已写入 | 类型:${contentType} | 标题:${title} | 目标:${manageUrl}`);
 
             // 跳转前先通知首页刷新（第一次成功流程的通知不能丢）
             try { window.sendMessageToParent?.("发布成功，刷新数据"); } catch (_) {}
 
-            window.location.href = manageUrl;
+            // 🔧 撞车修复：成功落地页本身就是目标管理页时（如搜狐 first/page），
+            // location.href=同一URL 在 SPA 内是空操作，content-verify.js 会在标记写入前跑完退出
+            // → 验证与二次上报丢失、窗口卡死。改用 reload 强制 content-verify.js 带标记以验证模式重新进入。
+            if (window.isOnContentManagePage(platformKey)) {
+                console.log(`${logPrefix} 📍 当前已在管理页，reload 以验证模式重进（避免同 URL 空跳转）`);
+                window.location.reload();
+            } else {
+                window.location.href = manageUrl;
+            }
             return true;
         } catch (e) {
             console.warn(`${logPrefix} ⚠️ 发起验证跳转失败，回退原流程:`, e && e.message);
@@ -3083,9 +3209,7 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}${isGeo ? " [GEO-每次记录]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
-            // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 6;
-            const retryDelay = isGeo ? 0 : 600;
+            // 🔒 只发一次：成功与失败上报都不重试、不入补报队列（用户要求「只有一次」）
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -3109,32 +3233,20 @@ if (typeof window.uploadVideo === "function"
                 } finally {
                     clearTimeout(timeoutId);
                 }
-            }, retryCount, retryDelay);
+            }, 1, 0);
 
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
-            // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
-            window.flushFailedStatReports?.().catch(() => {});
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
                 await window.releaseStatisticsReportLock(reportLock, publishId);
             }
-            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
-            if (isGeo) {
-                console.warn(`[${platform || "发布"}] ⚠️ GEO 统计失败不入补报队列，避免 keepalive 已到达服务端后补报造成重复记录`);
-                window.showPublishToast?.(
-                    "内容已发布成功！GEO 统计上报失败，为避免重复记录未加入补报队列，不影响发布结果。",
-                    "warning"
-                );
-            } else {
-                // 🔑 落盘到离线补报队列，后台恢复后自动补发，避免数据永久丢失
-                await window.enqueueFailedStatReport?.({ url, scanData, resultType: "success", platform, publishId });
-                // 🔑 能走到 sendStatistics 即代表「内容已发布成功」，仅统计上报失败 → 提示用户别误以为白发
-                window.showPublishToast?.(
-                    "内容已发布成功！仅数据统计上报失败，已自动加入补报队列稍后重试，不影响发布结果。",
-                    "warning"
-                );
-            }
+            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败（只发 1 次，不重试、不补报）:`, e.message);
+            // 🔒 只发一次：不入补报队列。仅提示用户内容已发布成功、统计上报失败。
+            window.showPublishToast?.(
+                "内容已发布成功！仅数据统计上报失败（不影响发布结果）。",
+                "warning"
+            );
             return { success: false, error: e };
         }
     };
@@ -3242,9 +3354,7 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}${isGeo ? " [GEO-每次记录]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
-            // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 6;
-            const retryDelay = isGeo ? 0 : 600;
+            // 🔒 只发一次：不重试、不入补报队列（用户要求「只有一次」）
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -3268,23 +3378,16 @@ if (typeof window.uploadVideo === "function"
                 } finally {
                     clearTimeout(timeoutId);
                 }
-            }, retryCount, retryDelay);
+            }, 1, 0);
 
             console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
-            // 趁后台活着，顺带补发之前积压的失败上报（fire-and-forget，不阻塞返回）
-            window.flushFailedStatReports?.().catch(() => {});
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
                 await window.releaseStatisticsReportLock(reportLock, publishId);
             }
-            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
-            if (isGeo) {
-                console.warn(`[${platform || "发布"}] ⚠️ GEO 失败统计不入补报队列，避免 keepalive 已到达服务端后补报造成重复记录`);
-            } else {
-                // 🔑 落盘到离线补报队列，后台恢复后自动补发（错误上报失败属内容未发成功场景，静默入队不弹 toast）
-                await window.enqueueFailedStatReport?.({ url, scanData, resultType: "error", platform, publishId });
-            }
+            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败（只发 1 次，不重试、不补报）:`, e.message);
+            // 🔒 只发一次：不入补报队列。
             return { success: false, error: e };
         }
     };
@@ -5011,26 +5114,6 @@ if (typeof hideOperationBanner === "undefined") window.hideOperationBanner && (h
     console.log("[ProtocolBlock] ✅ 前端协议拦截已启用");
 })();
 
-// ===========================
-// 🔁 启动补报：脚本加载后延迟 5s 触发一次离线补报队列 flush
-// 每次打开发布窗口都会执行，正好借这个时机把之前积压（后台曾挂掉）的失败上报补回来
-// ===========================
-setTimeout(() => {
-    try {
-        window.flushFailedStatReports?.().catch(() => {});
-    } catch (_) {}
-}, 5000);
-
-// ===========================
-// 🔁 周期性补报：只要发布窗口还开着，每 60s 尝试把积压的失败上报补回
-// 解决「发完即关窗，补报只能等下次开窗」的延迟问题。
-// 防重复注册：每次开窗都会执行本脚本，用全局标志确保 interval 只挂一次。
-// 开销极小：flushFailedStatReports 内部有 __STAT_FLUSH_RUNNING__ 并发锁 + 空队列早退。
-// ===========================
-if (!window.__STAT_FLUSH_INTERVAL__) {
-    window.__STAT_FLUSH_INTERVAL__ = setInterval(() => {
-        try {
-            window.flushFailedStatReports?.().catch(() => {});
-        } catch (_) {}
-    }, 60000);
-}
+// 🔒 已按「统计上报只发一次」移除离线补报队列的启动补发与周期性补发触发点。
+// enqueueFailedStatReport / flushFailedStatReports 函数体保留但不再被自动调用，
+// 上报失败即失败，不重试、不补发。

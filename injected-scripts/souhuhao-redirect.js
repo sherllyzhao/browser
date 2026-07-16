@@ -61,7 +61,26 @@ const MAX_PUBLISH_RECOVER_COUNT = 3;
             console.warn('[搜狐号重定向] ⚠️ 根入口读取窗口上下文失败，按授权入口兜底:', rootContextError.message);
         }
 
-        if (rootWindowContext && rootWindowContext.purpose === 'publish') {
+        // 🛡️ 发布窗口识别加 publish-data 兜底：掉登录时序里 getWindowContext 可能读空，
+        //    若仅靠 purpose 判断会把发布窗口误当授权入口 → 写 AUTH_ENTRY_KEY 并跳授权页，
+        //    导致登录后回不到发布页。故上下文读空时再查 publish_data_window 兜底确认。
+        //    ⚠️ 此处早于 hasActivePublishData/getCurrentWindowId 定义（TDZ），故内联直接读取，不调用后面的函数。
+        let rootIsPublishWindow = !!(rootWindowContext && rootWindowContext.purpose === 'publish');
+        if (!rootIsPublishWindow) {
+            try {
+                if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+                    const rootWid = await window.browserAPI.getWindowId();
+                    if (rootWid && rootWid !== 'main') {
+                        const rootPublishData = await window.browserAPI.getGlobalData(`publish_data_window_${rootWid}`);
+                        rootIsPublishWindow = !!rootPublishData;
+                    }
+                }
+            } catch (rootPublishDataError) {
+                console.warn('[搜狐号重定向] ⚠️ 根入口 publish-data 兜底检查失败:', rootPublishDataError.message);
+            }
+        }
+
+        if (rootIsPublishWindow) {
             console.log('[搜狐号重定向] 根入口属于发布窗口，跳过授权入口兜底');
         } else {
             try {
@@ -185,8 +204,20 @@ const MAX_PUBLISH_RECOVER_COUNT = 3;
 
     // 🔎 内容验证模式守卫：验证标记存在时，成功标志的上报/关窗与发布页回跳都交给 content-verify.js，
     // 这里直接退出，避免验证还没做完窗口就被关掉
+    // 🛡️ 授权短路：仅在「非发布窗口」且是授权入口时生效，避免误伤授权链路。
+    //    ⚠️ 关键修复：AUTH_ENTRY_KEY 是 sessionStorage，发布窗口掉登录时途经授权/根入口会残留它，
+    //    登录后搜狐跳回裸 first/page，若仍按授权短路会跳过回跳发布页 → 永停 first/page。
+    //    故发布窗口(isPublishWindow)即使有残留授权标记也不短路，并主动清除误留标记。
     try {
-        if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+        if (isPublishWindow) {
+            // 发布窗口：清掉可能残留的授权标记，确保后续回跳发布页逻辑不被误拦
+            try { sessionStorage.removeItem(AUTH_ENTRY_KEY); } catch (_) {}
+        }
+        const isAuthContext = !isPublishWindow && (isAuthEntry
+            || (() => { try { return !!sessionStorage.getItem(AUTH_ENTRY_KEY); } catch (_) { return false; } })());
+        if (isAuthContext) {
+            console.log('[搜狐号重定向] ⏭️ 非发布窗口的授权入口场景，跳过内容验证守卫，保障授权链路');
+        } else if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
             const verifyWindowIdEarly = await window.browserAPI.getWindowId();
             if (verifyWindowIdEarly && verifyWindowIdEarly !== 'main') {
                 const verifyFlagEarly = await window.browserAPI.getGlobalData(`CONTENT_VERIFY_DATA_${verifyWindowIdEarly}`);
@@ -312,8 +343,16 @@ const MAX_PUBLISH_RECOVER_COUNT = 3;
 
         // 🔎 内容验证模式守卫：发布成功后 content-verify.js 会带着验证标记跳回内容管理页，
         // 此时绝不能再回跳发布页，否则和验证流程打架形成循环
+        // 🛡️ 授权短路：仅非发布窗口的授权入口生效；发布窗口清除残留授权标记，确保回跳不被误拦
         try {
-            if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
+            if (isPublishWindow) {
+                try { sessionStorage.removeItem(AUTH_ENTRY_KEY); } catch (_) {}
+            }
+            const isAuthContext2 = !isPublishWindow && (isAuthEntry
+                || (() => { try { return !!sessionStorage.getItem(AUTH_ENTRY_KEY); } catch (_) { return false; } })());
+            if (isAuthContext2) {
+                console.log('[搜狐号重定向] ⏭️ 非发布窗口的授权入口场景，跳过发布页回跳守卫');
+            } else if (window.browserAPI && window.browserAPI.getWindowId && window.browserAPI.getGlobalData) {
                 const verifyWindowId = await window.browserAPI.getWindowId();
                 if (verifyWindowId && verifyWindowId !== 'main') {
                     const verifyFlag = await window.browserAPI.getGlobalData(`CONTENT_VERIFY_DATA_${verifyWindowId}`);

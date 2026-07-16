@@ -30,6 +30,25 @@
 
   console.log(`${LOG} ✅ 脚本已注入 | URL:`, currentUrl);
 
+  // 🛡️ 授权页硬早退：搜狐授权入口(?from=auth)与内容管理页共用 first/page URL 前缀，
+  //    content-verify 绝不能在授权链路上做任何事，否则会打断授权。
+  //    只要 URL 带 from=auth 或存在授权入口 sessionStorage 标记，立即退出（无视验证标记）。
+  try {
+    const searchLower = currentSearch.toLowerCase();
+    const hasAuthQuery = searchLower.includes('from=auth');
+    const hasAuthEntryFlag = (() => {
+      try {
+        return !!sessionStorage.getItem('__sohuhao_auth_entry__');
+      } catch (_) {
+        return false;
+      }
+    })();
+    if (hasAuthQuery || hasAuthEntryFlag) {
+      console.log(`${LOG} ⏭️ 检测到授权入口（from=auth 或授权标记），本脚本不介入授权链路，退出`);
+      return;
+    }
+  } catch (_) {}
+
   // ===========================
   // 平台管理页匹配（与 common.js 的 CONTENT_MANAGE_URLS 对应）
   // ===========================
@@ -170,6 +189,10 @@
         localStorage.removeItem(`PUBLISH_SUCCESS_DATA_${windowId}`);
       }
       localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+      // 搜狐专属成功标记 key（souhuhao-publish.js 的 getPublishSuccessKey()），
+      // 撞车场景 reload 后残留会让 souhuhao-redirect.js 误判，一并清除
+      localStorage.removeItem('sohu_publish_success_data');
+      try { window.__sohuPublishSuccessFlag = false; } catch (_) {}
     } catch (_) {}
   }
 
@@ -226,11 +249,33 @@
 
   const matchedManagePlatform = findMatchedManagePlatform(currentUrl);
 
+  // 双发平台（同时发视频和文章、两页 URL 不同）兼容：验证标记里的 manageUrl 是 gotoContentVerify
+  // 按内容类型解析好的确切目标页，用它判断「是否已到目标页」比 platform 级 matcher 更精确
+  // （platform matcher 只认一个 URL，双发平台的另一类型页会被判为"未到"而卡在等待）。
+  function isOnExpectedManagePage(vData) {
+    if (!vData) return false;
+    const expectedUrl = vData.manageUrl;
+    if (expectedUrl) {
+      const path = String(expectedUrl)
+        .replace(/^https?:\/\//i, '')
+        .split('?')[0]
+        .split('#')[0]
+        .replace(/\/+$/, '');
+      // hash 路由平台（网易 #/content-manage 等）split('#') 会砍掉关键路径，
+      // 这类回退到 platform matcher 判断
+      if (path && path.includes('/') && currentUrl.includes(path)) {
+        return true;
+      }
+    }
+    // 回退：platform 级 matcher（含 hash 路由平台与老逻辑）
+    return matchedManagePlatform === vData.platform;
+  }
+
   // ---------------------------
   // 验证模式：有验证标记且在对应平台管理页
   // ---------------------------
   if (verifyData && verifyData.publishId && verifyData.title) {
-    if (!matchedManagePlatform || matchedManagePlatform !== verifyData.platform) {
+    if (!isOnExpectedManagePage(verifyData)) {
       // 🛡️ 落到登录页说明管理页要求重新登录，验证无法进行；发布与首次上报已完成，清标记关窗兜底
       if (typeof window.isPageOnLoginUrl === 'function' && window.isPageOnLoginUrl()) {
         console.warn(`${LOG} ⚠️ 验证跳转落到登录页，无法验证（发布与首次上报已完成），清标记关窗`);
@@ -239,7 +284,7 @@
         await closeWindowSafely();
         return;
       }
-      console.log(`${LOG} ⏳ 有验证标记但当前页非 ${verifyData.platform} 管理页（匹配到: ${matchedManagePlatform || '无'}），等待跳转完成`);
+      console.log(`${LOG} ⏳ 有验证标记但当前页非目标管理页（平台: ${verifyData.platform}, 目标: ${verifyData.manageUrl || 'N/A'}, 匹配到: ${matchedManagePlatform || '无'}），等待跳转完成`);
       return;
     }
 
@@ -373,11 +418,14 @@
 
   // 提取标题（发布数据仍在 publish_data_window_${windowId} 中）
   let title = '';
+  let contentType = 'article';
   try {
     const publishData = typeof window.getCurrentPublishDataForStatistics === 'function'
       ? await window.getCurrentPublishDataForStatistics(LOG)
       : null;
     title = typeof window.extractPublishTitle === 'function' ? window.extractPublishTitle(publishData) : '';
+    contentType = typeof window.detectPublishContentType === 'function'
+      ? window.detectPublishContentType(publishData) : 'article';
   } catch (_) {}
 
   if (!title) {
@@ -388,16 +436,29 @@
     return;
   }
 
-  // 如果当前落地页恰好就是本平台管理页（抖音/腾讯/网易/头条），原地转验证模式：写标记后刷新逻辑复用
-  const manageUrl = (window.CONTENT_MANAGE_URLS && window.CONTENT_MANAGE_URLS[platformKey]) || null;
+  // 按内容类型解析管理页 URL（视频/图文可能不同；缺失该类型 URL 则不验证）
+  const manageUrl = typeof window.resolveContentManageUrl === 'function'
+    ? window.resolveContentManageUrl(platformKey, contentType)
+    : null;
   const newVerifyData = {
     platform: platformKey,
     displayName,
     publishId: String(successData.publishId),
     title,
     manageUrl,
+    contentType,
     createdAt: Date.now(),
   };
+
+  // 落地页即管理页时（撞车），无需依赖 manageUrl 也能原地 reload 验证；
+  // 只有既非管理页、又无目标 URL 时才无法验证 → 走原收尾
+  if (matchedManagePlatform !== platformKey && !manageUrl) {
+    console.warn(`${LOG} ⚠️ 平台 ${platformKey} 的 ${contentType} 类型未配置管理页 URL，跳过验证（成功已上报，安全），走原收尾`);
+    await cleanupFlags(windowId);
+    await delayFn(3000);
+    await closeWindowSafely();
+    return;
+  }
 
   try {
     await window.browserAPI.setGlobalData(`CONTENT_VERIFY_DATA_${windowId}`, newVerifyData);
