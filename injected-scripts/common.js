@@ -2926,13 +2926,14 @@ if (typeof window.uploadVideo === "function"
             // 跳转前先通知首页刷新（第一次成功流程的通知不能丢）
             try { window.sendMessageToParent?.("发布成功，刷新数据"); } catch (_) {}
 
-            // 🔧 撞车修复：成功落地页本身就是目标管理页时（如搜狐 first/page），
-            // location.href=同一URL 在 SPA 内是空操作，content-verify.js 会在标记写入前跑完退出
-            // → 验证与二次上报丢失、窗口卡死。改用 reload 强制 content-verify.js 带标记以验证模式重新进入。
+            // 🔧 智能验证跳转：
+            // 已在管理页时（如搜狐 first/page）：标记已写入 → reload 强制 content-verify.js 重新执行并捡到标记
+            // 不在管理页时：标记已写入 → 跳转到管理页
             if (window.isOnContentManagePage(platformKey)) {
-                console.log(`${logPrefix} 📍 当前已在管理页，reload 以验证模式重进（避免同 URL 空跳转）`);
+                console.log(`${logPrefix} 📍 当前已在管理页，reload 以验证模式重进（标记已写入，content-verify.js 将接管验证）`);
                 window.location.reload();
             } else {
+                console.log(`${logPrefix} 🔗 跳转到管理页验证 | 目标:${manageUrl}`);
                 window.location.href = manageUrl;
             }
             return true;

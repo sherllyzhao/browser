@@ -3033,6 +3033,42 @@ async function maybeBlockMismatchedSohuhaoPublishAccount(targetWindow, currentUR
   appendPublishSessionDiagLog('publish-session-sohuhao-account-mismatch', payload);
 
   if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+    // 🔔 踢回登录页前先给用户可见提示：说明是账号不一致（而非"神秘掉登录"），并等几秒让用户看清
+    try {
+      const tipInfo = {
+        expectedName: expected.name || '（任务未提供账号名）',
+        actualName: actual.nickName || '（未识别到昵称）'
+      };
+      await targetWindow.webContents.executeJavaScript(`
+        (() => {
+          try {
+            var info = ${JSON.stringify(tipInfo)};
+            var old = document.getElementById('__sohu_account_mismatch_tip__');
+            if (old) old.remove();
+            var mask = document.createElement('div');
+            mask.id = '__sohu_account_mismatch_tip__';
+            mask.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;';
+            var box = document.createElement('div');
+            box.style.cssText = 'max-width:460px;background:#fff;border-radius:12px;padding:28px 32px;box-shadow:0 8px 40px rgba(0,0,0,.3);text-align:center;';
+            box.innerHTML =
+              '<div style="font-size:44px;line-height:1;margin-bottom:14px;">⚠️</div>'
+              + '<div style="font-size:19px;font-weight:600;color:#e6392e;margin-bottom:16px;">登录账号不匹配</div>'
+              + '<div style="font-size:15px;color:#333;line-height:1.7;text-align:left;">'
+              + '当前登录账号：<b style="color:#e6392e;">' + info.actualName + '</b><br>'
+              + '本次任务账号：<b style="color:#1a7f37;">' + info.expectedName + '</b>'
+              + '</div>'
+              + '<div style="font-size:14px;color:#666;margin-top:16px;line-height:1.7;">为避免内容发到错误账号，已阻止发布并即将跳转登录页。<br>请退出后，用<b>本次任务对应的账号</b>重新登录。</div>';
+            mask.appendChild(box);
+            document.body.appendChild(mask);
+          } catch (_) {}
+        })();
+      `, true);
+      // 停留 5 秒让用户看清提示，再跳登录页
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    } catch (tipErr) {
+      console.warn('[搜狐号发布账号守卫] 展示账号不一致提示失败（不影响跳转）:', tipErr.message);
+    }
+
     try {
       await targetWindow.webContents.loadURL('https://mp.sohu.com/mpfe/v4/login');
     } catch (loadErr) {

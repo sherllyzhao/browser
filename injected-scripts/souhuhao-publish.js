@@ -1784,20 +1784,41 @@
         const handlePublishSuccess = async (reason, feedbackText = '') => {
             stopErrorListener();
             const markerData = await savePublishSuccessMarker(dataObj);
-            if (markerData.publishId && typeof sendStatistics === 'function') {
-                console.log('[搜狐号发布] 📤 检测到成功，调用成功接口:', reason);
-                await sendStatistics(markerData.publishId, '搜狐号发布');
-            } else if (markerData.publishId) {
-                console.warn('[搜狐号发布] ⚠️ 检测到成功但 sendStatistics 不可用，无法调用成功接口:', reason);
-            } else {
-                console.warn('[搜狐号发布] ⚠️ 检测到成功但 publishId 为空，无法调用成功接口:', reason);
-            }
-            console.log('[搜狐号发布] ✅ 发布成功确认:', { reason, feedbackText });
-            // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-            if (typeof window.gotoContentVerify === 'function'
-                && await window.gotoContentVerify('sohuhao', markerData.publishId, '搜狐号发布')) {
+            if (!markerData.publishId) {
+                console.warn('[搜狐号发布] ⚠️ 检测到成功但 publishId 为空，无法调用接口:', reason);
+                // 回退原关窗流程
+                try { window.sendMessageToParent?.("发布成功，刷新数据"); } catch (_) {}
+                if (typeof closeWindowWithMessage === 'function') {
+                    await closeWindowWithMessage('发布成功，刷新数据', 1000);
+                }
                 return true;
             }
+
+            // 🔧 改用二次验证流程：成功后跳到内容管理页检查文章是否真的出现了
+            // gotoContentVerify 会：
+            //   - 已在管理页时：直接返回 true，让 content-verify.js 自动验证（零刷新）
+            //   - 不在管理页时：返回 true（跳转或 reload）或 false（无法验证）
+            if (typeof window.gotoContentVerify === 'function') {
+                console.log('[搜狐号发布] 📋 发起二次验证流程，检查文章是否已出现在管理页');
+                const verifyStarted = await window.gotoContentVerify('sohuhao', markerData.publishId, '搜狐号发布');
+                if (verifyStarted) {
+                    // 验证流程已发起，关窗由 content-verify.js 负责
+                    console.log('[搜狐号发布] ✅ 验证流程已发起，等待 content-verify.js 接管');
+                    return true;
+                }
+            }
+
+            // 回退原流程：直接上报成功并关窗
+            console.log('[搜狐号发布] 📤 二次验证不可用，回退原流程：直接上报成功');
+            if (typeof sendStatistics === 'function') {
+                console.log('[搜狐号发布] 📤 调用成功接口:', reason);
+                await sendStatistics(markerData.publishId, '搜狐号发布');
+            } else {
+                console.warn('[搜狐号发布] ⚠️ sendStatistics 不可用，无法调用成功接口');
+            }
+
+            console.log('[搜狐号发布] ✅ 发布成功确认:', { reason, feedbackText });
+            try { window.sendMessageToParent?.("发布成功，刷新数据"); } catch (_) {}
             if (typeof closeWindowWithMessage === 'function') {
                 await closeWindowWithMessage('发布成功，刷新数据', 1000);
             } else if (typeof sendMessageToParent === 'function') {
