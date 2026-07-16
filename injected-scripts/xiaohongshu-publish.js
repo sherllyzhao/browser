@@ -580,11 +580,6 @@ if (location.search.includes("published=true")) {
             console.warn("[小红书发布] ⚠️ 清理发布临时数据异常:", error.message);
         }
         publishRunning = false;
-        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-        if (typeof window.gotoContentVerify === 'function'
-            && await window.gotoContentVerify('xiaohongshu', publishId, '小红书发布')) {
-            return;
-        }
         try {
             await closeWindowWithMessage("发布成功，刷新数据", 1000);
         } catch (error) {

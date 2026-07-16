@@ -936,11 +936,6 @@ async function publishApi(dataObj) {
       const reported = await reportDouyinPublishSuccess(publishId, windowId, 'click-success-message');
       publishRunning = false;
       if (reported) {
-        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-        if (typeof window.gotoContentVerify === 'function'
-          && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
-          return;
-        }
         await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return;
       }
@@ -1004,11 +999,6 @@ async function publishApi(dataObj) {
             const reported = await reportDouyinPublishSuccess(publishId, windowId, 'poll-success-toast');
             publishRunning = false;
             if (reported) {
-              // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-              if (typeof window.gotoContentVerify === 'function'
-                && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
-                return;
-              }
               await closeWindowWithMessage('发布成功，刷新数据', 1000);
               return;
             }
@@ -1035,11 +1025,6 @@ async function publishApi(dataObj) {
       console.log('[抖音发布] ✅ 超时未捕获任何失败提示，点击发布已提交，视为发布成功');
       await reportDouyinPublishSuccess(publishId, windowId, 'timeout-no-failure');
       publishRunning = false;
-      // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-      if (typeof window.gotoContentVerify === 'function'
-        && await window.gotoContentVerify('douyin', publishId, '抖音发布')) {
-        return;
-      }
       await closeWindowWithMessage('发布成功，刷新数据', 1000);
       return;
     }

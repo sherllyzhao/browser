@@ -254,8 +254,12 @@
       // 忽略清除失败
     }
 
-    // 延迟关闭窗口
-    await window.delay(10000);
+    // 上报完成后等 15 秒再关窗：接口不稳定时给上报请求留足回包时间，避免窗口关早了上报丢失
+    if (typeof window.delay === 'function') {
+      await window.delay(15000);
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 15000));
+    }
 
     // 开发模式下不关闭窗口（browserAPI.isProduction 为 false 时是开发环境）
     const isDev = window.browserAPI && window.browserAPI.isProduction === false;

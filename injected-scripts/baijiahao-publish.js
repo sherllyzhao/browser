@@ -1413,11 +1413,6 @@
         if (publishIdForSuccess) {
           await sendStatistics(publishIdForSuccess, '百家号发布');
         }
-        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-        if (typeof window.gotoContentVerify === 'function'
-          && await window.gotoContentVerify('baijiahao', publishIdForSuccess, '百家号发布')) {
-          return true;
-        }
         await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return true;
       }

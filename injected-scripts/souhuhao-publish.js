@@ -1794,22 +1794,7 @@
                 return true;
             }
 
-            // 🔧 改用二次验证流程：成功后跳到内容管理页检查文章是否真的出现了
-            // gotoContentVerify 会：
-            //   - 已在管理页时：直接返回 true，让 content-verify.js 自动验证（零刷新）
-            //   - 不在管理页时：返回 true（跳转或 reload）或 false（无法验证）
-            if (typeof window.gotoContentVerify === 'function') {
-                console.log('[搜狐号发布] 📋 发起二次验证流程，检查文章是否已出现在管理页');
-                const verifyStarted = await window.gotoContentVerify('sohuhao', markerData.publishId, '搜狐号发布');
-                if (verifyStarted) {
-                    // 验证流程已发起，关窗由 content-verify.js 负责
-                    console.log('[搜狐号发布] ✅ 验证流程已发起，等待 content-verify.js 接管');
-                    return true;
-                }
-            }
-
-            // 回退原流程：直接上报成功并关窗
-            console.log('[搜狐号发布] 📤 二次验证不可用，回退原流程：直接上报成功');
+            // 直接上报成功并关窗
             if (typeof sendStatistics === 'function') {
                 console.log('[搜狐号发布] 📤 调用成功接口:', reason);
                 await sendStatistics(markerData.publishId, '搜狐号发布');

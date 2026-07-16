@@ -1320,11 +1320,6 @@ async function publishApi(dataObj) {
       hasProcessed = true;
       publishRunning = false;
       await sendStatistics(publishId, '视频号发布');
-      // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
-      if (typeof window.gotoContentVerify === 'function'
-        && await window.gotoContentVerify('shipinhao', publishId, '视频号发布')) {
-        return;
-      }
       await closeWindowWithMessage('发布成功，刷新数据', 1000);
       return;
     }
