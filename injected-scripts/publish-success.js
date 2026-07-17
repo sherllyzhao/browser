@@ -172,26 +172,43 @@
     console.log('[发布成功] 📋 数据来源:', usedSource);
     console.log('[发布成功] 📋 最终 publishId:', publishData?.publishId);
 
-    // 发送统计接口
+    // 发送统计接口（带超时检测）
     if (publishData && publishData.publishId) {
       try {
         console.log('[发布成功] 📤 发送成功统计...');
+        let reportResult = null;
+
         if (window.sendStatistics) {
-          await window.sendStatistics(publishData.publishId, '发布成功页');
+          // 如果有 sendStatistics 函数，使用它
+          console.log('[发布成功] 📤 使用 sendStatistics 函数...');
+          reportResult = await window.sendStatistics(publishData.publishId, '发布成功页');
+          console.log('[发布成功] ✅ sendStatistics 完成:', reportResult);
         } else {
+          // 使用新的超时检测上报函数
           const scanData = window.buildStatisticsRequestData
             ? await window.buildStatisticsRequestData(publishData.publishId)
             : { data: JSON.stringify({ id: publishData.publishId }) };
           let url = await getStatisticsUrl();
-          await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(scanData),
+
+          console.log('[发布成功] 📤 使用 reportStatisticsWithTimeout 发送...');
+          reportResult = await window.reportStatisticsWithTimeout(url, scanData, {
+            timeout: 8000,    // 8 秒超时
+            retries: 3,       // 重试 3 次
+            retryDelay: 1000  // 重试间隔 1 秒
           });
+
+          if (reportResult.success) {
+            console.log('[发布成功] ✅ 统计接口请求成功，状态码:', reportResult.status);
+          } else {
+            if (reportResult.isTimeout) {
+              console.warn('[发布成功] ⏱️ 统计接口请求超时，但继续处理');
+            } else {
+              console.error('[发布成功] ❌ 统计接口请求失败:', reportResult.error);
+            }
+          }
         }
-        console.log('[发布成功] ✅ 统计接口请求成功');
       } catch (e) {
-        console.error('[发布成功] ❌ 统计接口请求失败:', e);
+        console.error('[发布成功] ❌ 统计接口处理出错:', e);
       }
     }
 

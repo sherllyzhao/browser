@@ -143,16 +143,21 @@
                     if (message.type === 'auth-data') {
                         console.log('[网易号授权] ✅ 收到授权数据:', message.data);
 
-                        // 🔑 检查 windowId 是否匹配（如果消息带有 windowId）
-                        if (message.windowId) {
-                            const myWindowId = await window.browserAPI.getWindowId();
-                            console.log('[网易号授权] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-                            if (myWindowId !== message.windowId) {
-                                console.log('[网易号授权] ⏭️ 消息不是发给我的，跳过');
-                                return;
-                            }
-                            console.log('[网易号授权] ✅ windowId 匹配，处理消息');
+                        // 🔑 强制检查 windowId（必须匹配，否则立即返回）
+                        const myWindowId = await window.browserAPI.getWindowId();
+                        console.log('[网易号授权] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+
+                        if (!message.windowId) {
+                          console.error('[网易号授权] ❌ 收到的 auth-data 消息缺少 windowId，这不应该发生！已拒绝处理');
+                          return;
                         }
+
+                        if (myWindowId !== message.windowId) {
+                          console.warn('[网易号授权] ⚠️ 消息不是发给我的（我是 ' + myWindowId + '，消息发给 ' + message.windowId + '），拒绝处理');
+                          return;
+                        }
+
+                        console.log('[网易号授权] ✅ windowId 匹配，安全处理消息');
 
                         // 防重复检查
                         if (isProcessing) {

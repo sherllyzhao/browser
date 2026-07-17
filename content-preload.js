@@ -1580,6 +1580,16 @@ contextBridge.exposeInMainWorld('browserAPI', {
       return;
     }
 
+    // 🔑 auth-data 消息必须携带 windowId（禁止广播以避免多账号串联）
+    if (message.type === 'auth-data') {
+      if (!message.windowId) {
+        console.error('[BrowserAPI] ❌ auth-data 消息缺少 windowId，拒绝发送！这是编程错误。');
+        console.error('[BrowserAPI] 消息内容:', message);
+        throw new Error('auth-data 消息必须携带 windowId 字段');
+      }
+      console.log('[BrowserAPI] ✅ auth-data 消息验证通过，windowId:', message.windowId);
+    }
+
     // 其他类型的消息正常发送
     ipcRenderer.send('home-to-content', message);
   },

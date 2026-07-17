@@ -11535,20 +11535,55 @@ ipcMain.on('home-to-content', async (event, message) => {
   console.log('[IPC] 收到 home-to-content 消息:', message);
   console.log('[IPC] 当前打开的子窗口数量:', childWindows.length);
 
-  if (isSohuhaoAuthDataMessage(message)) {
-    try {
-      const routeResult = await routeSohuhaoAuthDataToAccountWindow(message, event.sender.session);
-      console.log('[IPC] 搜狐号 auth-data 定向投递结果:', routeResult);
-      if (routeResult.routed) {
-        return;
+  // 🔑 auth-data 和 publish-data 消息必须有定向投递（禁止广播以避免多账号串联）
+  if (message.type === 'auth-data' || message.type === 'publish-data') {
+    console.log(`[IPC] 检测到 ${message.type} 消息，执行定向投递...`);
+
+    // 优先使用搜狐号专属逻辑（仅适用于 auth-data）
+    if (message.type === 'auth-data' && isSohuhaoAuthDataMessage(message)) {
+      try {
+        const routeResult = await routeSohuhaoAuthDataToAccountWindow(message, event.sender.session);
+        console.log('[IPC] 搜狐号 auth-data 定向投递结果:', routeResult);
+        if (routeResult.routed) {
+          return;
+        }
+        console.warn('[IPC] ⚠️ 搜狐号 auth-data 无法定向投递，尝试通用定向投递');
+      } catch (routeErr) {
+        console.warn('[IPC] ⚠️ 搜狐号 auth-data 定向投递异常，尝试通用定向投递:', routeErr.message);
       }
-      console.warn('[IPC] ⚠️ 搜狐号 auth-data 无法定向投递，回退原广播逻辑:', routeResult);
-    } catch (routeErr) {
-      console.warn('[IPC] ⚠️ 搜狐号 auth-data 定向投递异常，回退原广播逻辑:', routeErr.message);
     }
+
+    // 🔑 通用定向投递逻辑：检查 windowId（强制）
+    const targetWindowId = message.windowId;
+    if (!targetWindowId) {
+      console.error(`[IPC] ❌ ${message.type} 消息缺少 windowId 字段，无法定向投递，已丢弃！`);
+      console.error('[IPC] 消息内容:', message);
+      return;
+    }
+
+    // 查找目标窗口
+    const targetWindow = getWindowById(targetWindowId);
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      console.warn(`[IPC] ⚠️ 目标窗口 ${targetWindowId} 不存在或已销毁，无法投递 ${message.type} 消息`);
+      return;
+    }
+
+    // 只发送到指定窗口
+    const messageStr = JSON.stringify(message);
+    targetWindow.webContents.executeJavaScript(`
+      (function() {
+        const messageData = ${messageStr};
+        console.log('[Child Window] 收到来自首页的定向 ${message.type} 消息:', messageData);
+        window.postMessage({ type: 'FROM_HOME', data: messageData }, '*');
+      })();
+    `).catch(err => console.error(`[IPC] 向窗口 ${targetWindowId} 发送 ${message.type} 失败:`, err));
+
+    console.log(`[IPC] ✅ ${message.type} 已定向投递到窗口 ${targetWindowId}`);
+    return;
   }
 
-  // 序列化消息一次，用于日志和传输
+  // 📢 其他消息继续使用广播逻辑
+  console.log('[IPC] 非 auth-data/publish-data 消息，执行广播...');
   const messageStr = JSON.stringify(message);
 
   // 向 BrowserView 中的非首页发送消息

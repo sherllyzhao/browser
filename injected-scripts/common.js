@@ -2016,8 +2016,10 @@ if (typeof window.uploadVideo === "function"
         }
     };
 
-    window.isGeoStatisticsReport = function (url, options = {}) {
-        return String(url || '').includes('/api/geo/') || options.skipDedup === true;
+    // 判断是否为 GEO 系统统计接口（用于：跳过乐观上报、不入补报队列、日志标记）
+    // 注意：GEO 的成功/失败上报与普通系统一样走去重锁，同一 publishId 只上报 1 次
+    window.isGeoStatisticsReport = function (url) {
+        return String(url || '').includes('/api/geo/');
     };
 
     // ===========================
@@ -2805,6 +2807,16 @@ if (typeof window.uploadVideo === "function"
         return { data: JSON.stringify(payload) };
     };
 
+    // 🔒 页内同步内存锁：Map 的 check-and-claim 在任何 await 之前同步完成，
+    //     JS 单线程下不可被穿插，封死同页并发穿锁竞态
+    //     （典型场景：乐观上报 fire-and-forget 与轮询判定几乎同时触发；success 与 error 同时触发）。
+    //     sessionStorage/globalData 锁仍保留，用于跨导航、跨窗口去重。
+    const statisticsReportMemoryLocks = new Map();
+
+    function getStatisticsMemoryLockKey(publishId, resultType = "unknown") {
+        return `${resultType}:${String(publishId || "").trim()}`;
+    }
+
     function getStatisticsReportCacheKey(windowId, resultType = "unknown") {
         return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
     }
@@ -2859,10 +2871,50 @@ if (typeof window.uploadVideo === "function"
 
     window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
         if (!publishId) {
-            return { acquired: true, key: null, globalKey: null, windowId: null };
+            return { acquired: true, key: null, globalKey: null, windowId: null, memoryKey: null };
         }
 
         const normalizedPublishId = String(publishId).trim();
+
+        // 🔒 第一道闸（同步、原子）：内存锁。必须先于任何 await 执行——
+        //     后面的 getWindowId/getGlobalData 是 IPC await 会让出事件循环，
+        //     并发调用会在 check 与 set 之间穿插导致双双拿锁。
+        const memoryKey = getStatisticsMemoryLockKey(normalizedPublishId, resultType);
+        if (resultType === "error") {
+            const successMemory = statisticsReportMemoryLocks.get(getStatisticsMemoryLockKey(normalizedPublishId, "success"));
+            if (successMemory) {
+                console.warn(`[${platform || "发布"}][统计接口] ⚠️ 成功上报已在进行/已完成（内存锁），跳过失败上报`, successMemory);
+                return {
+                    acquired: false,
+                    key: null,
+                    globalKey: null,
+                    windowId: null,
+                    memoryKey: null,
+                    cached: successMemory,
+                    reason: "success-already-reported",
+                };
+            }
+        }
+        const existingMemory = statisticsReportMemoryLocks.get(memoryKey);
+        if (existingMemory) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报（内存锁），跳过`, existingMemory);
+            return {
+                acquired: false,
+                key: null,
+                globalKey: null,
+                windowId: null,
+                memoryKey: null,
+                cached: existingMemory,
+                reason: "duplicate-report",
+            };
+        }
+        statisticsReportMemoryLocks.set(memoryKey, {
+            publishId: normalizedPublishId,
+            resultType,
+            platform: platform || "",
+            timestamp: Date.now(),
+        });
+
         const globalKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, resultType);
         const globalSuccessKey = resultType === "error"
             ? getStatisticsGlobalReportCacheKey(normalizedPublishId, "success")
@@ -2938,13 +2990,17 @@ if (typeof window.uploadVideo === "function"
             console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
         }
 
-        return { acquired: true, key, globalKey, windowId };
+        return { acquired: true, key, globalKey, windowId, memoryKey };
     };
 
     window.releaseStatisticsReportLock = async function (lockOrKey, publishId = "") {
         const key = typeof lockOrKey === "object" ? lockOrKey?.key : lockOrKey;
         const globalKey = typeof lockOrKey === "object" ? lockOrKey?.globalKey : null;
+        const memoryKey = typeof lockOrKey === "object" ? lockOrKey?.memoryKey : null;
         const normalizedPublishId = String(publishId || "").trim();
+        if (memoryKey) {
+            statisticsReportMemoryLocks.delete(memoryKey);
+        }
         if (!key && !globalKey) {
             return;
         }
@@ -2971,22 +3027,19 @@ if (typeof window.uploadVideo === "function"
     };
 
     // 发送统计接口（发布成功时调用）
+    // 🔒 GEO 与普通系统统一走去重锁：同一 publishId 只上报 1 次（GEO 曾是"每次记录"导致重复计数，已改为只报一次）
     window.sendStatistics = async function (publishId, platform = "", options = {}) {
-        // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
         const url = await getStatisticsUrl(false);
-        const isGeo = window.isGeoStatisticsReport(url, options);
+        const isGeo = window.isGeoStatisticsReport(url);
 
-        let reportLock = null;
-        if (!isGeo) {
-            reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
-            if (!reportLock.acquired) {
-                return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
-            }
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform);
         try {
-            console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}${isGeo ? " [GEO-每次记录]" : ""}`);
+            console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}${isGeo ? " [GEO-仅一次]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // 🔒 只发一次：成功与失败上报都不重试、不入补报队列（用户要求「只有一次」）
@@ -3018,10 +3071,9 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
-            if (reportLock) {
-                await window.releaseStatisticsReportLock(reportLock, publishId);
-            }
-            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败（只发 1 次，不重试、不补报）:`, e.message);
+            // 🔒 失败/超时后不释放去重锁：10s abort 超时的请求可能已到达服务器并被记录，
+            //     释放锁会让后续判定路径重报同一 publishId（重复计数）。同一 publishId 最多只发出 1 次请求。
+            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败（只发 1 次，不重试、不补报、不解锁）:`, e.message);
             // 🔒 只发一次：不入补报队列。仅提示用户内容已发布成功、统计上报失败。
             window.showPublishToast?.(
                 "内容已发布成功！仅数据统计上报失败（不影响发布结果）。",
@@ -3037,8 +3089,8 @@ if (typeof window.uploadVideo === "function"
     // 背景：平台点了发布按钮后大多会发布成功，但脚本常等不到跳转/toast 而误报超时失败。
     //       故点击成功后先「乐观」上报一次成功；后续跳转成功再报会被去重锁挡掉（不重复），
     //       后续若捕获明确失败则照常报错（后台以失败覆盖）。
-    // ⚠️ GEO 系统每次记录、不去重，若点击时也报会与后续「确认成功」重复计数，
-    //     故 GEO 一律跳过乐观上报，保持「真正确认成功才记 1 次」的原有行为。
+    // ⚠️ GEO 系统跳过乐观上报：GEO 保持「真正确认成功才记 1 次」的语义，
+    //     确认成功/失败上报已由去重锁保证同一 publishId 只发 1 次。
     window.sendOptimisticSuccess = async function (publishId, platform = "") {
         try {
             if (!publishId) {
@@ -3068,16 +3120,13 @@ if (typeof window.uploadVideo === "function"
     //   - {Object} diagnosis - 诊断信息（如表单/按钮诊断结果）
     //   - {string} failure_category - 显式指定失败分类（覆盖自动推断）
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null, options = {}) {
-        // 先取 URL 判断是否为 GEO 系统：GEO 是每次记录，跳过去重锁
+        // 🔒 GEO 与普通系统统一走去重锁：同一 publishId 只上报 1 次失败（且已报成功则不再报失败）
         const url = await getStatisticsUrl(true);
-        const isGeo = window.isGeoStatisticsReport(url, options);
+        const isGeo = window.isGeoStatisticsReport(url);
 
-        let reportLock = null;
-        if (!isGeo) {
-            reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
-            if (!reportLock.acquired) {
-                return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
-            }
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+        if (!reportLock.acquired) {
+            return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
 
         // 使用 PublishLogger 记录错误
@@ -3131,7 +3180,7 @@ if (typeof window.uploadVideo === "function"
 
         const scanData = await window.buildStatisticsRequestData(publishId, platform, errorExtraData);
         try {
-            console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}${isGeo ? " [GEO-每次记录]" : ""}`);
+            console.log(`[${platform || "发布"}] 📤 发送失败统计接口，ID: ${publishId}, 错误: ${statusText}${isGeo ? " [GEO-仅一次]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // 🔒 只发一次：不重试、不入补报队列（用户要求「只有一次」）
@@ -3163,10 +3212,8 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
-            if (reportLock) {
-                await window.releaseStatisticsReportLock(reportLock, publishId);
-            }
-            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败（只发 1 次，不重试、不补报）:`, e.message);
+            // 🔒 失败/超时后不释放去重锁：请求可能已到达服务器，释放会导致重复上报（同一 publishId 最多 1 次请求）
+            console.error(`[${platform || "发布"}] ❌ 失败统计上报失败（只发 1 次，不重试、不补报、不解锁）:`, e.message);
             // 🔒 只发一次：不入补报队列。
             return { success: false, error: e };
         }
@@ -3393,8 +3440,10 @@ if (typeof window.uploadVideo === "function"
      * @returns {Promise<boolean>} 是否匹配（无 windowId 时返回 true）
      */
     window.checkWindowIdMatch = async function (message, logPrefix = "[发布]") {
+        // 强制检查：必须有 windowId，否则拒绝
         if (!message.windowId) {
-            return true; // 没有 windowId 限制，认为匹配
+            console.error(`${logPrefix} ❌ 收到的发布消息缺少 windowId 字段，已拒绝处理！`);
+            return false; // 强制拒绝，不再是条件性的
         }
 
         try {
@@ -3402,15 +3451,15 @@ if (typeof window.uploadVideo === "function"
             console.log(`${logPrefix} 我的窗口 ID:`, myWindowId, "消息目标窗口 ID:", message.windowId);
 
             if (myWindowId !== message.windowId) {
-                console.log(`${logPrefix} ⏭️ 消息不是发给我的，跳过`);
+                console.warn(`${logPrefix} ⚠️ 消息不是发给我的，拒绝处理`);
                 return false;
             }
 
-            console.log(`${logPrefix} ✅ windowId 匹配，处理消息`);
+            console.log(`${logPrefix} ✅ windowId 匹配，安全处理消息`);
             return true;
         } catch (e) {
             console.error(`${logPrefix} ❌ 检查 windowId 失败:`, e);
-            return true; // 出错时默认处理
+            return false; // 出错时拒绝处理，防止串联
         }
     };
 
@@ -4893,6 +4942,115 @@ if (typeof hideOperationBanner === "undefined") window.hideOperationBanner && (h
 
     console.log("[ProtocolBlock] ✅ 前端协议拦截已启用");
 })();
+
+// ===========================
+// 🔑 带超时检测和用户提示的统计上报函数
+// ===========================
+window.reportStatisticsWithTimeout = async function(url, scanData, options = {}) {
+    const {
+        timeout = 8000,  // 默认 8 秒超时
+        retries = 3,     // 重试次数
+        retryDelay = 1000 // 重试间隔（毫秒）
+    } = options;
+
+    let lastError = null;
+    let isTimeout = false;
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            console.log(`[reportStatistics] 📤 第 ${attempt}/${retries} 次尝试，URL: ${url}`);
+
+            // 使用 Promise.race 实现超时控制
+            const response = await Promise.race([
+                fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(scanData)
+                }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('TIMEOUT')), timeout)
+                )
+            ]);
+
+            // 请求成功（即使返回 HTTP 错误码也算请求成功）
+            console.log(`[reportStatistics] ✅ 第 ${attempt} 次尝试成功，状态码: ${response.status}`);
+            return {
+                success: true,
+                status: response.status,
+                attempt: attempt
+            };
+        } catch (e) {
+            lastError = e;
+            isTimeout = e.message === 'TIMEOUT';
+
+            if (isTimeout) {
+                console.warn(`[reportStatistics] ⏱️ 第 ${attempt} 次尝试超时 (${timeout}ms)`);
+            } else {
+                console.warn(`[reportStatistics] ❌ 第 ${attempt} 次尝试失败:`, e.message);
+            }
+
+            // 最后一次尝试失败，不再重试
+            if (attempt === retries) {
+                break;
+            }
+
+            // 等待后重试
+            console.log(`[reportStatistics] ⏳ 等待 ${retryDelay}ms 后重试...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+    }
+
+    // 所有重试都失败了
+    console.error(`[reportStatistics] ❌ 所有 ${retries} 次尝试都失败，最后错误:`, lastError?.message);
+
+    // 在页面上显示提示（如果超时）
+    if (isTimeout) {
+        window.showReportTimeoutNotice();
+    }
+
+    return {
+        success: false,
+        error: lastError?.message,
+        isTimeout: isTimeout,
+        attempts: retries
+    };
+};
+
+// 显示上报超时提示
+window.showReportTimeoutNotice = function() {
+    try {
+        // 创建提示 DOM（简单版本，直接显示在页面上）
+        const notice = document.createElement('div');
+        notice.id = 'report-timeout-notice';
+        notice.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 12px 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 14px;
+            color: #856404;
+            z-index: 99999;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        `;
+        notice.innerHTML = '⏱️ 统计上报超时，请稍候...';
+        document.body.appendChild(notice);
+
+        // 3 秒后自动移除
+        setTimeout(() => {
+            if (notice.parentNode) {
+                notice.parentNode.removeChild(notice);
+            }
+        }, 3000);
+
+        console.log('[reportStatistics] 💬 已显示超时提示');
+    } catch (e) {
+        console.error('[reportStatistics] ❌ 显示超时提示失败:', e);
+    }
+};
 
 // 🔒 已按「统计上报只发一次」移除离线补报队列的启动补发与周期性补发触发点。
 // enqueueFailedStatReport / flushFailedStatReports 函数体保留但不再被自动调用，
