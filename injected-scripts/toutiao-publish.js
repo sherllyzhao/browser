@@ -816,12 +816,6 @@
   };
 
   const fillContent = async (htmlContent, introText) => {
-    const plain = parsePlainTextFromHtml(htmlContent) || parsePlainTextFromHtml(introText);
-    if (!plain) {
-      console.log(`${LOG_PREFIX} ℹ️ 内容为空，跳过正文填写`);
-      return;
-    }
-
     // 🔢 给被段落打断的多个 <ol> 用 start 属性接续编号，修复 insertHTML/paste 原生渲染时序号全 1
     const addOrderedListStart = (html) => {
       if (!html || !/[<>]/.test(html)) return html;
@@ -839,10 +833,17 @@
       return d.innerHTML;
     };
 
-    // 保留原始 HTML 用于 paste（ProseMirror 原生处理 paste 事件会正确更新内部 state）
-    const htmlForPaste = htmlContent
+    // 保留原始 HTML 用于 HTML 方法（优先保留格式）
+    let htmlForPaste = htmlContent
       ? addOrderedListStart(htmlContent)
       : `<p>${(introText || '').split('\n').filter(Boolean).join('</p><p>')}</p>`;
+
+    // 仅作为最后兜底时才用纯文本
+    const plain = parsePlainTextFromHtml(htmlForPaste) || parsePlainTextFromHtml(introText);
+    if (!plain) {
+      console.log(`${LOG_PREFIX} ℹ️ 内容为空，跳过正文填写`);
+      return;
+    }
 
     await retryOperation(async () => {
       const editor = findVisibleEditable();
@@ -940,15 +941,36 @@
       };
 
       // Helper: 通过 ProseMirror dispatch 设置内容
-      const pmDispatchContent = (textContent) => {
+      // 🔗 优先用 view.pasteHTML 灌入原始 HTML（走 PM 原生剪贴板解析，保留超链接/加粗/列表等
+      //    schema 支持的富文本格式），失败时只做纯文本 dispatch
+      const pmDispatchContent = (textContent, htmlContent) => {
         const view = getPmView();
         if (!view) {
           console.warn(`${LOG_PREFIX} [PM] dispatch 失败: EditorView 不可用`);
           return false;
         }
-        const { state } = view;
+
+        // ✅ 优先尝试 pasteHTML（保留原始 HTML 格式）
+        if (htmlContent && /[<>]/.test(htmlContent) && typeof view.pasteHTML === 'function') {
+          try {
+            if (view.state.doc.content.size > 0) {
+              view.dispatch(view.state.tr.delete(0, view.state.doc.content.size));
+            }
+            view.pasteHTML(htmlContent);
+            const pastedText = view.state.doc.textContent || '';
+            if (pastedText.trim().length > 0) {
+              console.log(`${LOG_PREFIX} [PM] ✅ pasteHTML 富文本写入成功 (长度=${pastedText.trim().length})`);
+              return true;
+            }
+            console.warn(`${LOG_PREFIX} [PM] ⚠️ pasteHTML 后 state 为空，尝试纯文本 dispatch`);
+          } catch (e) {
+            console.warn(`${LOG_PREFIX} [PM] ⚠️ pasteHTML 失败，尝试纯文本 dispatch:`, e.message);
+          }
+        }
+
+        // 🔢 纯文本 dispatch（仅当 pasteHTML 不可用或失败时）
+        const state = view.state;
         const { schema } = state;
-        console.log(`${LOG_PREFIX} [PM] schema nodes:`, Object.keys(schema.nodes || {}));
 
         // 找到用于创建段落的 node type
         const paraType = schema.nodes.paragraph || schema.nodes.para || schema.nodes.text_block;
@@ -962,7 +984,7 @@
           ? pmLines.map(line => paraType.create(null, line ? [schema.text(line)] : []))
           : [paraType.create(null, [schema.text(textContent || ' ')])];
 
-        console.log(`${LOG_PREFIX} [PM] 准备 dispatch: ${paragraphs.length} 个段落, doc.content.size=${state.doc.content.size}`);
+        console.log(`${LOG_PREFIX} [PM] 纯文本 dispatch: ${paragraphs.length} 个段落`);
         const tr = state.tr.replaceWith(0, state.doc.content.size, paragraphs);
         view.dispatch(tr);
 
@@ -976,7 +998,7 @@
       // 直接 dispatch transaction 设置文档内容，确保 ProseMirror 内部 state 被正确更新
       // 这是唯一能保证草稿自动保存时发送正确 content 的方式
       try {
-        const dispatched = pmDispatchContent(plain);
+        const dispatched = pmDispatchContent(plain, htmlForPaste);
         if (dispatched) {
           contentSet = true;
           console.log(`${LOG_PREFIX} ✅ 方法1(ProseMirror dispatch) 正文设置成功`);
@@ -994,6 +1016,7 @@
           selectAndClear();
           await delay(200);
 
+          // ✅ 优先用 htmlForPaste（保留原始 HTML 格式）
           const insertOk = document.execCommand('insertHTML', false, htmlForPaste);
           await delay(800);
 
@@ -1016,6 +1039,7 @@
           selectAndClear();
           await delay(200);
 
+          // ✅ 优先用 htmlForPaste（保留原始 HTML 格式）
           const clipboardData = new DataTransfer();
           clipboardData.setData('text/html', htmlForPaste);
           clipboardData.setData('text/plain', plain);
@@ -1106,7 +1130,7 @@
       if (contentSet && !pmStateHasContent()) {
         console.warn(`${LOG_PREFIX} ⚠️ DOM 有内容但 ProseMirror state 为空，强制 dispatch 补救`);
         try {
-          const rescued = pmDispatchContent(plain);
+          const rescued = pmDispatchContent(plain, htmlForPaste);
           await delay(300);
           if (rescued && pmStateHasContent()) {
             console.log(`${LOG_PREFIX} ✅ ProseMirror state 补救成功`);
