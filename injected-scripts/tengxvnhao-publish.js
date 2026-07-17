@@ -26,7 +26,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    const TXH_PUBLISH_SCRIPT_VERSION = "2026-06-09-ai-declaration-radio-confirm-v20";
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-07-17-hang-guard-dedup-v21";
     if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
         console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
@@ -1722,10 +1722,14 @@
                         console.log("🚀 ~  ~ messageData: ", messageData);
 
                         try {
-                            await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+                            // fillFormData 把主流程放进 setTimeout 后立即返回、不会 throw，包 retryOperation 无意义
+                            await fillFormData(messageData);
                         } catch (e) {
                             console.log("[腾讯号发布] ❌ 填写表单数据失败:", e);
                         }
+
+                        // 🔑 标记已处理：发布主流程异步执行期间，忽略父窗口重发的重复消息，防止二次发布
+                        hasProcessed = true;
 
                         console.log("[腾讯号发布] 📤 准备发送数据到接口...");
                         console.log("[腾讯号发布] ✅ 发布流程已启动，等待 publishApi 完成...");
@@ -1846,10 +1850,14 @@
                 };
 
                 try {
-                    await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+                    // fillFormData 把主流程放进 setTimeout 后立即返回、不会 throw，包 retryOperation 无意义
+                    await fillFormData(publishData);
                 } catch (e) {
                     console.log("[腾讯号发布] ❌ 填写表单数据失败:", e);
                 }
+
+                // 🔑 标记已处理：防止消息通道再次触发二次发布
+                hasProcessed = true;
 
                 console.log("[腾讯号发布] 📤 准备发送数据到接口...");
                 console.log("[腾讯号发布] ✅ 发布流程已启动，等待 publishApi 完成...");
@@ -1885,13 +1893,15 @@
         try {
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
-                // alert('No cover image found');
+                console.error("[腾讯号发布] ❌ 发布数据缺少封面图，无法继续发布");
                 fillFormRunning = false;
+                await reportTxhFailure(dataObj, "发布数据缺少封面图", "发布失败，刷新数据");
                 return;
             }
 
             setTimeout(async () => {
-                // 标题（带重试和验证）
+                // 标题（带重试和验证）：失败时上报并关窗，避免未捕获异常让窗口悬死
+                try {
                 await retryOperation(
                     async () => {
                         const titleEle = await waitForElement(".omui-articletitle__input1 .omui-inputautogrowing__inner", 5000);
@@ -1936,6 +1946,11 @@
                     5,
                     1000,
                 );
+                } catch (e) {
+                    console.log("[腾讯号发布] ❌ 标题填写失败:", e.message);
+                    await reportTxhFailure(dataObj, e.message || "标题填写失败", "标题填写失败，刷新数据");
+                    return;
+                }
 
                 try {
                     // 内容（带重试）：优先直接粘贴原 HTML，让腾讯编辑器自己的粘贴链路处理正文图片。
@@ -2060,8 +2075,13 @@
                     return;
                 }
 
-                // 设置封面为单图模式
-                const hasSettingsWrapEle = await waitForElement("class^=articleCoverWrap-");
+                // 设置封面为单图模式（waitForElement 超时是 reject，转 null 后走失败上报，避免窗口悬死）
+                const hasSettingsWrapEle = await waitForElement("class^=articleCoverWrap-").catch(() => null);
+                if (!hasSettingsWrapEle) {
+                    console.error("[腾讯号发布] ❌ 未找到封面设置区域");
+                    await reportTxhFailure(dataObj, "未找到封面设置区域", "发布失败，刷新数据");
+                    return;
+                }
                 if (hasSettingsWrapEle) {
                     const coverRadioEle = hasSettingsWrapEle.querySelectorAll(".omui-radio");
                     for (let coverRadioEleElement of coverRadioEle) {
@@ -2085,8 +2105,8 @@
                             setTimeout(async () => {
                                 // 选中本地上传（点击"选择封面"按钮）
                                 setTimeout(async () => {
-                                    // 等待封面选择区域出现
-                                    await waitForElement("class^=articleCoverWrap-");
+                                    // 等待封面选择区域出现（超时不抛异常，后续逻辑自行兜底）
+                                    await waitForElement("class^=articleCoverWrap-").catch(() => null);
                                     await delay(1000); // 🔑 增加到 1 秒
 
                                     // 查找并点击"选择封面"按钮
@@ -2095,11 +2115,11 @@
                                     if (coverBtn) {
                                         coverBtn.click();
                                     }else{
-                                        //检查是否已经有图片
-                                        const coverWrapperEle = await waitForElement(".omui-thumb__figure");
+                                        //检查是否已经有图片（超时转 null，避免未捕获异常中断流程）
+                                        const coverWrapperEle = await waitForElement(".omui-thumb__figure").catch(() => null);
                                         if (coverWrapperEle) {
                                             const imgEle = coverWrapperEle.querySelector("img");
-                                            const coverBg = imgEle.getAttribute("src");
+                                            const coverBg = imgEle?.getAttribute("src");
                                             if (imgEle) {
                                                 // 检查是否有图片
                                                 if (coverBg) {
@@ -2138,8 +2158,13 @@
                                     }
 
                                     setTimeout(async () => {
-                                        // 使用原生选择器获取元素
-                                        const hasInputEle = await waitForElement(".omui-upload-image-list");
+                                        // 使用原生选择器获取元素（超时转 null 走失败上报，避免窗口悬死）
+                                        const hasInputEle = await waitForElement(".omui-upload-image-list").catch(() => null);
+                                        if (!hasInputEle) {
+                                            console.error("[腾讯号发布] ❌ 未找到封面上传区域");
+                                            await reportTxhFailure(dataObj, "未找到封面上传区域", "发布失败，刷新数据");
+                                            return;
+                                        }
                                         if (hasInputEle) {
                                             const input = document.querySelector("input[type='file']");
                                             const dataTransfer = new DataTransfer();
@@ -2150,7 +2175,9 @@
                                             input.dispatchEvent(event);
 
                                             // 封装上传检测与重试逻辑
+                                            // 整体 try/catch 兜底：任何未捕获异常都上报失败并关窗，避免窗口悬死
                                             const tryUploadImage = async (retryCount = 0) => {
+                                                try {
                                                 const maxRetries = 3;
 
                                                 // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
@@ -2245,8 +2272,8 @@
                                                         return;
                                                     }
 
-                                                    // 自主声明
-                                                    const declarationArea = await waitForElement("#articlePublish-selfDeclaration");
+                                                    // 自主声明（页面可能没有该区域，超时转 null 走下方 else 分支，不再 30 秒后异常卡死）
+                                                    const declarationArea = await waitForElement("#articlePublish-selfDeclaration", 10000).catch(() => null);
                                                     if(declarationArea){
                                                         const declarationTitle = declarationArea.querySelector(".omui-contentbutton__title");
                                                         console.log("🚀 ~ tryUploadImage ~ declarationTitle: ", declarationTitle);
@@ -2367,8 +2394,13 @@
                                                                         // 腾讯的ai生成声明确认弹窗
                                                                         await AICreatePopup();
 
-                                                                        //  检测有没有定时发布弹窗
-                                                                        const scheduledReleasesModal = await  waitForElement(".omui-dialog-wrapper");
+                                                                        //  检测有没有定时发布弹窗（超时转 null 走失败上报，避免窗口悬死）
+                                                                        const scheduledReleasesModal = await waitForElement(".omui-dialog-wrapper").catch(() => null);
+                                                                        if (!scheduledReleasesModal) {
+                                                                            console.error("[腾讯号发布] ❌ 定时发布弹窗未出现");
+                                                                            await reportTxhFailure(dataObj, "定时发布弹窗未出现", "发布失败，刷新数据");
+                                                                            return;
+                                                                        }
                                                                         if (scheduledReleasesModal) {
                                                                             console.log("[腾讯号发布] ✅ 检测到定时发布弹窗");
 
@@ -2377,8 +2409,7 @@
 
                                                                             if (!sendTime) {
                                                                                 console.error("[腾讯号发布] ❌ 解析定时时间失败");
-                                                                                stopErrorListener();
-                                                                                await closeWindowWithMessage("定时时间解析失败", 1000);
+                                                                                await reportTxhFailure(dataObj, "定时时间解析失败", "定时时间解析失败，刷新数据");
                                                                                 return;
                                                                             }
 
@@ -2389,8 +2420,7 @@
 
                                                                             if (!timeSelectSuccess) {
                                                                                 console.error("[腾讯号发布] ❌ 时间选择失败");
-                                                                                stopErrorListener();
-                                                                                await closeWindowWithMessage("定时时间选择失败", 1000);
+                                                                                await reportTxhFailure(dataObj, "定时发布时间选择失败", "定时时间选择失败，刷新数据");
                                                                                 return;
                                                                             }
 
@@ -2406,7 +2436,8 @@
                                                                                 if (publishId) {
                                                                                     try {
                                                                                         // 同时设置全局变量和 localStorage，确保标志能被检测到
-                                                                                        window.__tengxunPublishSuccessFlag = true;
+                                                                                        // ⚠️ publish-success.js 只认 __sohuPublishSuccessFlag（各平台共用的历史命名）
+                                                                                        window.__sohuPublishSuccessFlag = true;
                                                                                         localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
                                                                                         console.log("[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
@@ -2421,7 +2452,16 @@
                                                                                 } else {
                                                                                     // 即使没有 publishId，也要设置全局变量允许跳转
                                                                                     window.__sohuPublishSuccessFlag = true;
-                                                                                    console.log("[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志");
+                                                                                    // 🔑 window 标志在整页跳转后会丢失，补 localStorage + globalData 兜底
+                                                                                    try {
+                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null }));
+                                                                                        if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null });
+                                                                                        }
+                                                                                    } catch (e) {
+                                                                                        console.error("[腾讯号发布] ❌ 保存发布成功标记失败:", e);
+                                                                                    }
+                                                                                    console.log("[腾讯号发布] ℹ️ 没有 publishId，已设置跳转标志(含 localStorage/globalData 兜底)");
                                                                                 }
 
                                                                                 confirmBtn.click();
@@ -2435,6 +2475,8 @@
                                                                                 stopErrorListener();
                                                                             } else {
                                                                                 console.error("[腾讯号发布] ❌ 未找到确定按钮");
+                                                                                await reportTxhFailure(dataObj, "定时发布确认按钮未找到", "发布失败，刷新数据");
+                                                                                return;
                                                                             }
                                                                         }
                                                                     }
@@ -2483,7 +2525,16 @@
                                                                     } else {
                                                                         // 即使没有 publishId，也要设置全局变量允许跳转
                                                                         window.__sohuPublishSuccessFlag = true;
-                                                                        console.log("[腾讯号发布] ℹ️ 没有 publishId，但已设置跳转标志");
+                                                                        // 🔑 window 标志在整页跳转后会丢失，补 localStorage + globalData 兜底
+                                                                        try {
+                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null }));
+                                                                            if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null });
+                                                                            }
+                                                                        } catch (e) {
+                                                                            console.error("[腾讯号发布] ❌ 保存发布成功标记失败:", e);
+                                                                        }
+                                                                        console.log("[腾讯号发布] ℹ️ 没有 publishId，已设置跳转标志(含 localStorage/globalData 兜底)");
                                                                     }
 
                                                                     const clickEvent = new MouseEvent("click", {
@@ -2594,6 +2645,14 @@
                                                         }
                                                         await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
                                                     }
+                                                }
+                                                } catch (error) {
+                                                    console.error("[腾讯号发布] ❌ tryUploadImage 未捕获异常:", error);
+                                                    if (window.__sohuPublishSuccessFlag) {
+                                                        console.warn("[腾讯号发布] ⚠️ 发布已点击，跳过失败上报，交给成功页流程处理");
+                                                        return;
+                                                    }
+                                                    await reportTxhFailure(dataObj, error?.message || "发布流程异常", "发布失败，刷新数据");
                                                 }
                                             };
 
