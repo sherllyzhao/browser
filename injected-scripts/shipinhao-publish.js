@@ -1270,6 +1270,8 @@ async function publishApi(dataObj) {
         // 标记已完成
         hasProcessed = true;
         publishRunning = false;
+        // 🔑 关闭窗口（发布成功）
+        await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return; // 页面已跳转，由 publish-success.js 处理统计接口
       }
 
@@ -1278,6 +1280,8 @@ async function publishApi(dataObj) {
         console.log('[视频号发布] ✅ 数据已被成功页处理，跳过后续检测');
         hasProcessed = true;
         publishRunning = false;
+        // 🔑 关闭窗口（成功页已处理）
+        await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return;
       }
 
@@ -1306,6 +1310,8 @@ async function publishApi(dataObj) {
       console.log('[视频号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
       hasProcessed = true;
       publishRunning = false;
+      // 🔑 关闭窗口（成功页已处理）
+      await closeWindowWithMessage('发布成功，刷新数据', 1000);
       return;
     }
 
