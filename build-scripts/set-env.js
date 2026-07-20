@@ -76,7 +76,7 @@ const fallbackConfig = env === 'prod'
       };`;
 
 loginContent = loginContent.replace(
-  /\/\/ fallback 默认配置[\s\S]*?};/m,
+  /[ \t]*\/\/ fallback 默认配置[\s\S]*?};/m,
   fallbackConfig
 );
 
