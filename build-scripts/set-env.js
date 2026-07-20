@@ -65,7 +65,7 @@ const fallbackConfig = env === 'prod'
       domainConfig = {
         isProduction: false,
         aigcUrl: 'http://localhost:5173/',
-        geoUrl: 'http://localhost:8080/geo/dashboard',
+        geoUrl: 'http://localhost:8080/#/geo/dashboard',
         cookieUrl: 'https://dev.china9.cn',
         cookieDomain: '.china9.cn',
         domains: {
@@ -130,8 +130,21 @@ commonContent = commonContent.replace(
 
 fs.writeFileSync(commonPath, commonContent, 'utf-8');
 
-console.log(`✅ 已设置环境为: ${env}`);
-console.log(`📝 domain-config.js: ${configPath}`);
-console.log(`📝 login.html: ${loginPath}`);
-console.log(`📝 renderer.js: ${rendererPath}`);
-console.log(`📝 common.js: ${commonPath}`);
+// ✅ 验证和输出
+console.log(`\n✅ 已设置环境为: ${env.toUpperCase()}\n`);
+console.log(`📝 已修改的文件:`);
+console.log(`   ✓ domain-config.js`);
+console.log(`   ✓ login.html (fallback: ${config.aigcPage}/aigc_browser/)`);
+console.log(`   ✓ renderer.js (AIGC_URL: ${aigcUrl})`);
+console.log(`   ✓ common.js\n`);
+
+// 验证 login.html 中的配置是否正确
+if (loginContent.includes(config.aigcPage)) {
+  console.log(`✅ login.html 已正确替换生产 URL`);
+} else {
+  console.error(`❌ 警告：login.html 可能未正确替换，请检查`);
+}
+
+console.log(`\n🎯 生产环境首页:`);
+console.log(`   AIGC: ${config.aigcPage}/aigc_browser/`);
+console.log(`   GEO:  ${config.geoPage}/jzt_all/#/geo/dashboard\n`);
