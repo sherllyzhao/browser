@@ -862,40 +862,86 @@
     };
   };
 
-  // 🔗 在编辑器中精确定位并选中文本
+  // 🔗 在编辑器中精确定位并选中文本（兼容 ProseMirror）
   const selectTextInEditor = (editor, targetText) => {
-    const sel = window.getSelection();
-    if (!sel) return false;
+    // 如果是 ProseMirror 编辑器，先尝试找 ProseMirror 数据
+    const isProseMirror = editor.classList?.contains('ProseMirror');
 
-    // 遍历编辑器所有文本节点，找到目标文本
-    const findTextNode = (node, searchText) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.textContent || '';
-        const index = text.indexOf(searchText);
-        if (index !== -1) {
-          return { node, index, length: searchText.length };
-        }
-      } else {
-        for (const child of node.childNodes) {
-          const result = findTextNode(child, searchText);
-          if (result) return result;
-        }
-      }
-      return null;
-    };
+    // 方案1: 直接查找所有文本内容
+    const editorText = (editor.innerText || editor.textContent || '').trim();
+    if (!editorText.includes(targetText)) {
+      console.warn(`${LOG_PREFIX} ⚠️ 编辑器中不存在文本: "${targetText}"`);
+      return false;
+    }
 
-    const result = findTextNode(editor, targetText);
-    if (!result) {
-      console.warn(`${LOG_PREFIX} ⚠️ 未在编辑器中找到文本: "${targetText}"`);
+    // 方案2: 使用 DOM Range API（对 ProseMirror 有更好兼容性）
+    const walker = document.createTreeWalker(
+      editor,
+      NodeFilter.SHOW_TEXT,
+      null,
+      false
+    );
+
+    let textNode;
+    let fullText = '';
+    const nodePositions = [];
+
+    // 先遍历所有文本节点，构建完整文本和位置映射
+    while (textNode = walker.nextNode()) {
+      const text = textNode.textContent || '';
+      nodePositions.push({
+        node: textNode,
+        start: fullText.length,
+        end: fullText.length + text.length,
+        text: text
+      });
+      fullText += text;
+    }
+
+    const targetIndex = fullText.indexOf(targetText);
+    if (targetIndex === -1) {
+      console.warn(`${LOG_PREFIX} ⚠️ 未在编辑器文本中找到: "${targetText}"`);
+      return false;
+    }
+
+    // 找到包含目标文本的文本节点
+    const targetEnd = targetIndex + targetText.length;
+    const startNodeInfo = nodePositions.find(
+      pos => pos.start <= targetIndex && targetIndex < pos.end
+    );
+    const endNodeInfo = nodePositions.find(
+      pos => pos.start < targetEnd && targetEnd <= pos.end
+    );
+
+    if (!startNodeInfo) {
+      console.warn(`${LOG_PREFIX} ⚠️ 无法定位目标文本的起点`);
       return false;
     }
 
     try {
       const range = document.createRange();
-      range.setStart(result.node, result.index);
-      range.setEnd(result.node, result.index + result.length);
+      const startOffset = targetIndex - startNodeInfo.start;
+
+      if (startNodeInfo === endNodeInfo) {
+        // 文本在同一个节点内
+        const endOffset = targetIndex + targetText.length - startNodeInfo.start;
+        range.setStart(startNodeInfo.node, startOffset);
+        range.setEnd(startNodeInfo.node, endOffset);
+      } else if (endNodeInfo) {
+        // 文本跨越多个节点
+        const endOffset = targetEnd - endNodeInfo.start;
+        range.setStart(startNodeInfo.node, startOffset);
+        range.setEnd(endNodeInfo.node, endOffset);
+      } else {
+        // 结束节点未找到，按起始节点文本长度计算
+        range.setStart(startNodeInfo.node, startOffset);
+        range.setEnd(startNodeInfo.node, startNodeInfo.text.length);
+      }
+
+      const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
+
       console.log(`${LOG_PREFIX} ✅ 已选中文本: "${targetText}"`);
       return true;
     } catch (e) {
@@ -907,48 +953,63 @@
   // 🔗 模拟点击链接工具按钮并填入 URL
   const addLinkToSelection = async (url) => {
     try {
-      // 方法1: 查找链接按钮（通常是工具栏中的链接图标）
-      const toolbarButtons = Array.from(document.querySelectorAll('button, div[role="button"]')).filter(el => {
-        const classes = (el.className || '').toString();
-        const title = (el.title || '').toLowerCase();
-        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-        const svg = el.querySelector('svg[class*="link"]');
+      // 方法1: 查找链接按钮（优先查找有 title="链接" 或 aria-label 的按钮）
+      const findLinkButton = () => {
+        // 精准查找：具有 title 或 aria-label 含有 "链接" 的按钮
+        let linkBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(el => {
+          const title = (el.title || '').toLowerCase();
+          const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+          const text = (el.textContent || '').trim().toLowerCase();
+          return title.includes('链接') || ariaLabel.includes('link') || text.includes('链接');
+        });
 
-        return svg || title.includes('link') || title.includes('链接') || ariaLabel.includes('link') || ariaLabel.includes('链接');
-      });
+        if (linkBtn) return linkBtn;
 
-      if (toolbarButtons.length === 0) {
+        // 次要查找：具有链接图标的按钮
+        linkBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(el => {
+          const svg = el.querySelector('svg');
+          if (!svg) return false;
+          const svgClass = (svg.className?.baseVal || svg.className || '').toLowerCase();
+          return svgClass.includes('link') || svgClass.includes('url');
+        });
+
+        return linkBtn || null;
+      };
+
+      const linkButton = findLinkButton();
+      if (!linkButton) {
         console.warn(`${LOG_PREFIX} ⚠️ 未找到链接工具按钮`);
         return false;
       }
 
-      const linkButton = toolbarButtons[0];
       console.log(`${LOG_PREFIX} 🔗 找到链接按钮，准备点击`);
-
       linkButton.click();
-      await delay(500);
+      await delay(600);
 
-      // 方法2: 查找链接输入框（模态框或弹出窗口中）
+      // 方法2: 等待链接输入框出现（使用多种选择器兼容不同 UI）
       const findLinkInput = () => {
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="url"], input:not([type])'));
-        // 优先查找带 placeholder 或 label 含有 "链接" 或 "URL" 的输入框
-        return inputs.find(inp => {
-          const placeholder = (inp.placeholder || '').toLowerCase();
-          const label = (inp.getAttribute('aria-label') || '').toLowerCase();
-          return placeholder.includes('url') || placeholder.includes('链接') ||
-                 label.includes('url') || label.includes('链接') ||
-                 inp.offsetParent !== null; // 至少是可见的
-        }) || inputs.find(inp => inp.offsetParent !== null);
+        // 先查找专门的链接输入框
+        let input = document.querySelector(
+          'input[placeholder*="链接"], input[placeholder*="URL"], input[placeholder*="url"], input[aria-label*="链接"]'
+        );
+        if (input) return input;
+
+        // 查找最后出现的可见输入框（通常在弹窗中）
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="url"], input:not([type])'))
+          .filter(inp => {
+            const rect = inp.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0; // 可见
+          });
+
+        return inputs[inputs.length - 1] || null;
       };
 
-      const linkInput = await (async () => {
-        for (let i = 0; i < 10; i++) {
-          const inp = findLinkInput();
-          if (inp) return inp;
-          await delay(100);
-        }
-        return null;
-      })();
+      let linkInput = null;
+      for (let i = 0; i < 15; i++) {
+        linkInput = findLinkInput();
+        if (linkInput && linkInput.offsetParent !== null) break;
+        await delay(100);
+      }
 
       if (!linkInput) {
         console.warn(`${LOG_PREFIX} ⚠️ 链接输入框未出现`);
@@ -957,27 +1018,40 @@
 
       console.log(`${LOG_PREFIX} 📝 已找到链接输入框，填入 URL: ${url}`);
 
+      // 清空现有内容
       linkInput.focus();
+      linkInput.select();
+      await delay(50);
+
+      // 填入 URL
       linkInput.value = url;
       linkInput.dispatchEvent(new Event('input', { bubbles: true }));
       linkInput.dispatchEvent(new Event('change', { bubbles: true }));
-      await delay(300);
+      linkInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 
-      // 方法3: 查找确认按钮并点击
-      const confirmButtons = Array.from(document.querySelectorAll('button')).filter(btn => {
-        const text = (btn.textContent || '').trim().toLowerCase();
-        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        return text.includes('确定') || text.includes('确认') || text.includes('添加') || text.includes('ok') ||
-               ariaLabel.includes('confirm') || ariaLabel.includes('ok');
-      });
+      await delay(400);
 
-      if (confirmButtons.length > 0) {
+      // 方法3: 查找确认按钮
+      const findConfirmButton = () => {
+        const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
+          if (!isVisibleElement(btn)) return false;
+          const text = (btn.textContent || '').trim().toLowerCase();
+          const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+          return text.includes('确定') || text.includes('确认') || text.includes('ok') ||
+                 ariaLabel.includes('confirm') || ariaLabel.includes('ok') ||
+                 text.includes('添加') || text === '确认';
+        });
+        return buttons[buttons.length - 1] || null; // 优先取最后一个（通常是确认按钮）
+      };
+
+      const confirmButton = findConfirmButton();
+      if (confirmButton && isVisibleElement(confirmButton)) {
         console.log(`${LOG_PREFIX} ✅ 找到确认按钮，点击提交链接`);
-        confirmButtons[0].click();
-        await delay(400);
+        confirmButton.click();
+        await delay(500);
         return true;
       } else {
-        // 如果没有确认按钮，尝试按 Enter 键
+        // 如果没找到确认按钮，尝试 Enter 键提交
         console.log(`${LOG_PREFIX} ℹ️ 未找到确认按钮，尝试按 Enter 键提交`);
         const enterEvent = new KeyboardEvent('keydown', {
           key: 'Enter',
@@ -988,7 +1062,7 @@
           cancelable: true
         });
         linkInput.dispatchEvent(enterEvent);
-        await delay(400);
+        await delay(500);
         return true;
       }
     } catch (e) {
