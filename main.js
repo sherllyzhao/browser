@@ -6732,6 +6732,159 @@ function buildToutiaoBarePublishScript(payload) {
         return { ok: true, modal: true, confirmText: textOf(confirmBtn) };
       };
 
+      // 🔗 链接处理：normalizeContent 会把 HTML 拍成纯文本丢掉 <a>，这里在正文写入后补回链接
+      const extractLinksFromHtml = (html) => {
+        const links = [];
+        if (!html || typeof html !== 'string' || !/[<>]/.test(html)) return links;
+        try {
+          const temp = document.createElement('div');
+          temp.innerHTML = html;
+          temp.querySelectorAll('a[href]').forEach((a) => {
+            const text = (a.textContent || '').trim();
+            const url = (a.getAttribute('href') || '').trim();
+            if (text && url && !/^javascript:/i.test(url)) links.push({ text, url });
+          });
+        } catch (_) {}
+        return links;
+      };
+      const getPmView = (root) => {
+        try {
+          const pmNode = (root && root.closest && root.closest('.ProseMirror')) || root;
+          if (pmNode && pmNode.pmViewDesc && pmNode.pmViewDesc.view) return pmNode.pmViewDesc.view;
+        } catch (_) {}
+        try {
+          let node = root;
+          while (node && node !== document.body) {
+            if (node.pmViewDesc && node.pmViewDesc.view) return node.pmViewDesc.view;
+            node = node.parentElement;
+          }
+        } catch (_) {}
+        try {
+          const list = document.querySelectorAll('.ProseMirror, [contenteditable="true"]');
+          for (const el of list) {
+            if (el.pmViewDesc && el.pmViewDesc.view) return el.pmViewDesc.view;
+          }
+        } catch (_) {}
+        return null;
+      };
+      const findTextRangeInPmDoc = (doc, targetText) => {
+        let fullText = '';
+        const segments = [];
+        doc.descendants((node, pos) => {
+          if (node.isText) {
+            segments.push({ start: fullText.length, end: fullText.length + node.text.length, pos });
+            fullText += node.text;
+          } else if (node.isBlock && fullText.length > 0 && !fullText.endsWith('\\n')) {
+            fullText += '\\n';
+          }
+          return true;
+        });
+        const idx = fullText.indexOf(targetText);
+        if (idx === -1) return null;
+        const endIdx = idx + targetText.length;
+        const startSeg = segments.find(s => s.start <= idx && idx < s.end);
+        const endSeg = segments.find(s => s.start < endIdx && endIdx <= s.end);
+        if (!startSeg || !endSeg) return null;
+        return { from: startSeg.pos + (idx - startSeg.start), to: endSeg.pos + (endIdx - endSeg.start) };
+      };
+      const findLinkMarkType = (schema) => {
+        if (!schema || !schema.marks) return null;
+        if (schema.marks.link) return schema.marks.link;
+        const name = Object.keys(schema.marks).find(n => /link|anchor|hyper/i.test(n));
+        if (name) return schema.marks[name];
+        return schema.marks.a || null;
+      };
+      const addLinksViaPmMarks = (view, links) => {
+        const result = { supported: false, applied: 0, marks: null, attrKeys: null, failures: [] };
+        try {
+          const schema = view.state.schema;
+          result.marks = Object.keys(schema.marks || {});
+          const linkType = findLinkMarkType(schema);
+          if (!linkType) return result;
+          result.supported = true;
+          result.attrKeys = Object.keys((linkType.spec && linkType.spec.attrs) || {});
+          for (const link of links) {
+            try {
+              const range = findTextRangeInPmDoc(view.state.doc, link.text);
+              if (!range) {
+                result.failures.push({ text: link.text, reason: 'text-not-in-doc' });
+                continue;
+              }
+              const attrs = {};
+              if (result.attrKeys.includes('href')) attrs.href = link.url;
+              else if (result.attrKeys.includes('url')) attrs.url = link.url;
+              else if (result.attrKeys.length > 0) attrs[result.attrKeys[0]] = link.url;
+              else attrs.href = link.url;
+              if (result.attrKeys.includes('title')) attrs.title = link.text;
+              view.dispatch(view.state.tr.addMark(range.from, range.to, linkType.create(attrs)));
+              result.applied++;
+            } catch (e) {
+              result.failures.push({ text: link.text, reason: e.message });
+            }
+          }
+        } catch (e) {
+          result.failures.push({ text: '(all)', reason: e.message });
+        }
+        return result;
+      };
+      const wrapTextWithAnchor = (root, text, url) => {
+        try {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            const value = node.nodeValue || '';
+            const idx = value.indexOf(text);
+            if (idx === -1) continue;
+            if (node.parentElement && node.parentElement.closest('a')) continue;
+            const range = document.createRange();
+            range.setStart(node, idx);
+            range.setEnd(node, idx + text.length);
+            const anchor = document.createElement('a');
+            anchor.setAttribute('href', url);
+            anchor.setAttribute('target', '_blank');
+            anchor.setAttribute('rel', 'noopener');
+            range.surroundContents(anchor);
+            return true;
+          }
+        } catch (_) {}
+        return false;
+      };
+      const applyContentLinks = async (editorEl) => {
+        const diag = { expected: 0, pmSupported: null, pmApplied: 0, pmFailures: null, marks: null, attrKeys: null, domApplied: 0, finalInDom: 0 };
+        const links = extractLinksFromHtml(payload.rawContent);
+        diag.expected = links.length;
+        if (links.length === 0) return diag;
+        await delay(600);
+        const normUrl = (u) => String(u || '').trim().replace(/\\/+$/, '');
+        const domHrefs = () => new Set(Array.from(editorEl.querySelectorAll('a[href]')).map(a => normUrl(a.getAttribute('href'))));
+        let missing = links.filter(l => !domHrefs().has(normUrl(l.url)));
+        if (missing.length > 0) {
+          const view = getPmView(editorEl);
+          if (view) {
+            const pmRes = addLinksViaPmMarks(view, missing);
+            diag.pmSupported = pmRes.supported;
+            diag.pmApplied = pmRes.applied;
+            diag.pmFailures = pmRes.failures;
+            diag.marks = pmRes.marks;
+            diag.attrKeys = pmRes.attrKeys;
+            await delay(400);
+          } else {
+            diag.pmSupported = false;
+          }
+        }
+        missing = links.filter(l => !domHrefs().has(normUrl(l.url)));
+        for (const link of missing) {
+          if (wrapTextWithAnchor(editorEl, link.text, link.url)) diag.domApplied++;
+        }
+        if (diag.domApplied > 0) {
+          editorEl.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText' }));
+          editorEl.dispatchEvent(new Event('change', { bubbles: true }));
+          await delay(400);
+        }
+        diag.finalInDom = editorEl.querySelectorAll('a[href]').length;
+        return diag;
+      };
+
       const title = normalizeTitle(payload.rawTitle);
       const content = normalizeContent(payload.rawContent, payload.intro, title);
       const logs = [];
@@ -6788,6 +6941,14 @@ function buildToutiaoBarePublishScript(payload) {
       editor.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
       await delay(900);
       push('content-filled', { length: (editor.innerText || '').trim().length });
+
+      // 🔗 补回链接（失败不阻断发布，诊断信息随 logs 落入 bare-result 转储）
+      try {
+        const linkDiag = await applyContentLinks(editor);
+        push('links-processed', linkDiag);
+      } catch (e) {
+        push('links-error', { message: e.message });
+      }
 
       const coverResult = await tryUploadCover(payload.cover, title);
       push('cover-finished', coverResult);
