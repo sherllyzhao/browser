@@ -862,6 +862,130 @@
     };
   };
 
+  // 🔗 在 ProseMirror 文档中定位文本的 from/to 位置（块之间补 \n 分隔，避免跨段误匹配）
+  const findTextRangeInPmDoc = (doc, targetText) => {
+    let fullText = '';
+    const segments = [];
+    doc.descendants((node, pos) => {
+      if (node.isText) {
+        segments.push({ start: fullText.length, end: fullText.length + node.text.length, pos });
+        fullText += node.text;
+      } else if (node.isBlock && fullText.length > 0 && !fullText.endsWith('\n')) {
+        fullText += '\n';
+      }
+      return true;
+    });
+    const idx = fullText.indexOf(targetText);
+    if (idx === -1) return null;
+    const endIdx = idx + targetText.length;
+    const startSeg = segments.find(s => s.start <= idx && idx < s.end);
+    const endSeg = segments.find(s => s.start < endIdx && endIdx <= s.end);
+    if (!startSeg || !endSeg) return null;
+    return {
+      from: startSeg.pos + (idx - startSeg.start),
+      to: endSeg.pos + (endIdx - endSeg.start)
+    };
+  };
+
+  // 🔗 在 schema 中查找链接类 mark（不同编辑器可能命名为 link/hyperlink/anchor/a）
+  const findLinkMarkType = (schema) => {
+    if (!schema?.marks) return null;
+    if (schema.marks.link) return schema.marks.link;
+    const name = Object.keys(schema.marks).find(n => /link|anchor|hyper/i.test(n));
+    if (name) return schema.marks[name];
+    return schema.marks.a || null;
+  };
+
+  // 🔗 直接操作 ProseMirror state 给文本加 link mark（绕过工具栏 UI 与粘贴过滤）
+  const addLinksViaPmMarks = (view, links) => {
+    const result = { supported: false, applied: 0, marks: null, attrKeys: null, failures: [] };
+    try {
+      const schema = view.state.schema;
+      result.marks = Object.keys(schema.marks || {});
+      const linkType = findLinkMarkType(schema);
+      if (!linkType) {
+        console.warn(`${LOG_PREFIX} [PM链接] schema 无链接类 mark，可用 marks: ${result.marks.join(', ')}`);
+        return result;
+      }
+      result.supported = true;
+      result.attrKeys = Object.keys(linkType.spec?.attrs || {});
+      console.log(`${LOG_PREFIX} [PM链接] 使用 mark "${linkType.name}" (attrs: ${result.attrKeys.join(',')})，schema marks: ${result.marks.join(', ')}`);
+      for (const link of links) {
+        try {
+          const range = findTextRangeInPmDoc(view.state.doc, link.text);
+          if (!range) {
+            result.failures.push({ text: link.text, reason: 'doc中未找到文本' });
+            console.warn(`${LOG_PREFIX} [PM链接] ⚠️ doc 中未找到文本: "${link.text}"`);
+            continue;
+          }
+          // 根据 mark 实际定义的 attr 名装配属性（href / url 等命名差异）
+          const attrs = {};
+          if (result.attrKeys.includes('href')) attrs.href = link.url;
+          else if (result.attrKeys.includes('url')) attrs.url = link.url;
+          else if (result.attrKeys.length > 0) attrs[result.attrKeys[0]] = link.url;
+          else attrs.href = link.url;
+          if (result.attrKeys.includes('title')) attrs.title = link.text;
+          view.dispatch(view.state.tr.addMark(range.from, range.to, linkType.create(attrs)));
+          result.applied++;
+          console.log(`${LOG_PREFIX} [PM链接] ✅ 已加链接: "${link.text}" → ${link.url}`);
+        } catch (e) {
+          result.failures.push({ text: link.text, reason: e.message });
+          console.warn(`${LOG_PREFIX} [PM链接] ⚠️ 加链接失败 "${link.text}":`, e.message);
+        }
+      }
+    } catch (e) {
+      result.failures.push({ text: '(整体)', reason: e.message });
+      console.warn(`${LOG_PREFIX} [PM链接] ⚠️ 整体异常:`, e.message);
+    }
+    return result;
+  };
+
+  // 🔍 收集可见按钮清单（诊断用：链接添加失败时写入调试文件，定位工具栏真实结构）
+  const collectToolbarInfo = () => {
+    try {
+      return Array.from(document.querySelectorAll('button, [role="button"]'))
+        .filter(el => isVisibleElement(el))
+        .slice(0, 60)
+        .map(el => ({
+          tag: el.tagName,
+          title: el.title || '',
+          aria: el.getAttribute('aria-label') || '',
+          cls: (el.className || '').toString().slice(0, 60),
+          text: (el.textContent || '').trim().slice(0, 20),
+          svg: (() => {
+            const svg = el.querySelector('svg, use');
+            if (!svg) return '';
+            const cls = (svg.className?.baseVal || svg.className || '').toString();
+            const href = svg.getAttribute?.('xlink:href') || svg.getAttribute?.('href') || '';
+            return (cls + ' ' + href).trim().slice(0, 60);
+          })()
+        }));
+    } catch (e) {
+      return [{ error: e.message }];
+    }
+  };
+
+  // 🖱️ 完整鼠标事件序列点击（ProseMirror 工具栏常监听 mousedown 而非 click，裸 .click() 无效）
+  const simulateMouseClick = (el) => {
+    try {
+      const rect = el.getBoundingClientRect();
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        button: 0
+      };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      return true;
+    } catch (e) {
+      try { el.click(); return true; } catch (_) { return false; }
+    }
+  };
+
   // 🔗 在编辑器中精确定位并选中文本（兼容 ProseMirror）
   const selectTextInEditor = (editor, targetText) => {
     // 如果是 ProseMirror 编辑器，先尝试找 ProseMirror 数据
@@ -983,7 +1107,7 @@
       }
 
       console.log(`${LOG_PREFIX} 🔗 找到链接按钮，准备点击`);
-      linkButton.click();
+      simulateMouseClick(linkButton);
       await delay(600);
 
       // 方法2: 等待链接输入框出现（使用多种选择器兼容不同 UI）
@@ -1047,7 +1171,7 @@
       const confirmButton = findConfirmButton();
       if (confirmButton && isVisibleElement(confirmButton)) {
         console.log(`${LOG_PREFIX} ✅ 找到确认按钮，点击提交链接`);
-        confirmButton.click();
+        simulateMouseClick(confirmButton);
         await delay(500);
         return true;
       } else {
@@ -1162,7 +1286,7 @@
           }
 
           console.log(`${LOG_PREFIX} 📋 点击列表按钮: ${buttonText}`);
-          listButtons[0].click();
+          simulateMouseClick(listButtons[0]);
           await delay(400);
 
           // 查找并点击列表类型选项
@@ -1174,7 +1298,7 @@
           if (listOptions.length > 0) {
             const targetOption = listOptions.find(opt => (opt.textContent || '').trim() === buttonText) || listOptions[0];
             console.log(`${LOG_PREFIX} 📋 选择列表类型: ${buttonText}`);
-            targetOption.click?.();
+            simulateMouseClick(targetOption);
             await delay(300);
             successCount++;
             console.log(`${LOG_PREFIX} ✅ 已应用列表格式: "${item.text}"`);
@@ -1531,18 +1655,67 @@
       if (htmlContent && /[<>]/.test(htmlContent)) {
         try {
           const { links, listItems } = extractLinksAndListsFromHtml(htmlContent);
+          const normUrl = (u) => (u || '').trim().replace(/\/+$/, '');
+          const getDomHrefs = () => new Set(
+            Array.from(editor.querySelectorAll('a[href]')).map(a => normUrl(a.getAttribute('href')))
+          );
 
-          // 添加链接
+          // 链接三级策略：已存在跳过 → PM state 直加 mark → 工具栏 UI 模拟兜底
+          const linkDiag = {
+            expected: links.length, alreadyInDom: 0,
+            pmSupported: null, pmApplied: 0, pmFailures: null, marks: null,
+            uiApplied: 0, finalInDom: 0
+          };
           if (links.length > 0) {
             await delay(500);
-            await addAllLinks(links, editor);
+            // 1) pasteHTML 可能已保留链接，避免重复添加
+            let domHrefs = getDomHrefs();
+            let missingLinks = links.filter(l => !domHrefs.has(normUrl(l.url)));
+            linkDiag.alreadyInDom = links.length - missingLinks.length;
+            if (missingLinks.length === 0) {
+              console.log(`${LOG_PREFIX} ✅ ${links.length} 个链接已由富文本写入保留，无需补加`);
+            } else {
+              // 2) 优先直接操作 ProseMirror state 加 link mark（绕过粘贴过滤与工具栏 UI）
+              const view = getPmView();
+              if (view) {
+                const pmRes = addLinksViaPmMarks(view, missingLinks);
+                linkDiag.pmSupported = pmRes.supported;
+                linkDiag.pmApplied = pmRes.applied;
+                linkDiag.pmFailures = pmRes.failures;
+                linkDiag.marks = pmRes.marks;
+                await delay(300);
+              } else {
+                console.warn(`${LOG_PREFIX} 🔗 PM view 不可用，直接走 UI 模拟`);
+              }
+              // 3) 仍缺失的链接 → 工具栏 UI 模拟兜底
+              domHrefs = getDomHrefs();
+              missingLinks = missingLinks.filter(l => !domHrefs.has(normUrl(l.url)));
+              if (missingLinks.length > 0) {
+                console.log(`${LOG_PREFIX} 🔗 仍有 ${missingLinks.length} 个链接缺失，尝试 UI 模拟兜底`);
+                linkDiag.uiApplied = await addAllLinks(missingLinks, editor);
+              }
+            }
             await delay(500);
+            linkDiag.finalInDom = editor.querySelectorAll('a[href]').length;
+            console.log(`${LOG_PREFIX} 🔗 链接最终验证: 期望 ${linkDiag.expected} 个, 编辑器实际 ${linkDiag.finalInDom} 个`);
+            if (linkDiag.finalInDom < linkDiag.expected) {
+              // 写诊断文件：包含 schema marks、各阶段结果、工具栏按钮清单，便于定位失败环节
+              await dumpDebugToFile('link-add-incomplete', {
+                linkDiag,
+                links,
+                toolbar: collectToolbarInfo()
+              });
+            }
           }
 
-          // 处理列表
+          // 处理列表：编辑器已有原生 ol/ul（pasteHTML 保留）时跳过，避免二次点击把列表切回普通段落
           if (listItems.length > 0) {
             await delay(500);
-            await applyListFormatting(listItems, editor);
+            if (editor.querySelector('ol, ul, li')) {
+              console.log(`${LOG_PREFIX} ✅ 检测到编辑器已有原生列表，跳过 UI 模拟`);
+            } else {
+              await applyListFormatting(listItems, editor);
+            }
             await delay(500);
           }
 
