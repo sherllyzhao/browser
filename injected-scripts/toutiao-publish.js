@@ -815,6 +815,310 @@
     }, 5, 1000);
   };
 
+  // 🔗 从 HTML 中提取链接映射和列表信息
+  const extractLinksAndListsFromHtml = (htmlContent) => {
+    if (!htmlContent || !/[<>]/.test(htmlContent)) {
+      return { links: [], listItems: [], hasLists: false };
+    }
+
+    const div = document.createElement('div');
+    div.innerHTML = htmlContent;
+
+    // 提取所有链接：{ text: "链接文本", url: "https://..." }
+    const links = [];
+    div.querySelectorAll('a[href]').forEach((a) => {
+      const text = (a.textContent || '').trim();
+      const url = (a.getAttribute('href') || '').trim();
+      if (text && url) {
+        links.push({ text, url });
+      }
+    });
+
+    // 提取所有列表项及其类型
+    const listItems = [];
+    let listIndex = 0;
+    div.querySelectorAll('ul, ol').forEach((list) => {
+      const isOrdered = list.tagName.toLowerCase() === 'ol';
+      let itemIndex = 1;
+      list.querySelectorAll(':scope > li').forEach((li) => {
+        const text = (li.textContent || '').trim();
+        if (text) {
+          listItems.push({
+            text,
+            type: isOrdered ? 'ordered' : 'bullet',
+            number: isOrdered ? itemIndex : null,
+            listIndex
+          });
+          itemIndex++;
+        }
+      });
+      listIndex++;
+    });
+
+    return {
+      links,
+      listItems,
+      hasLists: listItems.length > 0
+    };
+  };
+
+  // 🔗 在编辑器中精确定位并选中文本
+  const selectTextInEditor = (editor, targetText) => {
+    const sel = window.getSelection();
+    if (!sel) return false;
+
+    // 遍历编辑器所有文本节点，找到目标文本
+    const findTextNode = (node, searchText) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent || '';
+        const index = text.indexOf(searchText);
+        if (index !== -1) {
+          return { node, index, length: searchText.length };
+        }
+      } else {
+        for (const child of node.childNodes) {
+          const result = findTextNode(child, searchText);
+          if (result) return result;
+        }
+      }
+      return null;
+    };
+
+    const result = findTextNode(editor, targetText);
+    if (!result) {
+      console.warn(`${LOG_PREFIX} ⚠️ 未在编辑器中找到文本: "${targetText}"`);
+      return false;
+    }
+
+    try {
+      const range = document.createRange();
+      range.setStart(result.node, result.index);
+      range.setEnd(result.node, result.index + result.length);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      console.log(`${LOG_PREFIX} ✅ 已选中文本: "${targetText}"`);
+      return true;
+    } catch (e) {
+      console.warn(`${LOG_PREFIX} ⚠️ 选中文本失败:`, e.message);
+      return false;
+    }
+  };
+
+  // 🔗 模拟点击链接工具按钮并填入 URL
+  const addLinkToSelection = async (url) => {
+    try {
+      // 方法1: 查找链接按钮（通常是工具栏中的链接图标）
+      const toolbarButtons = Array.from(document.querySelectorAll('button, div[role="button"]')).filter(el => {
+        const classes = (el.className || '').toString();
+        const title = (el.title || '').toLowerCase();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const svg = el.querySelector('svg[class*="link"]');
+
+        return svg || title.includes('link') || title.includes('链接') || ariaLabel.includes('link') || ariaLabel.includes('链接');
+      });
+
+      if (toolbarButtons.length === 0) {
+        console.warn(`${LOG_PREFIX} ⚠️ 未找到链接工具按钮`);
+        return false;
+      }
+
+      const linkButton = toolbarButtons[0];
+      console.log(`${LOG_PREFIX} 🔗 找到链接按钮，准备点击`);
+
+      linkButton.click();
+      await delay(500);
+
+      // 方法2: 查找链接输入框（模态框或弹出窗口中）
+      const findLinkInput = () => {
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="url"], input:not([type])'));
+        // 优先查找带 placeholder 或 label 含有 "链接" 或 "URL" 的输入框
+        return inputs.find(inp => {
+          const placeholder = (inp.placeholder || '').toLowerCase();
+          const label = (inp.getAttribute('aria-label') || '').toLowerCase();
+          return placeholder.includes('url') || placeholder.includes('链接') ||
+                 label.includes('url') || label.includes('链接') ||
+                 inp.offsetParent !== null; // 至少是可见的
+        }) || inputs.find(inp => inp.offsetParent !== null);
+      };
+
+      const linkInput = await (async () => {
+        for (let i = 0; i < 10; i++) {
+          const inp = findLinkInput();
+          if (inp) return inp;
+          await delay(100);
+        }
+        return null;
+      })();
+
+      if (!linkInput) {
+        console.warn(`${LOG_PREFIX} ⚠️ 链接输入框未出现`);
+        return false;
+      }
+
+      console.log(`${LOG_PREFIX} 📝 已找到链接输入框，填入 URL: ${url}`);
+
+      linkInput.focus();
+      linkInput.value = url;
+      linkInput.dispatchEvent(new Event('input', { bubbles: true }));
+      linkInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await delay(300);
+
+      // 方法3: 查找确认按钮并点击
+      const confirmButtons = Array.from(document.querySelectorAll('button')).filter(btn => {
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+        return text.includes('确定') || text.includes('确认') || text.includes('添加') || text.includes('ok') ||
+               ariaLabel.includes('confirm') || ariaLabel.includes('ok');
+      });
+
+      if (confirmButtons.length > 0) {
+        console.log(`${LOG_PREFIX} ✅ 找到确认按钮，点击提交链接`);
+        confirmButtons[0].click();
+        await delay(400);
+        return true;
+      } else {
+        // 如果没有确认按钮，尝试按 Enter 键
+        console.log(`${LOG_PREFIX} ℹ️ 未找到确认按钮，尝试按 Enter 键提交`);
+        const enterEvent = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        });
+        linkInput.dispatchEvent(enterEvent);
+        await delay(400);
+        return true;
+      }
+    } catch (e) {
+      console.warn(`${LOG_PREFIX} ⚠️ 添加链接失败:`, e.message);
+      return false;
+    }
+  };
+
+  // 🔗 逐个添加所有链接
+  const addAllLinks = async (links, editor) => {
+    if (!links || links.length === 0) {
+      console.log(`${LOG_PREFIX} ℹ️ 没有链接需要添加`);
+      return 0;
+    }
+
+    console.log(`${LOG_PREFIX} 🔗 开始添加 ${links.length} 个链接`);
+    let successCount = 0;
+
+    for (const link of links) {
+      try {
+        // 选中链接文本
+        const selected = selectTextInEditor(editor, link.text);
+        if (!selected) {
+          console.warn(`${LOG_PREFIX} ⚠️ 未能选中链接文本 "${link.text}"，跳过`);
+          continue;
+        }
+
+        await delay(200);
+
+        // 添加链接
+        const added = await addLinkToSelection(link.url);
+        if (added) {
+          successCount++;
+          console.log(`${LOG_PREFIX} ✅ 已添加链接: "${link.text}" → ${link.url}`);
+        } else {
+          console.warn(`${LOG_PREFIX} ⚠️ 未能添加链接: "${link.text}"`);
+        }
+
+        await delay(300);
+      } catch (e) {
+        console.warn(`${LOG_PREFIX} ⚠️ 添加链接异常:`, e.message);
+      }
+    }
+
+    console.log(`${LOG_PREFIX} ✅ 链接添加完成，成功 ${successCount}/${links.length}`);
+    return successCount;
+  };
+
+  // 📋 处理列表格式
+  const applyListFormatting = async (listItems, editor) => {
+    if (!listItems || listItems.length === 0) {
+      console.log(`${LOG_PREFIX} ℹ️ 没有列表需要处理`);
+      return 0;
+    }
+
+    console.log(`${LOG_PREFIX} 📋 开始处理 ${listItems.length} 个列表项`);
+    let successCount = 0;
+
+    // 按 listIndex 分组处理
+    const groupedByList = {};
+    listItems.forEach(item => {
+      if (!groupedByList[item.listIndex]) {
+        groupedByList[item.listIndex] = [];
+      }
+      groupedByList[item.listIndex].push(item);
+    });
+
+    for (const [listIdx, items] of Object.entries(groupedByList)) {
+      const listType = items[0].type; // 取第一项的类型作为整个列表的类型
+      const buttonText = listType === 'ordered' ? '有序列表' : '无序列表';
+
+      for (const item of items) {
+        try {
+          // 选中列表项文本
+          const selected = selectTextInEditor(editor, item.text);
+          if (!selected) {
+            console.warn(`${LOG_PREFIX} ⚠️ 未能选中列表项文本 "${item.text}"，跳过`);
+            continue;
+          }
+
+          await delay(200);
+
+          // 查找并点击列表按钮
+          // 先点击列表按钮的下拉菜单
+          const listButtons = Array.from(document.querySelectorAll('button, div[role="button"]')).filter(el => {
+            const title = (el.title || '').toLowerCase();
+            const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+            const svg = el.querySelector('svg');
+            if (!svg) return false;
+            const svgClass = (svg.className?.baseVal || '').toLowerCase();
+            return title.includes('list') || ariaLabel.includes('list') || svgClass.includes('list');
+          });
+
+          if (listButtons.length === 0) {
+            console.warn(`${LOG_PREFIX} ⚠️ 未找到列表按钮`);
+            continue;
+          }
+
+          console.log(`${LOG_PREFIX} 📋 点击列表按钮: ${buttonText}`);
+          listButtons[0].click();
+          await delay(400);
+
+          // 查找并点击列表类型选项
+          const listOptions = Array.from(document.querySelectorAll('div, li, button, span')).filter(el => {
+            const text = (el.textContent || '').trim();
+            return text === buttonText || text === '无序列表' || text === '有序列表';
+          });
+
+          if (listOptions.length > 0) {
+            const targetOption = listOptions.find(opt => (opt.textContent || '').trim() === buttonText) || listOptions[0];
+            console.log(`${LOG_PREFIX} 📋 选择列表类型: ${buttonText}`);
+            targetOption.click?.();
+            await delay(300);
+            successCount++;
+            console.log(`${LOG_PREFIX} ✅ 已应用列表格式: "${item.text}"`);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 未找到列表类型选项`);
+          }
+
+          await delay(200);
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 处理列表项异常:`, e.message);
+        }
+      }
+    }
+
+    console.log(`${LOG_PREFIX} ✅ 列表处理完成，成功 ${successCount}/${listItems.length}`);
+    return successCount;
+  };
+
   const fillContent = async (htmlContent, introText) => {
     // 🔢 给被段落打断的多个 <ol> 用 start 属性接续编号，修复 insertHTML/paste 原生渲染时序号全 1
     const addOrderedListStart = (html) => {
@@ -1148,6 +1452,31 @@
         throw new Error('正文设置后仍为空');
       }
       console.log(`${LOG_PREFIX} ✅ 正文设置成功，长度:`, currentText.length);
+
+      // 🔗 正文设置成功后，处理链接和列表
+      if (htmlContent && /[<>]/.test(htmlContent)) {
+        try {
+          const { links, listItems } = extractLinksAndListsFromHtml(htmlContent);
+
+          // 添加链接
+          if (links.length > 0) {
+            await delay(500);
+            await addAllLinks(links, editor);
+            await delay(500);
+          }
+
+          // 处理列表
+          if (listItems.length > 0) {
+            await delay(500);
+            await applyListFormatting(listItems, editor);
+            await delay(500);
+          }
+
+          console.log(`${LOG_PREFIX} ✅ 链接和列表处理完成`);
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 链接和列表处理异常（不影响正文发布）:`, e.message);
+        }
+      }
     }, 4, 1200);
   };
 
