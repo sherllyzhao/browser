@@ -4121,6 +4121,70 @@ async function probeTengxunhaoServerLoginState(windowSession) {
   }
 }
 
+// 🔎 搜狐号服务端登录态探测：mp.sohu.com 是 SPA，发布页对未登录请求也返回 200（鉴权在客户端），
+// 不能靠页面 URL/状态码判断；唯一可靠判据是业务接口 newsInfo——未登录时明确返回
+// {"code":1211,"msg":"登录错误","success":false}（2026-07-21 实测）。回跳发布页前必须实测一次，
+// 否则死 cookie 会陷入「恢复守卫回跳 ↔ 客户端鉴权打回登录页」拉锯，且拉锯期间把死 cookie 同步进本地缓存。
+async function probeSohuhaoServerLoginState(targetWindow) {
+  try {
+    // accountId 从登录页同域 localStorage 读（掉登录被踢回登录页时 currentAccount 通常仍在）；
+    // 读不到就放弃探测（unknown → 保持原有回跳行为，不因缺参误伤正常流程）
+    let accountId = '';
+    try {
+      accountId = await targetWindow.webContents.executeJavaScript(`
+        (() => { try { return String((JSON.parse(localStorage.getItem('currentAccount') || 'null') || {}).id || ''); } catch (_) { return ''; } })()
+      `, true);
+    } catch (_) {}
+    if (!accountId) {
+      return { verdict: 'unknown', reason: 'no-account-id' };
+    }
+
+    const cookies = await targetWindow.webContents.session.cookies.get({});
+    const cookieHeader = cookies
+      .filter(c => {
+        if (!c || !c.value) return false;
+        const d = String(c.domain || '').replace(/^\./, '').toLowerCase();
+        return d === 'sohu.com' || d.endsWith('.sohu.com');
+      })
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    if (!cookieHeader) {
+      return { verdict: 'not-login', reason: 'no-cookie' };
+    }
+
+    const body = await new Promise((resolve, reject) => {
+      const req = https.request(`https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${encodeURIComponent(accountId)}&_=${Date.now()}`, {
+        method: 'GET',
+        headers: {
+          'Cookie': cookieHeader,
+          'User-Agent': targetWindow.webContents.getUserAgent(),
+          'Referer': 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+          'Accept': 'application/json'
+        },
+        timeout: 5000
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve(data));
+      });
+      req.on('timeout', () => { req.destroy(new Error('探测请求超时')); });
+      req.on('error', reject);
+      req.end();
+    });
+    const parsed = JSON.parse(body);
+    if (parsed && (parsed.code === 1211 || /登录错误|not\s*login/i.test(String(parsed.msg || '')))) {
+      return { verdict: 'not-login', code: parsed.code };
+    }
+    if (parsed && parsed.success === true) {
+      return { verdict: 'logged-in', code: parsed.code };
+    }
+    // 其他业务错误码（如权限/参数问题）不能证明登录失效，保守放行
+    return { verdict: 'unknown', reason: `code=${parsed ? parsed.code : 'n/a'}` };
+  } catch (err) {
+    return { verdict: 'unknown', reason: err.message };
+  }
+}
+
 function isSohuhaoLoginUrl(rawUrl = '') {
   if (!rawUrl) return false;
 
@@ -4229,6 +4293,29 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
       }
     } catch (purgeErr) {
       console.warn('[Tengxunhao Login Recover] ⚠️ 清除失效会话缓存异常:', purgeErr.message);
+    }
+    // 🧹 死 cookie 必须从窗口 session 里清掉：留着会让登录页上新旧凭证混杂，
+    // 扫码时腾讯登录流程被失效 token 干扰，出现"扫了也登不上/一直停在登录页"。
+    // 清完后刷新登录页，让页面以干净状态重新走扫码流程。
+    try {
+      const winSession = targetWindow.webContents.session;
+      const allCookies = await winSession.cookies.get({});
+      let removedCount = 0;
+      for (const cookie of allCookies) {
+        const d = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+        if (d !== 'qq.com' && !d.endsWith('.qq.com')) continue;
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${d}${cookie.path || '/'}`;
+        try {
+          await winSession.cookies.remove(cookieUrl, cookie.name);
+          removedCount++;
+        } catch (_) { /* 单条失败不影响其余 */ }
+      }
+      console.warn(`[Tengxunhao Login Recover] 🧹 已从窗口 session 清除失效 qq.com 系 cookie: ${removedCount} 个`);
+      if (removedCount > 0 && !targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+        targetWindow.webContents.reload();
+      }
+    } catch (cookiePurgeErr) {
+      console.warn('[Tengxunhao Login Recover] ⚠️ 清除窗口 session 失效 cookie 异常:', cookiePurgeErr.message);
     }
     return { redirected: false, serverRejected: true };
   }
@@ -4351,6 +4438,60 @@ async function maybeRecoverSohuhaoLoginWindow(targetWindow, currentURL, reason =
   }
   if (!hasLogin) {
     return { redirected: false };
+  }
+
+  // 🔎 本地 cookie 形式有效 ≠ 服务端认可（同腾讯号 fix 系列）：回跳前实测服务端登录态。
+  // 判死 → 停止回跳、不同步缓存、清污染缓存、清窗口 session 死 cookie 后 reload 登录页。
+  // 搜狐无需 pending 标志：cookie 清空后下次 recover 的 hasValidLoginCookies 自然为 false 直接短路，
+  // 不会循环；窗口关闭保存也会因形式检查失败自动跳过回存。手动登录后由既有 watchLoginRecovery 链路续发。
+  const serverProbe = await probeSohuhaoServerLoginState(targetWindow);
+  if (serverProbe.verdict === 'not-login') {
+    console.warn(`[Sohuhao Login Recover] 🛑 服务端判定未登录（快照 cookie 已失效），停止回跳，等待用户在登录页手动登录: windowId=${windowId}, code=${serverProbe.code ?? serverProbe.reason}`);
+    // 🧹 清除被死 cookie 污染的本地会话缓存：死缓存每次发布被重新盖时间戳，永远比后台快照"新"而反复中选
+    try {
+      const backendAccountId = normalizeAccountIdValue(context?.accountId) || getPublishBackendAccountId(publishData);
+      const cacheKeys = [...new Set([
+        buildLatestSessionCacheKey('sohuhao', backendAccountId),
+        buildLatestSessionCacheKey(normalizePlatformName(context?.platform || ''), backendAccountId)
+      ])].filter(Boolean);
+      for (const cacheKey of cacheKeys) {
+        if (globalStorage[cacheKey]) {
+          delete globalStorage[cacheKey];
+          saveGlobalStorage();
+          console.warn(`[Sohuhao Login Recover] 🧹 已清除被失效 cookie 污染的本地会话缓存: ${cacheKey}`);
+        }
+      }
+    } catch (purgeErr) {
+      console.warn('[Sohuhao Login Recover] ⚠️ 清除失效会话缓存异常:', purgeErr.message);
+    }
+    // 🧹 死 cookie 必须从窗口 session 清掉：残留会让登录页新旧凭证混杂干扰重新登录，
+    // 也会让窗口关闭时的形式检查误判有登录而把死 cookie 回存后台。清完 reload 让登录页干净重来。
+    try {
+      const winSession = targetWindow.webContents.session;
+      const allCookies = await winSession.cookies.get({});
+      let removedCount = 0;
+      for (const cookie of allCookies) {
+        const d = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+        if (d !== 'sohu.com' && !d.endsWith('.sohu.com')) continue;
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${d}${cookie.path || '/'}`;
+        try {
+          await winSession.cookies.remove(cookieUrl, cookie.name);
+          removedCount++;
+        } catch (_) { /* 单条失败不影响其余 */ }
+      }
+      console.warn(`[Sohuhao Login Recover] 🧹 已从窗口 session 清除失效 sohu.com 系 cookie: ${removedCount} 个`);
+      if (removedCount > 0 && !targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+        targetWindow.webContents.reload();
+      }
+    } catch (cookiePurgeErr) {
+      console.warn('[Sohuhao Login Recover] ⚠️ 清除窗口 session 失效 cookie 异常:', cookiePurgeErr.message);
+    }
+    return { redirected: false, serverRejected: true };
+  }
+  if (serverProbe.verdict === 'unknown') {
+    console.warn('[Sohuhao Login Recover] ⚠️ 服务端登录态探测未定论，按原逻辑回跳:', serverProbe.reason);
+  } else {
+    console.log(`[Sohuhao Login Recover] 🔎 服务端登录态探测通过 (code=${serverProbe.code ?? 'n/a'})，继续回跳`);
   }
 
   const targetUrl = getSohuhaoRecoverTargetUrl(context);
@@ -10082,7 +10223,7 @@ app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
-  console.log('[Build] 修复标记: txh-login-fix4（服务端探测+扫码接力+死缓存清理）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1（判死后清空窗口session死cookie+刷新登录页；搜狐补服务端探测同款防护）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
