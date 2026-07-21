@@ -1580,14 +1580,15 @@ contextBridge.exposeInMainWorld('browserAPI', {
       return;
     }
 
-    // 🔑 auth-data 消息必须携带 windowId（禁止广播以避免多账号串联）
+    // 🔑 auth-data 消息应携带 windowId（禁止广播以避免多账号串联）
+    // 缺失时不拦截：放行给主进程做「唯一授权窗口」回退路由，否则旧版前端（未升级携带 windowId）的授权会整体断掉
     if (message.type === 'auth-data') {
       if (!message.windowId) {
-        console.error('[BrowserAPI] ❌ auth-data 消息缺少 windowId，拒绝发送！这是编程错误。');
-        console.error('[BrowserAPI] 消息内容:', message);
-        throw new Error('auth-data 消息必须携带 windowId 字段');
+        console.warn('[BrowserAPI] ⚠️ auth-data 消息缺少 windowId（前端请尽快升级携带），交由主进程回退路由到唯一授权窗口');
+        console.warn('[BrowserAPI] 消息内容:', message);
+      } else {
+        console.log('[BrowserAPI] ✅ auth-data 消息验证通过，windowId:', message.windowId);
       }
-      console.log('[BrowserAPI] ✅ auth-data 消息验证通过，windowId:', message.windowId);
     }
 
     // 其他类型的消息正常发送

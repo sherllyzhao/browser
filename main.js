@@ -3971,6 +3971,29 @@ function getSohuhaoAuthInjectionMatchUrl(actualUrl = '', context = null) {
   });
 }
 
+// 🔑 腾讯号授权窗口注入匹配 URL：om.qq.com/main 同时是授权入口和「查看内容管理」入口，
+// 后者在 script-manager 的 CONTENT_MANAGE_OPEN_ONLY_URLS 里被精确拦截（不注入任何脚本）。
+// 授权窗口必须绕过该拦截，否则 tengxvnhao-creator.js 永远注入不上（与搜狐 ?from=auth 旁路同理）。
+function getTengxunhaoAuthInjectionMatchUrl(actualUrl = '', context = null, windowId = null) {
+  let normalizedHref = '';
+  try {
+    normalizedHref = new URL(actualUrl || '').href;
+  } catch (_) {
+    return actualUrl;
+  }
+  // 仅改写会命中 open-only 精确拦截的形态；带参数/带 hash/其他路径本来就不被拦
+  if (normalizedHref !== 'https://om.qq.com/main') {
+    return actualUrl;
+  }
+
+  const isAuthContext = context?.purpose === 'auth'
+    || (windowId != null && !!globalStorage?.[`auth_mode_window_${windowId}`]);
+  if (!isAuthContext) {
+    return actualUrl;
+  }
+  return 'https://om.qq.com/main?from=auth';
+}
+
 function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
   if (!currentUrl || !expectedUrl) return false;
   if (currentUrl === expectedUrl) return true;
@@ -4051,6 +4074,53 @@ function getTengxunhaoRecoverTargetUrl(context) {
     || 'https://om.qq.com/main/creation/article';
 }
 
+// 🔎 腾讯号服务端登录态探测：本地 cookie「形式完整」不代表服务端认可（微信扫码登录 om.qq.com 是
+// 单点会话，重复授权会把旧 token 挤掉作废；失效快照恢复后 homeInfo 返回 {"code":-10403,"msg":"not login"}）。
+// 回跳发布页前必须实测一次，否则会陷入「恢复守卫回跳 ↔ 服务端打回登录页」的拉锯循环，
+// 且拉锯期间会把死 token 同步进本地缓存/后台，进一步污染快照。
+async function probeTengxunhaoServerLoginState(windowSession) {
+  try {
+    const cookies = await windowSession.cookies.get({});
+    const cookieHeader = cookies
+      .filter(c => {
+        if (!c || !c.value) return false;
+        const d = String(c.domain || '').replace(/^\./, '').toLowerCase();
+        return d === 'qq.com' || d.endsWith('.qq.com');
+      })
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    if (!cookieHeader) {
+      return { verdict: 'not-login', reason: 'no-cookie' };
+    }
+    const body = await new Promise((resolve, reject) => {
+      const req = https.request('https://om.qq.com/mindex/homeInfo?app=all&relogin=1', {
+        method: 'GET',
+        headers: {
+          'Cookie': cookieHeader,
+          'User-Agent': TENGXUNHAO_USER_AGENT,
+          'Referer': 'https://om.qq.com/main',
+          'Accept': 'application/json'
+        },
+        timeout: 5000
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve(data));
+      });
+      req.on('timeout', () => { req.destroy(new Error('探测请求超时')); });
+      req.on('error', reject);
+      req.end();
+    });
+    const parsed = JSON.parse(body);
+    if (parsed && (parsed.code === -10403 || /not\s*login/i.test(String(parsed.msg || '')))) {
+      return { verdict: 'not-login', code: parsed.code };
+    }
+    return { verdict: 'logged-in', code: parsed ? parsed.code : undefined };
+  } catch (err) {
+    return { verdict: 'unknown', reason: err.message };
+  }
+}
+
 function isSohuhaoLoginUrl(rawUrl = '') {
   if (!rawUrl) return false;
 
@@ -4113,6 +4183,10 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
     return { redirected: false };
   }
 
+  // 🛑 已判定快照 token 失效、正在等用户手动扫码时，不再反复探测/回跳，让登录页安静展示
+  if (context?.tengxunhaoManualLoginPending) {
+    return { redirected: false, waitingManualLogin: true };
+  }
   if (context?.tengxunhaoLoginRecoverInFlight) {
     return { redirected: true, deduped: true };
   }
@@ -4129,6 +4203,39 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
   }
   if (!hasLogin) {
     return { redirected: false };
+  }
+
+  // 🔎 本地 cookie 形式有效 ≠ 服务端认可：回跳前实测服务端登录态。
+  // 死 token（如被重复授权挤掉）就停止回跳、不同步缓存，留在登录页等用户手动扫码；
+  // 探测异常（网络抖动）时保持原有回跳行为，不因探测失败误伤正常流程。
+  const serverProbe = await probeTengxunhaoServerLoginState(targetWindow.webContents.session);
+  if (serverProbe.verdict === 'not-login') {
+    context.tengxunhaoManualLoginPending = true;
+    console.warn(`[Tengxunhao Login Recover] 🛑 服务端判定未登录（快照 token 已失效，可能被重复授权挤掉），停止回跳，等待用户在登录页手动扫码: windowId=${windowId}, code=${serverProbe.code ?? serverProbe.reason}`);
+    // 🧹 死 token 的本地缓存每次发布都会被重新盖时间戳，若不清除会永远比后台快照"新"而反复中选。
+    // 清掉后下次打开发布窗口直接使用后台快照（用户重新授权后即为新登录态）。
+    try {
+      const backendAccountId = normalizeAccountIdValue(context?.accountId) || getPublishBackendAccountId(publishData);
+      const cacheKeys = [...new Set([
+        buildLatestSessionCacheKey('tengxunhao', backendAccountId),
+        buildLatestSessionCacheKey(normalizePlatformName(context?.platform || ''), backendAccountId)
+      ])].filter(Boolean);
+      for (const cacheKey of cacheKeys) {
+        if (globalStorage[cacheKey]) {
+          delete globalStorage[cacheKey];
+          saveGlobalStorage();
+          console.warn(`[Tengxunhao Login Recover] 🧹 已清除被失效 token 污染的本地会话缓存: ${cacheKey}`);
+        }
+      }
+    } catch (purgeErr) {
+      console.warn('[Tengxunhao Login Recover] ⚠️ 清除失效会话缓存异常:', purgeErr.message);
+    }
+    return { redirected: false, serverRejected: true };
+  }
+  if (serverProbe.verdict === 'unknown') {
+    console.warn('[Tengxunhao Login Recover] ⚠️ 服务端登录态探测异常，按原逻辑回跳:', serverProbe.reason);
+  } else {
+    console.log(`[Tengxunhao Login Recover] 🔎 服务端登录态探测通过 (code=${serverProbe.code ?? 'n/a'})，继续回跳`);
   }
 
   const targetUrl = getTengxunhaoRecoverTargetUrl(context);
@@ -4158,6 +4265,51 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
     }, 1500);
   }
 
+  return { redirected: true };
+}
+
+// 🔁 用户手动扫码接力：快照 token 失效后发布窗口停在登录页等用户扫码。扫码成功后腾讯会把窗口
+// 带到 om.qq.com 首页（而非发布页），此时自动跳回期望发布页让发布脚本继续执行；
+// 新 token 会在窗口关闭时由既有 Save Session 机制回流后台，自愈失效的快照。
+async function maybeRelayTengxunhaoAfterManualLogin(targetWindow, currentURL, reason = 'unknown') {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { redirected: false };
+  }
+  const windowId = targetWindow.id;
+  const context = windowContextMap.get(windowId) || null;
+  if (!context || !context.tengxunhaoManualLoginPending || context.bootstrapInProgress) {
+    return { redirected: false };
+  }
+  let host = '';
+  try {
+    host = new URL(currentURL || '').hostname.toLowerCase();
+  } catch (_) {
+    return { redirected: false };
+  }
+  const isOmHost = host === 'om.qq.com' || host.endsWith('.om.qq.com');
+  if (!isOmHost || isTengxunhaoLoginUrl(currentURL)) {
+    return { redirected: false };
+  }
+  // 服务端实测确认新登录真实有效，避免误把未登录状态下可访问的中间页当成扫码成功；
+  // 探测异常（网络抖动）时放行——从登录页导航到业务页本身已是强登录信号
+  const serverProbe = await probeTengxunhaoServerLoginState(targetWindow.webContents.session);
+  if (serverProbe.verdict === 'not-login') {
+    return { redirected: false };
+  }
+  context.tengxunhaoManualLoginPending = false;
+  if (isTengxunhaoPublishUrl(currentURL)) {
+    console.log(`[Tengxunhao Manual Login] ✅ 用户手动登录成功且已在发布页，清除等待标志: windowId=${windowId}`);
+    return { redirected: false, relogined: true };
+  }
+  const targetUrl = getTengxunhaoRecoverTargetUrl(context);
+  console.warn(`[Tengxunhao Manual Login] 🔁 检测到用户手动登录成功，接力回发布页: windowId=${windowId}, reason=${reason}, target=${targetUrl}`);
+  try {
+    if (!targetWindow.isDestroyed() && !targetWindow.webContents.isDestroyed()) {
+      await targetWindow.webContents.loadURL(targetUrl);
+    }
+  } catch (error) {
+    console.error('[Tengxunhao Manual Login] ❌ 接力回发布页失败:', error.message);
+  }
   return { redirected: true };
 }
 
@@ -9929,6 +10081,8 @@ app.whenReady().then(async () => {
 
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
+  // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
+  console.log('[Build] 修复标记: txh-login-fix4（服务端探测+扫码接力+死缓存清理）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -11714,8 +11868,30 @@ ipcMain.on('home-to-content', async (event, message) => {
       }
     }
 
-    // 🔑 通用定向投递逻辑：检查 windowId（强制）
-    const targetWindowId = message.windowId;
+    // 🔑 通用定向投递逻辑：优先使用消息自带 windowId
+    let targetWindowId = message.windowId;
+    let directedMessage = message;
+
+    // 🛡️ 回退路由：旧版前端发的 auth-data 不带 windowId（升级前端前会一直如此）。
+    // 仅当存活授权窗口（auth_mode_window_ 标志）恰好唯一时才补 windowId 投递；
+    // 0 个或多个一律丢弃——多窗口场景绝不猜测目标，防串联底线不破。
+    if (!targetWindowId && message.type === 'auth-data') {
+      const aliveAuthWindows = childWindows.filter(childWindow =>
+        childWindow
+        && !childWindow.isDestroyed()
+        && !!globalStorage?.[`auth_mode_window_${childWindow.id}`]
+      );
+      if (aliveAuthWindows.length === 1) {
+        targetWindowId = aliveAuthWindows[0].id;
+        directedMessage = { ...message, windowId: targetWindowId };
+        console.warn(`[IPC] ⚠️ auth-data 缺少 windowId，回退路由到唯一存活授权窗口 ${targetWindowId}（前端请尽快升级携带 windowId）`);
+      } else {
+        console.error(`[IPC] ❌ auth-data 缺少 windowId 且无法回退（存活授权窗口数=${aliveAuthWindows.length}），已丢弃！`);
+        console.error('[IPC] 消息内容:', message);
+        return;
+      }
+    }
+
     if (!targetWindowId) {
       console.error(`[IPC] ❌ ${message.type} 消息缺少 windowId 字段，无法定向投递，已丢弃！`);
       console.error('[IPC] 消息内容:', message);
@@ -11730,7 +11906,7 @@ ipcMain.on('home-to-content', async (event, message) => {
     }
 
     // 只发送到指定窗口
-    const messageStr = JSON.stringify(message);
+    const messageStr = JSON.stringify(directedMessage);
     targetWindow.webContents.executeJavaScript(`
       (function() {
         const messageData = ${messageStr};
@@ -13809,6 +13985,17 @@ async function openManagedChildWindow(url, options = {}) {
             return;
           }
 
+          // 🚫 腾讯号：快照 token 已被服务端判死且用户始终没有手动扫码重新登录（标志未清），
+          // 当前 session 里的 cookie 就是那套死 token——回存只会用死数据覆盖后台/本地缓存
+          if (normalizedTargetPlatform === 'tengxunhao'
+            && windowContextMap.get(windowId)?.tengxunhaoManualLoginPending) {
+            console.log('[Window Manager] 🚫 腾讯号发布窗口关闭前服务端登录态仍为失效（用户未重新扫码），跳过脚本保存和后台保存，防止死 token 污染快照');
+            await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:close-skip-login`);
+            isSavingSession = false;
+            newWindow.destroy();
+            return;
+          }
+
           if (normalizedTargetPlatform === 'sohuhao' && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
             const currentUrlForGuard = newWindow.webContents.getURL();
             const sohuAccountGuard = await maybeBlockMismatchedSohuhaoPublishAccount(newWindow, currentUrlForGuard, 'window-close-before-save');
@@ -14143,9 +14330,10 @@ async function openManagedChildWindow(url, options = {}) {
       }
 
       // 🔑 优先走统一注入函数，避免 dom-ready / did-finish-load / SPA 导航各自重复执行脚本。
-      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+      const sohuAdjustedUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+      const injectionUrl = getTengxunhaoAuthInjectionMatchUrl(sohuAdjustedUrl, currentContext, newWindow.id);
       if (injectionUrl !== currentURL) {
-        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+        console.log('[New Window API] 授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
       }
       await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
@@ -14192,9 +14380,10 @@ async function openManagedChildWindow(url, options = {}) {
         console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
         await maybeRunBareToutiaoPublish(newWindow);
       } else {
-        const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+        const sohuAdjustedUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+        const injectionUrl = getTengxunhaoAuthInjectionMatchUrl(sohuAdjustedUrl, currentContext, newWindow.id);
         if (injectionUrl !== currentURL) {
-          console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+          console.log('[New Window API] 授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
         }
         await injectScriptForUrl(newWindow.webContents, injectionUrl);
       }
@@ -14209,6 +14398,10 @@ async function openManagedChildWindow(url, options = {}) {
       }
       const loginRecovered = await maybeRecoverTengxunhaoLoginWindow(newWindow, navUrl, 'did-navigate');
       if (loginRecovered.redirected) {
+        return;
+      }
+      const tengxunhaoRelay = await maybeRelayTengxunhaoAfterManualLogin(newWindow, navUrl, 'did-navigate');
+      if (tengxunhaoRelay.redirected) {
         return;
       }
       const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, navUrl, 'did-navigate');
@@ -14245,6 +14438,10 @@ async function openManagedChildWindow(url, options = {}) {
       if (loginRecovered.redirected) {
         return;
       }
+      const tengxunhaoRelay = await maybeRelayTengxunhaoAfterManualLogin(newWindow, navUrl, 'did-navigate-in-page');
+      if (tengxunhaoRelay.redirected) {
+        return;
+      }
       const sohuLoginRecovered = await maybeRecoverSohuhaoLoginWindow(newWindow, navUrl, 'did-navigate-in-page');
       if (sohuLoginRecovered.redirected) {
         return;
@@ -14262,9 +14459,10 @@ async function openManagedChildWindow(url, options = {}) {
         await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
-      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(navUrl, currentContext);
+      const sohuAdjustedUrl = getSohuhaoAuthInjectionMatchUrl(navUrl, currentContext);
+      const injectionUrl = getTengxunhaoAuthInjectionMatchUrl(sohuAdjustedUrl, currentContext, newWindow.id);
       if (injectionUrl !== navUrl) {
-        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { navUrl, injectionUrl });
+        console.log('[New Window API] 授权页使用可注入匹配 URL:', { navUrl, injectionUrl });
       }
       await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
