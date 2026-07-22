@@ -45,7 +45,7 @@ if (typeof window.uploadVideo === "function"
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
       //   enabled: false,
-      //   version: '1.3.0',
+      //   version: '1.1.9',
       //   risk: 'medium',
       //   files: ['common.js:XXX'],
       //   description: '功能描述'
