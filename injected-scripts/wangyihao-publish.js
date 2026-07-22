@@ -1006,6 +1006,11 @@
                     // 立即启动错误监听
                     startErrorListener();
 
+                    // 🔑 注册错误探针：延迟乐观成功上报到点/页面卸载前会先查询此探针，
+                    //     捕获到"账号被禁言"等点击后错误时取消乐观成功、转报失败
+                    //     （capturedErrors 已含 snackbar + 弹窗双通道采集与 ignoredTexts 过滤）
+                    window.registerPublishErrorProbe?.(getLatestError);
+
                     // 设置封面（使用主进程下载绕过跨域）
                     await (async () => {
                         try {

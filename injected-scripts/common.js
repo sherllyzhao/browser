@@ -3084,25 +3084,186 @@ if (typeof window.uploadVideo === "function"
     };
 
     // ===========================
-    // 🚀 乐观成功上报（点击发布按钮成功后立即调用）
+    // 🚀 延迟乐观成功上报（点击发布按钮成功后调用）
     // ===========================
-    // 背景：平台点了发布按钮后大多会发布成功，但脚本常等不到跳转/toast 而误报超时失败。
-    //       故点击成功后先「乐观」上报一次成功；后续跳转成功再报会被去重锁挡掉（不重复），
-    //       后续若捕获明确失败则照常报错（后台以失败覆盖）。
+    // 背景：旧版「点击即上报成功」会先占 success 去重锁，导致点击后才出现的明确失败
+    //       （账号被禁言/违规/频次超限等平台错误）被锁挡掉（success-already-reported），后台误记成功。
+    //       后台不支持「失败覆盖成功」，因此必须保证同一 publishId 只发出一条、且是对的那条：
+    //   1. 乐观成功延迟 OPTIMISTIC_SUCCESS_DELAY_MS 后才真正发送；
+    //   2. 期间任何 sendStatisticsError 抢锁成功会自动取消该 pending（后台只收到失败）；
+    //   3. 到点发送前先查 error 内存锁与错误探针（registerPublishErrorProbe 注册，
+    //      如网易的 getLatestError）——探针命中则取消成功并转报失败；
+    //   4. 页面卸载（pagehide/beforeunload，发布成功跳转的强信号）时用预构建请求体
+    //      keepalive 立即冲刷成功，保留乐观上报的防漏报能力。
     // ⚠️ GEO 系统跳过乐观上报：GEO 保持「真正确认成功才记 1 次」的语义，
     //     确认成功/失败上报已由去重锁保证同一 publishId 只发 1 次。
+    const OPTIMISTIC_SUCCESS_DELAY_MS = 8000;
+    const optimisticPendingReports = new Map(); // publishId -> pending
+    let publishErrorProbe = null;
+    let optimisticFlushHooked = false;
+
+    // 平台脚本注册同步错误探针（返回错误文本或 null），供延迟乐观到点/卸载冲刷前查询
+    window.registerPublishErrorProbe = function (fn) {
+        if (typeof fn === "function") {
+            publishErrorProbe = fn;
+            console.log("[统计接口] ✅ 已注册发布错误探针");
+        }
+    };
+
+    function readPublishErrorProbe() {
+        if (typeof publishErrorProbe !== "function") return null;
+        try {
+            const err = publishErrorProbe();
+            return err ? String(err) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    window.cancelOptimisticPendingSuccess = function (publishId, reason = "") {
+        const normalizedPublishId = String(publishId || "").trim();
+        const pending = optimisticPendingReports.get(normalizedPublishId);
+        if (!pending) return false;
+        pending.cancelled = true;
+        if (pending.timer) clearTimeout(pending.timer);
+        optimisticPendingReports.delete(normalizedPublishId);
+        console.log(`[${pending.platform || "发布"}] 🛑 已取消待发送的乐观成功上报（ID: ${normalizedPublishId}）${reason ? `，原因: ${reason}` : ""}`);
+        return true;
+    };
+
+    function hasErrorMemoryLock(publishId) {
+        return statisticsReportMemoryLocks.has(getStatisticsMemoryLockKey(publishId, "error"));
+    }
+
+    // 页面卸载冲刷：跳转/关窗前把尚未到点的乐观成功用 keepalive 发出。
+    // 卸载多半意味着发布成功跳转（失败路径都是先 await sendStatisticsError 再关窗，
+    // 那时 pending 已被取消，不会走到这里）。
+    function flushOptimisticPendingOnUnload() {
+        for (const [publishId, pending] of optimisticPendingReports) {
+            if (pending.cancelled || pending.inFlight || pending.flushed) continue;
+            if (hasErrorMemoryLock(publishId)) continue;
+            const probeError = readPublishErrorProbe();
+            if (probeError) {
+                // 有明确错误 + 页面卸载：宁漏勿误，放弃成功（失败上报由平台脚本流程负责）
+                console.warn(`[${pending.platform || "发布"}] ⚠️ 卸载冲刷时探针检测到错误，放弃乐观成功: ${probeError}`);
+                continue;
+            }
+            pending.flushed = true;
+            if (pending.timer) clearTimeout(pending.timer);
+            try {
+                // 同步落锁（内存 + sessionStorage；globalData 尽力而为），防跳转后 publish-success.js 重复报成功
+                const memoryKey = getStatisticsMemoryLockKey(publishId, "success");
+                if (statisticsReportMemoryLocks.has(memoryKey)) continue;
+                const cacheData = {
+                    publishId,
+                    resultType: "success",
+                    platform: pending.platform || "",
+                    windowId: pending.windowId,
+                    timestamp: Date.now(),
+                    optimistic: true,
+                };
+                statisticsReportMemoryLocks.set(memoryKey, cacheData);
+                try {
+                    sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "success"), JSON.stringify(cacheData));
+                } catch (_) {}
+                const globalKey = getStatisticsGlobalReportCacheKey(publishId, "success");
+                if (globalKey && window.browserAPI?.setGlobalData) {
+                    try { window.browserAPI.setGlobalData(globalKey, cacheData).catch(() => {}); } catch (_) {}
+                }
+                fetch(pending.url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: pending.body,
+                    keepalive: true,
+                }).catch(() => {});
+                console.log(`[${pending.platform || "发布"}] 🚀 页面卸载，已冲刷乐观成功上报（ID: ${publishId}）`);
+            } catch (e) {
+                console.warn(`[${pending.platform || "发布"}] ⚠️ 卸载冲刷乐观成功失败:`, e.message);
+            }
+        }
+    }
+
+    function ensureOptimisticFlushHook() {
+        if (optimisticFlushHooked) return;
+        optimisticFlushHooked = true;
+        window.addEventListener("pagehide", flushOptimisticPendingOnUnload);
+        window.addEventListener("beforeunload", flushOptimisticPendingOnUnload);
+    }
+
     window.sendOptimisticSuccess = async function (publishId, platform = "") {
         try {
             if (!publishId) {
                 return { success: false, skipped: true, reason: "no-publishId" };
             }
+            const normalizedPublishId = String(publishId).trim();
             const url = await getStatisticsUrl(false);
             if (window.isGeoStatisticsReport(url)) {
                 console.log(`[${platform || "发布"}] ℹ️ GEO 系统跳过「点击即上报成功」，避免重复记录`);
                 return { success: true, skipped: true, reason: "geo-skip-optimistic" };
             }
-            console.log(`[${platform || "发布"}] 🚀 点击发布成功，乐观上报一次成功（ID: ${publishId}）`);
-            return await window.sendStatistics(publishId, platform);
+            if (optimisticPendingReports.has(normalizedPublishId)) {
+                return { success: true, skipped: true, reason: "optimistic-already-pending" };
+            }
+            if (hasErrorMemoryLock(normalizedPublishId)) {
+                return { success: true, skipped: true, reason: "error-already-reported" };
+            }
+
+            // 预构建请求体：页面卸载冲刷时来不及 async 构建
+            const scanData = await window.buildStatisticsRequestData(normalizedPublishId, platform);
+            let windowId = null;
+            try {
+                if (window.browserAPI?.getWindowId) windowId = await window.browserAPI.getWindowId();
+            } catch (_) {}
+
+            // await 之后重查：预构建期间失败流程可能已抢到 error 锁
+            if (hasErrorMemoryLock(normalizedPublishId)) {
+                return { success: true, skipped: true, reason: "error-already-reported" };
+            }
+
+            const pending = {
+                publishId: normalizedPublishId,
+                platform: platform || "",
+                url,
+                body: JSON.stringify(scanData),
+                windowId,
+                cancelled: false,
+                inFlight: false,
+                flushed: false,
+                timer: null,
+            };
+            optimisticPendingReports.set(normalizedPublishId, pending);
+            ensureOptimisticFlushHook();
+
+            console.log(`[${platform || "发布"}] 🚀 点击发布成功，${Math.round(OPTIMISTIC_SUCCESS_DELAY_MS / 1000)} 秒后乐观上报成功（期间检测到明确失败则自动取消，ID: ${normalizedPublishId}）`);
+
+            pending.timer = setTimeout(async () => {
+                if (pending.cancelled || pending.flushed) return;
+                if (hasErrorMemoryLock(normalizedPublishId)) {
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报");
+                    return;
+                }
+                const probeError = readPublishErrorProbe();
+                if (probeError) {
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`);
+                    console.log(`[${platform || "发布"}] ❌ 乐观上报到点前探针发现明确错误，转报失败: ${probeError}`);
+                    try {
+                        await window.sendStatisticsError(normalizedPublishId, probeError, platform);
+                    } catch (e) {
+                        console.warn(`[${platform || "发布"}] ⚠️ 探针失败转报异常:`, e.message);
+                    }
+                    return;
+                }
+                pending.inFlight = true;
+                try {
+                    await window.sendStatistics(normalizedPublishId, platform);
+                } catch (e) {
+                    console.warn(`[${platform || "发布"}] ⚠️ 延迟乐观成功上报异常:`, e.message);
+                } finally {
+                    optimisticPendingReports.delete(normalizedPublishId);
+                }
+            }, OPTIMISTIC_SUCCESS_DELAY_MS);
+
+            return { success: true, deferred: true, delayMs: OPTIMISTIC_SUCCESS_DELAY_MS };
         } catch (e) {
             console.warn(`[${platform || "发布"}] ⚠️ 乐观成功上报异常（不阻断发布流程）:`, e.message);
             return { success: false, error: e };
@@ -3128,6 +3289,10 @@ if (typeof window.uploadVideo === "function"
         if (!reportLock.acquired) {
             return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
+
+        // 🛑 失败已确认抢锁：立即取消同 publishId 尚未发出的延迟乐观成功，
+        //     保证后台只收到「失败」这一条（后台不支持失败覆盖成功）
+        window.cancelOptimisticPendingSuccess?.(publishId, "失败上报已抢锁");
 
         // 使用 PublishLogger 记录错误
         if (window.PublishLogger && errorObj) {
