@@ -3144,8 +3144,54 @@ if (typeof window.uploadVideo === "function"
             if (hasErrorMemoryLock(publishId)) continue;
             const probeError = readPublishErrorProbe();
             if (probeError) {
-                // 有明确错误 + 页面卸载：宁漏勿误，放弃成功（失败上报由平台脚本流程负责）
-                console.warn(`[${pending.platform || "发布"}] ⚠️ 卸载冲刷时探针检测到错误，放弃乐观成功: ${probeError}`);
+                // 有明确错误 + 页面卸载：不能只放弃成功——平台脚本的失败流程可能随窗口关闭一起死掉，
+                // 导致成功/失败都没发出（后台零上报、无失败原因）。这里同步 keepalive 补发失败（带原因）。
+                console.warn(`[${pending.platform || "发布"}] ⚠️ 卸载冲刷时探针检测到错误，改为补发失败上报: ${probeError}`);
+                pending.flushed = true;
+                if (pending.timer) clearTimeout(pending.timer);
+                if (pending.probeTimer) clearInterval(pending.probeTimer);
+                try {
+                    // 同步落 error 锁（内存 + sessionStorage；globalData 尽力而为），防平台脚本随后重复报失败
+                    const errorMemoryKey = getStatisticsMemoryLockKey(publishId, "error");
+                    if (statisticsReportMemoryLocks.has(errorMemoryKey)) continue;
+                    const errorCacheData = {
+                        publishId,
+                        resultType: "error",
+                        platform: pending.platform || "",
+                        windowId: pending.windowId,
+                        timestamp: Date.now(),
+                        unloadProbe: true,
+                    };
+                    statisticsReportMemoryLocks.set(errorMemoryKey, errorCacheData);
+                    try {
+                        sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "error"), JSON.stringify(errorCacheData));
+                    } catch (_) {}
+                    const errorGlobalKey = getStatisticsGlobalReportCacheKey(publishId, "error");
+                    if (errorGlobalKey && window.browserAPI?.setGlobalData) {
+                        try { window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData).catch(() => {}); } catch (_) {}
+                    }
+                    // 基于预构建的成功 body 同步改造出失败 body（payload = {id, ...meta, ...extraData}）
+                    let errorBody = pending.body;
+                    try {
+                        const bodyObj = JSON.parse(pending.body);
+                        const payload = JSON.parse(bodyObj.data);
+                        payload.status_text = probeError;
+                        if (typeof window.categorizeFailure === "function") {
+                            try { payload.failure_category = window.categorizeFailure(probeError, {}).category; } catch (_) {}
+                        }
+                        payload.context = { url: window.location.href, timestamp: new Date().toISOString(), platform: pending.platform || "unknown", reportedOnUnload: true };
+                        errorBody = JSON.stringify({ data: JSON.stringify(payload) });
+                    } catch (_) {}
+                    fetch(pending.errorUrl || pending.url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: errorBody,
+                        keepalive: true,
+                    }).catch(() => {});
+                    console.log(`[${pending.platform || "发布"}] 📤 页面卸载，已用 keepalive 补发失败上报（ID: ${publishId}，原因: ${probeError}）`);
+                } catch (e) {
+                    console.warn(`[${pending.platform || "发布"}] ⚠️ 卸载补发失败上报异常:`, e.message);
+                }
                 continue;
             }
             pending.flushed = true;
