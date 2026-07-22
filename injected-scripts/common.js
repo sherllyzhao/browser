@@ -3126,6 +3126,7 @@ if (typeof window.uploadVideo === "function"
         if (!pending) return false;
         pending.cancelled = true;
         if (pending.timer) clearTimeout(pending.timer);
+        if (pending.probeTimer) clearInterval(pending.probeTimer);
         optimisticPendingReports.delete(normalizedPublishId);
         console.log(`[${pending.platform || "发布"}] 🛑 已取消待发送的乐观成功上报（ID: ${normalizedPublishId}）${reason ? `，原因: ${reason}` : ""}`);
         return true;
@@ -3168,7 +3169,7 @@ if (typeof window.uploadVideo === "function"
                     } catch (_) {}
                     const errorGlobalKey = getStatisticsGlobalReportCacheKey(publishId, "error");
                     if (errorGlobalKey && window.browserAPI?.setGlobalData) {
-                        try { window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData).catch(() => {}); } catch (_) {}
+                        try { window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData); } catch (_) {}
                     }
                     // 基于预构建的成功 body 同步改造出失败 body（payload = {id, ...meta, ...extraData}）
                     let errorBody = pending.body;
@@ -3214,7 +3215,7 @@ if (typeof window.uploadVideo === "function"
                 } catch (_) {}
                 const globalKey = getStatisticsGlobalReportCacheKey(publishId, "success");
                 if (globalKey && window.browserAPI?.setGlobalData) {
-                    try { window.browserAPI.setGlobalData(globalKey, cacheData).catch(() => {}); } catch (_) {}
+                    try { window.browserAPI.setGlobalData(globalKey, cacheData); } catch (_) {}
                 }
                 fetch(pending.url, {
                     method: "POST",
@@ -3256,6 +3257,7 @@ if (typeof window.uploadVideo === "function"
 
             // 预构建请求体：页面卸载冲刷时来不及 async 构建
             const scanData = await window.buildStatisticsRequestData(normalizedPublishId, platform);
+            const errorUrl = await getStatisticsUrl(true); // 预取失败接口地址，卸载冲刷探针命中时用
             let windowId = null;
             try {
                 if (window.browserAPI?.getWindowId) windowId = await window.browserAPI.getWindowId();
@@ -3270,20 +3272,50 @@ if (typeof window.uploadVideo === "function"
                 publishId: normalizedPublishId,
                 platform: platform || "",
                 url,
+                errorUrl,
                 body: JSON.stringify(scanData),
                 windowId,
                 cancelled: false,
                 inFlight: false,
                 flushed: false,
                 timer: null,
+                probeTimer: null,
             };
             optimisticPendingReports.set(normalizedPublishId, pending);
             ensureOptimisticFlushHook();
 
             console.log(`[${platform || "发布"}] 🚀 点击发布成功，${Math.round(OPTIMISTIC_SUCCESS_DELAY_MS / 1000)} 秒后乐观上报成功（期间检测到明确失败则自动取消，ID: ${normalizedPublishId}）`);
 
+            // 🔍 秒级轮询探针：点击后才出现的禁言/违规等错误可能在 1-3 秒内显示，
+            //     每秒探测一次，命中立即取消成功并转报失败（比 8 秒到点更早，防漏报）
+            pending.probeTimer = setInterval(() => {
+                if (pending.cancelled || pending.flushed || pending.inFlight) {
+                    if (pending.probeTimer) clearInterval(pending.probeTimer);
+                    return;
+                }
+                if (hasErrorMemoryLock(normalizedPublishId)) {
+                    if (pending.probeTimer) clearInterval(pending.probeTimer);
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报");
+                    return;
+                }
+                const probeError = readPublishErrorProbe();
+                if (probeError) {
+                    if (pending.probeTimer) clearInterval(pending.probeTimer);
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`);
+                    console.log(`[${platform || "发布"}] ❌ 延迟期间探针发现明确错误，转报失败: ${probeError}`);
+                    (async () => {
+                        try {
+                            await window.sendStatisticsError(normalizedPublishId, probeError, platform);
+                        } catch (e) {
+                            console.warn(`[${platform || "发布"}] ⚠️ 探针失败转报异常:`, e.message);
+                        }
+                    })();
+                }
+            }, 1000);
+
             pending.timer = setTimeout(async () => {
                 if (pending.cancelled || pending.flushed) return;
+                if (pending.probeTimer) clearInterval(pending.probeTimer);
                 if (hasErrorMemoryLock(normalizedPublishId)) {
                     window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报");
                     return;
@@ -3305,6 +3337,7 @@ if (typeof window.uploadVideo === "function"
                 } catch (e) {
                     console.warn(`[${platform || "发布"}] ⚠️ 延迟乐观成功上报异常:`, e.message);
                 } finally {
+                    if (pending.probeTimer) clearInterval(pending.probeTimer);
                     optimisticPendingReports.delete(normalizedPublishId);
                 }
             }, OPTIMISTIC_SUCCESS_DELAY_MS);
