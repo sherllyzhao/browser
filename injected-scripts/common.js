@@ -25,6 +25,48 @@ if (typeof window.uploadVideo === "function"
     window.__COMMON_JS_LOADED__ = true;
 
     // ===========================
+    // 🎛️ 特性开关框架（Feature Flags）
+    // ===========================
+    // 用途：隔离新修复和功能，遇到问题可快速禁用，实现无缝降级
+    // 规则：新改动默认加入这里，enabled=true 启用，false 禁用；版本号追踪修复时间
+    window.__COMMON_JS_FEATURES__ = {
+      // 【修复】2026-07-22 修复发布时 ACCESS_VIOLATION 崩溃
+      // 根因：pagehide 事件中的 Promise.catch() 链导致页面卸载时访问已释放内存
+      // 修复：移除 setGlobalData() 调用后的 .catch()，改为 fire-and-forget
+      // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
+      FIX_PAGEHIDE_PROMISE_CRASH: {
+        enabled: true,
+        version: '1.2.1',
+        risk: 'high',
+        files: ['common.js:3172', 'common.js:3218'],  // 修改位置
+        description: '移除 pagehide 事件中的 Promise.catch() 链'
+      },
+
+      // 【预留】未来的修复/功能添加在下方
+      // NEW_FEATURE_TEMPLATE: {
+      //   enabled: false,
+      //   version: '1.3.0',
+      //   risk: 'medium',
+      //   files: ['common.js:XXX'],
+      //   description: '功能描述'
+      // }
+    };
+
+    // 🔍 特性开关检查函数（快速判断改动是否启用）
+    window.isFeatureEnabled = function (featureName) {
+      const feature = window.__COMMON_JS_FEATURES__?.[featureName];
+      if (!feature) {
+        console.warn(`[Feature] ⚠️ 未知的特性: ${featureName}`);
+        return false;
+      }
+      const result = feature.enabled;
+      if (!result) {
+        console.log(`[Feature] ℹ️ 特性已禁用: ${featureName} (v${feature.version})`);
+      }
+      return result;
+    };
+
+    // ===========================
     // 🔑 安全的 getGlobalData 包装函数（带超时保护）
     // ===========================
     /**
@@ -3111,11 +3153,18 @@ if (typeof window.uploadVideo === "function"
     };
 
     function readPublishErrorProbe() {
-        if (typeof publishErrorProbe !== "function") return null;
+        if (typeof publishErrorProbe !== "function") {
+            console.log("[统计接口] 🔍 探针查询: 未注册探针函数");
+            return null;
+        }
         try {
             const err = publishErrorProbe();
+            if (err) {
+                console.log(`[统计接口] 🔍 探针查询: 检测到错误 "${err}"`);
+            }
             return err ? String(err) : null;
-        } catch (_) {
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 探针查询异常:", e.message);
             return null;
         }
     }
@@ -3169,7 +3218,14 @@ if (typeof window.uploadVideo === "function"
                     } catch (_) {}
                     const errorGlobalKey = getStatisticsGlobalReportCacheKey(publishId, "error");
                     if (errorGlobalKey && window.browserAPI?.setGlobalData) {
-                        try { window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData); } catch (_) {}
+                        try {
+                          // 【特性开关】FIX_PAGEHIDE_PROMISE_CRASH: 移除 .catch() 防止 Promise 在 unload 时访问释放内存
+                          if (window.isFeatureEnabled?.('FIX_PAGEHIDE_PROMISE_CRASH')) {
+                            window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData);  // fire-and-forget
+                          } else {
+                            window.browserAPI.setGlobalData(errorGlobalKey, errorCacheData).catch(() => {});  // 旧逻辑兼容
+                          }
+                        } catch (_) {}
                     }
                     // 基于预构建的成功 body 同步改造出失败 body（payload = {id, ...meta, ...extraData}）
                     let errorBody = pending.body;
@@ -3215,7 +3271,14 @@ if (typeof window.uploadVideo === "function"
                 } catch (_) {}
                 const globalKey = getStatisticsGlobalReportCacheKey(publishId, "success");
                 if (globalKey && window.browserAPI?.setGlobalData) {
-                    try { window.browserAPI.setGlobalData(globalKey, cacheData); } catch (_) {}
+                    try {
+                      // 【特性开关】FIX_PAGEHIDE_PROMISE_CRASH: 移除 .catch() 防止 Promise 在 unload 时访问释放内存
+                      if (window.isFeatureEnabled?.('FIX_PAGEHIDE_PROMISE_CRASH')) {
+                        window.browserAPI.setGlobalData(globalKey, cacheData);  // fire-and-forget
+                      } else {
+                        window.browserAPI.setGlobalData(globalKey, cacheData).catch(() => {});  // 旧逻辑兼容
+                      }
+                    } catch (_) {}
                 }
                 fetch(pending.url, {
                     method: "POST",
@@ -3288,9 +3351,15 @@ if (typeof window.uploadVideo === "function"
 
             // 🔍 秒级轮询探针：点击后才出现的禁言/违规等错误可能在 1-3 秒内显示，
             //     每秒探测一次，命中立即取消成功并转报失败（比 8 秒到点更早，防漏报）
+            let probeTickCount = 0;
             pending.probeTimer = setInterval(() => {
+                probeTickCount++;
+                if (probeTickCount === 1 || probeTickCount % 3 === 0) {
+                    console.log(`[${platform || "发布"}] 🔍 探针轮询第 ${probeTickCount} 次...`);
+                }
                 if (pending.cancelled || pending.flushed || pending.inFlight) {
                     if (pending.probeTimer) clearInterval(pending.probeTimer);
+                    console.log(`[${platform || "发布"}] 🛑 探针轮询停止（pending 已结束）`);
                     return;
                 }
                 if (hasErrorMemoryLock(normalizedPublishId)) {
