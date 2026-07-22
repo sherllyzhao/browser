@@ -6,10 +6,11 @@
   "scripts": {
     "start": "electron .",
     "start:debug": "electron . --remote-debugging-port=9222",
-    "build:dev": "node build-scripts/set-env.js dev && electron-builder --win nsis --ia32",
-    "build:prod": "node build-scripts/set-env.js prod && electron-builder --win nsis --ia32",
-    "build:dev:portable": "node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
-    "build:prod:portable": "node build-scripts/set-env.js prod && electron-builder --win portable --ia32",
+    "sync-features": "node build-scripts/sync-features-version.js",
+    "build:dev": "npm run sync-features && node build-scripts/set-env.js dev && electron-builder --win nsis --ia32",
+    "build:prod": "npm run sync-features && node build-scripts/set-env.js prod && electron-builder --win nsis --ia32",
+    "build:dev:portable": "npm run sync-features && node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
+    "build:prod:portable": "npm run sync-features && node build-scripts/set-env.js prod && electron-builder --win portable --ia32",
     "build": "npm run build:prod",
     "build:dir": "electron-builder --win --dir",
     "build:portable": "npm run build:prod:portable"
