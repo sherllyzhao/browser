@@ -36,10 +36,54 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.1',
+        version: '1.2.3',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
+      },
+
+      // 【修复】2026-07-23 网易发布失败漏报（tjlogerror 被 success 锁吞掉）
+      // 根因：乐观成功 8 秒到点定时先发 tjlog 占 success 锁；网易点击后常触发「发文前检测」
+      //       需二次点击（耗掉 ~7 秒），真实错误在 8 秒后才出现，随后的 sendStatisticsError
+      //       被 success-already-reported 挡掉，失败永不上报（网络面板只见 tjlog 不见 tjlogerror）
+      // 修复：网易乐观成功不设到点定时器（deferUntilUnload），只在页面卸载(pagehide)时冲刷；
+      //       失败路径先 await sendStatisticsError 再关窗，失败上报永远抢在成功前
+      // 风险：禁用后回退旧 8 秒到点逻辑（错误>8秒出现时仍会被误报成功）
+      FIX_WANGYI_OPTIMISTIC_DEFER: {
+        enabled: true,
+        version: '1.2.3',
+        risk: 'medium',
+        files: ['common.js:sendOptimisticSuccess', 'wangyihao-publish.js:1404'],
+        description: '网易乐观成功仅卸载冲刷，不设8秒定时，防失败被success锁吞'
+      },
+
+      // 【修复】2026-07-23 搜狐"昨天授权今天掉登录"（后台记录归属漂移）
+      // 根因：新授权（auth_type=1）时前端不传后台记录 ID，shinfo 后台疑似新建记录而非更新，
+      //       旧记录绑定的发布任务拿到的永远是老快照；浏览器侧"最近授权兜底"又因缺账号绑定被禁用
+      // 修复：授权成功后记录登录身份（平台 uid+昵称）→ 主进程记"身份模式"最近授权标记 →
+      //       发布窗口打开时期望账号身份匹配（账号守卫同款比对）才放行预热账号 session；
+      //       发布关窗 close-save 顺势把新快照写回后台旧记录，形成闭环
+      // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
+      FIX_SOHU_AUTH_IDENTITY_BINDING: {
+        enabled: true,
+        version: '1.2.3',
+        risk: 'medium',
+        files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
+        description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
+      },
+
+      // 【修复】2026-07-23 腾讯号图片误判（"看到图了突然就没了"）
+      // 根因：getTxhEditorImageFailureText 正则误判腾讯编辑器瞬时提示（如"上传中，请勿..."）
+      //       触发清空编辑器 + 原生上传回退，回退链路 downloadFile 跨域失败 → 图片全丢
+      // 修复：强化正则过滤词（排除"上传中""加载中""等待""请勿"等进行中状态）；
+      //       验证循环命中失败文本后不立即 break，而是再等 1 轮确认文本仍存在（瞬时提示会消失）
+      // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
+      FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
+        enabled: true,
+        version: '1.2.3',
+        risk: 'low',
+        files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
+        description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'
       },
 
       // 【预留】未来的修复/功能添加在下方
@@ -1241,6 +1285,7 @@ if (typeof window.uploadVideo === "function"
                     console.log(`[downloadFile] 第 ${attemptCount} 次重试下载...`);
                 }
 
+                try {
                 if (downloadByMainProcess) {
                     console.log("[downloadFile] 使用主进程下载...");
                     const result = await downloadByMainProcess(url);
@@ -1273,6 +1318,12 @@ if (typeof window.uploadVideo === "function"
                     blob: normalized.blob,
                     contentType: normalized.contentType,
                 };
+                } catch (downloadErr) {
+                    // 失败原因必须落日志：此前重试 5 次只打"第 N 次重试"不带原因，
+                    // 现场（如腾讯号正文图片连挂 5 次）完全无法确诊是防盗链/超时/网络
+                    console.warn(`[downloadFile] ❌ 第 ${attemptCount} 次下载失败:`, downloadErr.message, "| URL:", url);
+                    throw downloadErr;
+                }
             },
             5,
             3000,
@@ -3139,6 +3190,9 @@ if (typeof window.uploadVideo === "function"
     //      keepalive 立即冲刷成功，保留乐观上报的防漏报能力。
     // ⚠️ GEO 系统跳过乐观上报：GEO 保持「真正确认成功才记 1 次」的语义，
     //     确认成功/失败上报已由去重锁保证同一 publishId 只发 1 次。
+    // 🕐 options.deferUntilUnload=true（网易，FIX_WANGYI_OPTIMISTIC_DEFER）：不设到点定时器，
+    //     成功只在页面卸载冲刷时发出——错误出现时间不可预测（发文前检测二次点击+慢审核）的
+    //     平台用，保证失败上报永远先于成功抢锁。
     const OPTIMISTIC_SUCCESS_DELAY_MS = 8000;
     const optimisticPendingReports = new Map(); // publishId -> pending
     let publishErrorProbe = null;
@@ -3300,7 +3354,7 @@ if (typeof window.uploadVideo === "function"
         window.addEventListener("beforeunload", flushOptimisticPendingOnUnload);
     }
 
-    window.sendOptimisticSuccess = async function (publishId, platform = "") {
+    window.sendOptimisticSuccess = async function (publishId, platform = "", options = {}) {
         try {
             if (!publishId) {
                 return { success: false, skipped: true, reason: "no-publishId" };
@@ -3331,6 +3385,9 @@ if (typeof window.uploadVideo === "function"
                 return { success: true, skipped: true, reason: "error-already-reported" };
             }
 
+            // 🔑 deferUntilUnload：不设到点定时器，成功只靠 pagehide 卸载冲刷发出
+            //     （网易等「错误出现晚于固定延迟」的平台用，失败上报永远抢在成功前）
+            const deferUntilUnload = options && options.deferUntilUnload === true;
             const pending = {
                 publishId: normalizedPublishId,
                 platform: platform || "",
@@ -3338,6 +3395,7 @@ if (typeof window.uploadVideo === "function"
                 errorUrl,
                 body: JSON.stringify(scanData),
                 windowId,
+                deferUntilUnload,
                 cancelled: false,
                 inFlight: false,
                 flushed: false,
@@ -3347,13 +3405,24 @@ if (typeof window.uploadVideo === "function"
             optimisticPendingReports.set(normalizedPublishId, pending);
             ensureOptimisticFlushHook();
 
-            console.log(`[${platform || "发布"}] 🚀 点击发布成功，${Math.round(OPTIMISTIC_SUCCESS_DELAY_MS / 1000)} 秒后乐观上报成功（期间检测到明确失败则自动取消，ID: ${normalizedPublishId}）`);
+            if (deferUntilUnload) {
+                console.log(`[${platform || "发布"}] 🚀 点击发布成功，乐观成功改为页面卸载时冲刷（不设 ${Math.round(OPTIMISTIC_SUCCESS_DELAY_MS / 1000)} 秒定时，期间检测到明确失败则自动取消，ID: ${normalizedPublishId}）`);
+            } else {
+                console.log(`[${platform || "发布"}] 🚀 点击发布成功，${Math.round(OPTIMISTIC_SUCCESS_DELAY_MS / 1000)} 秒后乐观上报成功（期间检测到明确失败则自动取消，ID: ${normalizedPublishId}）`);
+            }
 
             // 🔍 秒级轮询探针：点击后才出现的禁言/违规等错误可能在 1-3 秒内显示，
             //     每秒探测一次，命中立即取消成功并转报失败（比 8 秒到点更早，防漏报）
             let probeTickCount = 0;
             pending.probeTimer = setInterval(() => {
                 probeTickCount++;
+                // defer 模式无到点定时器来清理轮询，设上限（~5 分钟）防长驻页面无限轮询；
+                // 停止轮询后仍有脚本失败路径 + 卸载冲刷前的探针查询兜底
+                if (deferUntilUnload && probeTickCount > 300) {
+                    if (pending.probeTimer) clearInterval(pending.probeTimer);
+                    console.log(`[${platform || "发布"}] 🛑 探针轮询达到上限（300 次），停止轮询，成功仍待卸载冲刷`);
+                    return;
+                }
                 if (probeTickCount === 1 || probeTickCount % 3 === 0) {
                     console.log(`[${platform || "发布"}] 🔍 探针轮询第 ${probeTickCount} 次...`);
                 }
@@ -3382,7 +3451,8 @@ if (typeof window.uploadVideo === "function"
                 }
             }, 1000);
 
-            pending.timer = setTimeout(async () => {
+            // 🔑 defer 模式不设到点定时器：成功只在 pagehide 卸载冲刷时发出
+            pending.timer = deferUntilUnload ? null : setTimeout(async () => {
                 if (pending.cancelled || pending.flushed) return;
                 if (pending.probeTimer) clearInterval(pending.probeTimer);
                 if (hasErrorMemoryLock(normalizedPublishId)) {
@@ -3411,7 +3481,7 @@ if (typeof window.uploadVideo === "function"
                 }
             }, OPTIMISTIC_SUCCESS_DELAY_MS);
 
-            return { success: true, deferred: true, delayMs: OPTIMISTIC_SUCCESS_DELAY_MS };
+            return { success: true, deferred: true, deferUntilUnload, delayMs: deferUntilUnload ? null : OPTIMISTIC_SUCCESS_DELAY_MS };
         } catch (e) {
             console.warn(`[${platform || "发布"}] ⚠️ 乐观成功上报异常（不阻断发布流程）:`, e.message);
             return { success: false, error: e };

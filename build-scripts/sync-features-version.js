@@ -65,6 +65,10 @@ for (let i = 0; i < lines.length; i++) {
     // 遇到下一个特性，停止
     if (checkLine.match(/^\s+\w+:\s*\{/)) break;
 
+    // 🔑 跳过注释行：末尾的 NEW_FEATURE_TEMPLATE 注释模板里也有 version:/enabled: 字样，
+    //    不跳过会把「模板注释」误当成最后一个真实特性的版本行来更新
+    if (checkLine.trim().startsWith('//')) continue;
+
     // 检查 enabled: true
     if (checkLine.includes('enabled:') && checkLine.includes('true')) {
       hasEnabledTrue = true;

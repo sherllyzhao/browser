@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>腾讯号发布按钮 hover 探针</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #f5f7fb;
+      color: #1f2937;
+      font-family: "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    .stage {
+      width: min(720px, calc(100vw - 48px));
+      padding: 32px;
+      background: #fff;
+      border: 1px solid #d9e2ef;
+      border-radius: 8px;
+      box-shadow: 0 18px 45px rgba(15, 23, 42, .12);
+    }
+
+    .tool_right-sim {
+      display: inline-flex;
+      align-items: center;
+      gap: 16px;
+      margin: 80px 0 32px;
+      padding: 18px 22px;
+      list-style: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: #fbfdff;
+    }
+
+    .tool_right-sim,
+    .tool_right-sim li,
+    .tool_right-sim button,
+    .tool_right-sim span {
+      pointer-events: none;
+    }
+
+    .tool_public_tip-sim {
+      min-width: 270px;
+      color: #cf1322;
+      font-size: 14px;
+      line-height: 24px;
+      white-space: nowrap;
+    }
+
+    .omui-button {
+      min-width: 94px;
+      height: 36px;
+      border: 0;
+      border-radius: 4px;
+      color: #fff;
+      background: #1677ff;
+      font-size: 14px;
+      line-height: 36px;
+    }
+
+    .omui-button.is-disabled {
+      cursor: not-allowed;
+      opacity: .62;
+    }
+
+    .tool_publish_button_text-sim {
+      display: inline-block;
+      padding: 0 12px;
+      line-height: 36px;
+    }
+
+    .probe-log {
+      height: 180px;
+      padding: 12px;
+      border-radius: 6px;
+      background: #111827;
+      color: #d1d5db;
+      font: 12px/1.6 Consolas, monospace;
+      overflow: hidden;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1>腾讯号 hover probe</h1>
+    <p>这个页面复刻 disabled 发布按钮：默认整段发布区禁用 pointer-events，只有真正 hover 到“发布”文字事件后才插入错误提示 li。</p>
+
+    <ul id="toolRight" class="tool_right-sim tool_right-abc123">
+      <li class="tool_publish_action-sim">
+        <button id="publishButton" class="omui-button omui-button--primary is-disabled" disabled>
+          <span id="publishText" class="tool_publish_button_text-sim tool_publish_button_text-abc123">发布</span>
+        </button>
+      </li>
+    </ul>
+
+    <section id="eventLog" class="probe-log">等待 hover...</section>
+  </main>
+
+  <script>
+    (() => {
+      const toolRight = document.getElementById('toolRight');
+      const publishButton = document.getElementById('publishButton');
+      const publishText = document.getElementById('publishText');
+      const eventLog = document.getElementById('eventLog');
+      const errorText = '您的资质审核被驳回，暂不能发文';
+      const log = [];
+
+      let removeTimer = null;
+
+      function delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+      }
+
+      function appendLog(message) {
+        const line = `${new Date().toISOString()} ${message}`;
+        log.push(line);
+        while (log.length > 80) log.shift();
+        eventLog.textContent = log.join('\n') || '等待 hover...';
+      }
+
+      function summarizeElement(el) {
+        if (!el) return null;
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || '',
+          className: String(el.className || ''),
+          text: String(el.textContent || '').trim().slice(0, 80),
+          disabled: typeof el.disabled === 'boolean' ? el.disabled : undefined
+        };
+      }
+
+      function showTip(source) {
+        clearTimeout(removeTimer);
+        let tip = document.querySelector('[class*="tool_public_tip"]');
+        if (!tip) {
+          tip = document.createElement('li');
+          tip.className = 'tool_public_tip-sim tool_public_tip-abc123';
+          tip.textContent = errorText;
+          toolRight.insertBefore(tip, toolRight.firstElementChild);
+        }
+        appendLog(`[showTip] ${source}`);
+      }
+
+      function scheduleRemoveTip(source) {
+        clearTimeout(removeTimer);
+        removeTimer = setTimeout(() => {
+          const tip = document.querySelector('[class*="tool_public_tip"]');
+          if (tip) tip.remove();
+          appendLog(`[removeTip] ${source}`);
+        }, 260);
+      }
+
+      function getTextRect() {
+        const walker = document.createTreeWalker(publishText, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node && !node.nodeValue.includes('发布')) node = walker.nextNode();
+
+        if (node) {
+          const range = document.createRange();
+          const start = node.nodeValue.indexOf('发布');
+          range.setStart(node, start);
+          range.setEnd(node, start + 2);
+          const rect = range.getBoundingClientRect();
+          range.detach();
+          if (rect.width > 0 && rect.height > 0) return rect;
+        }
+
+        return publishText.getBoundingClientRect();
+      }
+
+      function makeHoverPoints() {
+        const rect = getTextRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        return [
+          { x: centerX - Math.max(90, rect.width + 40), y: centerY, label: 'outside-left' },
+          { x: centerX - rect.width * 0.4, y: centerY, label: 'publish-text-left' },
+          { x: centerX, y: centerY, label: 'publish-text-center' },
+          { x: centerX + rect.width * 0.4, y: centerY, label: 'publish-text-right' },
+          { x: centerX, y: centerY - Math.max(2, rect.height * 0.25), label: 'publish-text-top' },
+          { x: centerX, y: centerY, label: 'publish-text-hold' }
+        ].map(point => ({
+          x: Math.round(point.x),
+          y: Math.round(point.y),
+          label: point.label
+        }));
+      }
+
+      function applyPointerOverride() {
+        let style = document.getElementById('__txh_pointer_override__');
+        if (!style) {
+          style = document.createElement('style');
+          style.id = '__txh_pointer_override__';
+          style.textContent = `
+            #toolRight,
+            #toolRight *,
+            [class*="tool_right"],
+            [class*="tool_right"] *,
+            button.omui-button,
+            button.omui-button *,
+            [class*="tool_publish_button_text"] {
+              pointer-events: auto !important;
+            }
+          `;
+          document.head.appendChild(style);
+        }
+      }
+
+      function removePointerOverride() {
+        document.getElementById('__txh_pointer_override__')?.remove();
+      }
+
+      function reset(options = {}) {
+        clearTimeout(removeTimer);
+        document.querySelector('[class*="tool_public_tip"]')?.remove();
+        log.length = 0;
+        eventLog.textContent = '等待 hover...';
+        publishButton.disabled = options.disabled !== false;
+        if (options.removeOverride !== false) removePointerOverride();
+      }
+
+      function snapshot(label, nativeResult = null) {
+        const rect = getTextRect();
+        const centerX = Math.round(rect.left + rect.width / 2);
+        const centerY = Math.round(rect.top + rect.height / 2);
+        const tip = document.querySelector('[class*="tool_public_tip"]');
+        const atCenter = document.elementFromPoint(centerX, centerY);
+        const style = getComputedStyle(publishText);
+        return {
+          label,
+          hasBrowserAPI: !!window.browserAPI,
+          hasNativeHover: typeof window.browserAPI?.nativeMouseHover === 'function',
+          buttonDisabled: publishButton.disabled,
+          publishTextPointerEvents: style.pointerEvents,
+          textRect: {
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          },
+          elementAtTextCenter: summarizeElement(atCenter),
+          tipExists: !!tip,
+          tipText: String(tip?.textContent || '').trim(),
+          nativeResult,
+          eventLog: log.slice()
+        };
+      }
+
+      async function nativeHover(label) {
+        const points = makeHoverPoints();
+        appendLog(`[nativeHover:start] ${label} ${JSON.stringify(points)}`);
+        const nativeResult = await window.browserAPI.nativeMouseHover(points, {
+          intervalMs: 90,
+          holdMs: 1100
+        });
+        await delay(180);
+        return snapshot(label, nativeResult);
+      }
+
+      async function runScenario(config) {
+        reset({ disabled: !config.removeDisabled });
+        if (config.overridePointerEvents) applyPointerOverride();
+        if (config.removeDisabled) publishButton.disabled = false;
+        const before = snapshot(`${config.label}:before`);
+        const after = await nativeHover(`${config.label}:after`);
+        return { label: config.label, before, after };
+      }
+
+      async function runAll() {
+        return [
+          await runScenario({
+            label: 'no-override-disabled',
+            overridePointerEvents: false,
+            removeDisabled: false
+          }),
+          await runScenario({
+            label: 'pointer-override-disabled',
+            overridePointerEvents: true,
+            removeDisabled: false
+          }),
+          await runScenario({
+            label: 'pointer-override-remove-disabled',
+            overridePointerEvents: true,
+            removeDisabled: true
+          })
+        ];
+      }
+
+      ['pointerenter', 'pointerover', 'pointermove', 'mouseenter', 'mouseover', 'mousemove'].forEach(type => {
+        document.addEventListener(type, event => {
+          appendLog(`[doc:${type}] target=${summarizeElement(event.target)?.tag || ''}.${summarizeElement(event.target)?.className || ''}`);
+        }, true);
+
+        publishText.addEventListener(type, event => {
+          appendLog(`[span:${type}] trusted=${event.isTrusted}`);
+          if (/enter|over|move/.test(type)) showTip(type);
+        }, true);
+      });
+
+      ['pointerleave', 'mouseleave', 'mouseout'].forEach(type => {
+        publishText.addEventListener(type, event => {
+          appendLog(`[span:${type}] trusted=${event.isTrusted}`);
+          scheduleRemoveTip(type);
+        }, true);
+      });
+
+      window.__txProbe = {
+        reset,
+        snapshot,
+        runAll,
+        applyPointerOverride,
+        removePointerOverride,
+        makeHoverPoints
+      };
+    })();
+  </script>
+</body>
+</html>

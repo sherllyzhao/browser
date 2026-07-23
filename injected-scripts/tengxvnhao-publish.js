@@ -493,10 +493,23 @@
             editorRoot?.closest('[class*=editor_container], [class*=editorContainer], [class*=ExEditor]')
         ].filter(Boolean);
 
+        const useStrictFilter = window.isFeatureEnabled?.('FIX_TENGXUN_IMAGE_FALSE_POSITIVE');
+
         for (const container of containers) {
             const text = (container.innerText || container.textContent || "").replace(/\s+/g, " ").trim();
             const match = text.match(/(?:图片|素材|文件|上传).{0,30}(?:失败|重试|异常|错误)|(?:失败|重试).{0,30}(?:图片|素材|文件|上传)/);
             if (match?.[0]) {
+                if (useStrictFilter) {
+                    const hit = match[0];
+                    // 仅排除"进行中"文案（如"上传中，请勿重试"）：不含终态词且含进行中词才忽略。
+                    // "上传失败，点击重试"这类真失败含"失败"终态词，永远保留。
+                    const isTerminalFailure = /失败|错误|异常/.test(hit);
+                    const isProgressText = /上传中|加载中|处理中|等待|请勿|正在|请稍/.test(hit);
+                    if (!isTerminalFailure && isProgressText) {
+                        console.log("[腾讯号发布] ℹ️ 忽略进行中状态文案（非失败终态）:", hit);
+                        continue;
+                    }
+                }
                 return match[0];
             }
         }
@@ -1998,6 +2011,29 @@
 
                             const clearEditor = async () => {
                                 editorEle.focus();
+                                // 🔑 优先走编辑器友好的清空路径（selectAll+delete 会经过编辑器命令层，
+                                // model 与 DOM 同步）。直接 innerHTML="" 会让类 ProseMirror 编辑器的内部
+                                // model 与 DOM 脱节，后续 nodeAt/patchNodeAttr 抛 RangeError: Index out of
+                                // range for <paragraph>，编辑器状态从此不可靠（原生上传模式必现）。
+                                if (window.isFeatureEnabled?.('FIX_TENGXUN_IMAGE_FALSE_POSITIVE')) {
+                                    try {
+                                        const selection = window.getSelection();
+                                        const range = document.createRange();
+                                        range.selectNodeContents(editorEle);
+                                        selection.removeAllRanges();
+                                        selection.addRange(range);
+                                        document.execCommand("delete", false, null);
+                                        await delay(300);
+                                    } catch (clearErr) {
+                                        console.warn("[腾讯号发布] ⚠️ 编辑器命令清空异常，回退 innerHTML:", clearErr.message);
+                                    }
+                                    const remaining = (editorEle.innerText || editorEle.textContent || "").trim();
+                                    if (!remaining && getTxhArticleImageElements(editorEle).length === 0) {
+                                        await delay(200);
+                                        return;
+                                    }
+                                    console.warn("[腾讯号发布] ⚠️ 命令清空后仍有残留内容，回退 innerHTML 强制清空");
+                                }
                                 editorEle.innerHTML = "";
                                 editorEle.dispatchEvent(new InputEvent("input", {
                                     bubbles: true,
@@ -2023,25 +2059,75 @@
                             let actualLength = 0;
                             let actualImageCount = 0;
                             let contentFailureText = "";
+                            let failureHitCount = 0;
+                            const needDoubleConfirm = window.isFeatureEnabled?.('FIX_TENGXUN_IMAGE_FALSE_POSITIVE');
+                            const logEditorSuccess = () => {
+                                console.log("[腾讯号发布] ✅ 内容验证通过");
+                                console.log("[腾讯号发布] 🖼️ 当前编辑器图片:", getTxhArticleImageElements(editorEle).map(img => img.getAttribute("src") || img.src || ""));
+                                console.log("[腾讯号发布] ✅ 内容填写完成");
+                            };
+                            const isEditorContentPassed = () => {
+                                const textPassed = expectedLength === 0 || actualLength >= expectedLength * 0.8;
+                                const imagePassed = expectedImageCount === 0 || actualImageCount >= expectedImageCount;
+                                return textPassed && imagePassed;
+                            };
                             for (let i = 0; i < 3; i++) {
                                 await window.delay([1500, 2500, 3500][i]);
                                 actualLength = (editorEle.innerText || editorEle.textContent || "").trim().length;
                                 actualImageCount = getTxhArticleImageElements(editorEle).length;
                                 console.log(`[腾讯号发布] 📏 第${i + 1}次验证: 实际长度=${actualLength}/${expectedLength}, 图片=${actualImageCount}/${expectedImageCount}`);
 
-                                contentFailureText = getLatestError() || getTxhEditorImageFailureText(editorEle);
-                                if (contentFailureText) {
-                                    console.warn("[腾讯号发布] ⚠️ 检测到正文图片上传失败状态，准备切换原生上传:", contentFailureText);
-                                    break;
+                                // 🔑 数值达标优先判成功：长度≥80% 且图片数齐（如 1335/1346+2/2）说明内容已上齐，
+                                // 页面残留的"失败/重试"文案（历史 toast、无关模块）不应推翻既成事实。
+                                // 曾因失败文本先于成功判定，误清好内容切原生模式 → clearEditor 触发编辑器
+                                // RangeError + 图片下载失败 → 正文只剩首段。失败文本仅在数值不达标时参与决策。
+                                if (needDoubleConfirm && isEditorContentPassed()) {
+                                    clearLatestErrors();
+                                    logEditorSuccess();
+                                    return;
                                 }
 
-                                const textPassed = expectedLength === 0 || actualLength >= expectedLength * 0.8;
-                                const imagePassed = expectedImageCount === 0 || actualImageCount >= expectedImageCount;
-                                if (textPassed && imagePassed) {
-                                    console.log("[腾讯号发布] ✅ 内容验证通过");
-                                    console.log("[腾讯号发布] 🖼️ 当前编辑器图片:", getTxhArticleImageElements(editorEle).map(img => img.getAttribute("src") || img.src || ""));
-                                    console.log("[腾讯号发布] ✅ 内容填写完成");
+                                const failureTextThisRound = getLatestError() || getTxhEditorImageFailureText(editorEle);
+                                if (failureTextThisRound) {
+                                    failureHitCount += 1;
+                                    contentFailureText = failureTextThisRound;
+                                    if (!needDoubleConfirm || failureHitCount >= 2) {
+                                        console.warn("[腾讯号发布] ⚠️ 检测到正文图片上传失败状态，准备切换原生上传:", contentFailureText);
+                                        break;
+                                    }
+                                    // 瞬时提示（编辑器内部一闪而过的重试/toast）会自行消失；错误监听器的
+                                    // 记录是持久的，必须清掉后复核——若下一轮错误再次出现才算真实失败
+                                    console.log("[腾讯号发布] ℹ️ 首次命中失败文本，清空错误记录后下一轮复核:", failureTextThisRound);
+                                    clearLatestErrors();
+                                    continue;
+                                }
+                                failureHitCount = 0;
+                                contentFailureText = "";
+
+                                if (isEditorContentPassed()) {
+                                    logEditorSuccess();
                                     return;
+                                }
+                            }
+
+                            // 失败文本仅在最后一轮首次命中时，多给一次复核机会，避免瞬时提示触发破坏性回退
+                            if (needDoubleConfirm && failureHitCount === 1) {
+                                await window.delay(2000);
+                                actualLength = (editorEle.innerText || editorEle.textContent || "").trim().length;
+                                actualImageCount = getTxhArticleImageElements(editorEle).length;
+                                const recheckFailureText = getLatestError() || getTxhEditorImageFailureText(editorEle);
+                                console.log(`[腾讯号发布] 📏 末轮复核: 实际长度=${actualLength}/${expectedLength}, 图片=${actualImageCount}/${expectedImageCount}, 错误=${recheckFailureText || "无"}`);
+                                // 数值达标同样优先于失败文本（与主循环口径一致）
+                                if (isEditorContentPassed()) {
+                                    clearLatestErrors();
+                                    logEditorSuccess();
+                                    return;
+                                }
+                                if (!recheckFailureText) {
+                                    contentFailureText = "";
+                                } else {
+                                    contentFailureText = recheckFailureText;
+                                    console.warn("[腾讯号发布] ⚠️ 末轮复核仍存在失败文本，准备切换原生上传:", contentFailureText);
                                 }
                             }
 

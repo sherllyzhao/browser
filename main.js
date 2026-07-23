@@ -159,6 +159,14 @@ let destroyedWindowCleanupInterval = null;
 let mainWindowCloseForceTimer = null;
 const windowContextMap = new Map();
 const SOHUHAO_RECENT_AUTH_COOKIE_MIGRATION_TTL_MS = 60 * 60 * 1000;
+// 🎛️ FIX_SOHU_AUTH_IDENTITY_BINDING（shh-auth-identity-fix1）：
+// 新授权（auth_type=1）拿不到后台记录 ID 时，授权脚本把登录身份（平台 uid+昵称）落盘到
+// globalData（sohuhao_recent_auth_identity），发布窗口打开时期望账号身份匹配才放行
+// "从持久化 session 预热账号分区"。身份文件与持久化 session cookie 都落盘，跨重启/跨天有效。
+// 出问题改 false 即回退到"缺少 accountId 一律不预热"的旧行为。
+const FEATURE_SOHU_AUTH_IDENTITY_BINDING = true;
+// 身份文件的有效窗口：搜狐 ppinf/pprdig 续签凭证约 14 天，取 7 天保守值
+const SOHUHAO_RECENT_AUTH_IDENTITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 let recentSohuhaoPersistentCredentialMigration = null;
 
 function normalizeAccountIdValue(accountId) {
@@ -299,6 +307,42 @@ function isRecentSohuhaoMigrationForAccount(accountId) {
   const targetAccountId = normalizeAccountIdValue(accountId);
   const migrationAccountId = normalizeAccountIdValue(recentSohuhaoPersistentCredentialMigration?.targetAccountId);
   return !!targetAccountId && !!migrationAccountId && targetAccountId === migrationAccountId;
+}
+
+// 🎛️ FIX_SOHU_AUTH_IDENTITY_BINDING：持久化身份路径的匹配判断。
+// 数据源是 globalData 里的 sohuhao_recent_auth_identity（授权成功时落盘，跨重启有效），
+// 不依赖内存里的最近迁移标记（那个 TTL 1 小时且重启即失——救不了"昨天授权今天发布"）。
+// 期望身份（发布数据里的账号 uid/昵称）与授权身份比对：
+// uid 双方都有则必须严格相等（最强判据）；否则回退昵称归一化相等；信息不足一律拒绝。
+// 拒绝即回到现状（不预热），串号防线与账号守卫同标准。
+function isIdentityModeRecentSohuhaoMigrationMatching(expectedIdentity) {
+  if (!FEATURE_SOHU_AUTH_IDENTITY_BINDING) {
+    return false;
+  }
+  let identity = null;
+  try {
+    identity = parseMaybeJsonObject(globalStorage?.['sohuhao_recent_auth_identity']);
+  } catch (_) {
+    return false;
+  }
+  const identityTs = Number(identity?.timestamp || 0);
+  if (!(identityTs > 0 && (Date.now() - identityTs) <= SOHUHAO_RECENT_AUTH_IDENTITY_TTL_MS)) {
+    return false;
+  }
+  const authUid = normalizeAccountIdValue(identity?.platformUid);
+  const authName = normalizeSohuhaoIdentityText(identity?.nickname);
+  if (!authUid && !authName) {
+    return false;
+  }
+  const expectedUid = normalizeAccountIdValue(expectedIdentity?.platformUid);
+  const expectedName = normalizeSohuhaoIdentityText(expectedIdentity?.name);
+  if (authUid && expectedUid) {
+    return authUid === expectedUid;
+  }
+  if (authName && expectedName) {
+    return authName === expectedName;
+  }
+  return false;
 }
 
 // 🩹 视频号白屏自愈 reload 放行标记（按 windowId）：经 shipinhao-blank-self-heal-reload 通道
@@ -1918,7 +1962,7 @@ function isRecentSohuhaoPersistentCredentialMigration() {
   return migratedAt > 0 && (Date.now() - migratedAt) <= SOHUHAO_RECENT_AUTH_COOKIE_MIGRATION_TTL_MS;
 }
 
-async function hydrateSohuhaoAccountSessionFromRecentPersistentSession(targetSession, accountId, reason = 'publish-open') {
+async function hydrateSohuhaoAccountSessionFromRecentPersistentSession(targetSession, accountId, reason = 'publish-open', expectedIdentity = null) {
   const credentialNames = ['sct', 'ppinf', 'pprdig', 'passport', 'ppmdig'];
   const resultBase = {
     migrated: false,
@@ -1926,17 +1970,43 @@ async function hydrateSohuhaoAccountSessionFromRecentPersistentSession(targetSes
     accountId: accountId || null,
     recentMigration: isRecentSohuhaoPersistentCredentialMigration(),
     sourceIsAuthWindow: !!recentSohuhaoPersistentCredentialMigration?.sourceIsAuthWindow,
-    migrationTargetAccountId: recentSohuhaoPersistentCredentialMigration?.targetAccountId || null
+    migrationTargetAccountId: recentSohuhaoPersistentCredentialMigration?.targetAccountId || null,
+    identityMatchAllowed: false
   };
 
   if (!targetSession) {
     return { ...resultBase, skipped: true, skipReason: 'invalid-target-session' };
   }
-  if (!isRecentSohuhaoPersistentCredentialMigration()) {
-    return { ...resultBase, skipped: true, skipReason: 'no-recent-sohuhao-auth-migration' };
+  // 🎛️ FIX_SOHU_AUTH_IDENTITY_BINDING：持久化身份路径。内存迁移标记（TTL 1小时、重启即失）
+  // 拦不住"昨天授权今天发布"的场景；授权身份文件与持久化 session cookie 都落盘，
+  // 只要期望账号身份与最近授权身份匹配（账号守卫同款比对）就放行预热，其余一律维持旧行为。
+  const identityPathAllowed = isIdentityModeRecentSohuhaoMigrationMatching(expectedIdentity);
+  if (identityPathAllowed) {
+    resultBase.identityMatchAllowed = true;
   }
-  if (!isRecentSohuhaoMigrationForAccount(accountId)) {
-    return { ...resultBase, skipped: true, skipReason: 'recent-auth-account-mismatch' };
+  if (!isRecentSohuhaoPersistentCredentialMigration()) {
+    if (!identityPathAllowed) {
+      return { ...resultBase, skipped: true, skipReason: 'no-recent-sohuhao-auth-migration' };
+    }
+    console.log('[搜狐号账号 session 兜底] ✅ 持久化授权身份与发布期望账号身份匹配，放行预热（跨重启身份路径）:', {
+      accountId: accountId || null,
+      expectedIdentity: {
+        platformUid: expectedIdentity?.platformUid || '无',
+        name: expectedIdentity?.name || '无'
+      }
+    });
+  } else if (!isRecentSohuhaoMigrationForAccount(accountId)) {
+    if (!identityPathAllowed) {
+      return { ...resultBase, skipped: true, skipReason: 'recent-auth-account-mismatch' };
+    }
+    console.log('[搜狐号账号 session 兜底] ✅ 最近迁移标记账号不匹配，但持久化授权身份与期望账号身份匹配，放行预热:', {
+      accountId: accountId || null,
+      migrationTargetAccountId: recentSohuhaoPersistentCredentialMigration?.targetAccountId || null,
+      expectedIdentity: {
+        platformUid: expectedIdentity?.platformUid || '无',
+        name: expectedIdentity?.name || '无'
+      }
+    });
   }
 
   const oldTargetCookies = await targetSession.cookies.get({});
@@ -6480,9 +6550,16 @@ function downloadImageAsBase64(downloadUrl, redirectCount = 0) {
     }
 
     const protocol = downloadUrl.startsWith('https') ? https : http;
+    // 部分图床（CDN 防盗链）校验 Referer，只带 UA 会 403/连接重置。
+    // Referer 取图片自身 origin（同站引用语义），对无防盗链站点无副作用；重定向时沿用新 URL 的 origin
+    let refererHeader = '';
+    try {
+      refererHeader = new URL(downloadUrl).origin + '/';
+    } catch (_) {}
     const request = protocol.get(downloadUrl, {
       headers: {
-        'User-Agent': STANDARD_USER_AGENT
+        'User-Agent': STANDARD_USER_AGENT,
+        ...(refererHeader ? { 'Referer': refererHeader } : {})
       }
     }, (response) => {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
@@ -10223,7 +10300,7 @@ app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1（判死后清空窗口session死cookie+刷新登录页；搜狐补服务端探测同款防护）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1（判死后清空窗口session死cookie+刷新登录页；搜狐补服务端探测同款防护；搜狐授权身份绑定放行最近授权预热）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -13037,7 +13114,10 @@ async function openManagedChildWindow(url, options = {}) {
           sohuhaoRecentAuthHydrateResult = await hydrateSohuhaoAccountSessionFromRecentPersistentSession(
             windowSession,
             options.accountId,
-            'publish-open-before-session-restore'
+            'publish-open-before-session-restore',
+            // 🎛️ FIX_SOHU_AUTH_IDENTITY_BINDING：传入发布期望账号身份（账号守卫同源），
+            // 供身份模式最近授权标记做匹配放行；publishData 缺失时身份为空 → 匹配必拒绝，行为同现状
+            getExpectedSohuhaoPublishIdentity(options.publishData)
           );
           if (sohuhaoRecentAuthHydrateResult.migrated) {
             appendPublishSessionDiagLog('publish-session-sohuhao-recent-auth-hydrated', {
@@ -15220,15 +15300,60 @@ ipcMain.handle('migrate-cookies-to-persistent', async (event, domain) => {
         const sohuCredential = hasRequiredSohuhaoCredentialCookies(persistentCookies);
         const authFlagKey = `auth_mode_window_${senderWindow.id}`;
         if (sohuCredential.valid) {
-          recentSohuhaoPersistentCredentialMigration = null;
-          console.warn('[Cookie Migration] ⚠️ 搜狐号持久化授权 cookie 已更新，但缺少目标 accountId，已禁用最近授权兜底，避免多账号串号:', {
-            sourceWindowId: senderWindow.id,
-            sourceIsAuthWindow: !!globalStorage[authFlagKey],
-            domain,
-            migratedCount,
-            foundNames: sohuCredential.summary.foundNames,
-            fingerprints: buildCookieFingerprints(persistentCookies, 'sohuhao')
-          });
+          // 🎛️ FIX_SOHU_AUTH_IDENTITY_BINDING：新授权拿不到后台记录 ID，但授权脚本
+          // 在迁移前已把当前登录身份写进 globalData（sohuhao_recent_auth_identity）。
+          // 有新鲜身份且来源确为授权窗口时，改记"身份模式"最近授权标记（targetAccountId 留空），
+          // 发布窗口打开时由 hydrate 按期望账号身份匹配放行；拿不到身份则维持旧行为（禁用兜底）。
+          let identityMarkerRecorded = false;
+          if (FEATURE_SOHU_AUTH_IDENTITY_BINDING && globalStorage[authFlagKey]) {
+            try {
+              const rawIdentity = parseMaybeJsonObject(globalStorage['sohuhao_recent_auth_identity']);
+              const identityTs = Number(rawIdentity?.timestamp || 0);
+              const identityFresh = identityTs > 0 && (Date.now() - identityTs) <= SOHUHAO_RECENT_AUTH_IDENTITY_TTL_MS;
+              const identityPlatformUid = normalizeAccountIdValue(rawIdentity?.platformUid);
+              const identityNickname = String(rawIdentity?.nickname || '').trim();
+              if (identityFresh && (identityPlatformUid || identityNickname)) {
+                recentSohuhaoPersistentCredentialMigration = {
+                  timestamp: Date.now(),
+                  sourceWindowId: senderWindow.id,
+                  sourceIsAuthWindow: true,
+                  domain,
+                  targetPlatform: 'sohuhao',
+                  targetAccountId: '',
+                  identity: {
+                    platformUid: identityPlatformUid,
+                    nickname: identityNickname
+                  },
+                  migratedCount,
+                  foundNames: sohuCredential.summary.foundNames,
+                  credentialSignature: buildCookieValueSignature(persistentCookies, ['sct', 'ppinf', 'pprdig', 'passport', 'ppmdig']),
+                  fingerprints: buildCookieFingerprints(persistentCookies, 'sohuhao')
+                };
+                identityMarkerRecorded = true;
+                console.log('[Cookie Migration] ✅ 已记录身份模式的搜狐号最近授权迁移标记（发布窗口按身份匹配放行）:', {
+                  sourceWindowId: senderWindow.id,
+                  domain,
+                  migratedCount,
+                  identityPlatformUid: identityPlatformUid || '无',
+                  identityNickname: identityNickname || '无',
+                  identityAgeMs: Date.now() - identityTs
+                });
+              }
+            } catch (identityMarkErr) {
+              console.warn('[Cookie Migration] ⚠️ 记录身份模式搜狐号最近授权标记失败:', identityMarkErr.message);
+            }
+          }
+          if (!identityMarkerRecorded) {
+            recentSohuhaoPersistentCredentialMigration = null;
+            console.warn('[Cookie Migration] ⚠️ 搜狐号持久化授权 cookie 已更新，但缺少目标 accountId，已禁用最近授权兜底，避免多账号串号:', {
+              sourceWindowId: senderWindow.id,
+              sourceIsAuthWindow: !!globalStorage[authFlagKey],
+              domain,
+              migratedCount,
+              foundNames: sohuCredential.summary.foundNames,
+              fingerprints: buildCookieFingerprints(persistentCookies, 'sohuhao')
+            });
+          }
         } else {
           console.warn('[Cookie Migration] ⚠️ 搜狐号迁移后持久化 session 仍缺真实登录凭证，不记录最近授权标记:', sohuCredential.summary.foundNames);
         }

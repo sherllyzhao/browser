@@ -756,6 +756,29 @@
                                     }
                                 } catch (_) {}
 
+                                // 🔑 记录最近授权身份（FIX_SOHU_AUTH_IDENTITY_BINDING）
+                                // 新授权（auth_type=1）时父页面不传后台记录 ID，主进程的"最近授权兜底"
+                                // 因缺少账号绑定被禁用，后台若把新快照写进了别的记录，旧记录绑定的
+                                // 发布任务隔天必掉登录。这里把当前登录身份（平台 uid + 昵称）交给主进程，
+                                // 迁移持久化 session 时改记"身份模式"标记；发布窗口打开时按期望账号
+                                // 身份匹配（与账号守卫同款比对）才放行预热，防串号底线不变。
+                                // 必须在 migrateCookiesToPersistent 之前写入，主进程在迁移 handler 里读取。
+                                if (window.isFeatureEnabled?.('FIX_SOHU_AUTH_IDENTITY_BINDING')) {
+                                    try {
+                                        await window.browserAPI.setGlobalData('sohuhao_recent_auth_identity', JSON.stringify({
+                                            platformUid: currentAccount?.id != null ? String(currentAccount.id) : '',
+                                            nickname: currentAccount?.nickName || '',
+                                            timestamp: Date.now()
+                                        }));
+                                        console.log('[搜狐号授权] ✅ 已记录最近授权身份（用于发布窗口身份匹配兜底）:', {
+                                            platformUid: currentAccount?.id || '无',
+                                            nickname: currentAccount?.nickName || '无'
+                                        });
+                                    } catch (identityErr) {
+                                        console.warn('[搜狐号授权] ⚠️ 记录最近授权身份失败（不影响授权流程）:', identityErr.message);
+                                    }
+                                }
+
                                 // 🔑 迁移登录 Cookies 到持久化 session
                                 // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
                                 // 这样发布时才能用新授权的账号

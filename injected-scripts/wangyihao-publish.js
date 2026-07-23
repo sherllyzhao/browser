@@ -1400,8 +1400,16 @@
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 console.log('[网易号发布] ✅ 已点击发布按钮');
-                                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
-                                                if (publishId) { window.sendOptimisticSuccess(publishId, '网易号发布').catch(() => {}); }
+                                                // 🚀 点击发布成功 → 乐观上报成功（GEO 内部跳过；不 await 避免阻塞）
+                                                // 🔑 FIX_WANGYI_OPTIMISTIC_DEFER：网易错误常在 8 秒后才出现（发文前检测二次点击+慢审核），
+                                                //     启用时不设 8 秒到点定时，成功只在页面卸载(pagehide)冲刷时发出，
+                                                //     保证失败路径 sendStatisticsError 永远先抢锁（tjlogerror 必发）
+                                                if (publishId) {
+                                                    const wyOptimisticOptions = window.isFeatureEnabled?.('FIX_WANGYI_OPTIMISTIC_DEFER')
+                                                        ? { deferUntilUnload: true }
+                                                        : {};
+                                                    window.sendOptimisticSuccess(publishId, '网易号发布', wyOptimisticOptions).catch(() => {});
+                                                }
 
                                                 // 检查是否有发文前检测提示
                                                 await delay(1000);
