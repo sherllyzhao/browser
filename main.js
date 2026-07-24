@@ -9,6 +9,10 @@ const config = require('./domain-config');
 
 // 应用版本号（从 package.json 读取，改版本只需改 package.json）
 const APP_VERSION = app.getVersion();
+// 【特性开关】2026-07-23 磁盘满(ENOSPC)防护：客户C盘被便携版旧解压残留吃满 → 发布中闪退+exe再也打不开
+// 包含：①启动清理Temp旧版本解压残留 ②启动检测磁盘剩余空间告警 ③ENOSPC崩溃弹人话提示
+// 生产出问题改 false 重打包即可整体降级
+const FIX_DISK_SPACE_GUARD = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -1152,7 +1156,22 @@ function installSessionDiagnosticLogger() {
     appendSessionDiagnosticLog('ERROR', 'process', ['uncaughtException', `origin=${origin || '-'}`, error]);
     console.error('[Process] ❌ uncaughtException:', error);
     try {
-      dialog.showErrorBox('运行错误', error && error.stack ? error.stack : String(error));
+      // 【FIX_DISK_SPACE_GUARD】磁盘满(ENOSPC)时弹人话提示，替代原始堆栈（客户看不懂堆栈，只会以为"程序坏了"）
+      const isDiskFull = FIX_DISK_SPACE_GUARD && error && (
+        error.code === 'ENOSPC' || /ENOSPC|no space left/i.test(String(error.message || error))
+      );
+      if (isDiskFull) {
+        dialog.showErrorBox(
+          '磁盘空间已满',
+          '电脑磁盘空间已满，程序无法继续运行，即将退出。\n\n' +
+          '请先清理磁盘空间（特别是 C 盘），再重新打开程序：\n' +
+          '1. Windows 设置 → 系统 → 存储 → 临时文件 → 删除\n' +
+          '2. 或右键 C 盘 → 属性 → 磁盘清理\n\n' +
+          '磁盘空间不足时程序将无法启动，清理后即可恢复正常。'
+        );
+      } else {
+        dialog.showErrorBox('运行错误', error && error.stack ? error.stack : String(error));
+      }
     } catch (_) {
       // ignore dialog failure
     }
@@ -5186,6 +5205,127 @@ function cleanupPortableRuntimeCaches(baseDir) {
     } catch (err) {
       console.warn('[Portable Mode] ⚠️ 清理运行缓存失败:', targetPath, err && err.message ? err.message : err);
     }
+  }
+}
+
+// 便携版历史版本解压残留清理。
+// electron-builder portable 每个版本解压到 %TEMP%\zhcloud-ops-assistant-portable-<版本> 且从不回收，
+// 每个 ~500MB，多版本累积可吃满 C 盘 → 写盘 ENOSPC 闪退，且下次启动解压失败导致"exe 再也打不开"。
+// 安全策略：当前版本目录不动；先 renameSync 探测占用（Windows 上目录树内有被打开的文件时 rename 必失败），
+// rename 成功才真正删除，避免误删并行运行中的其他版本实例。
+function cleanupStalePortableUnpackDirs() {
+  try {
+    const tempDir = os.tmpdir();
+    const currentVersionDirName = `zhcloud-ops-assistant-portable-${APP_VERSION}`.toLowerCase();
+    // realpathSync 展开 8.3 短路径（如 ADMINI~1），保证与 readdir 返回的长名可比
+    let currentUnpackDirName = '';
+    try {
+      currentUnpackDirName = path.basename(fs.realpathSync(path.dirname(process.execPath))).toLowerCase();
+    } catch (_) {
+      currentUnpackDirName = path.basename(path.dirname(process.execPath)).toLowerCase();
+    }
+
+    const entries = fs.readdirSync(tempDir, { withFileTypes: true });
+    let cleanedCount = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const nameLower = entry.name.toLowerCase();
+      if (!nameLower.startsWith('zhcloud-ops-assistant-portable-')) continue;
+      // 双保险排除当前运行版本：按版本号拼名 + 按 execPath 实际目录名
+      if (nameLower === currentVersionDirName || nameLower === currentUnpackDirName) continue;
+
+      const targetPath = path.join(tempDir, entry.name);
+      const probePath = `${targetPath}.stale-${Date.now()}`;
+      try {
+        fs.renameSync(targetPath, probePath);
+      } catch (_) {
+        console.warn('[Portable Cleanup] ⚠️ 旧版本目录疑似被占用，跳过:', targetPath);
+        continue;
+      }
+      try {
+        fs.rmSync(probePath, { recursive: true, force: true });
+        cleanedCount++;
+        console.log('[Portable Cleanup] 🧹 已清理旧版本解压残留:', targetPath);
+      } catch (err) {
+        // 删除中途失败：改回原名，留待下次启动再清（.stale- 后缀名仍匹配前缀，也能被再次扫到）
+        try { fs.renameSync(probePath, targetPath); } catch (_) {}
+        console.warn('[Portable Cleanup] ⚠️ 清理失败:', targetPath, err && err.message ? err.message : err);
+      }
+    }
+    if (cleanedCount > 0) {
+      console.log(`[Portable Cleanup] ✅ 共清理 ${cleanedCount} 个旧版本解压残留`);
+    } else {
+      console.log('[Portable Cleanup] 无旧版本解压残留需要清理');
+    }
+  } catch (err) {
+    console.warn('[Portable Cleanup] ⚠️ 扫描 Temp 目录失败:', err && err.message ? err.message : err);
+  }
+}
+
+// 查询指定盘符剩余空间（MB）。Node 16 无 fs.statfs，走 wmic（Win10 内置），失败回退 PowerShell。
+// 查不到返回 null，绝不抛错。
+function getDriveFreeSpaceMB(driveLetter) {
+  return new Promise((resolve) => {
+    try {
+      const { exec } = require('child_process');
+      exec(`wmic logicaldisk where "DeviceID='${driveLetter}:'" get FreeSpace /value`, { windowsHide: true, timeout: 10000 }, (err, stdout) => {
+        if (!err && stdout) {
+          const match = String(stdout).match(/FreeSpace=(\d+)/i);
+          if (match) {
+            resolve(Math.floor(Number(match[1]) / (1024 * 1024)));
+            return;
+          }
+        }
+        exec(`powershell -NoProfile -Command "(Get-PSDrive -Name ${driveLetter}).Free"`, { windowsHide: true, timeout: 15000 }, (err2, stdout2) => {
+          if (!err2 && stdout2) {
+            const value = Number(String(stdout2).trim());
+            if (Number.isFinite(value) && value >= 0) {
+              resolve(Math.floor(value / (1024 * 1024)));
+              return;
+            }
+          }
+          resolve(null);
+        });
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+// 启动时磁盘剩余空间检测：Temp 盘（便携版解压/运行）与 userData 盘（cookies/global-storage 写入）
+// 低于阈值弹窗警告，提前拦住"发着发着 ENOSPC 闪退"的事故链
+const DISK_SPACE_WARN_THRESHOLD_MB = 500;
+async function checkStartupDiskSpace() {
+  if (process.platform !== 'win32') return;
+  try {
+    const drives = new Set();
+    const tempDrive = (os.tmpdir().match(/^([a-zA-Z]):/) || [])[1];
+    const dataDrive = (app.getPath('userData').match(/^([a-zA-Z]):/) || [])[1];
+    if (tempDrive) drives.add(tempDrive.toUpperCase());
+    if (dataDrive) drives.add(dataDrive.toUpperCase());
+
+    const lowDrives = [];
+    for (const drive of drives) {
+      const freeMB = await getDriveFreeSpaceMB(drive);
+      console.log(`[Disk Guard] ${drive} 盘剩余空间: ${freeMB === null ? '未知' : freeMB + 'MB'}`);
+      if (freeMB !== null && freeMB < DISK_SPACE_WARN_THRESHOLD_MB) {
+        lowDrives.push({ drive, freeMB });
+      }
+    }
+    if (lowDrives.length > 0) {
+      const detail = lowDrives.map(item => `${item.drive} 盘仅剩 ${item.freeMB}MB`).join('，');
+      dialog.showMessageBox({
+        type: 'warning',
+        title: '磁盘空间不足',
+        message: '磁盘空间不足，可能导致程序闪退或数据无法保存',
+        detail: `${detail}。\n\n请尽快清理磁盘空间（Windows 设置 → 系统 → 存储 → 临时文件），否则发布过程中可能出现闪退、登录状态丢失、下次打不开程序等问题。`,
+        buttons: ['我知道了'],
+        noLink: true
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('[Disk Guard] ⚠️ 磁盘空间检测失败:', err && err.message ? err.message : err);
   }
 }
 
@@ -10300,7 +10440,7 @@ app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1（判死后清空窗口session死cookie+刷新登录页；搜狐补服务端探测同款防护；搜狐授权身份绑定放行最近授权预热）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1（磁盘满防护：Temp旧版本残留清理+启动空间检测+ENOSPC人话提示）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -10336,6 +10476,18 @@ app.whenReady().then(async () => {
 
   // 启动后检查更新（延迟执行，避免影响启动速度）
   scheduleUpdateCheck();
+
+  // 【FIX_DISK_SPACE_GUARD】磁盘满防护：延迟执行避开启动 IO 高峰
+  if (FIX_DISK_SPACE_GUARD && isProduction) {
+    // 磁盘剩余空间检测（8秒后，窗口已就绪，警告弹窗不打断启动）
+    setTimeout(() => {
+      checkStartupDiskSpace();
+    }, 8000);
+    // 清理 Temp 旧版本便携解压残留（15秒后，纯后台 IO）
+    setTimeout(() => {
+      cleanupStalePortableUnpackDirs();
+    }, 15000);
+  }
 
   // 注册全局快捷键：只打开公共头部（主窗口）的 DevTools (Ctrl+Shift+F11)
   globalShortcut.register('CommandOrControl+Shift+F11', () => {
