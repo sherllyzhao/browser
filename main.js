@@ -13,6 +13,16 @@ const APP_VERSION = app.getVersion();
 // 包含：①启动清理Temp旧版本解压残留 ②启动检测磁盘剩余空间告警 ③ENOSPC崩溃弹人话提示
 // 生产出问题改 false 重打包即可整体降级
 const FIX_DISK_SPACE_GUARD = true;
+// 【特性开关】2026-07-24 版本升级自动清理：新版本首次运行时，一次性清掉旧版留下的日志/缓存等垃圾数据
+// 白名单删除制：只删已知的日志与缓存目录，global-storage.json（自己平台登录）和
+// Partitions 里的 Cookies/Local Storage/IndexedDB（第三方平台登录）绝对不动
+// 生产出问题改 false 重打包即可整体降级
+const FIX_VERSION_UPGRADE_CLEANUP = true;
+// 【特性开关】2026-07-24 自定义数据目录：Ctrl+Alt+P 选择新目录，自动迁移旧数据后重启生效
+// 指针文件 data-path-config.json 固定放在默认数据目录，启动最早期读取并 setPath('userData')
+// 自定义目录不可用（U盘拔了/被删）时自动回退默认目录，绝不让应用起不来
+// 生产出问题改 false 重打包即可整体降级（回退到默认目录）
+const FIX_CUSTOM_DATA_PATH = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -3949,16 +3959,23 @@ function buildWindowContext(targetUrl, options = {}) {
   const provided = options.windowContext && typeof options.windowContext === 'object'
     ? options.windowContext
     : {};
+  const purpose = normalizeContextPurpose(options);
+  const platform = provided.platform || options.platform || options.publishData?.platform || '';
+  const normalizedPlatform = normalizePlatformName(platform);
+  // 搜狐授权窗口没有 publishData，但它同样需要防止把 JS/CSS 响应当成主文档显示。
+  // 只对明确的 sohuhao + auth 上下文开启，避免改变其他平台授权窗口行为。
+  const isSohuhaoAuthContext = purpose === 'auth' && normalizedPlatform === 'sohuhao';
 
   return {
-    purpose: normalizeContextPurpose(options),
-    platform: provided.platform || options.platform || options.publishData?.platform || '',
+    purpose,
+    platform,
     accountId: normalizeAccountIdValue(provided.accountId || options.accountId || ''),
     contentType: provided.contentType || options.publishData?.contentType || '',
     expectedPageUrl: provided.expectedPageUrl || targetUrl,
     safeOrigin: provided.safeOrigin || baseInfo.origin || '',
     bootstrapUrl: provided.bootstrapUrl || (baseInfo.origin ? `${baseInfo.origin}/` : ''),
-    guardResourceUrls: provided.guardResourceUrls !== false && !!options.publishData,
+    guardResourceUrls: provided.guardResourceUrls !== false
+      && (!!options.publishData || isSohuhaoAuthContext),
     bootstrapInProgress: false,
     guardRedirectInFlight: false,
     guardRedirectCount: 0,
@@ -4718,6 +4735,13 @@ async function inspectSourceTextDocument(webContents) {
           /#__browser_common_header__/i,
           /--header-height\\s*:/i
         ];
+        const jsPatterns = [
+          /\\b(?:window|globalThis)\\.[A-Za-z_$][\\w$]*\\s*=\\s*/i,
+          /\\b(?:const|let|var|function)\\s+[A-Za-z_$][\\w$]*(?:\\s*=|\\s*\\()/i,
+          /\\b(?:document|window|console)\\.(?:querySelector|addEventListener|performance|location|body|createElement)\\b/i,
+          /=>\\s*(?:\\{|[A-Za-z_$][\\w$]*)/i,
+          /\\b(?:return|throw|new)\\s+[A-Za-z_$][\\w$]*\\b/i
+        ];
         const jsonMarkers = [
           '"userAgent"',
           '"appViewConfig"',
@@ -4728,18 +4752,35 @@ async function inspectSourceTextDocument(webContents) {
           '"ctx"',
           '"register"'
         ];
+        const contentType = String(document.contentType || '').trim().toLowerCase();
+        const textualContentTypes = new Set([
+          'text/plain',
+          'text/css',
+          'text/javascript',
+          'application/javascript',
+          'application/x-javascript',
+          'application/octet-stream',
+          'binary/octet-stream'
+        ]);
         const cssScore = cssPatterns.filter((pattern) => pattern.test(bodyText)).length;
+        const jsScore = jsPatterns.filter((pattern) => pattern.test(bodyText)).length;
         const jsonScore = jsonMarkers.filter((pattern) => bodyText.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyText) || /^"[^"]+"\\s*:/.test(bodyText);
         const compactTextDocument = body.children.length <= 2 && visibleElementCount <= 3;
         const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyText) && cssScore >= 2;
+        const isTextualDocumentType = textualContentTypes.has(contentType);
         const isCssSource = compactTextDocument && (cssScore >= 4 || hasBrowserHeaderCss);
+        const isJavaScriptSource = compactTextDocument
+          && (jsScore >= 3 || (isTextualDocumentType && jsScore >= 2));
         const isJsonSource = compactTextDocument && bodyText.length > 800 && startsLikeJson && jsonScore >= 3;
-
         return {
-          isSourceTextDocument: isCssSource || isJsonSource,
-          reason: isCssSource ? 'css-source-text' : (isJsonSource ? 'json-source-text' : 'normal'),
+          isSourceTextDocument: isCssSource || isJavaScriptSource || isJsonSource,
+          reason: isCssSource
+            ? 'css-source-text'
+            : (isJavaScriptSource ? 'javascript-source-text' : (isJsonSource ? 'json-source-text' : 'normal')),
+          contentType,
           cssScore,
+          jsScore,
           jsonScore,
           visibleElementCount,
           childCount: body.children.length,
@@ -4763,8 +4804,24 @@ async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unk
     return { redirected: false };
   }
 
-  const context = windowContextMap.get(targetWindow.id);
-  if (!context || !context.guardResourceUrls || context.bootstrapInProgress || !currentURL || currentURL === 'about:blank') {
+  const storedContext = windowContextMap.get(targetWindow.id) || null;
+  const context = inferSohuhaoAuthWindowContext(targetWindow.id, currentURL, storedContext) || storedContext;
+  if (context && context !== storedContext) {
+    windowContextMap.set(targetWindow.id, context);
+  }
+  const isSohuhaoAuthContext = normalizePlatformName(context?.platform) === 'sohuhao'
+    && context?.purpose === 'auth';
+  if (
+    !context
+    || (!context.guardResourceUrls && !isSohuhaoAuthContext)
+    || context.bootstrapInProgress
+    || !currentURL
+    || currentURL === 'about:blank'
+  ) {
+    return { redirected: false };
+  }
+  // 登录页是用户扫码/登录的正常页面，源码检测只处理误把资源响应当主文档的情况。
+  if (isSohuhaoAuthContext && isSohuhaoLoginUrl(currentURL)) {
     return { redirected: false };
   }
   const matchedExpectedPage = matchesExpectedPage(currentURL, context.expectedPageUrl);
@@ -4780,23 +4837,38 @@ async function maybeRecoverPublishWindow(targetWindow, currentURL, reason = 'unk
   if (context.guardRedirectInFlight) {
     return { redirected: true, deduped: true };
   }
-  if ((context.guardRedirectCount || 0) >= 3) {
-    console.warn(`[Publish Window Guard] ⚠️ 资源页恢复已达到上限，停止自动回跳: windowId=${targetWindow.id}, url=${currentURL}`);
+  const maxRedirectCount = isSohuhaoAuthContext ? 1 : 3;
+  if ((context.guardRedirectCount || 0) >= maxRedirectCount) {
+    console.warn(`[Publish Window Guard] ⚠️ 资源页恢复已达到上限，停止自动回跳: windowId=${targetWindow.id}, max=${maxRedirectCount}, url=${currentURL}`);
     return { redirected: false, limitReached: true };
   }
-
   context.guardRedirectInFlight = true;
   context.guardRedirectCount = (context.guardRedirectCount || 0) + 1;
-  console.warn(`[Publish Window Guard] ⚠️ 检测到资源/源码页异常: windowId=${targetWindow.id}, reason=${reason}, url=${currentURL}, state=${sourceTextState.reason}`);
+  console.warn('[Publish Window Guard] ⚠️ 检测到资源/源码页异常:', {
+    windowId: targetWindow.id,
+    platform: normalizePlatformName(context.platform),
+    purpose: context.purpose,
+    reason,
+    url: currentURL,
+    documentContentType: sourceTextState.contentType || '',
+    sourceState: sourceTextState.reason || ''
+  });
   const dumpPath = await captureWindowDebugDump(targetWindow, reason, currentURL);
   if (dumpPath) {
     console.warn(`[Publish Window Guard] 调试快照已写入: ${dumpPath}`);
   }
 
+  const recoveryTargetUrl = isSohuhaoAuthContext
+    ? normalizeSohuhaoAuthEntryUrl(
+      context.expectedPageUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+      { platform: 'sohuhao', windowContext: context }
+    )
+    : context.expectedPageUrl;
   try {
-    await targetWindow.webContents.loadURL(context.expectedPageUrl);
+    console.warn(`[Publish Window Guard] 🔁 回到${isSohuhaoAuthContext ? '搜狐授权入口' : '目标发布页'}: ${recoveryTargetUrl}`);
+    await targetWindow.webContents.loadURL(recoveryTargetUrl);
   } catch (error) {
-    console.error('[Publish Window Guard] ❌ 回跳发布页失败:', error.message);
+    console.error('[Publish Window Guard] ❌ 回跳目标页失败:', error.message);
   } finally {
     setTimeout(() => {
       const latest = windowContextMap.get(targetWindow.id);
@@ -5329,6 +5401,125 @@ async function checkStartupDiskSpace() {
   }
 }
 
+// 【FIX_VERSION_UPGRADE_CLEANUP】版本升级后一次性清理旧版数据（日志/缓存），登录信息全部保留。
+// 触发：userData 下 .last-run-version 标记与当前 APP_VERSION 不一致（含首次无标记）。
+// 时机：必须在 whenReady 打开 app.log 写入流之前调用，否则日志文件被占用删不掉。
+// 安全：白名单删除制——只删列出来的日志/缓存路径；global-storage.json、Preferences、
+//       Partitions\<分区>\Network(Cookies)、Local Storage、Session Storage、IndexedDB、
+//       databases、WebStorage、File System 等承载登录态的数据一律不碰。
+const VERSION_CLEANUP_MARKER_FILE = '.last-run-version';
+function cleanupOldVersionDataOnUpgrade() {
+  try {
+    const userDataDir = app.getPath('userData');
+    const markerPath = path.join(userDataDir, VERSION_CLEANUP_MARKER_FILE);
+    let lastVersion = '';
+    try { lastVersion = fs.readFileSync(markerPath, 'utf8').trim(); } catch (_) {}
+    if (lastVersion === APP_VERSION) {
+      return; // 同版本重复启动不清理，避免每次开机都丢日志
+    }
+
+    console.log(`[Upgrade Cleanup] 检测到版本变化: ${lastVersion || '(无记录)'} → ${APP_VERSION}，开始清理旧版日志与缓存`);
+    let cleanedCount = 0;
+
+    const removeTarget = (relativePath) => {
+      const targetPath = path.resolve(userDataDir, relativePath);
+      // 防御：拼出来的路径必须仍在 userData 内，防止相对路径逃逸误删
+      if (!targetPath.startsWith(`${path.resolve(userDataDir)}${path.sep}`)) return;
+      try {
+        if (fs.existsSync(targetPath)) {
+          fs.rmSync(targetPath, { recursive: true, force: true });
+          cleanedCount++;
+          console.log('[Upgrade Cleanup] 🧹 已清理:', relativePath);
+        }
+      } catch (err) {
+        console.warn('[Upgrade Cleanup] ⚠️ 清理失败(跳过):', relativePath, err && err.message ? err.message : err);
+      }
+    };
+
+    // ① userData 根目录：旧日志 + 全局缓存/崩溃转储
+    const rootTargets = [
+      'app.log', 'app.log.1',          // console 重定向日志（新流尚未打开，此刻可安全删除）
+      'logs',                           // session-diagnostic.log 等诊断日志目录
+      'Cache', 'Code Cache', 'GPUCache', 'DawnCache',
+      'ShaderCache', 'GrShaderCache',
+      'blob_storage', 'VideoDecodeStats',
+      'Crashpad', 'Crash Reports'
+    ];
+    rootTargets.forEach(removeTarget);
+
+    // ② 每个 session 分区内：只清缓存类子目录，登录数据（Network/Local Storage/IndexedDB 等）不动
+    const partitionCacheDirs = [
+      'Cache', 'Code Cache', 'GPUCache', 'DawnCache',
+      'blob_storage', 'VideoDecodeStats',
+      path.join('Service Worker', 'CacheStorage'),  // SW 缓存可安全重建，不含登录态
+      path.join('Service Worker', 'ScriptCache')
+    ];
+    const partitionsRoot = path.join(userDataDir, 'Partitions');
+    try {
+      const partitionEntries = fs.readdirSync(partitionsRoot, { withFileTypes: true });
+      for (const entry of partitionEntries) {
+        if (!entry.isDirectory()) continue;
+        for (const sub of partitionCacheDirs) {
+          removeTarget(path.join('Partitions', entry.name, sub));
+        }
+      }
+    } catch (_) {
+      // Partitions 不存在（全新安装）属正常
+    }
+
+    try {
+      fs.writeFileSync(markerPath, APP_VERSION, 'utf8');
+    } catch (markerErr) {
+      console.warn('[Upgrade Cleanup] ⚠️ 版本标记写入失败(下次启动会重跑清理):', markerErr && markerErr.message ? markerErr.message : markerErr);
+    }
+    console.log(`[Upgrade Cleanup] ✅ 清理完成，共处理 ${cleanedCount} 项，登录信息未受影响`);
+  } catch (err) {
+    console.warn('[Upgrade Cleanup] ⚠️ 清理流程异常(不影响启动):', err && err.message ? err.message : err);
+  }
+}
+
+// ============ 自定义数据目录（FIX_CUSTOM_DATA_PATH） ============
+// 指针文件固定放在【默认】数据目录下，内容: { "customDataPath": "E:\\运营助手数据" }
+// 为什么用指针文件：setPath('userData') 必须在启动最早期执行，此时还读不到新目录里的任何配置，
+// 只能在固定的默认位置留一个"路标"
+const DATA_PATH_CONFIG_FILE = 'data-path-config.json';
+
+function getDataPathConfigFile(defaultDataDir) {
+  return path.join(defaultDataDir, DATA_PATH_CONFIG_FILE);
+}
+
+// 读取指针文件并校验自定义目录可用性；任何异常都回退默认目录，保证应用一定能起来
+function resolveCustomDataDir(defaultDataDir) {
+  try {
+    const configPath = getDataPathConfigFile(defaultDataDir);
+    if (!fs.existsSync(configPath)) return defaultDataDir;
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const customPath = config && typeof config.customDataPath === 'string' ? config.customDataPath.trim() : '';
+    if (!customPath || !path.isAbsolute(customPath)) return defaultDataDir;
+    // 目录必须存在且可写（自定义盘可能是被拔掉的U盘/被删的目录）
+    if (!fs.existsSync(customPath)) {
+      console.warn('[Custom Data Path] ⚠️ 自定义数据目录不存在，回退默认目录:', customPath);
+      return defaultDataDir;
+    }
+    const probeFile = path.join(customPath, `.write-probe-${process.pid}`);
+    try {
+      fs.writeFileSync(probeFile, 'probe');
+      fs.unlinkSync(probeFile);
+    } catch (probeErr) {
+      console.warn('[Custom Data Path] ⚠️ 自定义数据目录不可写，回退默认目录:', customPath, probeErr && probeErr.message);
+      return defaultDataDir;
+    }
+    console.log('[Custom Data Path] ✅ 使用自定义数据目录:', customPath);
+    return customPath;
+  } catch (err) {
+    console.warn('[Custom Data Path] ⚠️ 指针文件读取异常，回退默认目录:', err && err.message ? err.message : err);
+    return defaultDataDir;
+  }
+}
+
+// 记录默认数据目录（指针文件读写都基于它，与当前是否启用自定义目录无关）
+let defaultDataDirForConfig = null;
+
 // 设置用户数据路径
 if (isProduction) {
   if (isPortable) {
@@ -5346,15 +5537,29 @@ if (isProduction) {
       }
     }
 
-    app.setPath('userData', portableDataPath);
+    defaultDataDirForConfig = portableDataPath;
+    const effectiveDataPath = FIX_CUSTOM_DATA_PATH ? resolveCustomDataDir(portableDataPath) : portableDataPath;
+    app.setPath('userData', effectiveDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
-    console.log('[Portable Mode] 数据存储在固定位置:', portableDataPath);
+    console.log('[Portable Mode] 数据存储在固定位置:', effectiveDataPath);
     if (shouldDisableHardwareAcceleration || shouldUseRendererLaunchCompatibility) {
-      cleanupPortableRuntimeCaches(portableDataPath);
+      cleanupPortableRuntimeCaches(effectiveDataPath);
     }
   } else {
-    // 安装版：使用系统默认路径
-    console.log('[Installed Mode] 使用系统 AppData 目录:', app.getPath('userData'));
+    // 安装版：默认使用系统 AppData 目录，指针文件存在时切到自定义目录
+    defaultDataDirForConfig = app.getPath('userData');
+    if (FIX_CUSTOM_DATA_PATH) {
+      const effectiveDataPath = resolveCustomDataDir(defaultDataDirForConfig);
+      if (effectiveDataPath !== defaultDataDirForConfig) {
+        app.setPath('userData', effectiveDataPath);
+      }
+    }
+    console.log('[Installed Mode] 使用数据目录:', app.getPath('userData'));
+  }
+
+  // 【FIX_VERSION_UPGRADE_CLEANUP】版本升级后清理旧版日志/缓存（必须在 whenReady 打开 app.log 之前执行）
+  if (FIX_VERSION_UPGRADE_CLEANUP) {
+    cleanupOldVersionDataOnUpgrade();
   }
 }
 
@@ -10440,7 +10645,7 @@ app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1（磁盘满防护：Temp旧版本残留清理+启动空间检测+ENOSPC人话提示）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口，登录信息保留）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -10511,10 +10716,9 @@ app.whenReady().then(async () => {
     }
   });
 
-  // 注册全局快捷键后门清除指定域名的 Cookies (Ctrl+Alt+C)
-  console.log('[Main] 尝试注册清除 Cookies 快捷键: Ctrl+Alt+C');
-  const registerResult = globalShortcut.register('CommandOrControl+Alt+C', safeAsyncHandler('Clear Cookies shortcut', async () => {
-    console.log('[Clear Cookies] ========== 后门快捷键触发 ==========');
+  // 清除 Cookies 流程（原 Ctrl+Alt+C 快捷键后门，现额外由用户菜单"清除登录缓存"入口调用）
+  async function runClearCookiesFlow() {
+    console.log('[Clear Cookies] ========== 触发清除登录缓存 ==========');
 
     // 使用 Electron 的对话框让用户输入域名
     const { dialog } = require('electron');
@@ -10524,7 +10728,7 @@ app.whenReady().then(async () => {
       type: 'question',
       buttons: ['取消', '清除所有登录状态', '清除指定域名'],
       defaultId: 2,
-      title: '清除 Cookies',
+      title: '清除登录缓存',
       message: '选择要清除的范围：',
       detail: '清除所有：删除所有网站的登录状态\n清除指定域名：删除特定网站的登录状态（如：douyin.com）'
     });
@@ -10769,7 +10973,11 @@ app.whenReady().then(async () => {
         console.log('[Clear Cookies] 输入窗口已关闭');
       });
     }
-  }));
+  }
+
+  // 注册全局快捷键后门清除指定域名的 Cookies (Ctrl+Alt+C)
+  console.log('[Main] 尝试注册清除 Cookies 快捷键: Ctrl+Alt+C');
+  const registerResult = globalShortcut.register('CommandOrControl+Alt+C', safeAsyncHandler('Clear Cookies shortcut', runClearCookiesFlow));
 
   if (registerResult) {
     console.log('[Main] ✅ 清除 Cookies 快捷键注册成功 (Ctrl+Alt+C)');
@@ -10922,6 +11130,139 @@ del "%~f0"
     console.log('[Main] ✅ 清除数据目录快捷键注册成功 (Ctrl+Alt+D)');
   } else {
     console.error('[Main] ❌ 清除数据目录快捷键注册失败，可能被占用');
+  }
+
+  // 修改数据目录流程（原 Ctrl+Alt+P 快捷键后门，现额外由用户菜单"修改数据目录"入口调用）
+  async function runChangeDataPathFlow() {
+    const currentDataDir = app.getPath('userData');
+    const defaultDir = defaultDataDirForConfig || currentDataDir;
+    const configPath = getDataPathConfigFile(defaultDir);
+    const isUsingCustom = path.resolve(currentDataDir) !== path.resolve(defaultDir);
+
+    // 1. 入口对话框：说明现状，提供操作选项
+    const entryChoice = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: '修改数据目录',
+      message: '修改缓存数据的存放位置',
+      detail: `当前数据目录：\n${currentDataDir}\n\n默认数据目录：\n${defaultDir}\n\n选择新目录后会自动把现有数据（含登录信息）复制过去，旧目录保留不删除，重启后生效。`,
+      buttons: isUsingCustom ? ['选择新目录', '恢复默认位置', '取消'] : ['选择新目录', '取消'],
+      cancelId: isUsingCustom ? 2 : 1,
+    });
+
+    // 恢复默认位置：删掉指针文件即可
+    if (isUsingCustom && entryChoice.response === 1) {
+      try { fs.unlinkSync(configPath); } catch (_) {}
+      console.log('[Custom Data Path] 已恢复默认数据目录（指针文件已删除）');
+      const restartChoice = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: '已恢复默认位置',
+        message: '数据目录已恢复为默认位置，重启后生效',
+        detail: `默认目录：\n${defaultDir}\n\n（之前自定义目录里的数据仍保留在原处，可手动删除）`,
+        buttons: ['立即重启', '稍后手动重启'],
+        cancelId: 1,
+      });
+      if (restartChoice.response === 0) { app.relaunch(); app.quit(); }
+      return;
+    }
+    if (entryChoice.response !== 0) return; // 取消
+
+    // 2. 选择新目录
+    const pickResult = await dialog.showOpenDialog(mainWindow, {
+      title: '选择新的数据存放目录（建议选空目录，且选剩余空间充足的盘）',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (pickResult.canceled || !pickResult.filePaths || !pickResult.filePaths[0]) return;
+    const newDataDir = pickResult.filePaths[0];
+
+    // 3. 校验：不能是当前目录本身，也不能在当前目录内部（否则复制会无限递归）
+    const resolvedNew = path.resolve(newDataDir);
+    const resolvedCurrent = path.resolve(currentDataDir);
+    if (resolvedNew === resolvedCurrent || resolvedNew.startsWith(`${resolvedCurrent}${path.sep}`)) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error', title: '目录无效',
+        message: '新目录不能是当前数据目录或它的子目录',
+        detail: `当前数据目录：\n${resolvedCurrent}`, buttons: ['确定'],
+      });
+      return;
+    }
+    // 可写探测
+    try {
+      const probeFile = path.join(resolvedNew, `.write-probe-${process.pid}`);
+      fs.writeFileSync(probeFile, 'probe');
+      fs.unlinkSync(probeFile);
+    } catch (probeErr) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error', title: '目录不可写',
+        message: '选择的目录没有写入权限，请换一个目录',
+        detail: probeErr && probeErr.message ? probeErr.message : String(probeErr), buttons: ['确定'],
+      });
+      return;
+    }
+
+    // 4. 迁移：复制现有数据到新目录（跳过缓存/日志等垃圾，登录信息全部带走；旧目录保留）
+    console.log(`[Custom Data Path] 开始迁移数据: ${resolvedCurrent} → ${resolvedNew}`);
+    const fse = require('fs-extra');
+    const migrateSkipNames = new Set([
+      'Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'ShaderCache', 'GrShaderCache',
+      'blob_storage', 'VideoDecodeStats', 'Crashpad', 'Crash Reports', 'logs',
+      'app.log', 'app.log.1', DATA_PATH_CONFIG_FILE, 'debug-dumps',
+    ]);
+    try {
+      await fse.copy(resolvedCurrent, resolvedNew, {
+        overwrite: true,
+        filter: (src) => {
+          const rel = path.relative(resolvedCurrent, src);
+          if (!rel) return true;
+          const segments = rel.split(path.sep);
+          if (migrateSkipNames.has(segments[0])) return false;
+          if (segments[0] === 'Partitions' && segments.length >= 3 && migrateSkipNames.has(segments[2])) return false;
+          return true;
+        },
+      });
+    } catch (copyErr) {
+      console.error('[Custom Data Path] ❌ 数据迁移失败:', copyErr);
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error', title: '迁移失败',
+        message: '数据复制过程中出错，未做任何切换，仍使用原目录',
+        detail: `${copyErr && copyErr.message ? copyErr.message : copyErr}\n\n常见原因：目标盘空间不足、目录被占用。`,
+        buttons: ['确定'],
+      });
+      return;
+    }
+
+    // 5. 写指针文件（放默认目录），提示重启
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({ customDataPath: resolvedNew, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+    } catch (writeErr) {
+      console.error('[Custom Data Path] ❌ 指针文件写入失败:', writeErr);
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error', title: '设置失败',
+        message: '数据已复制，但配置写入失败，仍使用原目录',
+        detail: writeErr && writeErr.message ? writeErr.message : String(writeErr), buttons: ['确定'],
+      });
+      return;
+    }
+    console.log('[Custom Data Path] ✅ 指针文件已写入:', configPath, '→', resolvedNew);
+    const restartChoice = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '设置成功',
+      message: '数据目录已切换，重启后生效',
+      detail: `新数据目录：\n${resolvedNew}\n\n旧目录数据已保留在：\n${resolvedCurrent}\n（确认新位置正常后可手动删除旧目录里的数据）`,
+      buttons: ['立即重启', '稍后手动重启'],
+      cancelId: 1,
+    });
+    if (restartChoice.response === 0) { app.relaunch(); app.quit(); }
+  }
+
+  // 【FIX_CUSTOM_DATA_PATH】注册全局快捷键修改数据目录位置 (Ctrl+Alt+P)
+  if (FIX_CUSTOM_DATA_PATH) {
+    console.log('[Main] 尝试注册修改数据目录快捷键: Ctrl+Alt+P');
+    const registerDataPathResult = globalShortcut.register('CommandOrControl+Alt+P', safeAsyncHandler('Change Data Path shortcut', runChangeDataPathFlow));
+    if (registerDataPathResult) {
+      console.log('[Main] ✅ 修改数据目录快捷键注册成功 (Ctrl+Alt+P)');
+    } else {
+      console.error('[Main] ❌ 修改数据目录快捷键注册失败，可能被占用');
+    }
   }
 
   app.on('activate', function () {
@@ -12585,10 +12926,10 @@ ipcMain.handle('show-user-menu', async (event) => {
       });
     };
 
-    // 动态高度：每项 54，分隔线 9，退出 44，容器内边距 12，账号区最多显示 6 项
+    // 动态高度：每项 54，分隔线 9，工具项 41×2，退出 44，容器内边距 12，账号区最多显示 6 项
     const computeHeight = (count) => {
       const visible = Math.min(count, 6);
-      return visible * 54 + (count > 0 ? 9 : 0) + 44 + 12;
+      return visible * 54 + (count > 0 ? 9 : 0) + 41 * 2 + 9 + 44 + 12;
     };
 
     // 生成菜单 HTML
@@ -12634,6 +12975,9 @@ ipcMain.handle('show-user-menu', async (event) => {
             .acc-del { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #C0C4CC; flex-shrink: 0; font-size: 18px; line-height: 1; }
             .acc-del:hover { background: #FEF0F0; color: #F56C6C; }
             .divider { height: 1px; background: #F0F0F0; margin: 4px 8px; }
+            .tool-item { display: flex; align-items: center; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background 0.15s; font-size: 14px; color: #303133; gap: 8px; }
+            .tool-item:hover { background: #F5F7FA; }
+            .tool-item svg { width: 16px; height: 16px; }
             .menu-item { display: flex; align-items: center; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background 0.15s; font-size: 14px; color: #F56C6C; gap: 8px; }
             .menu-item:hover { background: #FEF0F0; }
             .menu-item svg { width: 16px; height: 16px; }
@@ -12642,6 +12986,21 @@ ipcMain.handle('show-user-menu', async (event) => {
         <body>
           <div class="menu">
             ${accountSection}
+            <div class="tool-item" data-action="clear-cookies">
+              <svg viewBox="0 0 1024 1024" fill="#555">
+                <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
+                <path d="M464 688a48 48 0 1 0 96 0 48 48 0 1 0-96 0zM480 256v272c0 17.7 14.3 32 32 32s32-14.3 32-32V256c0-17.7-14.3-32-32-32s-32 14.3-32 32z"/>
+              </svg>
+              <span>清除登录缓存</span>
+            </div>
+            <div class="tool-item" data-action="change-data-path">
+              <svg viewBox="0 0 1024 1024" fill="#555">
+                <path d="M832 64H192c-17.7 0-32 14.3-32 32v832c0 17.7 14.3 32 32 32h640c17.7 0 32-14.3 32-32V96c0-17.7-14.3-32-32-32zm-32 832H224V128h576v768z"/>
+                <path d="M608 384h-192c-17.7 0-32 14.3-32 32s14.3 32 32 32h192c17.7 0 32-14.3 32-32s-14.3-32-32-32zM608 576h-192c-17.7 0-32 14.3-32 32s14.3 32 32 32h192c17.7 0 32-14.3 32-32s-14.3-32-32-32z"/>
+              </svg>
+              <span>修改数据目录</span>
+            </div>
+            <div class="divider"></div>
             <div class="menu-item" data-action="logout">
               <svg viewBox="0 0 1024 1024" fill="#F56C6C">
                 <path d="M868.352 495.616l-160-160a32 32 0 0 0-45.248 45.248L761.376 479.136l-409.376 0a32 32 0 0 0 0 64l409.376 0-98.272 98.272a32 32 0 1 0 45.248 45.248l160-160a32 32 0 0 0 0-45.248z"/>
@@ -12697,6 +13056,36 @@ ipcMain.handle('show-user-menu', async (event) => {
       try {
         if (action === 'logout') {
           finish({ selected: true, action: 'logout' });
+          return;
+        }
+
+        // 清除登录缓存：先关菜单，再调起与 Ctrl+Alt+C 同一个流程
+        if (action === 'clear-cookies') {
+          acting = true;
+          if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+            userMenuWindow.close();
+            userMenuWindow = null;
+          }
+          finish({ selected: true, action: 'clear-cookies' });
+          try { await runClearCookiesFlow(); } catch (err) {
+            console.error('[User Menu] 清除登录缓存失败:', err);
+          }
+          return;
+        }
+
+        // 修改数据目录：先关菜单，再调起与 Ctrl+Alt+P 同一个流程
+        if (action === 'change-data-path') {
+          acting = true;
+          if (userMenuWindow && !userMenuWindow.isDestroyed()) {
+            userMenuWindow.close();
+            userMenuWindow = null;
+          }
+          finish({ selected: true, action: 'change-data-path' });
+          if (typeof FIX_CUSTOM_DATA_PATH !== 'undefined' && FIX_CUSTOM_DATA_PATH) {
+            try { await runChangeDataPathFlow(); } catch (err) {
+              console.error('[User Menu] 修改数据目录失败:', err);
+            }
+          }
           return;
         }
 
