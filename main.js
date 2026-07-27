@@ -23,6 +23,12 @@ const FIX_VERSION_UPGRADE_CLEANUP = true;
 // 自定义目录不可用（U盘拔了/被删）时自动回退默认目录，绝不让应用起不来
 // 生产出问题改 false 重打包即可整体降级（回退到默认目录）
 const FIX_CUSTOM_DATA_PATH = true;
+// 【特性开关】2026-07-27 首屏守卫僵尸恢复修复：守卫误判首屏未就绪时排队的恢复 loadURL（1200ms 裸 setTimeout），
+// 在守卫随后确认页面正常并结束后仍会执行，对刚渲染好的活跃页面强制导航 → 渲染进程 ACCESS_VIOLATION
+// 崩溃（退出码 -1073741819，2026-07-27 10:09 崩溃日志实锤）
+// 修法：恢复定时器句柄存入 startupLoadGuard.retryTimer，守卫结束/重开时一并撤销 + 回调内二次确认守卫仍在
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：恢复定时器不可取消）
+const FIX_STARTUP_GUARD_STALE_RETRY = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -5038,7 +5044,8 @@ let startupLoadGuard = {
   targetUrl: '',
   reloadCount: 0,
   startedAt: 0,
-  timer: null
+  timer: null,
+  retryTimer: null
 };
 
 let refreshLoadGuard = {
@@ -5756,6 +5763,12 @@ function clearStartupLoadGuardTimer() {
     clearTimeout(startupLoadGuard.timer);
     startupLoadGuard.timer = null;
   }
+  // 【FIX_STARTUP_GUARD_STALE_RETRY】守卫结束/重开时同步撤销已排队的恢复加载，
+  // 否则它会在页面正常渲染后仍强制 loadURL，打崩活跃渲染进程
+  if (FIX_STARTUP_GUARD_STALE_RETRY && startupLoadGuard.retryTimer) {
+    clearTimeout(startupLoadGuard.retryTimer);
+    startupLoadGuard.retryTimer = null;
+  }
 }
 
 function clearRefreshLoadGuardTimer() {
@@ -5830,7 +5843,8 @@ function beginStartupLoadGuard(targetUrl) {
     targetUrl,
     reloadCount: 0,
     startedAt: Date.now(),
-    timer: null
+    timer: null,
+    retryTimer: null
   };
   setBrowserLoadingState({ visible: true, text: '正在加载页面...' });
   console.log('[Startup Guard] ✅ 已开启首屏守卫:', targetUrl);
@@ -6051,7 +6065,18 @@ function retryStartupLoad(reason) {
   setBrowserLoadingState({ visible: true, text: retryText });
   console.warn(`[Startup Guard] ⚠️ ${reason}，准备第 ${startupLoadGuard.reloadCount} 次恢复: ${targetUrl}`);
 
-  setTimeout(() => {
+  const retryTimerHandle = setTimeout(() => {
+    // 【FIX_STARTUP_GUARD_STALE_RETRY】到点后先自摘句柄，再确认守卫仍在：
+    // 守卫已结束说明页面其实渲染好了，此时强制导航会打断活跃渲染进程（0xC0000005 崩溃）
+    if (FIX_STARTUP_GUARD_STALE_RETRY) {
+      if (startupLoadGuard.retryTimer === retryTimerHandle) {
+        startupLoadGuard.retryTimer = null;
+      }
+      if (!startupLoadGuard.active) {
+        console.log('[Startup Guard] ℹ️ 守卫已结束，撤销过期的恢复加载（页面已正常渲染，避免强制导航打崩渲染进程）');
+        return;
+      }
+    }
     if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return;
     const loadPromise = targetUrl.startsWith('file://')
       ? loadLocalPage(browserView.webContents, path.basename(targetUrl))
@@ -6060,6 +6085,9 @@ function retryStartupLoad(reason) {
       console.error('[Startup Guard] ❌ 恢复加载失败:', err);
     });
   }, 1200);
+  if (FIX_STARTUP_GUARD_STALE_RETRY) {
+    startupLoadGuard.retryTimer = retryTimerHandle;
+  }
 
   return true;
 }
@@ -10496,6 +10524,10 @@ console.log('[AntiDetection] ✅ 已禁用 AutomationControlled 特征');
 console.log(`[Compatibility] ✅ renderer 启动兼容参数: ${shouldUseRendererLaunchCompatibility ? '已启用（仅旧系统）' : '未启用'}`);
 console.log(`[Compatibility] ✅ 启动开关: ${startupCommandLineSwitches.length > 0 ? startupCommandLineSwitches.join(' ') : '-'}`);
 
+// 清除登录缓存/修改数据目录流程定义在 whenReady 回调内，用户菜单 handler 在模块顶层够不着，靠这两个引用桥接
+let runClearCookiesFlowRef = null;
+let runChangeDataPathFlowRef = null;
+
 app.whenReady().then(async () => {
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
   // 这会导致错误: "Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc"
@@ -10976,6 +11008,7 @@ app.whenReady().then(async () => {
   }
 
   // 注册全局快捷键后门清除指定域名的 Cookies (Ctrl+Alt+C)
+  runClearCookiesFlowRef = runClearCookiesFlow;
   console.log('[Main] 尝试注册清除 Cookies 快捷键: Ctrl+Alt+C');
   const registerResult = globalShortcut.register('CommandOrControl+Alt+C', safeAsyncHandler('Clear Cookies shortcut', runClearCookiesFlow));
 
@@ -11256,6 +11289,7 @@ del "%~f0"
 
   // 【FIX_CUSTOM_DATA_PATH】注册全局快捷键修改数据目录位置 (Ctrl+Alt+P)
   if (FIX_CUSTOM_DATA_PATH) {
+    runChangeDataPathFlowRef = runChangeDataPathFlow;
     console.log('[Main] 尝试注册修改数据目录快捷键: Ctrl+Alt+P');
     const registerDataPathResult = globalShortcut.register('CommandOrControl+Alt+P', safeAsyncHandler('Change Data Path shortcut', runChangeDataPathFlow));
     if (registerDataPathResult) {
@@ -13067,8 +13101,12 @@ ipcMain.handle('show-user-menu', async (event) => {
             userMenuWindow = null;
           }
           finish({ selected: true, action: 'clear-cookies' });
-          try { await runClearCookiesFlow(); } catch (err) {
-            console.error('[User Menu] 清除登录缓存失败:', err);
+          if (typeof runClearCookiesFlowRef === 'function') {
+            try { await runClearCookiesFlowRef(); } catch (err) {
+              console.error('[User Menu] 清除登录缓存失败:', err);
+            }
+          } else {
+            console.error('[User Menu] 清除登录缓存流程未初始化（runClearCookiesFlowRef 为空）');
           }
           return;
         }
@@ -13081,10 +13119,12 @@ ipcMain.handle('show-user-menu', async (event) => {
             userMenuWindow = null;
           }
           finish({ selected: true, action: 'change-data-path' });
-          if (typeof FIX_CUSTOM_DATA_PATH !== 'undefined' && FIX_CUSTOM_DATA_PATH) {
-            try { await runChangeDataPathFlow(); } catch (err) {
+          if (typeof runChangeDataPathFlowRef === 'function') {
+            try { await runChangeDataPathFlowRef(); } catch (err) {
               console.error('[User Menu] 修改数据目录失败:', err);
             }
+          } else {
+            console.error('[User Menu] 修改数据目录流程未初始化（runChangeDataPathFlowRef 为空或特性关闭）');
           }
           return;
         }
