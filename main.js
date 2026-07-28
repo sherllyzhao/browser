@@ -10677,7 +10677,8 @@ app.whenReady().then(async () => {
   console.log('=================================');
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口，登录信息保留）');
+  console.log(`[Build] 版本: v${APP_VERSION}`);
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复，登录信息保留）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
