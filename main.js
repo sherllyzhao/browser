@@ -29,6 +29,14 @@ const FIX_CUSTOM_DATA_PATH = true;
 // 修法：恢复定时器句柄存入 startupLoadGuard.retryTimer，守卫结束/重开时一并撤销 + 回调内二次确认守卫仍在
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：恢复定时器不可取消）
 const FIX_STARTUP_GUARD_STALE_RETRY = true;
+// 【特性开关】2026-07-28 第二实例半启动守卫：requestSingleInstanceLock 未拿到锁时 app.quit() 只是排队退出，
+// 不会拦住 whenReady 回调 —— 第二实例照样注册协议、初始化共享 session（persist:browserview）、创建窗口、
+// 加载 index.html，直到 quit 赶上来销毁窗口（客户 2026-07-28 08:41 UTC 日志实锤：3 个快捷键注册失败 +
+// index.html ERR_FAILED + webContents 已销毁）。期间两个进程并发读写同一数据目录（Cookies SQLite /
+// Local Storage LevelDB），是渲染进程 0xC0000005 崩溃的嫌疑来源之一
+// 修法：whenReady 回调开头检查 gotTheLock，未获锁直接 return 跳过全部初始化，让 quit 干净退出
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：第二实例半启动后被销毁）
+const FIX_SECOND_INSTANCE_INIT_GUARD = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -10529,6 +10537,13 @@ let runClearCookiesFlowRef = null;
 let runChangeDataPathFlowRef = null;
 
 app.whenReady().then(async () => {
+  // 第二实例守卫：未拿到单实例锁时 app.quit() 已排队，但 quit 不拦截本回调 ——
+  // 若不 return，第二实例会半启动（打开共享数据目录 + 创建窗口再被销毁），详见开关注释
+  if (FIX_SECOND_INSTANCE_INIT_GUARD && !gotTheLock) {
+    console.log('[Single Instance] whenReady 守卫：未获实例锁，跳过全部初始化，等待 quit 退出');
+    return;
+  }
+
   // ⚠️ 不要使用 app.setAsDefaultProtocolClient('bitbrowser')
   // 这会导致错误: "Unable to find Electron app at D:\浏览器\运营助手\bitbrowser\cc"
   // 原因: Windows 会将 bitbrowser://cc 的路径部分作为命令行参数传递给应用
@@ -10678,7 +10693,7 @@ app.whenReady().then(async () => {
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
   console.log(`[Build] 版本: v${APP_VERSION}`);
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复，登录信息保留）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫，登录信息保留）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
