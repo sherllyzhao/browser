@@ -1,6 +1,13 @@
 {
   "publish": {
-    "maxConcurrentWindows": 6
+    "maxConcurrentWindows": 6,
+    "platformThrottle": {
+      "zhihu": {
+        "maxConcurrentWindows": 2,
+        "minGapMs": 30000,
+        "maxGapMs": 90000
+      }
+    }
   },
   "platforms": {
     "souhuhao": {

@@ -24,6 +24,19 @@
     }
 
     // ===========================
+    // 🛡️ 知乎发布节奏配置
+    // ===========================
+    // 背景：知乎风控对「每篇发布耗时几乎一致」较敏感（原全流程约 10 秒且分布固定）。
+    // 这里把知乎的等待整体拉长并改为双向抖动，让耗时分布更自然。
+    // 仅作用于知乎发布页（profile 按页面 window 生效，其它平台发布页不受影响）。
+    if (typeof window.setDelayProfile === "function") {
+        window.setDelayProfile({ scale: 1.8, jitterRatio: 0.6, bidirectional: true });
+        console.log("[知乎发布] 🛡️ 已启用放缓的发布节奏");
+    } else {
+        console.warn("[知乎发布] ⚠️ setDelayProfile 不可用（common.js 版本较旧），沿用默认节奏");
+    }
+
+    // ===========================
     // 防止脚本重复注入
     // ===========================
     if (window.__ZH_SCRIPT_LOADED__) {

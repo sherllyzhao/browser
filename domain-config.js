@@ -291,7 +291,11 @@ const platformIdentityCookies = {
   sohuhao: ['passport', 'ppinf'],
   tengxunhao: ['userid', 'omgid', 'uin', 'p_uin'],
   xinlang: ['SUB'],
-  zhihu: ['d_c0']
+  // ⚠️ 必须用账号级凭证 z_c0，不能用 d_c0。
+  // d_c0 是知乎「设备指纹」（device client），同一台机器上所有账号共享同一个 d_c0，
+  // 用它做账号比对会把不同账号误判成「同账号」，导致换账号时不恢复后台登录态，
+  // 且会让多账号共享设备指纹。z_c0 才是随账号变化的登录凭证。
+  zhihu: ['z_c0']
 };
 
 // 平台登录凭证 Cookie 名称（用于判断登录状态）

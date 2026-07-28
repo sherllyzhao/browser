@@ -4356,12 +4356,45 @@ if (typeof window.uploadVideo === "function"
     };
 
     // 延迟执行（带随机抖动的 Promise 包装 setTimeout）
+    //
+    // 🛡️ 节奏缩放（默认 1，即所有平台维持原有行为，不受影响）
+    // 单个平台可通过 window.setDelayProfile({...}) 单独放缓节奏并加大抖动，
+    // 用于降低「每篇耗时几乎一致」这种机械特征（知乎风控对此较敏感）。
+    window.__delayProfile = window.__delayProfile || { scale: 1, jitterRatio: 0.35, bidirectional: false };
+
+    window.setDelayProfile = function (profile) {
+        const current = window.__delayProfile || {};
+        const scale = Number(profile && profile.scale);
+        const jitterRatio = Number(profile && profile.jitterRatio);
+        window.__delayProfile = {
+            scale: Number.isFinite(scale) && scale > 0 ? scale : (current.scale || 1),
+            jitterRatio: Number.isFinite(jitterRatio) && jitterRatio >= 0 ? jitterRatio : (current.jitterRatio ?? 0.35),
+            bidirectional: profile && typeof profile.bidirectional === "boolean"
+                ? profile.bidirectional
+                : !!current.bidirectional
+        };
+        console.log("[delay] 节奏配置已更新:", window.__delayProfile);
+        return window.__delayProfile;
+    };
+
     window.getRandomDelayMs = function (ms, jitterMs) {
-        const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+        const rawBaseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+        const profile = window.__delayProfile || { scale: 1, jitterRatio: 0.35, bidirectional: false };
+        const scale = Number.isFinite(Number(profile.scale)) && Number(profile.scale) > 0 ? Number(profile.scale) : 1;
+        const baseMs = Math.round(rawBaseMs * scale);
+
         const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
+        const jitterRatio = Number.isFinite(Number(profile.jitterRatio)) ? Number(profile.jitterRatio) : 0.35;
         const resolvedJitterMs = hasCustomJitter
             ? Math.max(0, Math.floor(Number(jitterMs)))
-            : Math.max(80, Math.round(baseMs * 0.35));
+            : Math.max(80, Math.round(baseMs * jitterRatio));
+
+        if (profile.bidirectional) {
+            // 双向抖动：在 base 上下浮动，避免「实际耗时永远 ≥ 基准值」这种固定分布形态
+            const offset = Math.floor(Math.random() * (resolvedJitterMs * 2 + 1)) - resolvedJitterMs;
+            // 保底 40% 基准值，防止关键步骤等待过短导致元素未就绪
+            return Math.max(Math.round(baseMs * 0.4), baseMs + offset);
+        }
         return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
     };
     window.delay = function (ms, jitterMs) {

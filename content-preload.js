@@ -1098,7 +1098,10 @@ const publishWindowScheduler = {
   activeJobs: new Map(),
   isLaunching: false,
   batchId: 0,
-  maxConcurrentWindows: DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS
+  maxConcurrentWindows: DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS,
+  // 平台级错峰配置与「上次开窗时间」记录（按平台名）
+  platformThrottle: {},
+  lastLaunchAtByPlatform: {}
 };
 
 function delay(ms) {
@@ -1120,6 +1123,57 @@ function resolveMaxConcurrentPublishWindows(platformConfig) {
     return Math.floor(value);
   }
   return DEFAULT_MAX_CONCURRENT_PUBLISH_WINDOWS;
+}
+
+// 🛡️ 平台账号发布错峰配置
+// 背景：多账号托管时，同平台多个账号在数秒内同时开窗发文（同 IP、同设备指纹），
+// 会被平台风控判定为「行为异常」并弹安全验证（知乎表现最明显）。
+// 策略：对风控敏感平台单独限制并发窗口数，并在同平台窗口之间插入随机间隔。
+// 远程配置可覆盖：platformConfig.publish.platformThrottle[平台名]
+const DEFAULT_PLATFORM_PUBLISH_THROTTLE = {
+  zhihu: { maxConcurrentWindows: 2, minGapMs: 30000, maxGapMs: 90000 }
+};
+
+function resolvePlatformThrottle(platformConfig, platformFullName) {
+  if (!platformFullName) return null;
+  const remote = platformConfig?.publish?.platformThrottle?.[platformFullName];
+  const fallback = DEFAULT_PLATFORM_PUBLISH_THROTTLE[platformFullName];
+  const merged = { ...(fallback || {}), ...(remote || {}) };
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+// 计算某个平台当前已占用的并发窗口数
+function countActiveJobsForPlatform(platformFullName) {
+  if (!platformFullName) return 0;
+  let count = 0;
+  for (const job of publishWindowScheduler.activeJobs.values()) {
+    if (job && job.platformFullName === platformFullName) {
+      count++;
+    }
+  }
+  return count;
+}
+
+// 该 job 是否因所属平台的并发上限而必须等待
+function isPlatformThrottled(job) {
+  const throttle = publishWindowScheduler.platformThrottle?.[job?.platformFullName];
+  const limit = Number(throttle?.maxConcurrentWindows);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return false;
+  }
+  return countActiveJobsForPlatform(job.platformFullName) >= limit;
+}
+
+// 同平台两次开窗之间的随机间隔（毫秒），无配置则返回 0
+function getPlatformLaunchGapMs(platformFullName) {
+  const throttle = publishWindowScheduler.platformThrottle?.[platformFullName];
+  const minGapMs = Number(throttle?.minGapMs);
+  const maxGapMs = Number(throttle?.maxGapMs);
+  if (!Number.isFinite(minGapMs) || minGapMs <= 0) {
+    return 0;
+  }
+  const upper = Number.isFinite(maxGapMs) && maxGapMs > minGapMs ? maxGapMs : minGapMs;
+  return Math.floor(minGapMs + Math.random() * (upper - minGapMs + 1));
 }
 
 function normalizePublishAccountId(value) {
@@ -1368,7 +1422,25 @@ async function launchQueuedPublishWindows() {
       publishWindowScheduler.activeJobs.size < publishWindowScheduler.maxConcurrentWindows &&
       publishWindowScheduler.pendingJobs.length > 0
     ) {
-      const job = publishWindowScheduler.pendingJobs.shift();
+      // 🛡️ 跳过因平台并发上限而暂不能开窗的任务，优先启动其它平台，避免整个队列被拖住
+      const readyIndex = publishWindowScheduler.pendingJobs.findIndex(item => !isPlatformThrottled(item));
+      if (readyIndex === -1) {
+        console.log('[BrowserAPI] ⏸️ 所有待启动任务均受平台并发限制，等待现有窗口关闭后继续');
+        break;
+      }
+      const job = publishWindowScheduler.pendingJobs.splice(readyIndex, 1)[0];
+
+      // 🛡️ 同平台两次开窗之间保持随机间隔，避免多账号瞬时并发触发风控
+      const gapMs = getPlatformLaunchGapMs(job.platformFullName);
+      if (gapMs > 0) {
+        const lastLaunchAt = publishWindowScheduler.lastLaunchAtByPlatform[job.platformFullName] || 0;
+        const waitMs = lastLaunchAt ? gapMs - (Date.now() - lastLaunchAt) : 0;
+        if (waitMs > 0) {
+          console.log(`[BrowserAPI] ⏳ ${job.platformFullName} 账号发布错峰，等待 ${Math.round(waitMs / 1000)} 秒后开窗`);
+          await delay(waitMs);
+        }
+      }
+
       console.log('[BrowserAPI] 📋 openOptions:', JSON.stringify(job.openOptions, null, 2));
       const result = await ipcRenderer.invoke('open-new-window', job.url, job.openOptions);
       if (!result.success) {
@@ -1377,6 +1449,7 @@ async function launchQueuedPublishWindows() {
       }
 
       const windowId = result.windowId;
+      publishWindowScheduler.lastLaunchAtByPlatform[job.platformFullName] = Date.now();
       publishWindowScheduler.activeJobs.set(windowId, {
         ...job,
         windowId
@@ -1425,7 +1498,7 @@ async function launchQueuedPublishWindows() {
 
   if (
     publishWindowScheduler.activeJobs.size < publishWindowScheduler.maxConcurrentWindows &&
-    publishWindowScheduler.pendingJobs.length > 0
+    publishWindowScheduler.pendingJobs.some(item => !isPlatformThrottled(item))
   ) {
     schedulePublishWindowLaunch();
     return;
@@ -1433,6 +1506,9 @@ async function launchQueuedPublishWindows() {
 
   if (publishWindowScheduler.pendingJobs.length === 0) {
     console.log('[BrowserAPI] ✅ 发布窗口待启动队列已清空，当前活跃窗口数:', publishWindowScheduler.activeJobs.size);
+  } else {
+    // 仍有任务在排队，但都受平台并发限制，等窗口关闭事件重新驱动调度
+    console.log(`[BrowserAPI] ⏸️ 剩余 ${publishWindowScheduler.pendingJobs.length} 个任务受平台并发限制，等待窗口关闭`);
   }
 }
 
@@ -1547,6 +1623,18 @@ contextBridge.exposeInMainWorld('browserAPI', {
         const platformConfig = await getRuntimePlatformConfig();
         const urlMap = buildPlatformPublishUrlMap(platformConfig);
         publishWindowScheduler.maxConcurrentWindows = resolveMaxConcurrentPublishWindows(platformConfig);
+        // 🛡️ 载入平台级错峰配置（远程可覆盖，缺省用本地兜底）
+        publishWindowScheduler.platformThrottle = {};
+        for (const name of new Set([
+          ...Object.keys(DEFAULT_PLATFORM_PUBLISH_THROTTLE),
+          ...Object.keys(platformConfig?.publish?.platformThrottle || {})
+        ])) {
+          const throttle = resolvePlatformThrottle(platformConfig, name);
+          if (throttle) {
+            publishWindowScheduler.platformThrottle[name] = throttle;
+          }
+        }
+        console.log('[BrowserAPI] 🛡️ 平台错峰配置:', publishWindowScheduler.platformThrottle);
         const jobs = [];
 
         for (let index = 0; index < dataArray.length; index++) {
