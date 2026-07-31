@@ -998,19 +998,6 @@
                 return;
             }
 
-            /* const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
-                method: 'GET',
-                credentials: 'include',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            })
-            const userInfoRes = await userInfoResult.json(); */
-            let userInfo = {};
-            /* if(userInfoRes.code === 1){
-                userInfo = userInfoRes.data;
-            } */
-
             setTimeout(async () => {
                 // 🔑 延迟窗口内页面可能被搜狐弹回登录页，真正开始填表前再确认一次
                 if (await stopIfLoginPage(dataObj, 'fillFormData-delayed')) {
