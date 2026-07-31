@@ -37,6 +37,19 @@ const FIX_STARTUP_GUARD_STALE_RETRY = true;
 // 修法：whenReady 回调开头检查 gotTheLock，未获锁直接 return 跳过全部初始化，让 quit 干净退出
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：第二实例半启动后被销毁）
 const FIX_SECOND_INSTANCE_INIT_GUARD = true;
+// 【特性开关】2026-07-31 内容管理连点开多窗：父页面「内容管理」按钮无防抖，浏览器端 openManagedChildWindow
+// 也无去重 —— 窗口要等目标页加载完才显示（最长干等 30 秒），用户以为没反应连点 N 下就开出 N 个窗口，
+// 第二次点击还会在 executeInSessionQueue 里排队等前一次 session 恢复，窗口一个接一个冒出来
+// 修法：非发布账号窗口（platform+accountId 且无 publishData 且非临时 session）按 platform|accountId|url 去重，
+// 创建中复用同一 promise（不重复建窗），已开窗直接 restore+focus 拉到前台；发布/授权窗口完全不受影响
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：每次点击都开新窗）
+const FIX_MANAGED_WINDOW_DEDUP = true;
+// 【特性开关】2026-07-31 内容管理点击后长时间无反馈：loading 提示窗只给发布流程（publishData），
+// 内容管理这类账号页点击后没有任何视觉反馈，直到目标页加载完成窗口才显示（重页面 10 秒+，兜底 30 秒）
+// 修法：非发布的账号 session 窗口也弹 loading 提示窗（复用发布 loading 窗，标题文案换成「正在打开页面」），
+// 点击瞬间就能看到提示，加载完成自动切换到真实窗口
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：内容管理无 loading 提示）
+const FIX_MANAGED_WINDOW_LOADING_HINT = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -5637,7 +5650,7 @@ function createPublishLoadingWindow(options = {}) {
   const loadingWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: '正在打开发布窗口',
+    title: options.loadingTitle || '正在打开发布窗口',
     show: false,
     center: true,
     autoHideMenuBar: true,
@@ -5655,6 +5668,10 @@ function createPublishLoadingWindow(options = {}) {
     platform: options.publishData?.platform || options.platform || '',
     contentType: options.publishData?.contentType || ''
   };
+  // 🎬 FIX_MANAGED_WINDOW_LOADING_HINT：查看类窗口（内容管理等）自定义标题文案，不传保持发布原文案
+  if (options.loadingTitle) {
+    query.title = options.loadingTitle;
+  }
   loadingWindow.loadFile(path.join(__dirname, PUBLISH_LOADING_PAGE), { query }).catch(err => {
     if (!loadingWindow.isDestroyed()) {
       console.warn('[Window Manager] 加载发布 loading 页失败:', err.message);
@@ -10693,7 +10710,7 @@ app.whenReady().then(async () => {
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
   console.log(`[Build] 版本: v${APP_VERSION}`);
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫，登录信息保留）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗，登录信息保留）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -13579,7 +13596,88 @@ async function waitForShipinhaoPublishVisualReady(targetWindow, timeoutMs = 1200
 // 统一的新窗口创建逻辑
 // options.useTemporarySession: true 时使用临时 session（不保存登录状态，用于授权页）
 // options.platform + options.accountId: 使用指定账号的持久化 session（多账号模式）
+// 🔒 FIX_MANAGED_WINDOW_DEDUP：非发布账号窗口去重注册表
+// key = platform|accountId|url，value = { window, promise }
+// 场景：父页面「内容管理」按钮连点 N 下开出 N 个窗口（窗口延迟显示期间用户以为没反应）
+const managedWindowDedupRegistry = new Map();
+
+function buildManagedWindowDedupKey(url, options = {}) {
+  if (!FIX_MANAGED_WINDOW_DEDUP) return null;
+  // 仅账号 session 的「查看类」窗口参与去重：
+  // - 发布窗口（publishData）不去重：批量发布本来就要开多个同平台窗口，并发由发布调度器管
+  // - 授权窗口（useTemporarySession / purpose=auth）不去重：授权流程有自己的生命周期
+  if (!options.platform || !options.accountId) return null;
+  if (options.publishData) return null;
+  if (options.useTemporarySession) return null;
+  if (options.windowContext?.purpose === 'auth') return null;
+  const platform = normalizePlatformName(options.platform) || String(options.platform);
+  const accountId = normalizeAccountIdValue(options.accountId) || String(options.accountId);
+  return `${platform}|${accountId}|${url}`;
+}
+
 async function openManagedChildWindow(url, options = {}) {
+  const dedupKey = buildManagedWindowDedupKey(url, options);
+  if (!dedupKey) {
+    return openManagedChildWindowInternal(url, options);
+  }
+
+  const existing = managedWindowDedupRegistry.get(dedupKey);
+  if (existing) {
+    // 已开窗且未销毁 → 拉到前台复用，不再开新窗
+    if (existing.window && !existing.window.isDestroyed()) {
+      try {
+        if (existing.window.isMinimized()) existing.window.restore();
+        existing.window.show();
+        existing.window.focus();
+      } catch (focusErr) {
+        console.warn('[Window Manager] ⚠️ 聚焦已有窗口失败:', focusErr.message);
+      }
+      console.log(`[Window Manager] 🔁 命中已开窗口去重，聚焦复用 (key=${dedupKey}, windowId=${existing.window.id})`);
+      return { success: true, windowId: existing.window.id, reused: true };
+    }
+    // 创建进行中 → 复用同一个创建 promise（连点第二下不再重复建窗）
+    if (existing.promise) {
+      console.log(`[Window Manager] 🔁 命中创建中去重，复用进行中的窗口创建 (key=${dedupKey})`);
+      return existing.promise;
+    }
+    managedWindowDedupRegistry.delete(dedupKey);
+  }
+
+  const creationPromise = openManagedChildWindowInternal(url, options)
+    .then((result) => {
+      if (result && result.success && result.windowId) {
+        const createdWindow = BrowserWindow.fromId(result.windowId);
+        if (createdWindow && !createdWindow.isDestroyed()) {
+          managedWindowDedupRegistry.set(dedupKey, { window: createdWindow, promise: null });
+          createdWindow.once('closed', () => {
+            const entry = managedWindowDedupRegistry.get(dedupKey);
+            if (entry && entry.window === createdWindow) {
+              managedWindowDedupRegistry.delete(dedupKey);
+            }
+          });
+          return result;
+        }
+      }
+      // 创建失败/窗口已销毁：清理注册表，避免死键卡住后续点击
+      const failedEntry = managedWindowDedupRegistry.get(dedupKey);
+      if (failedEntry && failedEntry.promise === creationPromise) {
+        managedWindowDedupRegistry.delete(dedupKey);
+      }
+      return result;
+    })
+    .catch((err) => {
+      const errorEntry = managedWindowDedupRegistry.get(dedupKey);
+      if (errorEntry && errorEntry.promise === creationPromise) {
+        managedWindowDedupRegistry.delete(dedupKey);
+      }
+      throw err;
+    });
+
+  managedWindowDedupRegistry.set(dedupKey, { window: null, promise: creationPromise });
+  return creationPromise;
+}
+
+async function openManagedChildWindowInternal(url, options = {}) {
   if (!url) {
     return { success: false, error: 'No URL provided' };
   }
@@ -13643,10 +13741,20 @@ async function openManagedChildWindow(url, options = {}) {
     if (isBareToutiao) {
       console.log('[Window Manager] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
     }
-    const shouldShowPublishLoadingWindow = !!options.publishData && !options.useTemporarySession;
+    // 🎬 FIX_MANAGED_WINDOW_LOADING_HINT：非发布的账号 session「查看类」窗口（内容管理等）也弹 loading 提示窗。
+    // 旧行为只给发布流程（publishData）提示，内容管理点击后直到目标页加载完成（最长 30 秒）无任何视觉反馈，
+    // 用户以为没反应会连点 N 下（配合 FIX_MANAGED_WINDOW_DEDUP 一起治理）。
+    const isManagedAccountViewWindow = FIX_MANAGED_WINDOW_LOADING_HINT
+      && !options.publishData
+      && !options.useTemporarySession
+      && !!options.platform && !!options.accountId
+      && options.windowContext?.purpose !== 'auth';
+    const shouldShowPublishLoadingWindow = (!!options.publishData || isManagedAccountViewWindow) && !options.useTemporarySession;
     if (shouldShowPublishLoadingWindow) {
-      publishLoadingWindow = createPublishLoadingWindow(options);
-      console.log(`[Window Manager][${__wmTs()}] 🎬 已打开发布 loading 窗口，后台准备真实发布窗口`);
+      publishLoadingWindow = createPublishLoadingWindow(
+        isManagedAccountViewWindow ? { ...options, loadingTitle: '正在打开页面' } : options
+      );
+      console.log(`[Window Manager][${__wmTs()}] 🎬 已打开${isManagedAccountViewWindow ? '页面' : '发布'} loading 窗口，后台准备真实窗口`);
       // 🪄 步骤联动：默认从「恢复账号登录状态」开始
       publishLoadingWindow?.activateStep?.(0);
     }

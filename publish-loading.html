@@ -258,6 +258,18 @@
       document.getElementById('platformText').textContent = text;
     }
 
+    // 🎬 查看类窗口（内容管理等）自定义标题：主标题/页签/提示语/末步文案通用化，不传保持发布原文案
+    const customTitle = params.get('title') || '';
+    if (customTitle) {
+      document.title = customTitle;
+      document.querySelector('h1').textContent = customTitle;
+      document.querySelector('.hint').textContent = '请稍等，完成后会自动打开页面。';
+      const lastStepText = document.querySelector('.step[data-step="2"] span:last-child');
+      if (lastStepText) {
+        lastStepText.textContent = '加载目标页面';
+      }
+    }
+
     // 暴露全局接口，主进程通过 webContents.executeJavaScript 调用
     // index: 0/1/2  status: 'pending' | 'active' | 'done'
     window.__setLoadingStep = function (index, status) {
