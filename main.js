@@ -13165,19 +13165,74 @@ ipcMain.handle('show-user-menu', async (event) => {
         if (typeof action === 'string' && action.startsWith('switch:')) {
           acting = true; // 抑制下方主动 close 触发的 blur
           const index = parseInt(action.slice(7), 10);
-          // 先关闭浮层，避免与确认弹窗争夺焦点
-          if (userMenuWindow && !userMenuWindow.isDestroyed()) {
-            userMenuWindow.close();
-            userMenuWindow = null;
-          }
           const accounts = Array.isArray(globalStorage.saved_accounts) ? globalStorage.saved_accounts : [];
           const acc = accounts[index];
           if (!acc || !acc.username) {
             finish({ selected: false, action: null });
             return;
           }
+
+          // BrowserWindow.close() 只发起关闭，Windows 上 closed/焦点切换可能稍后才完成。
+          // 若立即创建原生 MessageBox，旧的 alwaysOnTop 浮层会在部分机器上抢回焦点，
+          // 导致确认框刚显示就被系统取消。先隐藏并等待原生窗口真正销毁，再弹确认框。
+          const menuWindowToClose = userMenuWindow;
+          if (menuWindowToClose && !menuWindowToClose.isDestroyed()) {
+            userMenuWindow = null;
+            await new Promise((resolveClose) => {
+              let closeSettled = false;
+              let closeTimeout = null;
+              const finishClose = (reason) => {
+                if (closeSettled) return;
+                closeSettled = true;
+                if (closeTimeout) clearTimeout(closeTimeout);
+                console.log('[User Menu] 账号菜单关闭完成:', reason);
+                resolveClose();
+              };
+
+              menuWindowToClose.once('closed', () => finishClose('closed'));
+              closeTimeout = setTimeout(() => {
+                try {
+                  if (!menuWindowToClose.isDestroyed()) {
+                    console.warn('[User Menu] 账号菜单关闭超时，强制销毁后再显示切换确认框');
+                    menuWindowToClose.destroy();
+                  }
+                } catch (destroyError) {
+                  console.warn('[User Menu] 强制销毁账号菜单失败:', destroyError.message);
+                } finally {
+                  finishClose('timeout');
+                }
+              }, 1000);
+
+              try {
+                menuWindowToClose.hide();
+                menuWindowToClose.close();
+              } catch (closeError) {
+                console.warn('[User Menu] 关闭账号菜单失败，继续恢复主窗口焦点:', closeError.message);
+                try {
+                  if (!menuWindowToClose.isDestroyed()) menuWindowToClose.destroy();
+                } catch (destroyError) {
+                  console.warn('[User Menu] 关闭失败后的强制销毁也失败:', destroyError.message);
+                } finally {
+                  finishClose('close-error');
+                }
+              }
+            });
+          }
+
+          if (!mainWindow || mainWindow.isDestroyed()) {
+            throw new Error('主窗口不可用，无法显示切换确认框');
+          }
+
+          // 等待旧浮层的 blur/closed 消息排空后再恢复父窗口焦点，避免慢机器上的焦点回抢。
+          await new Promise(resolveFocus => setTimeout(resolveFocus, 80));
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          if (!mainWindow.isVisible()) mainWindow.show();
+          mainWindow.focus();
+          await new Promise(resolveFocus => setTimeout(resolveFocus, 80));
+
           const companyDisplay = acc.companyName || acc.company_name || acc.company?.name || acc.company?.company_name || '';
           const display = companyDisplay || acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
+          const dialogOpenedAt = Date.now();
           const { response } = await dialog.showMessageBox(mainWindow, {
             type: 'question',
             buttons: ['取消', '确定切换'],
@@ -13186,6 +13241,10 @@ ipcMain.handle('show-user-menu', async (event) => {
             title: '切换账号',
             message: `确定切换到「${display}」吗？`,
             detail: '将退出当前账号，并使用所选账号自动重新登录。'
+          });
+          console.log('[User Menu] 切换确认框已关闭:', {
+            response,
+            durationMs: Date.now() - dialogOpenedAt
           });
           if (response === 1) {
             // 清理上一个账号残留数据（navigateToLoginInternal 未覆盖的部分），确保切换干净
