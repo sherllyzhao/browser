@@ -6666,6 +6666,11 @@ function shouldSkipScriptInjection(url = '') {
 
 const childWindows = []; // 跟踪所有打开的子窗口
 const toutiaoBarePublishState = new Map();
+// 🔗 旧版前端发送 auth-data 时可能没有 windowId。页面先发送「页面加载完成」
+// 作为短时握手，主进程据此把后续授权数据定向回对应窗口；握手过期或窗口关闭后
+// 自动失效，避免多账号场景下把授权数据串到错误窗口。
+const AUTH_WINDOW_HANDSHAKE_TTL_MS = 60 * 1000;
+const authWindowHandshakeMap = new Map();
 
 function getStatisticsHostFromMainContext() {
   const context = getStatisticsContextFromMain();
@@ -12290,6 +12295,246 @@ ipcMain.handle('get-inject-script', async (event, url) => {
   return await scriptManager.getScript(url);
 });
 
+function normalizeSupportedAuthPlatform(platform = '') {
+  const normalized = normalizePlatformName(platform);
+  if (!normalized) {
+    return '';
+  }
+
+  const knownByLoginCookies = Object.prototype.hasOwnProperty.call(
+    config.platformLoginCookies || {},
+    normalized
+  );
+  const knownByNameMap = Object.values(config.platformNameMap || {}).includes(normalized);
+  const knownByPublishUrl = Object.prototype.hasOwnProperty.call(
+    config.platformPublishUrls || {},
+    normalized
+  );
+
+  return knownByLoginCookies || knownByNameMap || knownByPublishUrl ? normalized : '';
+}
+
+function inferAuthPlatformFromUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl || '');
+    const host = parsed.hostname.toLowerCase();
+
+    if (host === 'creator.douyin.com' || host.endsWith('.douyin.com')) return 'douyin';
+    if (host === 'creator.xiaohongshu.com' || host.endsWith('.xiaohongshu.com')) return 'xiaohongshu';
+    if (host === 'baijiahao.baidu.com' || host.endsWith('.baijiahao.baidu.com')) return 'baijiahao';
+    if (host === 'mp.toutiao.com' || host === 'www.toutiao.com' || host.endsWith('.toutiao.com')) return 'toutiao';
+    if (host === 'channels.weixin.qq.com' || host.endsWith('.channels.weixin.qq.com')) return 'shipinhao';
+    if (host === 'mp.weixin.qq.com' || host.endsWith('.mp.weixin.qq.com')) return 'weixin';
+    if (host === 'mp.163.com' || host.endsWith('.163.com')) return 'wangyihao';
+    if (host === 'mp.sohu.com' || host.endsWith('.sohu.com')) return 'sohuhao';
+    if (host === 'om.qq.com' || host.endsWith('.om.qq.com') || host === 'account.qq.com') return 'tengxunhao';
+    if (host === 'mp.sina.com.cn' || host.endsWith('.sina.com.cn') || host === 'weibo.com' || host.endsWith('.weibo.com')) return 'xinlang';
+    if (host === 'zhuanlan.zhihu.com' || host.endsWith('.zhihu.com')) return 'zhihu';
+  } catch (_) {}
+
+  return '';
+}
+
+function resolveAuthDataPlatform(message) {
+  if (!message || message.type !== 'auth-data') {
+    return '';
+  }
+
+  const payload = parseMaybeJsonObject(message.data);
+  const mediaId = readNestedObjectValue(payload, 'element.account_info.media.id')
+    || readNestedObjectValue(payload, 'account_info.media.id')
+    || readNestedObjectValue(payload, 'element.accountInfo.media.id')
+    || readNestedObjectValue(payload, 'accountInfo.media.id')
+    || readNestedObjectValue(payload, 'element.media.id')
+    || readNestedObjectValue(payload, 'media.id')
+    || payload?.media_id
+    || payload?.mediaId;
+  const shortPlatform = mediaId !== undefined && mediaId !== null && mediaId !== ''
+    ? config.platformIdMap?.[String(mediaId)] || config.platformIdMap?.[Number(mediaId)]
+    : '';
+  const mappedPlatform = normalizeSupportedAuthPlatform(
+    shortPlatform ? config.platformNameMap?.[shortPlatform] || shortPlatform : ''
+  );
+  if (mappedPlatform) {
+    return mappedPlatform;
+  }
+
+  const platformCandidates = [
+    payload?.platform,
+    payload?.platformName,
+    payload?.element?.platform,
+    payload?.element?.platformName,
+    payload?.account_info?.media?.key,
+    payload?.account_info?.media?.name,
+    payload?.element?.account_info?.media?.key,
+    payload?.element?.account_info?.media?.name,
+    payload?.element?.accountInfo?.media?.key,
+    payload?.element?.accountInfo?.media?.name,
+    payload?.media?.key,
+    payload?.media?.name
+  ];
+  for (const candidate of platformCandidates) {
+    const normalized = normalizeSupportedAuthPlatform(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const authUrl = String(
+    payload?.authUrl
+      || payload?.url
+      || payload?.targetUrl
+      || payload?.element?.authUrl
+      || payload?.element?.url
+      || ''
+  );
+  return inferAuthPlatformFromUrl(authUrl);
+}
+
+function inferAuthWindowPlatform(targetWindow) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return '';
+  }
+
+  const context = windowContextMap.get(targetWindow.id) || null;
+  const accountInfo = windowAccountMap.get(targetWindow.id) || null;
+  const contextPlatform = normalizeSupportedAuthPlatform(context?.platform || accountInfo?.platform);
+  if (contextPlatform) {
+    return contextPlatform;
+  }
+
+  try {
+    return inferAuthPlatformFromUrl(targetWindow.webContents.getURL() || context?.expectedPageUrl || '');
+  } catch (_) {
+    return inferAuthPlatformFromUrl(context?.expectedPageUrl || '');
+  }
+}
+
+function getLiveAuthWindowHandshake(windowId, handshake, now = Date.now()) {
+  if (!handshake || now - Number(handshake.recordedAt || 0) > AUTH_WINDOW_HANDSHAKE_TTL_MS) {
+    return null;
+  }
+
+  const targetWindow = getWindowById(windowId);
+  if (!targetWindow || targetWindow.isDestroyed() || !targetWindow.webContents || targetWindow.webContents.isDestroyed()) {
+    return null;
+  }
+
+  const context = windowContextMap.get(targetWindow.id) || null;
+  const authFlagKey = `auth_mode_window_${targetWindow.id}`;
+  if (!globalStorage?.[authFlagKey] || context?.purpose !== 'auth') {
+    return null;
+  }
+
+  const platform = inferAuthWindowPlatform(targetWindow) || normalizeSupportedAuthPlatform(handshake.platform);
+  return {
+    targetWindow,
+    windowId: targetWindow.id,
+    platform,
+    recordedAt: Number(handshake.recordedAt || 0)
+  };
+}
+
+function cleanupAuthWindowHandshakes() {
+  const now = Date.now();
+  for (const [windowId, handshake] of authWindowHandshakeMap.entries()) {
+    const liveHandshake = getLiveAuthWindowHandshake(windowId, handshake, now);
+    if (!liveHandshake) {
+      authWindowHandshakeMap.delete(windowId);
+      continue;
+    }
+
+    handshake.platform = liveHandshake.platform;
+  }
+}
+
+function rememberAuthWindowHandshake(senderWindow) {
+  if (!senderWindow || senderWindow.isDestroyed()) {
+    return false;
+  }
+
+  const windowId = senderWindow.id;
+  const context = windowContextMap.get(windowId) || null;
+  const authFlagKey = `auth_mode_window_${windowId}`;
+  if (!globalStorage?.[authFlagKey] || context?.purpose !== 'auth') {
+    authWindowHandshakeMap.delete(windowId);
+    return false;
+  }
+
+  let currentUrl = '';
+  try {
+    currentUrl = senderWindow.webContents.getURL() || '';
+  } catch (_) {}
+
+  const platform = inferAuthWindowPlatform(senderWindow);
+  authWindowHandshakeMap.set(windowId, {
+    windowId,
+    recordedAt: Date.now(),
+    platform,
+    currentUrl
+  });
+  console.log('[IPC] 🔗 已记录授权窗口握手:', {
+    windowId,
+    platform: platform || '未知',
+    currentUrl
+  });
+  return true;
+}
+
+function consumeAuthWindowHandshake(windowId) {
+  if (windowId === undefined || windowId === null || windowId === '') {
+    return;
+  }
+  authWindowHandshakeMap.delete(Number(windowId));
+}
+
+function findAuthWindowHandshakeTarget(message) {
+  cleanupAuthWindowHandshakes();
+
+  const payloadPlatform = resolveAuthDataPlatform(message);
+  const freshCandidates = [];
+  const candidates = [];
+  for (const [windowId, handshake] of authWindowHandshakeMap.entries()) {
+    const liveHandshake = getLiveAuthWindowHandshake(windowId, handshake);
+    if (!liveHandshake) {
+      continue;
+    }
+
+    freshCandidates.push(liveHandshake);
+    if (payloadPlatform && liveHandshake.platform && payloadPlatform !== liveHandshake.platform) {
+      continue;
+    }
+    candidates.push(liveHandshake);
+  }
+
+  if (candidates.length === 1) {
+    return {
+      targetWindow: candidates[0].targetWindow,
+      windowId: candidates[0].windowId,
+      payloadPlatform,
+      candidateCount: 1,
+      freshCandidateCount: freshCandidates.length,
+      reason: 'unique-fresh-handshake'
+    };
+  }
+
+  const hasPlatformMismatch = !!payloadPlatform
+    && freshCandidates.length > 0
+    && candidates.length === 0;
+  return {
+    targetWindow: null,
+    windowId: null,
+    payloadPlatform,
+    candidateCount: candidates.length,
+    freshCandidateCount: freshCandidates.length,
+    reason: candidates.length > 1
+      ? 'ambiguous-fresh-handshakes'
+      : hasPlatformMismatch
+        ? 'no-platform-matching-handshake'
+        : 'no-fresh-handshake'
+  };
+}
+
 // 立即执行脚本（用于测试）
 ipcMain.handle('execute-script-now', async (event, script) => {
   if (browserView && script) {
@@ -12307,6 +12552,12 @@ ipcMain.handle('execute-script-now', async (event, script) => {
 ipcMain.on('content-to-home', (event, message) => {
   console.log('[IPC] 收到 content-to-home 消息:', message);
   console.log('[IPC] HOME_URLS:', HOME_URLS);
+
+  // 旧版前端的 auth-data 可能不带 windowId；授权页先发出的「页面加载完成」
+  // 是主进程唯一可靠的窗口级握手信号，只记录明确处于授权上下文的子窗口。
+  if (message === '页面加载完成') {
+    rememberAuthWindowHandshake(BrowserWindow.fromWebContents(event.sender));
+  }
 
   const messageStr = JSON.stringify(message);
 
@@ -12638,6 +12889,7 @@ ipcMain.on('home-to-content', async (event, message) => {
         const routeResult = await routeSohuhaoAuthDataToAccountWindow(message, event.sender.session);
         console.log('[IPC] 搜狐号 auth-data 定向投递结果:', routeResult);
         if (routeResult.routed) {
+          consumeAuthWindowHandshake(routeResult.windowId);
           return;
         }
         console.warn('[IPC] ⚠️ 搜狐号 auth-data 无法定向投递，尝试通用定向投递');
@@ -12649,24 +12901,37 @@ ipcMain.on('home-to-content', async (event, message) => {
     // 🔑 通用定向投递逻辑：优先使用消息自带 windowId
     let targetWindowId = message.windowId;
     let directedMessage = message;
+    let handshakeWindowId = null;
 
     // 🛡️ 回退路由：旧版前端发的 auth-data 不带 windowId（升级前端前会一直如此）。
-    // 仅当存活授权窗口（auth_mode_window_ 标志）恰好唯一时才补 windowId 投递；
-    // 0 个或多个一律丢弃——多窗口场景绝不猜测目标，防串联底线不破。
+    // 优先消费最近收到「页面加载完成」的唯一授权窗口握手；
+    // 没有有效握手时保留旧版“唯一存活授权窗口”回退，多个候选一律拒绝。
     if (!targetWindowId && message.type === 'auth-data') {
-      const aliveAuthWindows = childWindows.filter(childWindow =>
-        childWindow
-        && !childWindow.isDestroyed()
-        && !!globalStorage?.[`auth_mode_window_${childWindow.id}`]
-      );
-      if (aliveAuthWindows.length === 1) {
-        targetWindowId = aliveAuthWindows[0].id;
+      const handshakeResult = findAuthWindowHandshakeTarget(message);
+      if (handshakeResult.targetWindow) {
+        targetWindowId = handshakeResult.windowId;
+        handshakeWindowId = handshakeResult.windowId;
         directedMessage = { ...message, windowId: targetWindowId };
-        console.warn(`[IPC] ⚠️ auth-data 缺少 windowId，回退路由到唯一存活授权窗口 ${targetWindowId}（前端请尽快升级携带 windowId）`);
-      } else {
-        console.error(`[IPC] ❌ auth-data 缺少 windowId 且无法回退（存活授权窗口数=${aliveAuthWindows.length}），已丢弃！`);
+        console.warn(`[IPC] ⚠️ auth-data 缺少 windowId，依据唯一新鲜授权握手定向到窗口 ${targetWindowId}（平台=${handshakeResult.payloadPlatform || '未知'}）`);
+      } else if (handshakeResult.reason === 'no-platform-matching-handshake') {
+        console.error(`[IPC] ❌ auth-data 缺少 windowId，但新鲜授权握手均与消息平台不匹配（平台=${handshakeResult.payloadPlatform}），已拒绝投递！`);
         console.error('[IPC] 消息内容:', message);
         return;
+      } else {
+        const aliveAuthWindows = childWindows.filter(childWindow =>
+          childWindow
+          && !childWindow.isDestroyed()
+          && !!globalStorage?.[`auth_mode_window_${childWindow.id}`]
+        );
+        if (aliveAuthWindows.length === 1) {
+          targetWindowId = aliveAuthWindows[0].id;
+          directedMessage = { ...message, windowId: targetWindowId };
+          console.warn(`[IPC] ⚠️ auth-data 缺少 windowId，回退路由到唯一存活授权窗口 ${targetWindowId}（前端请尽快升级携带 windowId）`);
+        } else {
+          console.error(`[IPC] ❌ auth-data 缺少 windowId 且无法回退（握手候选=${handshakeResult.candidateCount}，存活授权窗口数=${aliveAuthWindows.length}，原因=${handshakeResult.reason}），已丢弃！`);
+          console.error('[IPC] 消息内容:', message);
+          return;
+        }
       }
     }
 
@@ -12681,6 +12946,10 @@ ipcMain.on('home-to-content', async (event, message) => {
     if (!targetWindow || targetWindow.isDestroyed()) {
       console.warn(`[IPC] ⚠️ 目标窗口 ${targetWindowId} 不存在或已销毁，无法投递 ${message.type} 消息`);
       return;
+    }
+
+    if (handshakeWindowId !== null) {
+      consumeAuthWindowHandshake(handshakeWindowId);
     }
 
     // 只发送到指定窗口
@@ -15183,6 +15452,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
     // 监听窗口关闭事件
     newWindow.on('closed', () => {
       const closedWindowContext = windowContextMap.get(windowId) || null;
+      consumeAuthWindowHandshake(windowId);
       const index = childWindows.indexOf(newWindow);
       if (index > -1) {
         childWindows.splice(index, 1);

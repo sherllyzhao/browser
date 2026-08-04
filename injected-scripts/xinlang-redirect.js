@@ -6,7 +6,7 @@
  * 3. 新浪有时不会稳定携带 sudaref，因此不能只靠单一参数判断
  *
  * 处理规则：
- * - 未登录时，优先跳到新浪创作者入口登录
+ * - 未登录时，停留在当前微博页完成登录，避免 weibo.com ↔ mp.sina.com.cn 刷新循环
  * - 已登录且有发布恢复数据时，跳回发布页
  * - 已登录但没有发布恢复数据时，跳到新浪创作者入口
  *
@@ -75,15 +75,20 @@
     // ===========================
     let windowId = null;
     try {
+        if (!window.browserAPI || typeof window.browserAPI.getWindowId !== 'function') {
+            console.warn('[新浪重定向] ⚠️ browserAPI.getWindowId 不可用，停止重定向');
+            return;
+        }
         windowId = await window.browserAPI.getWindowId();
         console.log('[新浪重定向] 🔑 当前窗口 ID:', windowId);
 
-        if (windowId === 'main') {
-            console.log('[新浪重定向] ℹ️ 是主窗口，不需要重定向');
+        if (!windowId || windowId === 'main') {
+            console.log('[新浪重定向] ℹ️ 是主窗口或窗口 ID 为空，不需要重定向');
             return;
         }
     } catch (e) {
         console.error('[新浪重定向] ❌ 获取窗口 ID 失败:', e);
+        return;
     }
 
     // ===========================
@@ -132,31 +137,24 @@
         cookieLength: cookieString.length
     });
 
-    // 🔴🔴🔴 调试模式：临时注释掉所有跳转行为，验证刷新源头是否来自本脚本
-    // 如果注释后页面不再刷新，说明问题在 redirect 内；如果仍在刷，说明刷新源在其他地方
-    console.warn('[新浪重定向] ⛔ DEBUG: 已禁用所有跳转，仅打印日志，便于排查刷新源');
-    return;
+    // 🔒 未登录时不要跳到 mp.sina.com.cn，否则新浪可能再次把页面送回
+    // weibo.com/newlogin，形成刷新死循环；让用户在当前页完成登录即可。
+    if (!hasWeiboLoginCookie) {
+        console.log('[新浪重定向] ⛔ 未检测到微博登录态，停留在当前页等待用户完成登录');
+        return;
+    }
 
-    // ---- 以下逻辑全部禁用（一个个放开测试时再启用）----
-    // // 🔴 未登录场景一律不主动跳转，避免登录页刷新死循环
-    // // 死循环路径：weibo.com/newlogin(未登录) -> 跳 mp.sina.com.cn -> 被新浪踢回 weibo.com/newlogin -> ...
-    // // 让用户停留在 weibo.com/newlogin 完成登录即可，登录成功后新浪自身会跳走
-    // if (!hasWeiboLoginCookie) {
-    //     console.log('[新浪重定向] ⛔ 未检测到微博登录态，停留在当前页让用户完成登录，避免登录页刷新循环');
-    //     return;
-    // }
-    //
-    // let targetUrl = creatorUrl;
-    // let targetLabel = '新浪创作者入口';
-    // let scenario = '已登录但无发布恢复数据';
-    //
-    // if (hasPublishContext) {
-    //     targetUrl = publishUrl;
-    //     targetLabel = '发布页';
-    //     scenario = '已登录且有发布恢复数据';
-    // }
-    //
-    // console.log(`[新浪重定向] 🚀 检测到${scenario}场景，重定向到${targetLabel}:`, targetUrl);
-    // window.location.href = targetUrl;
+    let targetUrl = creatorUrl;
+    let targetLabel = '新浪创作者入口';
+    let scenario = '已登录但无发布恢复数据';
+
+    if (hasPublishContext) {
+        targetUrl = publishUrl;
+        targetLabel = '发布页';
+        scenario = '已登录且有发布恢复数据';
+    }
+
+    console.log(`[新浪重定向] 🚀 检测到${scenario}场景，重定向到${targetLabel}:`, targetUrl);
+    window.location.href = targetUrl;
 
 })();
