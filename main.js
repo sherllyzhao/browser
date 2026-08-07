@@ -1266,6 +1266,25 @@ function isFirstPartyUrl(rawUrl = '') {
   }
 }
 
+function isManagedProjectPageUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!isFirstPartyHost(parsed.hostname)) return false;
+
+    const pathname = String(parsed.pathname || '/').toLowerCase();
+    if (pathname === '/aigc_browser' || pathname.startsWith('/aigc_browser/')) return true;
+    if (pathname === '/jzt_all' || pathname.startsWith('/jzt_all/')) return true;
+    if (pathname === '/geo' || pathname.startsWith('/geo/')) return true;
+
+    const isLocalProjectHost = parsed.hostname === 'localhost'
+      || parsed.hostname === '127.0.0.1'
+      || parsed.hostname === '172.16.6.17';
+    return isLocalProjectHost && (parsed.port === '5173' || parsed.port === '8080');
+  } catch (_) {
+    return false;
+  }
+}
+
 function setHeaderCaseInsensitive(headers, key, value) {
   const targetKey = Object.keys(headers).find(k => k.toLowerCase() === key.toLowerCase()) || key;
   headers[targetKey] = value;
@@ -5050,6 +5069,7 @@ const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
 const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+const STARTUP_PROJECT_RENDER_GRACE_MS = 8000;
 const STARTUP_LOAD_DIALOG_RECHECK_MS = 2500;
 const STARTUP_LOAD_DIALOG_RECHECK_INTERVAL_MS = 500;
 const REFRESH_LOAD_READY_CHECK_DELAY = 600;
@@ -5873,14 +5893,20 @@ function beginStartupLoadGuard(targetUrl) {
   };
   setBrowserLoadingState({ visible: true, text: '正在加载页面...' });
   console.log('[Startup Guard] ✅ 已开启首屏守卫:', targetUrl);
+  // 即使导航没有触发 did-stop-loading，也要让守卫能够持续复检并触发总超时兜底。
+  scheduleStartupReadinessCheck('guard-start', STARTUP_LOAD_READY_CHECK_DELAY);
 }
 
 function finishStartupLoadGuard(reason = 'ready') {
   if (!startupLoadGuard.active) return;
+  const elapsedMs = startupLoadGuard.startedAt > 0
+    ? Date.now() - startupLoadGuard.startedAt
+    : null;
+  const reloadCount = startupLoadGuard.reloadCount;
   clearStartupLoadGuardTimer();
   startupLoadGuard.active = false;
   setBrowserLoadingState({ visible: false, text: '正在加载页面...' });
-  console.log('[Startup Guard] ✅ 首屏守卫结束:', reason);
+  console.log('[Startup Guard] ✅ 首屏守卫结束:', { reason, elapsedMs, reloadCount });
 }
 
 function beginRefreshLoadGuard(text = '正在刷新页面...') {
@@ -6158,6 +6184,24 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
       if (state.ready) {
         console.log('[Startup Guard] ✅ 首屏渲染检查通过:', state);
         finishStartupLoadGuard(reason);
+        return;
+      }
+
+      const currentUrl = state.href || browserView.webContents.getURL() || startupLoadGuard.targetUrl;
+      const isTransientProjectRender = isManagedProjectPageUrl(currentUrl)
+        && (state.reason === 'visual-not-ready' || state.reason === 'no-body');
+      if (isTransientProjectRender && elapsed < STARTUP_PROJECT_RENDER_GRACE_MS) {
+        const remainingMs = STARTUP_PROJECT_RENDER_GRACE_MS - elapsed;
+        console.log('[Startup Guard] ℹ️ AIGC/GEO SPA 仍在初始化，继续等待后复检:', {
+          elapsedMs: elapsed,
+          remainingMs,
+          state
+        });
+        setBrowserLoadingState({ visible: true, text: '正在初始化页面...' });
+        scheduleStartupReadinessCheck(
+          `${reason}:project-render-grace`,
+          Math.min(1000, Math.max(300, remainingMs))
+        );
         return;
       }
 
@@ -9059,6 +9103,9 @@ function createWindow() {
     isHeaderHidden = startUrl.includes('login.html');
     updateBrowserViewBounds(isScriptPanelOpen);
 
+    // 在发起导航前开启守卫，避免 did-start-loading 早于守卫注册时漏掉首屏状态。
+    beginStartupLoadGuard(startUrl);
+
     // 🔴 本地文件使用 loadFile，远程URL使用 loadURL（避免 file:// MIME 类型问题）
     let loadPage;
     if (startUrl.startsWith('file://')) {
@@ -9066,8 +9113,6 @@ function createWindow() {
     } else {
       loadPage = browserView.webContents.loadURL(startUrl);
     }
-
-    beginStartupLoadGuard(startUrl);
 
     loadPage
       .then(() => {
@@ -11837,16 +11882,54 @@ ipcMain.handle('native-mouse-hover', async (event, points = [], options = {}) =>
   }
 });
 
+function shouldStartProjectNavigationGuard(targetUrl) {
+  if (!isManagedProjectPageUrl(targetUrl)) return false;
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
+
+  const currentUrl = browserView.webContents.getURL();
+  if (!isManagedProjectPageUrl(currentUrl)) return true;
+
+  try {
+    const current = new URL(currentUrl);
+    const target = new URL(targetUrl);
+    const normalizePathname = value => String(value || '/').replace(/\/+$/, '') || '/';
+    return current.origin !== target.origin
+      || normalizePathname(current.pathname) !== normalizePathname(target.pathname);
+  } catch (_) {
+    return true;
+  }
+}
+
+function navigateBrowserViewUrl(targetUrl, source = 'unknown') {
+  if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+    return { success: false, error: 'No browser view available' };
+  }
+
+  const shouldGuard = shouldStartProjectNavigationGuard(targetUrl);
+  if (shouldGuard) {
+    console.log(`[BrowserView Navigation] 从非项目页进入 AIGC/GEO，开启首屏守卫 (${source}):`, targetUrl);
+    beginStartupLoadGuard(targetUrl);
+  }
+
+  try {
+    browserView.webContents.loadURL(targetUrl).catch(error => {
+      console.error(`[BrowserView Navigation] loadURL 失败 (${source}):`, error);
+    });
+    return { success: true };
+  } catch (error) {
+    if (shouldGuard) {
+      finishStartupLoadGuard('navigation-start-failed');
+    }
+    return { success: false, error: error.message };
+  }
+}
+
 // 导航到指定 URL（BrowserView）
 ipcMain.handle('navigate-to', async (event, url) => {
   if (shouldSkipScriptInjection(url)) {
     return openManagedChildWindow(url);
   }
-  if (browserView) {
-    browserView.webContents.loadURL(url);
-    return { success: true };
-  }
-  return { success: false, error: 'No browser view available' };
+  return navigateBrowserViewUrl(url, 'navigate-to');
 });
 
 // 导航到登录页
@@ -15936,11 +16019,7 @@ ipcMain.handle('navigate-current-window', async (event, url) => {
     if (shouldSkipScriptInjection(url)) {
       return openManagedChildWindow(url);
     }
-    if (browserView) {
-      browserView.webContents.loadURL(url);
-      return { success: true };
-    }
-    return { success: false, error: 'No browser view available' };
+    return navigateBrowserViewUrl(url, 'navigate-current-window');
   } catch (err) {
     return { success: false, error: err.message };
   }
