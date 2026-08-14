@@ -294,12 +294,12 @@
       // 保存 publishId 到 localStorage，供 publish-success.js 使用
       if (publishId) {
         try {
-          localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+          localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
           console.log('[百家号发布] 💾 已保存 publishId 到 localStorage，供成功页使用');
 
           // 同时保存到 globalData
           if (window.browserAPI && window.browserAPI.setGlobalData) {
-            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
             console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
           }
         } catch (e) {
@@ -584,6 +584,18 @@
       return;
     }
     fillFormRunning = true;
+
+    const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+        ? window.resolvePublishTaskToken(dataObj, '发布')
+        : (typeof window.buildPublishTaskToken === 'function'
+            ? window.buildPublishTaskToken(dataObj, '发布')
+            : 'task_default');
+    if (typeof window.setCurrentPublishTaskToken === 'function') {
+        window.setCurrentPublishTaskToken(publishTaskToken);
+    } else {
+        window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+    }
+
 
     // 🔑 启动短信验证检测器（在填写表单前就开始监听）
     startSmsVerificationDetector();
@@ -1126,12 +1138,12 @@
                                         const publishId = dataObj.video?.dyPlatform?.id;
                                         if (publishId) {
                                           try {
-                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                             console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
 
                                             // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                                             if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                              await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                              await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                               console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
                                             }
                                           } catch (e) {
@@ -1211,12 +1223,12 @@
                                 const publishId = dataObj.video?.dyPlatform?.id;
                                 if (publishId) {
                                   try {
-                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                    localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                     console.log('[百家号发布] 💾 已保存 publishId 到 localStorage:', publishId);
 
                                     // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                                     if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                      await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                      await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                       console.log('[百家号发布] 💾 已保存 publishId 到 globalData');
                                     }
                                   } catch (e) {

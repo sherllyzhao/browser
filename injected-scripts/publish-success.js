@@ -172,6 +172,17 @@
     console.log('[发布成功] 📋 数据来源:', usedSource);
     console.log('[发布成功] 📋 最终 publishId:', publishData?.publishId);
 
+    const successTaskToken = window.resolvePublishTaskToken
+      ? window.resolvePublishTaskToken(publishData, '发布成功页')
+      : String(publishData?.taskToken || publishData?.__publishTaskToken || window.__CURRENT_PUBLISH_TASK_TOKEN__ || 'task_default').trim() || 'task_default';
+    if (typeof window.setCurrentPublishTaskToken === 'function') {
+      window.setCurrentPublishTaskToken(successTaskToken);
+    } else {
+      window.__CURRENT_PUBLISH_TASK_TOKEN__ = successTaskToken;
+    }
+    console.log('[发布成功] 📋 最终 taskToken:', successTaskToken);
+
+
     // 发送统计接口（带超时检测）
     if (publishData && publishData.publishId) {
       try {
@@ -181,7 +192,7 @@
         if (window.sendStatistics) {
           // 如果有 sendStatistics 函数，使用它
           console.log('[发布成功] 📤 使用 sendStatistics 函数...');
-          reportResult = await window.sendStatistics(publishData.publishId, '发布成功页');
+          reportResult = await window.sendStatistics(publishData.publishId, '发布成功页', { taskToken: successTaskToken });
           console.log('[发布成功] ✅ sendStatistics 完成:', reportResult);
         } else {
           // 使用新的超时检测上报函数

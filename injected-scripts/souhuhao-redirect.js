@@ -126,9 +126,16 @@ const PLATFORM_CONFIG = (window.PLATFORM_CONFIGS && window.PLATFORM_CONFIGS.souh
                     console.warn('[搜狐号重定向] ⚠️ 清除发布成功标志失败，继续上报成功:', cleanupError.message);
                 }
 
+                const redirectTaskToken = String(publishSuccessData?.taskToken || publishSuccessData?.__publishTaskToken || window.__CURRENT_PUBLISH_TASK_TOKEN__ || 'task_default').trim() || 'task_default';
+                if (typeof window.setCurrentPublishTaskToken === 'function') {
+                    window.setCurrentPublishTaskToken(redirectTaskToken);
+                } else {
+                    window.__CURRENT_PUBLISH_TASK_TOKEN__ = redirectTaskToken;
+                }
+
                 if (publishId && typeof sendStatistics === 'function') {
                     console.log('[搜狐号重定向] 📤 调用 sendStatistics, publishId:', publishId);
-                    await sendStatistics(publishId, '搜狐号发布');
+                    await sendStatistics(publishId, '搜狐号发布', { taskToken: redirectTaskToken });
                     console.log('[搜狐号重定向] ✅ 发布成功上报完成');
                 } else if (publishId) {
                     console.log('[搜狐号重定向] ⚠️ sendStatistics 函数不存在，尝试手动上报');

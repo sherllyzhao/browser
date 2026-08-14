@@ -1210,12 +1210,12 @@ async function publishApi(dataObj) {
     // 🔑 视频号成功后会直接跳转页面，必须在点击前保存数据
     // 否则跳转后 publishApi 的后续代码不会执行
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
       console.log('[视频号发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
 
       // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
       if (window.browserAPI && window.browserAPI.setGlobalData && myWindowId) {
-        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${myWindowId}`, {publishId: publishId});
+        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${myWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
         console.log('[视频号发布] 💾 已保存 publishId 到 globalData');
       }
     } catch (e) {
@@ -1361,6 +1361,18 @@ async function fillFormData(dataObj) {
   }
 
   fillFormRunning = true;
+
+  const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+      ? window.resolvePublishTaskToken(dataObj, '发布')
+      : (typeof window.buildPublishTaskToken === 'function'
+          ? window.buildPublishTaskToken(dataObj, '发布')
+          : 'task_default');
+  if (typeof window.setCurrentPublishTaskToken === 'function') {
+      window.setCurrentPublishTaskToken(publishTaskToken);
+  } else {
+      window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+  }
+
 
   // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
   const executeAllFormSteps = async () => {

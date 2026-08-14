@@ -137,7 +137,62 @@
         return key;
     };
 
-    console.log('═══════════════════════════════════════');
+    const getPublishTaskId = (dataObj) => {
+        return dataObj?.video?.dyPlatform?.id
+            || dataObj?.video?.formData?.id
+            || dataObj?.id
+            || '';
+    };
+
+    const getPublishTaskToken = (dataObj, source = 'unknown') => {
+        const existingToken = String(
+            dataObj?.__publishTaskToken
+            || dataObj?.__taskToken
+            || dataObj?.taskToken
+            || ''
+        ).trim();
+        if (existingToken) {
+            return existingToken;
+        }
+
+        if (typeof window.buildPublishTaskToken === 'function') {
+            try {
+                const taskToken = String(window.buildPublishTaskToken(dataObj, '网易号发布') || '').trim();
+                if (taskToken) {
+                    return taskToken;
+                }
+            } catch (error) {
+                console.warn(`[网易号发布] ⚠️ ${source} 构建任务 token 失败，回退默认值:`, error?.message || error);
+            }
+        }
+
+        return 'task_default';
+    };
+
+    const resetPublishRuntimeForTask = async (dataObj, source = 'unknown', taskToken = '') => {
+        const publishId = getPublishTaskId(dataObj);
+        if (!publishId) {
+            console.warn(`[网易号发布] ⚠️ ${source} 未找到 publishId，无法隔离发布运行态`);
+            return;
+        }
+
+        const normalizedTaskToken = String(taskToken || getPublishTaskToken(dataObj, source) || '').trim() || 'task_default';
+        if (typeof window.setCurrentPublishTaskToken === 'function') {
+            window.setCurrentPublishTaskToken(normalizedTaskToken);
+        } else {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = normalizedTaskToken;
+        }
+
+        if (typeof window.resetPublishTaskRuntimeState === 'function') {
+            await window.resetPublishTaskRuntimeState(publishId, '网易号发布', normalizedTaskToken);
+            console.log(`[网易号发布] 🧹 已为 ${source} 隔离发布运行态，publishId: ${publishId}, taskToken: ${normalizedTaskToken}`);
+        } else {
+            window.__STATISTICS_REPORT_FAILURE__ = null;
+            window.__CURRENT_PUBLISH_TASK_ID__ = String(publishId);
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = normalizedTaskToken;
+            console.warn('[网易号发布] ⚠️ resetPublishTaskRuntimeState 不可用，仅清理统计失败标记');
+        }
+    };
     console.log('✅ 网易号发布脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
     console.log('🕐 注入时间:', new Date().toLocaleString());
@@ -185,6 +240,9 @@
                     // 使用公共方法检查 windowId 是否匹配（在保存数据之前！避免串数据）
                     const isMatch = await checkWindowIdMatch(message, '[网易号发布]');
                     if (!isMatch) return;
+
+                    const publishTaskToken = getPublishTaskToken(messageData, 'publish-data');
+                    await resetPublishRuntimeForTask(messageData, 'publish-data', publishTaskToken);
 
                     // 🔑 恢复会话数据（cookies、localStorage、sessionStorage、IndexedDB）
                     // 注意：网易号有特殊的多域名 cookies 处理逻辑，不能直接使用 restoreSessionAndReload
@@ -411,6 +469,9 @@
             if (publishData && !isProcessing && !hasProcessed) {
                 console.log('[网易号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
 
+                const publishTaskToken = getPublishTaskToken(publishData, 'global-storage');
+                await resetPublishRuntimeForTask(publishData, 'global-storage', publishTaskToken);
+
                 // 🔑 不再立即删除数据，改为在发布完成后删除
                 // 这样如果登录跳转后跳回来，数据仍然可用
                 // 使用 hasProcessed 标记防止重复处理
@@ -464,6 +525,9 @@
             return;
         }
         fillFormRunning = true;
+
+        const publishTaskToken = getPublishTaskToken(dataObj, 'fillFormData');
+
 
         try {
             const pathImage = dataObj?.video?.video?.cover;
@@ -916,6 +980,8 @@
                     // ===========================
                     const capturedErrors = []; // 收集所有捕获的错误信息
                     let errorScanInterval = null;
+                    let postPublishErrorWatchTimer = null;
+                    const POST_PUBLISH_ERROR_WATCH_MS = 5 * 60 * 1000;
 
                     // 🔑 需要忽略的非错误文本（在采集时就过滤掉）
                     const ignoredTexts = [
@@ -986,6 +1052,24 @@
                             errorScanInterval = null;
                             console.log('[网易号发布] 🛑 全局错误监听器已停止');
                         }
+                        if (postPublishErrorWatchTimer) {
+                            clearTimeout(postPublishErrorWatchTimer);
+                            postPublishErrorWatchTimer = null;
+                        }
+                    };
+
+                    // 网易的审核/发文前检测可能在首次检查结束后才返回失败提示。
+                    // 保持错误监听与 common.js 的发布错误探针同步工作，避免 tjlogerror 漏报。
+                    const keepErrorListenerForLatePublishFailure = () => {
+                        if (postPublishErrorWatchTimer) {
+                            clearTimeout(postPublishErrorWatchTimer);
+                        }
+                        postPublishErrorWatchTimer = setTimeout(() => {
+                            postPublishErrorWatchTimer = null;
+                            console.log('[网易号发布] ⏱️ 发布后错误监听到期，停止监听');
+                            stopErrorListener();
+                        }, POST_PUBLISH_ERROR_WATCH_MS);
+                        console.log(`[网易号发布] 👀 未发现即时错误，继续监听 ${POST_PUBLISH_ERROR_WATCH_MS / 60000} 分钟，等待延迟失败提示`);
                     };
 
                     // 获取最新的错误信息
@@ -1272,7 +1356,7 @@
                                             stopErrorListener();
                                             const publishId = dataObj.video?.dyPlatform?.id;
                                             if (publishId) {
-                                                await sendStatisticsError(publishId, result.message, '网易号发布');
+                                                await sendStatisticsError(publishId, result.message, '网易号发布', null, null, { taskToken: publishTaskToken });
                                             }
                                             await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                             return; // 不再继续
@@ -1368,7 +1452,7 @@
                                                     stopErrorListener();
                                                     const publishIdForError = dataObj.video?.dyPlatform?.id;
                                                     if (publishIdForError) {
-                                                        await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽', '网易号发布');
+                                                        await sendStatisticsError(publishIdForError, '发布按钮不可用，可能不符合发布要求，或者发文次数已用尽', '网易号发布', null, null, { taskToken: publishTaskToken });
                                                     }
                                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                     return;
@@ -1378,12 +1462,12 @@
                                                 if (publishId) {
                                                     try {
                                                         // 同时保存到 localStorage 和 globalData（双保险）
-                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({publishId: publishId}));
+                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                                         console.log('[网易号发布] 💾 已保存 publishId 到 localStorage:', publishId);
 
                                                         // 🔑 也保存到 globalData（更可靠，不受域名隔离限制）
                                                         if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                                             console.log('[网易号发布] 💾 已保存 publishId 到 globalData');
                                                         }
                                                     } catch (e) {
@@ -1408,7 +1492,7 @@
                                                     const wyOptimisticOptions = window.isFeatureEnabled?.('FIX_WANGYI_OPTIMISTIC_DEFER')
                                                         ? { deferUntilUnload: true }
                                                         : {};
-                                                    window.sendOptimisticSuccess(publishId, '网易号发布', wyOptimisticOptions).catch(() => {});
+                                                    window.sendOptimisticSuccess(publishId, '网易号发布', { ...wyOptimisticOptions, taskToken: publishTaskToken }).catch(() => {});
                                                 }
 
                                                 // 检查是否有发文前检测提示
@@ -1470,8 +1554,8 @@
 
                                                             const retryErrorMsg = getLatestError();
                                                             if (!retryErrorMsg && !retryDialogErrorMsg) {
-                                                                console.log('[网易号发布] ✅ 正文补图重试后未检测到错误，等待页面跳转');
-                                                                stopErrorListener();
+                                                                console.log('[网易号发布] ✅ 正文补图重试后未检测到即时错误，继续等待页面跳转或延迟失败提示');
+                                                                keepErrorListenerForLatePublishFailure();
                                                                 return;
                                                             }
 
@@ -1486,20 +1570,20 @@
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
                                                         console.log('[网易号发布] 📤 调用失败接口...');
-                                                        await sendStatisticsError(publishId, errorMsg, '网易号发布');
+                                                        await sendStatisticsError(publishId, errorMsg, '网易号发布', null, null, { taskToken: publishTaskToken });
                                                     }
                                                     await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                     return;
                                                 } else {
-                                                    console.log('[网易号发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）');
-                                                    stopErrorListener();
+                                                    console.log('[网易号发布] ✅ 未检测到即时错误，继续等待页面跳转或延迟失败提示（成功页/错误探针后续处理）');
+                                                    keepErrorListenerForLatePublishFailure();
                                                 }
                                             } else {
                                                 console.error('[网易号发布] ❌ 找不到提交图片按钮，上报失败');
                                                 stopErrorListener();
                                                 const publishId = dataObj.video?.dyPlatform?.id;
                                                 if (publishId) {
-                                                    await sendStatisticsError(publishId, '发布按钮不可用', '网易号发布');
+                                                    await sendStatisticsError(publishId, '发布按钮不可用', '网易号发布', null, null, { taskToken: publishTaskToken });
                                                 }
                                                 await closeWindowWithMessage('发布失败，刷新数据', 1000);
                                                 return;
@@ -1522,7 +1606,7 @@
                                                 console.log(`[网易号发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
                                                 if (publishId) {
                                                     console.log(`[网易号发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
-                                                    await sendStatisticsError(publishId, errorMessage, '网易号发布');
+                                                    await sendStatisticsError(publishId, errorMessage, '网易号发布', null, null, { taskToken: publishTaskToken });
                                                     console.log(`[网易号发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
                                                 } else {
                                                     console.error(`[网易号发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
@@ -1561,7 +1645,7 @@
                                                         stopErrorListener();
                                                         const publishId = dataObj.video?.dyPlatform?.id;
                                                         if (publishId) {
-                                                            await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '网易号发布');
+                                                            await sendStatisticsError(publishId, '图片上传失败，无法找到上传输入框', '网易号发布', null, null, { taskToken: publishTaskToken });
                                                         }
                                                         await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                     }
@@ -1570,7 +1654,7 @@
                                                     stopErrorListener();
                                                     const publishId = dataObj.video?.dyPlatform?.id;
                                                     if (publishId) {
-                                                        await sendStatisticsError(publishId, '图片上传失败，无法找到封面按钮', '网易号发布');
+                                                        await sendStatisticsError(publishId, '图片上传失败，无法找到封面按钮', '网易号发布', null, null, { taskToken: publishTaskToken });
                                                     }
                                                     await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                                 }
@@ -1580,7 +1664,7 @@
                                                 stopErrorListener();
                                                 const publishId = dataObj.video?.dyPlatform?.id;
                                                 if (publishId) {
-                                                    await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '网易号发布');
+                                                    await sendStatisticsError(publishId, '图片上传失败，重试次数已用尽', '网易号发布', null, null, { taskToken: publishTaskToken });
                                                 }
                                                 await closeWindowWithMessage('图片上传失败，刷新数据', 1000);
                                             }
@@ -1598,7 +1682,7 @@
                             stopErrorListener();
                             const publishId = dataObj?.video?.dyPlatform?.id;
                             if (publishId) {
-                                await sendStatisticsError(publishId, error.message || '封面下载失败', '网易号发布');
+                                await sendStatisticsError(publishId, error.message || '封面下载失败', '网易号发布', null, null, { taskToken: publishTaskToken });
                             }
                             await closeWindowWithMessage('封面下载失败，刷新数据', 1000);
                         }
@@ -1615,7 +1699,7 @@
             // 发送错误上报
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {
-                await sendStatisticsError(publishId, error.message || '填写表单失败', '网易号发布');
+                await sendStatisticsError(publishId, error.message || '填写表单失败', '网易号发布', null, null, { taskToken: publishTaskToken });
             }
             // 同步错误时重置标记
             fillFormRunning = false;

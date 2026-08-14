@@ -2056,27 +2056,56 @@ if (typeof window.uploadVideo === "function"
 
     function evaluateStatisticsResponse(response, parsed) {
         if (!response || !response.ok) {
-            return { ok: false, code: parsed ? parsed.code : undefined };
+
+            return {
+                ok: false,
+                code: parsed ? parsed.code : undefined,
+                message: parsed ? (parsed.message || parsed.msg || "") : "",
+            };
         }
 
         if (!parsed || typeof parsed !== "object") {
-            return { ok: true, code: response.status, reason: "http-ok-without-json" };
+            return { ok: true, code: response.status, message: "", reason: "http-ok-without-json" };
         }
 
         if (!Object.prototype.hasOwnProperty.call(parsed, "code")) {
-            return { ok: true, code: response.status, reason: "http-ok-without-code" };
+            return {
+                ok: true,
+                code: response.status,
+                message: parsed.message || parsed.msg || "",
+                reason: "http-ok-without-code",
+            };
         }
 
         const numericCode = Number(parsed.code);
         return {
             ok: Number.isFinite(numericCode) && numericCode === 200,
             code: parsed.code,
+            message: parsed.message || parsed.msg || "",
             reason: "business-code"
         };
     }
 
     function formatStatisticsResponseError(response, parsed) {
         return `status=${response ? response.status : "N/A"} code=${parsed ? parsed.code : "N/A"} msg=${parsed ? (parsed.message || parsed.msg || "") : "N/A"}`;
+    }
+
+    // 记录统计接口的业务失败原因：调用方随后尝试关窗时，统一改为只提示、不自动关闭。
+    function markStatisticsReportFailure(resultType, statusText, evaluation, error) {
+        const backendMessage = String(evaluation?.message || "").trim();
+        const originalMessage = String(statusText || "统计上报失败").trim();
+        const message = backendMessage && backendMessage !== originalMessage
+            ? `${originalMessage}（后台：${backendMessage}）`
+            : (backendMessage || originalMessage);
+        window.__STATISTICS_REPORT_FAILURE__ = {
+            resultType,
+            code: evaluation?.code,
+            message,
+            backendMessage,
+            error,
+            timestamp: Date.now(),
+        };
+        return message;
     }
 
     // ===========================
@@ -2905,21 +2934,155 @@ if (typeof window.uploadVideo === "function"
     //     （典型场景：乐观上报 fire-and-forget 与轮询判定几乎同时触发；success 与 error 同时触发）。
     //     sessionStorage/globalData 锁仍保留，用于跨导航、跨窗口去重。
     const statisticsReportMemoryLocks = new Map();
+    // 同一 publishId 的并发调用复用首个请求，避免后来的失败流程跳过后立即关窗，
+    // 使首个尚在异步准备中的 tjlogerror 被窗口销毁中断。
+    const statisticsReportInFlight = new Map();
 
-    function getStatisticsMemoryLockKey(publishId, resultType = "unknown") {
-        return `${resultType}:${String(publishId || "").trim()}`;
+    const PUBLISH_TASK_FINGERPRINT_IGNORED_KEYS = new Set([
+        "cookies",
+        "localStorage",
+        "sessionStorage",
+        "indexedDB",
+        "windowId",
+        "receivedAt",
+        "createdAt",
+        "timestamp",
+        "source",
+        "__source",
+        "__receivedAt",
+        "__createdAt",
+        "__timestamp",
+    ]);
+
+    function stableStringifyPublishTaskFingerprint(value, seen = new WeakSet()) {
+        if (value === null) {
+            return "null";
+        }
+
+        const type = typeof value;
+        if (type === "string") {
+            return JSON.stringify(value);
+        }
+        if (type === "number") {
+            return Number.isFinite(value) ? String(value) : JSON.stringify(String(value));
+        }
+        if (type === "boolean") {
+            return value ? "true" : "false";
+        }
+        if (type === "bigint") {
+            return JSON.stringify(value.toString());
+        }
+        if (type === "undefined" || type === "function" || type === "symbol") {
+            return "null";
+        }
+        if (value instanceof Date) {
+            return JSON.stringify(value.toISOString());
+        }
+        if (type === "object") {
+            if (seen.has(value)) {
+                return JSON.stringify("[Circular]");
+            }
+            seen.add(value);
+            try {
+                if (Array.isArray(value)) {
+                    return `[${value.map((item) => stableStringifyPublishTaskFingerprint(item, seen)).join(",")}]`;
+                }
+                const keys = Object.keys(value)
+                    .filter((key) => !PUBLISH_TASK_FINGERPRINT_IGNORED_KEYS.has(key))
+                    .sort();
+                const entries = keys.map((key) => `${JSON.stringify(key)}:${stableStringifyPublishTaskFingerprint(value[key], seen)}`);
+                return `{${entries.join(",")}}`;
+            } finally {
+                seen.delete(value);
+            }
+        }
+        return JSON.stringify(String(value));
     }
 
-    function getStatisticsReportCacheKey(windowId, resultType = "unknown") {
-        return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
+    function hashPublishTaskFingerprint(text) {
+        let hash1 = 0x811c9dc5;
+        let hash2 = 0x9e3779b9;
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            hash1 ^= code;
+            hash1 = Math.imul(hash1, 0x01000193);
+            hash2 ^= code + ((hash1 >>> 16) & 0xffff);
+            hash2 = Math.imul(hash2, 0x85ebca6b);
+        }
+        const part1 = (hash1 >>> 0).toString(36);
+        const part2 = (hash2 >>> 0).toString(36);
+        return `${part1}${part2}`;
     }
 
-    function getStatisticsGlobalReportCacheKey(publishId, resultType = "unknown") {
+    function resolveStatisticsTaskToken(taskToken = "") {
+        const normalized = String(taskToken || window.__CURRENT_PUBLISH_TASK_TOKEN__ || "").trim();
+        return normalized || "default";
+    }
+
+    function getStatisticsTaskScopeKey(publishId, taskToken = "") {
         const normalizedPublishId = String(publishId || "").trim();
         if (!normalizedPublishId) {
             return null;
         }
-        return `PUBLISH_STATISTICS_REPORTED_GLOBAL_${resultType}_${encodeURIComponent(normalizedPublishId)}`;
+        return `${resolveStatisticsTaskToken(taskToken)}::${encodeURIComponent(normalizedPublishId)}`;
+    }
+
+    window.buildPublishTaskToken = function (publishData, platform = "") {
+        try {
+            const fingerprint = stableStringifyPublishTaskFingerprint(publishData);
+            return `task_${hashPublishTaskFingerprint(fingerprint)}_${fingerprint.length.toString(36)}`;
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 构建发布任务指纹失败，回退到默认 token:`, e.message);
+            return "task_default";
+        }
+    };
+
+    window.setCurrentPublishTaskToken = function (taskToken = "") {
+        const normalizedTaskToken = String(taskToken || "").trim();
+        window.__CURRENT_PUBLISH_TASK_TOKEN__ = normalizedTaskToken;
+        return normalizedTaskToken;
+    };
+
+    window.resolvePublishTaskToken = function (publishData = null, platform = "") {
+        const existingToken = String(
+            publishData?.taskToken
+            || publishData?.__publishTaskToken
+            || publishData?.__taskToken
+            || window.__CURRENT_PUBLISH_TASK_TOKEN__
+            || ""
+        ).trim();
+        if (existingToken) {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = existingToken;
+            return existingToken;
+        }
+
+        if (publishData && typeof publishData === "object") {
+            const builtToken = window.buildPublishTaskToken(publishData, platform);
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = builtToken;
+            return builtToken;
+        }
+
+        return "task_default";
+    };
+
+    function getStatisticsMemoryLockKey(publishId, resultType = "unknown", taskToken = "") {
+        const normalizedPublishId = String(publishId || "").trim();
+        if (!normalizedPublishId) {
+            return null;
+        }
+        return `${resultType}:${resolveStatisticsTaskToken(taskToken)}:${encodeURIComponent(normalizedPublishId)}`;
+    }
+
+    function getStatisticsReportCacheKey(windowId, resultType = "unknown", taskToken = "") {
+        return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}_${resolveStatisticsTaskToken(taskToken)}`;
+    }
+
+    function getStatisticsGlobalReportCacheKey(publishId, resultType = "unknown", taskToken = "") {
+        const normalizedPublishId = String(publishId || "").trim();
+        if (!normalizedPublishId) {
+            return null;
+        }
+        return `PUBLISH_STATISTICS_REPORTED_GLOBAL_${resultType}_${resolveStatisticsTaskToken(taskToken)}_${encodeURIComponent(normalizedPublishId)}`;
     }
 
     function parseStatisticsReportCache(value) {
@@ -2962,19 +3125,20 @@ if (typeof window.uploadVideo === "function"
         }
     }
 
-    window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
+    window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "", taskToken = "") {
         if (!publishId) {
-            return { acquired: true, key: null, globalKey: null, windowId: null, memoryKey: null };
+            return { acquired: true, key: null, globalKey: null, windowId: null, memoryKey: null, taskToken: resolveStatisticsTaskToken(taskToken) };
         }
 
         const normalizedPublishId = String(publishId).trim();
+        const normalizedTaskToken = resolveStatisticsTaskToken(taskToken);
 
         // 🔒 第一道闸（同步、原子）：内存锁。必须先于任何 await 执行——
         //     后面的 getWindowId/getGlobalData 是 IPC await 会让出事件循环，
         //     并发调用会在 check 与 set 之间穿插导致双双拿锁。
-        const memoryKey = getStatisticsMemoryLockKey(normalizedPublishId, resultType);
+        const memoryKey = getStatisticsMemoryLockKey(normalizedPublishId, resultType, normalizedTaskToken);
         if (resultType === "error") {
-            const successMemory = statisticsReportMemoryLocks.get(getStatisticsMemoryLockKey(normalizedPublishId, "success"));
+            const successMemory = statisticsReportMemoryLocks.get(getStatisticsMemoryLockKey(normalizedPublishId, "success", normalizedTaskToken));
             if (successMemory) {
                 console.warn(`[${platform || "发布"}][统计接口] ⚠️ 成功上报已在进行/已完成（内存锁），跳过失败上报`, successMemory);
                 return {
@@ -3003,14 +3167,15 @@ if (typeof window.uploadVideo === "function"
         }
         statisticsReportMemoryLocks.set(memoryKey, {
             publishId: normalizedPublishId,
+            taskToken: normalizedTaskToken,
             resultType,
             platform: platform || "",
             timestamp: Date.now(),
         });
 
-        const globalKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, resultType);
+        const globalKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, resultType, normalizedTaskToken);
         const globalSuccessKey = resultType === "error"
-            ? getStatisticsGlobalReportCacheKey(normalizedPublishId, "success")
+            ? getStatisticsGlobalReportCacheKey(normalizedPublishId, "success", normalizedTaskToken)
             : null;
 
         let windowId = null;
@@ -3022,11 +3187,11 @@ if (typeof window.uploadVideo === "function"
             console.warn("[统计接口] ⚠️ 获取窗口 ID 失败，降级为默认去重 key:", e.message);
         }
 
-        const key = getStatisticsReportCacheKey(windowId, resultType);
+        const key = getStatisticsReportCacheKey(windowId, resultType, normalizedTaskToken);
 
         try {
             if (resultType === "error") {
-                const successKey = getStatisticsReportCacheKey(windowId, "success");
+                const successKey = getStatisticsReportCacheKey(windowId, "success", normalizedTaskToken);
                 const successCached = parseStatisticsReportCache(sessionStorage.getItem(successKey));
                 if (successCached) {
                     if (String(successCached?.publishId || "") === normalizedPublishId) {
@@ -3072,6 +3237,7 @@ if (typeof window.uploadVideo === "function"
 
             const cacheData = {
                 publishId: normalizedPublishId,
+                taskToken: normalizedTaskToken,
                 resultType,
                 platform: platform || "",
                 windowId,
@@ -3083,7 +3249,7 @@ if (typeof window.uploadVideo === "function"
             console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
         }
 
-        return { acquired: true, key, globalKey, windowId, memoryKey };
+        return { acquired: true, key, globalKey, windowId, memoryKey, taskToken: normalizedTaskToken };
     };
 
     window.releaseStatisticsReportLock = async function (lockOrKey, publishId = "") {
@@ -3125,7 +3291,8 @@ if (typeof window.uploadVideo === "function"
         const url = await getStatisticsUrl(false);
         const isGeo = window.isGeoStatisticsReport(url);
 
-        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform);
+        const taskToken = resolveStatisticsTaskToken(options.taskToken);
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "success", platform, taskToken);
         if (!reportLock.acquired) {
             return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
@@ -3153,7 +3320,9 @@ if (typeof window.uploadVideo === "function"
                     try { parsed = JSON.parse(text); } catch (_) {}
                     const evaluation = evaluateStatisticsResponse(response, parsed);
                     if (!evaluation.ok) {
-                        throw new Error(formatStatisticsResponseError(response, parsed));
+                        const error = new Error(formatStatisticsResponseError(response, parsed));
+                        error.statisticsEvaluation = evaluation;
+                        throw error;
                     }
                     return { response, parsed, evaluation };
                 } finally {
@@ -3164,6 +3333,10 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
+            const evaluation = e?.statisticsEvaluation;
+            const reportMessage = evaluation?.code !== undefined
+                ? markStatisticsReportFailure("success", "成功统计上报失败", evaluation, e)
+                : "";
             // 🔒 失败/超时后不释放去重锁：10s abort 超时的请求可能已到达服务器并被记录，
             //     释放锁会让后续判定路径重报同一 publishId（重复计数）。同一 publishId 最多只发出 1 次请求。
             console.error(`[${platform || "发布"}] ❌ 成功统计上报失败（只发 1 次，不重试、不补报、不解锁）:`, e.message);
@@ -3172,7 +3345,7 @@ if (typeof window.uploadVideo === "function"
                 "内容已发布成功！仅数据统计上报失败（不影响发布结果）。",
                 "warning"
             );
-            return { success: false, error: e };
+            return { success: false, code: evaluation?.code, message: reportMessage, error: e };
         }
     };
 
@@ -3223,29 +3396,110 @@ if (typeof window.uploadVideo === "function"
         }
     }
 
-    window.cancelOptimisticPendingSuccess = function (publishId, reason = "") {
+    window.cancelOptimisticPendingSuccess = function (publishId, reason = "", taskToken = "") {
         const normalizedPublishId = String(publishId || "").trim();
-        const pending = optimisticPendingReports.get(normalizedPublishId);
+        const scopeKey = getStatisticsTaskScopeKey(normalizedPublishId, taskToken);
+        const pending = scopeKey ? optimisticPendingReports.get(scopeKey) : null;
         if (!pending) return false;
         pending.cancelled = true;
         if (pending.timer) clearTimeout(pending.timer);
         if (pending.probeTimer) clearInterval(pending.probeTimer);
-        optimisticPendingReports.delete(normalizedPublishId);
-        console.log(`[${pending.platform || "发布"}] 🛑 已取消待发送的乐观成功上报（ID: ${normalizedPublishId}）${reason ? `，原因: ${reason}` : ""}`);
+        optimisticPendingReports.delete(scopeKey);
+        console.log(`[${pending.platform || "发布"}] 🛑 已取消待发送的乐观成功上报（ID: ${normalizedPublishId}，任务: ${pending.taskToken || "default"}）${reason ? `，原因: ${reason}` : ""}`);
         return true;
     };
 
-    function hasErrorMemoryLock(publishId) {
-        return statisticsReportMemoryLocks.has(getStatisticsMemoryLockKey(publishId, "error"));
+    // 🧹 同一发布窗口复用/重发新任务前的运行态隔离。
+    // 只清理“当前窗口内”的旧任务状态，不删除旧 publishId 的全局上报锁，
+    // 这样既避免新文章被旧文章的 sessionStorage/内存状态挡住，又保留同一文章只上报一次的保护。
+    window.resetPublishTaskRuntimeState = async function (publishId, platform = "", taskToken = "") {
+        const normalizedPublishId = String(publishId || "").trim();
+        const normalizedTaskToken = resolveStatisticsTaskToken(taskToken);
+        if (!normalizedPublishId) {
+            return { success: false, skipped: true, reason: "no-publishId" };
+        }
+
+        const previousPublishId = String(window.__CURRENT_PUBLISH_TASK_ID__ || "").trim();
+        const previousTaskToken = resolveStatisticsTaskToken(window.__CURRENT_PUBLISH_TASK_TOKEN__ || "");
+        if (previousPublishId === normalizedPublishId && previousTaskToken === normalizedTaskToken) {
+            return {
+                success: true,
+                skipped: true,
+                reason: "same-task",
+                publishId: normalizedPublishId,
+                taskToken: normalizedTaskToken,
+            };
+        }
+
+        window.__CURRENT_PUBLISH_TASK_ID__ = normalizedPublishId;
+        window.__CURRENT_PUBLISH_TASK_TOKEN__ = normalizedTaskToken;
+        window.__STATISTICS_REPORT_FAILURE__ = null;
+
+        if (previousPublishId) {
+            window.cancelOptimisticPendingSuccess?.(previousPublishId, "切换到新的发布任务", previousTaskToken);
+            ["success", "error", "unknown"].forEach((resultType) => {
+                statisticsReportMemoryLocks.delete(getStatisticsMemoryLockKey(previousPublishId, resultType, previousTaskToken));
+            });
+            publishErrorProbe = null;
+        }
+
+        let windowId = null;
+        try {
+            if (window.browserAPI?.getWindowId) {
+                windowId = await window.browserAPI.getWindowId();
+            }
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 切换任务时获取窗口 ID 失败:`, e.message);
+        }
+
+        const clearedKeys = [];
+        try {
+            ["success", "error", "unknown"].forEach((resultType) => {
+                const key = getStatisticsReportCacheKey(windowId, resultType, previousTaskToken);
+                const cached = parseStatisticsReportCache(sessionStorage.getItem(key));
+                if (cached && String(cached?.publishId || "") !== normalizedPublishId) {
+                    sessionStorage.removeItem(key);
+                    clearedKeys.push(key);
+                }
+            });
+        } catch (e) {
+            console.warn(`[${platform || "发布"}][统计接口] ⚠️ 清理窗口级统计缓存失败:`, e.message);
+        }
+
+        if (previousPublishId || clearedKeys.length > 0) {
+            console.log(`[${platform || "发布"}][统计接口] 🧹 已切换发布任务运行态`, {
+                previousPublishId,
+                previousTaskToken,
+                publishId: normalizedPublishId,
+                taskToken: normalizedTaskToken,
+                windowId,
+                clearedKeys,
+            });
+        }
+
+        return {
+            success: true,
+            publishId: normalizedPublishId,
+            previousPublishId,
+            previousTaskToken,
+            taskToken: normalizedTaskToken,
+            windowId,
+            clearedKeys,
+        };
+    };
+    function hasErrorMemoryLock(publishId, taskToken = "") {
+        return statisticsReportMemoryLocks.has(getStatisticsMemoryLockKey(publishId, "error", taskToken));
     }
 
     // 页面卸载冲刷：跳转/关窗前把尚未到点的乐观成功用 keepalive 发出。
     // 卸载多半意味着发布成功跳转（失败路径都是先 await sendStatisticsError 再关窗，
     // 那时 pending 已被取消，不会走到这里）。
     function flushOptimisticPendingOnUnload() {
-        for (const [publishId, pending] of optimisticPendingReports) {
+        for (const [scopeKey, pending] of optimisticPendingReports) {
+            const publishId = String(pending.publishId || "").trim();
+            const taskToken = resolveStatisticsTaskToken(pending.taskToken);
             if (pending.cancelled || pending.inFlight || pending.flushed) continue;
-            if (hasErrorMemoryLock(publishId)) continue;
+            if (hasErrorMemoryLock(publishId, taskToken)) continue;
             const probeError = readPublishErrorProbe();
             if (probeError) {
                 // 有明确错误 + 页面卸载：不能只放弃成功——平台脚本的失败流程可能随窗口关闭一起死掉，
@@ -3256,10 +3510,11 @@ if (typeof window.uploadVideo === "function"
                 if (pending.probeTimer) clearInterval(pending.probeTimer);
                 try {
                     // 同步落 error 锁（内存 + sessionStorage；globalData 尽力而为），防平台脚本随后重复报失败
-                    const errorMemoryKey = getStatisticsMemoryLockKey(publishId, "error");
+                    const errorMemoryKey = getStatisticsMemoryLockKey(publishId, "error", taskToken);
                     if (statisticsReportMemoryLocks.has(errorMemoryKey)) continue;
                     const errorCacheData = {
                         publishId,
+                        taskToken,
                         resultType: "error",
                         platform: pending.platform || "",
                         windowId: pending.windowId,
@@ -3268,9 +3523,9 @@ if (typeof window.uploadVideo === "function"
                     };
                     statisticsReportMemoryLocks.set(errorMemoryKey, errorCacheData);
                     try {
-                        sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "error"), JSON.stringify(errorCacheData));
+                        sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "error", taskToken), JSON.stringify(errorCacheData));
                     } catch (_) {}
-                    const errorGlobalKey = getStatisticsGlobalReportCacheKey(publishId, "error");
+                    const errorGlobalKey = getStatisticsGlobalReportCacheKey(publishId, "error", taskToken);
                     if (errorGlobalKey && window.browserAPI?.setGlobalData) {
                         try {
                           // 【特性开关】FIX_PAGEHIDE_PROMISE_CRASH: 移除 .catch() 防止 Promise 在 unload 时访问释放内存
@@ -3309,10 +3564,11 @@ if (typeof window.uploadVideo === "function"
             if (pending.timer) clearTimeout(pending.timer);
             try {
                 // 同步落锁（内存 + sessionStorage；globalData 尽力而为），防跳转后 publish-success.js 重复报成功
-                const memoryKey = getStatisticsMemoryLockKey(publishId, "success");
+                const memoryKey = getStatisticsMemoryLockKey(publishId, "success", taskToken);
                 if (statisticsReportMemoryLocks.has(memoryKey)) continue;
                 const cacheData = {
                     publishId,
+                    taskToken,
                     resultType: "success",
                     platform: pending.platform || "",
                     windowId: pending.windowId,
@@ -3321,9 +3577,9 @@ if (typeof window.uploadVideo === "function"
                 };
                 statisticsReportMemoryLocks.set(memoryKey, cacheData);
                 try {
-                    sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "success"), JSON.stringify(cacheData));
+                    sessionStorage.setItem(getStatisticsReportCacheKey(pending.windowId, "success", taskToken), JSON.stringify(cacheData));
                 } catch (_) {}
-                const globalKey = getStatisticsGlobalReportCacheKey(publishId, "success");
+                const globalKey = getStatisticsGlobalReportCacheKey(publishId, "success", taskToken);
                 if (globalKey && window.browserAPI?.setGlobalData) {
                     try {
                       // 【特性开关】FIX_PAGEHIDE_PROMISE_CRASH: 移除 .catch() 防止 Promise 在 unload 时访问释放内存
@@ -3360,15 +3616,17 @@ if (typeof window.uploadVideo === "function"
                 return { success: false, skipped: true, reason: "no-publishId" };
             }
             const normalizedPublishId = String(publishId).trim();
+            const taskToken = resolveStatisticsTaskToken(options.taskToken);
+            const scopeKey = getStatisticsTaskScopeKey(normalizedPublishId, taskToken);
             const url = await getStatisticsUrl(false);
             if (window.isGeoStatisticsReport(url)) {
                 console.log(`[${platform || "发布"}] ℹ️ GEO 系统跳过「点击即上报成功」，避免重复记录`);
                 return { success: true, skipped: true, reason: "geo-skip-optimistic" };
             }
-            if (optimisticPendingReports.has(normalizedPublishId)) {
+            if (scopeKey && optimisticPendingReports.has(scopeKey)) {
                 return { success: true, skipped: true, reason: "optimistic-already-pending" };
             }
-            if (hasErrorMemoryLock(normalizedPublishId)) {
+            if (hasErrorMemoryLock(normalizedPublishId, taskToken)) {
                 return { success: true, skipped: true, reason: "error-already-reported" };
             }
 
@@ -3381,7 +3639,7 @@ if (typeof window.uploadVideo === "function"
             } catch (_) {}
 
             // await 之后重查：预构建期间失败流程可能已抢到 error 锁
-            if (hasErrorMemoryLock(normalizedPublishId)) {
+            if (hasErrorMemoryLock(normalizedPublishId, taskToken)) {
                 return { success: true, skipped: true, reason: "error-already-reported" };
             }
 
@@ -3390,6 +3648,8 @@ if (typeof window.uploadVideo === "function"
             const deferUntilUnload = options && options.deferUntilUnload === true;
             const pending = {
                 publishId: normalizedPublishId,
+                taskToken,
+                scopeKey,
                 platform: platform || "",
                 url,
                 errorUrl,
@@ -3402,7 +3662,9 @@ if (typeof window.uploadVideo === "function"
                 timer: null,
                 probeTimer: null,
             };
-            optimisticPendingReports.set(normalizedPublishId, pending);
+            if (scopeKey) {
+                optimisticPendingReports.set(scopeKey, pending);
+            }
             ensureOptimisticFlushHook();
 
             if (deferUntilUnload) {
@@ -3431,19 +3693,19 @@ if (typeof window.uploadVideo === "function"
                     console.log(`[${platform || "发布"}] 🛑 探针轮询停止（pending 已结束）`);
                     return;
                 }
-                if (hasErrorMemoryLock(normalizedPublishId)) {
+                if (hasErrorMemoryLock(normalizedPublishId, taskToken)) {
                     if (pending.probeTimer) clearInterval(pending.probeTimer);
-                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报");
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报", taskToken);
                     return;
                 }
                 const probeError = readPublishErrorProbe();
                 if (probeError) {
                     if (pending.probeTimer) clearInterval(pending.probeTimer);
-                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`);
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`, taskToken);
                     console.log(`[${platform || "发布"}] ❌ 延迟期间探针发现明确错误，转报失败: ${probeError}`);
                     (async () => {
                         try {
-                            await window.sendStatisticsError(normalizedPublishId, probeError, platform);
+                            await window.sendStatisticsError(normalizedPublishId, probeError, platform, null, null, { taskToken });
                         } catch (e) {
                             console.warn(`[${platform || "发布"}] ⚠️ 探针失败转报异常:`, e.message);
                         }
@@ -3455,16 +3717,16 @@ if (typeof window.uploadVideo === "function"
             pending.timer = deferUntilUnload ? null : setTimeout(async () => {
                 if (pending.cancelled || pending.flushed) return;
                 if (pending.probeTimer) clearInterval(pending.probeTimer);
-                if (hasErrorMemoryLock(normalizedPublishId)) {
-                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报");
+                if (hasErrorMemoryLock(normalizedPublishId, taskToken)) {
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, "已存在失败上报", taskToken);
                     return;
                 }
                 const probeError = readPublishErrorProbe();
                 if (probeError) {
-                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`);
+                    window.cancelOptimisticPendingSuccess(normalizedPublishId, `探针检测到错误: ${probeError}`, taskToken);
                     console.log(`[${platform || "发布"}] ❌ 乐观上报到点前探针发现明确错误，转报失败: ${probeError}`);
                     try {
-                        await window.sendStatisticsError(normalizedPublishId, probeError, platform);
+                        await window.sendStatisticsError(normalizedPublishId, probeError, platform, null, null, { taskToken });
                     } catch (e) {
                         console.warn(`[${platform || "发布"}] ⚠️ 探针失败转报异常:`, e.message);
                     }
@@ -3472,16 +3734,18 @@ if (typeof window.uploadVideo === "function"
                 }
                 pending.inFlight = true;
                 try {
-                    await window.sendStatistics(normalizedPublishId, platform);
+                    await window.sendStatistics(normalizedPublishId, platform, { taskToken });
                 } catch (e) {
                     console.warn(`[${platform || "发布"}] ⚠️ 延迟乐观成功上报异常:`, e.message);
                 } finally {
                     if (pending.probeTimer) clearInterval(pending.probeTimer);
-                    optimisticPendingReports.delete(normalizedPublishId);
+                    if (scopeKey) {
+                        optimisticPendingReports.delete(scopeKey);
+                    }
                 }
             }, OPTIMISTIC_SUCCESS_DELAY_MS);
 
-            return { success: true, deferred: true, deferUntilUnload, delayMs: deferUntilUnload ? null : OPTIMISTIC_SUCCESS_DELAY_MS };
+            return { success: true, deferred: true, deferUntilUnload, delayMs: deferUntilUnload ? null : OPTIMISTIC_SUCCESS_DELAY_MS, taskToken };
         } catch (e) {
             console.warn(`[${platform || "发布"}] ⚠️ 乐观成功上报异常（不阻断发布流程）:`, e.message);
             return { success: false, error: e };
@@ -3499,18 +3763,46 @@ if (typeof window.uploadVideo === "function"
     //   - {Object} diagnosis - 诊断信息（如表单/按钮诊断结果）
     //   - {string} failure_category - 显式指定失败分类（覆盖自动推断）
     window.sendStatisticsError = async function (publishId, statusText, platform = "", errorObj = null, extraFields = null, options = {}) {
+        const taskToken = resolveStatisticsTaskToken(options.taskToken);
+        const inFlightKey = getStatisticsMemoryLockKey(publishId, "error", taskToken);
+        if (!options.__statisticsInFlightOwner) {
+            const existingRequest = statisticsReportInFlight.get(inFlightKey);
+            if (existingRequest) {
+                console.log(`[${platform || "发布"}][统计接口] ⏳ 失败上报正在发送，等待同一 publishId 的首个请求完成: ${publishId}`);
+                return await existingRequest;
+            }
+
+            const ownerOptions = { ...options, taskToken, __statisticsInFlightOwner: true };
+            const request = window.sendStatisticsError(
+                publishId,
+                statusText,
+                platform,
+                errorObj,
+                extraFields,
+                ownerOptions
+            );
+            statisticsReportInFlight.set(inFlightKey, request);
+            try {
+                return await request;
+            } finally {
+                if (statisticsReportInFlight.get(inFlightKey) === request) {
+                    statisticsReportInFlight.delete(inFlightKey);
+                }
+            }
+        }
+
         // 🔒 GEO 与普通系统统一走去重锁：同一 publishId 只上报 1 次失败（且已报成功则不再报失败）
         const url = await getStatisticsUrl(true);
         const isGeo = window.isGeoStatisticsReport(url);
 
-        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform);
+        const reportLock = await window.acquireStatisticsReportLock(publishId, "error", platform, taskToken);
         if (!reportLock.acquired) {
             return { success: true, skipped: true, reason: reportLock.reason || "duplicate-report" };
         }
 
         // 🛑 失败已确认抢锁：立即取消同 publishId 尚未发出的延迟乐观成功，
         //     保证后台只收到「失败」这一条（后台不支持失败覆盖成功）
-        window.cancelOptimisticPendingSuccess?.(publishId, "失败上报已抢锁");
+        window.cancelOptimisticPendingSuccess?.(publishId, "失败上报已抢锁", taskToken);
 
         // 使用 PublishLogger 记录错误
         if (window.PublishLogger && errorObj) {
@@ -3584,7 +3876,9 @@ if (typeof window.uploadVideo === "function"
                     try { parsed = JSON.parse(text); } catch (_) {}
                     const evaluation = evaluateStatisticsResponse(response, parsed);
                     if (!evaluation.ok) {
-                        throw new Error(formatStatisticsResponseError(response, parsed));
+                        const error = new Error(formatStatisticsResponseError(response, parsed));
+                        error.statisticsEvaluation = evaluation;
+                        throw error;
                     }
                     return { response, parsed, evaluation };
                 } finally {
@@ -3595,10 +3889,14 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] ✅ 失败统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
+            const evaluation = e?.statisticsEvaluation;
+            const reportMessage = evaluation?.code !== undefined
+                ? markStatisticsReportFailure("error", statusText, evaluation, e)
+                : "";
             // 🔒 失败/超时后不释放去重锁：请求可能已到达服务器，释放会导致重复上报（同一 publishId 最多 1 次请求）
             console.error(`[${platform || "发布"}] ❌ 失败统计上报失败（只发 1 次，不重试、不补报、不解锁）:`, e.message);
             // 🔒 只发一次：不入补报队列。
-            return { success: false, error: e };
+            return { success: false, code: evaluation?.code, message: reportMessage, error: e };
         }
     };
 
@@ -3783,14 +4081,16 @@ if (typeof window.uploadVideo === "function"
                 toast.style.transform = "translateX(-50%) translateY(0)";
             });
 
-            // duration 后淡出并移除
-            setTimeout(() => {
-                try {
-                    toast.style.opacity = "0";
-                    toast.style.transform = "translateX(-50%) translateY(-12px)";
-                    setTimeout(() => { try { toast.remove(); } catch (_) {} }, 350);
-                } catch (_) {}
-            }, duration);
+            // duration 为 0 时保持显示，等待用户自行关闭发布窗口。
+            if (duration > 0) {
+                setTimeout(() => {
+                    try {
+                        toast.style.opacity = "0";
+                        toast.style.transform = "translateX(-50%) translateY(-12px)";
+                        setTimeout(() => { try { toast.remove(); } catch (_) {} }, 350);
+                    } catch (_) {}
+                }, duration);
+            }
         } catch (e) {
             console.warn("[showPublishToast] ⚠️ 显示提示失败:", e.message);
         }
@@ -4327,8 +4627,20 @@ if (typeof window.uploadVideo === "function"
     // 🔑 publish_data_window 由主进程在窗口 closed 后统一清理。
     // 提前删除会让 close handler 拿不到账号上下文，导致登录态保存被跳过。
     window.closeWindowWithMessage = async function (message = "发布成功，刷新数据", delay = 10000) {
-        console.log(`[closeWindow] 发送消息: ${message}`);
-        window.sendMessageToParent(message);
+        const reportFailure = window.__STATISTICS_REPORT_FAILURE__;
+        const finalMessage = reportFailure?.message
+            ? `${message}\n${reportFailure.message}`
+            : message;
+        console.log(`[closeWindow] 发送消息: ${finalMessage}`);
+        window.sendMessageToParent(finalMessage);
+
+        // tjlog / tjlogerror 返回非 200 业务码时，保留发布弹窗供用户处理；
+        // 错误上报会显示原失败原因，并追加后台 message，便于直接定位后台拒绝原因。
+        if (reportFailure?.message) {
+            console.warn("[closeWindow] ⚠️ 统计接口业务失败，已取消自动关闭窗口:", reportFailure);
+            window.showPublishToast?.(reportFailure.message, "error", 0);
+            return false;
+        }
 
         // 🔑 额外等待 500ms 确保 IPC 消息已发送到主进程
         await window.delay(500);

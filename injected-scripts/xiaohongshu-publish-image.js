@@ -120,7 +120,33 @@ if (location.search.includes("published=true")) {
             },
         };
 
+        function getXhsImagePublishTaskToken(dataObj, source = "小红书图文发布") {
+            const token = typeof window.resolvePublishTaskToken === "function"
+                ? window.resolvePublishTaskToken(dataObj, source)
+                : (typeof window.buildPublishTaskToken === "function"
+                    ? window.buildPublishTaskToken(dataObj, source)
+                    : "");
+            return String(
+                token
+                || dataObj?.taskToken
+                || dataObj?.__publishTaskToken
+                || window.__CURRENT_PUBLISH_TASK_TOKEN__
+                || "task_default"
+            ).trim() || "task_default";
+        }
+
+        function setXhsImageCurrentPublishTaskToken(dataObj, source = "小红书图文发布") {
+            const taskToken = getXhsImagePublishTaskToken(dataObj, source);
+            if (typeof window.setCurrentPublishTaskToken === "function") {
+                window.setCurrentPublishTaskToken(taskToken);
+            } else {
+                window.__CURRENT_PUBLISH_TASK_TOKEN__ = taskToken;
+            }
+            return taskToken;
+        }
+
         async function handleImageUploadAbort(dataObj, error) {
+            const publishTaskToken = setXhsImageCurrentPublishTaskToken(dataObj, "图片上传中止");
             const publishId = dataObj?.video?.dyPlatform?.id;
             const imageUrl = dataObj?.sourceUrl
                 || dataObj?.video?.video?.url
@@ -146,7 +172,7 @@ if (location.search.includes("published=true")) {
             }
             isProcessing = false;
 
-            await sendStatisticsError(publishId, errorMessage, "小红书发布", error);
+            await sendStatisticsError(publishId, errorMessage, "小红书发布", error, null, { taskToken: publishTaskToken });
             await closeWindowWithMessage(
                 error?.code === "UNSUPPORTED_GIF_IMAGE"
                     ? "检测到 GIF 图片，请更换静态图后重试"
@@ -656,8 +682,9 @@ if (location.search.includes("published=true")) {
                                     const canToError = tipsText.includes("未绑定手机号");
                                     if (canToError) {
                                         console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
+                                        const publishTaskToken = setXhsImageCurrentPublishTaskToken(messageData, "未绑定手机号");
                                         const publishId = messageData?.video?.dyPlatform?.id;
-                                        await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
+                                        await sendStatisticsError(publishId, "未绑定手机号", "小红书发布", null, null, { taskToken: publishTaskToken });
                                         await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                         return;
                                     }
@@ -782,8 +809,9 @@ if (location.search.includes("published=true")) {
                             const canToError = tipsText.includes("未绑定手机号");
                             if (canToError) {
                                 console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
+                                const publishTaskToken = setXhsImageCurrentPublishTaskToken(publishData, "未绑定手机号");
                                 const publishId = publishData?.video?.dyPlatform?.id;
-                                await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
+                                await sendStatisticsError(publishId, "未绑定手机号", "小红书发布", null, null, { taskToken: publishTaskToken });
                                 await closeWindowWithMessage("发布失败，刷新数据", 1000);
                                 return;
                             }
@@ -934,8 +962,9 @@ if (location.search.includes("published=true")) {
 
     async function completeXhsPublishAsSuccess(publishId, windowId, reason) {
         console.log("[小红书发布] ✅ 按成功收口:", reason);
+        const publishTaskToken = getXhsImagePublishTaskToken(null, "成功收口");
         try {
-            await sendStatistics(publishId, "小红书发布");
+            await sendStatistics(publishId, "小红书发布", { taskToken: publishTaskToken });
         } catch (error) {
             console.warn("[小红书发布] ⚠️ 成功统计上报异常:", error.message);
         }
@@ -961,6 +990,7 @@ if (location.search.includes("published=true")) {
             return;
         }
 
+        const publishTaskToken = setXhsImageCurrentPublishTaskToken(dataObj, "publishApi");
         const publishId = dataObj.video.dyPlatform.id;
 
         // 获取窗口 ID（用于多窗口并发发布时区分数据）
@@ -1016,12 +1046,12 @@ if (location.search.includes("published=true")) {
             // 使用窗口 ID 作为 key，避免多窗口并发时数据覆盖
             try {
                 const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : "PUBLISH_SUCCESS_DATA";
-                localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+                localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId, taskToken: publishTaskToken }));
                 console.log("[小红书发布] 💾 已提前保存 publishId 到 localStorage:", publishId, "key:", storageKey);
 
                 // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                 if (window.browserAPI && window.browserAPI.setGlobalData) {
-                    await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId });
+                    await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId, taskToken: publishTaskToken });
                     console.log("[小红书发布] 💾 已保存 publishId 到 globalData");
                 }
             } catch (e) {
@@ -1067,7 +1097,7 @@ if (location.search.includes("published=true")) {
 
             console.log("[小红书发布] ✅ 发布按钮已点击");
             // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
-            if (publishId) { window.sendOptimisticSuccess(publishId, '小红书发布').catch(() => {}); }
+            if (publishId) { window.sendOptimisticSuccess(publishId, '小红书发布', { taskToken: publishTaskToken }).catch(() => {}); }
             console.log("[小红书发布] 📨 平台提示:", clickResult.message);
 
             // 开发环境弹窗显示平台提示信息
@@ -1239,6 +1269,9 @@ if (location.search.includes("published=true")) {
             return;
         }
         fillFormRunning = true;
+
+        const publishTaskToken = setXhsImageCurrentPublishTaskToken(dataObj, "fillFormData");
+        console.log("[小红书发布] 📋 当前任务 taskToken:", publishTaskToken);
 
         // 🔑 掉登录被弹回登录页时不再继续填表，停窗等待用户手动登录
         if (stopIfXhsLoginPage("fillFormData")) {

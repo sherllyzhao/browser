@@ -652,12 +652,12 @@ if (location.search.includes("published=true")) {
             // 使用窗口 ID 作为 key，避免多窗口并发时数据覆盖
             try {
                 const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : "PUBLISH_SUCCESS_DATA";
-                localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+                localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                 console.log("[小红书发布] 💾 已提前保存 publishId 到 localStorage:", publishId, "key:", storageKey);
 
                 // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                 if (window.browserAPI && window.browserAPI.setGlobalData) {
-                    await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId });
+                    await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                     console.log("[小红书发布] 💾 已保存 publishId 到 globalData");
                 }
             } catch (e) {
@@ -875,6 +875,18 @@ if (location.search.includes("published=true")) {
             return;
         }
         fillFormRunning = true;
+
+        const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+            ? window.resolvePublishTaskToken(dataObj, '发布')
+            : (typeof window.buildPublishTaskToken === 'function'
+                ? window.buildPublishTaskToken(dataObj, '发布')
+                : 'task_default');
+        if (typeof window.setCurrentPublishTaskToken === 'function') {
+            window.setCurrentPublishTaskToken(publishTaskToken);
+        } else {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+        }
+
 
         // 🔑 掉登录被弹回登录页时不再继续填表，停窗等待用户手动登录
         if (stopIfXhsLoginPage("fillFormData")) {

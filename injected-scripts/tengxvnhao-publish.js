@@ -1903,6 +1903,18 @@
         }
         fillFormRunning = true;
 
+        const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+            ? window.resolvePublishTaskToken(dataObj, '发布')
+            : (typeof window.buildPublishTaskToken === 'function'
+                ? window.buildPublishTaskToken(dataObj, '发布')
+                : 'task_default');
+        if (typeof window.setCurrentPublishTaskToken === 'function') {
+            window.setCurrentPublishTaskToken(publishTaskToken);
+        } else {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+        }
+
+
         try {
             const pathImage = dataObj?.video?.video?.cover;
             if (!pathImage) {
@@ -2524,12 +2536,12 @@
                                                                                         // 同时设置全局变量和 localStorage，确保标志能被检测到
                                                                                         // ⚠️ publish-success.js 只认 __sohuPublishSuccessFlag（各平台共用的历史命名）
                                                                                         window.__sohuPublishSuccessFlag = true;
-                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                                                                         console.log("[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
                                                                                         // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                                                                                         if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                                                                             console.log('[腾讯号发布] 💾 已保存 publishId 到 globalData');
                                                                                         }
                                                                                     } catch (e) {
@@ -2597,12 +2609,12 @@
                                                                         try {
                                                                             // 同时设置全局变量和 localStorage，确保标志能被检测到
                                                                             window.__sohuPublishSuccessFlag = true;
-                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId }));
+                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                                                             console.log("[腾讯号发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
                                                                             // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
                                                                             if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {publishId: publishId});
+                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                                                                 console.log('[腾讯号发布] 💾 已保存 publishId 到 globalData');
                                                                             }
                                                                         } catch (e) {

@@ -565,6 +565,28 @@ async function clearDouyinPublishSuccessData(windowId) {
   localStorage.removeItem('PUBLISH_SUCCESS_DATA');
 }
 
+function getDouyinPublishTaskToken(windowId) {
+  const keys = [];
+  if (windowId) {
+    keys.push(`PUBLISH_SUCCESS_DATA_${windowId}`);
+  }
+  keys.push('PUBLISH_SUCCESS_DATA');
+
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const token = String(parsed?.taskToken || parsed?.__publishTaskToken || '').trim();
+      if (token) {
+        return token;
+      }
+    } catch (_) {}
+  }
+
+  return String(window.__CURRENT_PUBLISH_TASK_TOKEN__ || 'task_default').trim() || 'task_default';
+}
+
 async function reportDouyinPublishSuccess(publishId, windowId, reason = 'success-toast') {
   if (!publishId) {
     console.error('[抖音发布] ❌ publishId 为空，无法上报成功统计');
@@ -574,9 +596,11 @@ async function reportDouyinPublishSuccess(publishId, windowId, reason = 'success
   console.log('[抖音发布] 📤 发送成功统计:', { publishId, reason });
   let result = null;
   if (typeof sendStatistics === 'function') {
-    result = await sendStatistics(publishId, '抖音发布');
+    const publishTaskToken = getDouyinPublishTaskToken(windowId);
+    result = await sendStatistics(publishId, '抖音发布', { taskToken: publishTaskToken });
   } else if (typeof window.sendStatistics === 'function') {
-    result = await window.sendStatistics(publishId, '抖音发布');
+    const publishTaskToken = getDouyinPublishTaskToken(windowId);
+    result = await window.sendStatistics(publishId, '抖音发布', { taskToken: publishTaskToken });
   } else {
     const scanData = typeof window.buildStatisticsRequestData === 'function'
       ? await window.buildStatisticsRequestData(publishId, '抖音发布')
@@ -667,12 +691,12 @@ async function publishApi(dataObj) {
       if (publishId) {
         try {
           const windowKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
-          localStorage.setItem(windowKey, JSON.stringify({ publishId: publishId }));
+          localStorage.setItem(windowKey, JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
           console.log('[抖音发布] 💾 已保存 publishId 到 localStorage:', windowKey);
 
           // 同时保存到 globalData
           if (window.browserAPI && window.browserAPI.setGlobalData) {
-            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, {publishId: publishId});
+            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
             console.log('[抖音发布] 💾 已保存 publishId 到 globalData');
           }
         } catch (e) {
@@ -732,12 +756,12 @@ async function publishApi(dataObj) {
     // 使用窗口 ID 作为 key，避免多窗口并发时数据覆盖
     try {
       const storageKey = windowId ? `PUBLISH_SUCCESS_DATA_${windowId}` : 'PUBLISH_SUCCESS_DATA';
-      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId }));
+      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
       console.log('[抖音发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
 
       // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
       if (window.browserAPI && window.browserAPI.setGlobalData) {
-        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, {publishId: publishId});
+        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${windowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
         console.log('[抖音发布] 💾 已保存 publishId 到 globalData');
       }
     } catch (e) {
@@ -1109,6 +1133,18 @@ async function fillFormData(dataObj) {
   }
 
   fillFormRunning = true;
+
+  const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+      ? window.resolvePublishTaskToken(dataObj, '发布')
+      : (typeof window.buildPublishTaskToken === 'function'
+          ? window.buildPublishTaskToken(dataObj, '发布')
+          : 'task_default');
+  if (typeof window.setCurrentPublishTaskToken === 'function') {
+      window.setCurrentPublishTaskToken(publishTaskToken);
+  } else {
+      window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+  }
+
 
   // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
   const executeAllFormSteps = async () => {

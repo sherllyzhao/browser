@@ -985,6 +985,18 @@
         }
         fillFormRunning = true;
 
+        const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+            ? window.resolvePublishTaskToken(dataObj, '发布')
+            : (typeof window.buildPublishTaskToken === 'function'
+                ? window.buildPublishTaskToken(dataObj, '发布')
+                : 'task_default');
+        if (typeof window.setCurrentPublishTaskToken === 'function') {
+            window.setCurrentPublishTaskToken(publishTaskToken);
+        } else {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+        }
+
+
         try {
             if (await stopIfLoginPage(dataObj, 'fillFormData')) {
                 fillFormRunning = false;

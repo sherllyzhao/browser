@@ -2148,6 +2148,18 @@
     }
     fillFormRunning = true;
 
+    const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+        ? window.resolvePublishTaskToken(dataObj, '发布')
+        : (typeof window.buildPublishTaskToken === 'function'
+            ? window.buildPublishTaskToken(dataObj, '发布')
+            : 'task_default');
+    if (typeof window.setCurrentPublishTaskToken === 'function') {
+        window.setCurrentPublishTaskToken(publishTaskToken);
+    } else {
+        window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+    }
+
+
     // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
     const executeAllFormSteps = async () => {
       const rawTitle = dataObj?.video?.video?.title || dataObj?.element?.title || '';

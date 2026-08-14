@@ -714,7 +714,7 @@
                         // 同时设置全局变量和 localStorage，确保标志能被检测到
                         window.__xinlangPublishSuccessFlag = true;
                         window.__xinlangPublishId = publishId; // 供 selectScheduledTime 使用
-                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({publishId: publishId}));
+                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                         console.log("[新浪发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
 
                         // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
@@ -2192,6 +2192,18 @@
         // 设置全局锁
         window.__XL_fillFormRunning = true;
         fillFormRunning = true;
+
+        const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+            ? window.resolvePublishTaskToken(dataObj, '发布')
+            : (typeof window.buildPublishTaskToken === 'function'
+                ? window.buildPublishTaskToken(dataObj, '发布')
+                : 'task_default');
+        if (typeof window.setCurrentPublishTaskToken === 'function') {
+            window.setCurrentPublishTaskToken(publishTaskToken);
+        } else {
+            window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+        }
+
 
         // 原有的防止重复执行检查
         if (hasProcessed) {
