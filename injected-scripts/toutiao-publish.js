@@ -2063,9 +2063,10 @@
 
       if (publishId) {
         try {
-          localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId }));
+          const publishTaskTokenForSuccess = window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default";
+          localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId, taskToken: publishTaskTokenForSuccess }));
           if (window.browserAPI?.setGlobalData && currentWindowId) {
-            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId });
+            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId, taskToken: publishTaskTokenForSuccess });
           }
           console.log(`${LOG_PREFIX} 💾 发布前已保存 publishId:`, publishId);
         } catch (e) {
@@ -2116,7 +2117,7 @@
 
       const urlChanged = window.location.href !== originalUrl;
       if (publishId && !urlChanged && typeof sendStatistics === 'function') {
-        await sendStatistics(publishId, '头条发布');
+        await sendStatistics(publishId, '头条发布', { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
       }
 
       if (!urlChanged) {

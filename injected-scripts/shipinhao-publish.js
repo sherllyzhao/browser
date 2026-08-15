@@ -1324,7 +1324,7 @@ async function publishApi(dataObj) {
       localStorage.removeItem(publishDataKey);
       hasProcessed = true;
       publishRunning = false;
-      await sendStatistics(publishId, '视频号发布');
+      await sendStatistics(publishId, '视频号发布', { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
       await closeWindowWithMessage('发布成功，刷新数据', 1000);
       return;
     }

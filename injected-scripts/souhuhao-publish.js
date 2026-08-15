@@ -793,8 +793,10 @@
 
     async function savePublishSuccessMarker(dataObj) {
         const publishId = dataObj?.video?.dyPlatform?.id || '';
+        const taskToken = window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default";
         const markerData = {
             publishId,
+            taskToken,
             platform: 'souhuhao',
             savedAt: Date.now()
         };
@@ -1794,7 +1796,7 @@
             // 直接上报成功并关窗
             if (typeof sendStatistics === 'function') {
                 console.log('[搜狐号发布] 📤 调用成功接口:', reason);
-                await sendStatistics(markerData.publishId, '搜狐号发布');
+                await sendStatistics(markerData.publishId, '搜狐号发布', { taskToken: markerData.taskToken || window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
             } else {
                 console.warn('[搜狐号发布] ⚠️ sendStatistics 不可用，无法调用成功接口');
             }

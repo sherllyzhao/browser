@@ -1421,7 +1421,7 @@
         stopSmsVerificationDetector();
         const publishIdForSuccess = dataObj.video?.dyPlatform?.id;
         if (publishIdForSuccess) {
-          await sendStatistics(publishIdForSuccess, '百家号发布');
+          await sendStatistics(publishIdForSuccess, '百家号发布', { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
         }
         await closeWindowWithMessage('发布成功，刷新数据', 1000);
         return true;

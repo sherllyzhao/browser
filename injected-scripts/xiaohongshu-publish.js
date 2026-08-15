@@ -570,7 +570,7 @@ if (location.search.includes("published=true")) {
     async function completeXhsPublishAsSuccess(publishId, windowId, reason) {
         console.log("[小红书发布] ✅ 按成功收口:", reason);
         try {
-            await sendStatistics(publishId, "小红书发布");
+            await sendStatistics(publishId, "小红书发布", { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
         } catch (error) {
             console.warn("[小红书发布] ⚠️ 成功统计上报异常:", error.message);
         }
@@ -1457,7 +1457,7 @@ if (location.search.includes("published=true")) {
                             throw new Error("sendStatistics 未定义，无法执行去重统计上报");
                         }
 
-                        const statResult = await sendStatistics(publishId, "小红书发布");
+                        const statResult = await sendStatistics(publishId, "小红书发布", { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                         if (statResult?.skipped) {
                             console.log("[小红书发布] ⏭️ 定时发布统计已由其它页面上报，跳过重复记录:", statResult.reason);
                         } else if (statResult?.success) {
