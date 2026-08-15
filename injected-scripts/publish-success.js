@@ -23,6 +23,18 @@
   // ===========================
   const currentUrl = window.location.href;
   const currentPath = window.location.pathname;
+  const isXiaohongshuPublishSuccessPage = (() => {
+    try {
+      const url = new URL(currentUrl);
+      return url.hostname === 'creator.xiaohongshu.com'
+        && (
+          (url.pathname === '/publish/publish' && url.searchParams.get('published') === 'true')
+          || url.pathname.startsWith('/publish/success')
+        );
+    } catch (_) {
+      return false;
+    }
+  })();
 
   // 知乎编辑页：/write 或 /p/xxx/edit
   // 其他平台的编辑页关键词
@@ -35,12 +47,13 @@
     '/addarticle'
   ];
 
-  if (editPagePatterns.some(pattern => currentPath.includes(pattern))) {
+  // 小红书成功页 URL 也带 /publish，不能按通用编辑页规则跳过。
+  if (!isXiaohongshuPublishSuccessPage && editPagePatterns.some(pattern => currentPath.includes(pattern))) {
     console.log(`[发布成功] ⏭️ 检测到编辑页 URL (${currentPath})，跳过执行`);
     return;
   }
 
-  console.log(`[发布成功] ✅ 非编辑页 URL (${currentPath})，继续执行`);
+  console.log(`[发布成功] ✅ 检测到成功页或非编辑页 URL (${currentPath})，继续执行`);
 
   // ===========================
   // 🔑 检查 common.js 依赖并提供降级实现

@@ -1245,9 +1245,7 @@
                                 });
                                 publishBtn.dispatchEvent(clickEvent);
                                 console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
-                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
-                                const bjhOptId = dataObj.video?.dyPlatform?.id;
-                                if (bjhOptId) { window.sendOptimisticSuccess(bjhOptId, '百家号发布').catch(() => {}); }
+                                // 成功统计由 checkPublishResult 或成功页发送，避免点击成功抢占真实结果的去重锁。
                                 await checkPublishResult(dataObj, true);
                               }else{
                                 console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');

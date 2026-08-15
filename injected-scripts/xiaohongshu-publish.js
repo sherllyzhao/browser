@@ -702,8 +702,7 @@ if (location.search.includes("published=true")) {
             }
 
             console.log("[小红书发布] ✅ 发布按钮已点击");
-            // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
-            if (publishId) { window.sendOptimisticSuccess(publishId, '小红书发布').catch(() => {}); }
+            // 成功统计仅由成功页或本地明确成功确认发送，避免点击成功抢占真实结果的去重锁。
             console.log("[小红书发布] 📨 平台提示:", clickResult.message);
 
             // 开发环境弹窗显示平台提示信息

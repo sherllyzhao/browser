@@ -42,21 +42,6 @@ if (typeof window.uploadVideo === "function"
         description: '移除 pagehide 事件中的 Promise.catch() 链'
       },
 
-      // 【修复】2026-07-23 网易发布失败漏报（tjlogerror 被 success 锁吞掉）
-      // 根因：乐观成功 8 秒到点定时先发 tjlog 占 success 锁；网易点击后常触发「发文前检测」
-      //       需二次点击（耗掉 ~7 秒），真实错误在 8 秒后才出现，随后的 sendStatisticsError
-      //       被 success-already-reported 挡掉，失败永不上报（网络面板只见 tjlog 不见 tjlogerror）
-      // 修复：网易乐观成功不设到点定时器（deferUntilUnload），只在页面卸载(pagehide)时冲刷；
-      //       失败路径先 await sendStatisticsError 再关窗，失败上报永远抢在成功前
-      // 风险：禁用后回退旧 8 秒到点逻辑（错误>8秒出现时仍会被误报成功）
-      FIX_WANGYI_OPTIMISTIC_DEFER: {
-        enabled: true,
-        version: '1.2.6',
-        risk: 'medium',
-        files: ['common.js:sendOptimisticSuccess', 'wangyihao-publish.js:1404'],
-        description: '网易乐观成功仅卸载冲刷，不设8秒定时，防失败被success锁吞'
-      },
-
       // 【修复】2026-07-23 搜狐"昨天授权今天掉登录"（后台记录归属漂移）
       // 根因：新授权（auth_type=1）时前端不传后台记录 ID，shinfo 后台疑似新建记录而非更新，
       //       旧记录绑定的发布任务拿到的永远是老快照；浏览器侧"最近授权兜底"又因缺账号绑定被禁用
@@ -3363,9 +3348,8 @@ if (typeof window.uploadVideo === "function"
     //      keepalive 立即冲刷成功，保留乐观上报的防漏报能力。
     // ⚠️ GEO 系统跳过乐观上报：GEO 保持「真正确认成功才记 1 次」的语义，
     //     确认成功/失败上报已由去重锁保证同一 publishId 只发 1 次。
-    // 🕐 options.deferUntilUnload=true（网易，FIX_WANGYI_OPTIMISTIC_DEFER）：不设到点定时器，
-    //     成功只在页面卸载冲刷时发出——错误出现时间不可预测（发文前检测二次点击+慢审核）的
-    //     平台用，保证失败上报永远先于成功抢锁。
+    // 🕐 options.deferUntilUnload=true：不设到点定时器，成功仅在页面卸载时冲刷。
+    //     当前平台脚本均应优先使用明确成功信号；该选项仅保留给未来无法提供成功页确认的平台。
     const OPTIMISTIC_SUCCESS_DELAY_MS = 8000;
     const optimisticPendingReports = new Map(); // publishId -> pending
     let publishErrorProbe = null;

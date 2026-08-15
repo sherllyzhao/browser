@@ -26,7 +26,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    const TXH_PUBLISH_SCRIPT_VERSION = "2026-08-15-title-selector-fallback-v22";
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-08-15-success-page-report-v23";
     if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
         console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
@@ -2783,9 +2783,10 @@
                                                                     });
                                                                     publishBtn.dispatchEvent(clickEvent);
                                                                     console.log("[腾讯号发布] ✅ 已点击发布（模拟鼠标事件）");
-                                                                    // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
-                                                                    const txhOptId = dataObj.video?.dyPlatform?.id;
-                                                                    if (txhOptId) { window.sendOptimisticSuccess(txhOptId, '腾讯号发布').catch(() => {}); }
+                                                                    // 腾讯号以跳转到内容管理页为成功确认信号。
+                                                                    // 此处不调用 sendOptimisticSuccess，避免点击后的乐观成功抢占去重锁，
+                                                                    // 导致 publish-success.js 在真实成功页上报时被判定为 duplicate-report。
+                                                                    console.log("[腾讯号发布] ⏳ 已点击发布，等待内容管理页的发布成功脚本执行唯一成功上报");
 
                                                                     // 腾讯的ai生成声明确认弹窗
                                                                     await AICreatePopup();

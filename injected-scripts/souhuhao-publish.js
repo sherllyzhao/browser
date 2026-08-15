@@ -1651,9 +1651,7 @@
                                                                 cancelable: true
                                                             });
                                                             publishBtn.dispatchEvent(clickEvent);
-                                                            // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
-                                                            const sohuOptId = dataObj?.video?.dyPlatform?.id;
-                                                            if (sohuOptId) { window.sendOptimisticSuccess(sohuOptId, '搜狐号发布').catch(() => {}); }
+                                                            // 成功统计由 checkPublishResult 的明确成功确认发送，避免点击成功抢占去重锁。
                                                             await checkPublishResult(dataObj, true);
                                                             console.log('[搜狐号发布] ✅ 已点击发布（模拟鼠标事件）');
                                                         }else{

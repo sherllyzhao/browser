@@ -982,6 +982,8 @@
                     let errorScanInterval = null;
                     let postPublishErrorWatchTimer = null;
                     const POST_PUBLISH_ERROR_WATCH_MS = 5 * 60 * 1000;
+                    let latePublishFailureWatchActive = false;
+                    let latePublishFailureReported = false;
 
                     // 🔑 需要忽略的非错误文本（在采集时就过滤掉）
                     const ignoredTexts = [
@@ -999,6 +1001,29 @@
                         const textEl = snackbar?.querySelector?.('span:last-child');
                         return (textEl?.textContent || snackbar?.textContent || '').trim();
                     };
+
+                    async function reportLatePublishFailure(errorMsg) {
+                        if (!latePublishFailureWatchActive || latePublishFailureReported || !errorMsg) {
+                            return;
+                        }
+
+                        latePublishFailureReported = true;
+                        latePublishFailureWatchActive = false;
+                        stopErrorListener();
+
+                        const publishId = dataObj.video?.dyPlatform?.id;
+                        if (!publishId) {
+                            console.warn('[网易号发布] ⚠️ 检测到延迟发布失败但 publishId 为空:', errorMsg);
+                            return;
+                        }
+
+                        console.log('[网易号发布] 📤 检测到延迟发布失败，直接调用失败接口:', errorMsg);
+                        try {
+                            await sendStatisticsError(publishId, errorMsg, '网易号发布', null, null, { taskToken: publishTaskToken });
+                        } catch (error) {
+                            console.error('[网易号发布] ❌ 延迟发布失败上报异常:', error);
+                        }
+                    }
 
                     // 启动错误监听
                     const startErrorListener = () => {
@@ -1024,6 +1049,7 @@
                                 if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
                                     capturedErrors.push(text);
                                     console.log('[网易号发布] 📨 捕获到错误信息:', text);
+                                    void reportLatePublishFailure(text);
                                 }
                             }
 
@@ -1037,6 +1063,7 @@
                                     if (text && !capturedErrors.includes(text) && !shouldIgnoreText(text)) {
                                         capturedErrors.push(text);
                                         console.log('[网易号发布] 📨 捕获到错误信息:', text);
+                                        void reportLatePublishFailure(text);
                                     }
                                 }
                             }
@@ -1047,6 +1074,7 @@
 
                     // 停止错误监听
                     const stopErrorListener = () => {
+                        latePublishFailureWatchActive = false;
                         if (errorScanInterval) {
                             clearInterval(errorScanInterval);
                             errorScanInterval = null;
@@ -1059,13 +1087,15 @@
                     };
 
                     // 网易的审核/发文前检测可能在首次检查结束后才返回失败提示。
-                    // 保持错误监听与 common.js 的发布错误探针同步工作，避免 tjlogerror 漏报。
+                    // 成功由成功页唯一上报；这里直接监听并上报延迟失败，避免乐观成功抢占去重锁。
                     const keepErrorListenerForLatePublishFailure = () => {
                         if (postPublishErrorWatchTimer) {
                             clearTimeout(postPublishErrorWatchTimer);
                         }
+                        latePublishFailureWatchActive = true;
                         postPublishErrorWatchTimer = setTimeout(() => {
                             postPublishErrorWatchTimer = null;
+                            latePublishFailureWatchActive = false;
                             console.log('[网易号发布] ⏱️ 发布后错误监听到期，停止监听');
                             stopErrorListener();
                         }, POST_PUBLISH_ERROR_WATCH_MS);
@@ -1089,11 +1119,6 @@
 
                     // 立即启动错误监听
                     startErrorListener();
-
-                    // 🔑 注册错误探针：延迟乐观成功上报到点/页面卸载前会先查询此探针，
-                    //     捕获到"账号被禁言"等点击后错误时取消乐观成功、转报失败
-                    //     （capturedErrors 已含 snackbar + 弹窗双通道采集与 ignoredTexts 过滤）
-                    window.registerPublishErrorProbe?.(getLatestError);
 
                     // 设置封面（使用主进程下载绕过跨域）
                     await (async () => {
@@ -1484,16 +1509,7 @@
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 console.log('[网易号发布] ✅ 已点击发布按钮');
-                                                // 🚀 点击发布成功 → 乐观上报成功（GEO 内部跳过；不 await 避免阻塞）
-                                                // 🔑 FIX_WANGYI_OPTIMISTIC_DEFER：网易错误常在 8 秒后才出现（发文前检测二次点击+慢审核），
-                                                //     启用时不设 8 秒到点定时，成功只在页面卸载(pagehide)冲刷时发出，
-                                                //     保证失败路径 sendStatisticsError 永远先抢锁（tjlogerror 必发）
-                                                if (publishId) {
-                                                    const wyOptimisticOptions = window.isFeatureEnabled?.('FIX_WANGYI_OPTIMISTIC_DEFER')
-                                                        ? { deferUntilUnload: true }
-                                                        : {};
-                                                    window.sendOptimisticSuccess(publishId, '网易号发布', { ...wyOptimisticOptions, taskToken: publishTaskToken }).catch(() => {});
-                                                }
+                                                // 成功统计仅由成功页发送；延迟错误由 keepErrorListenerForLatePublishFailure 直接上报。
 
                                                 // 检查是否有发文前检测提示
                                                 await delay(1000);

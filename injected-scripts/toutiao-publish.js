@@ -2078,8 +2078,7 @@
         throw new Error(clickResult.message || '点击发布按钮失败');
       }
       console.log(`${LOG_PREFIX} ✅ 已点击发布按钮`);
-      // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
-      if (publishId) { window.sendOptimisticSuccess(publishId, '头条发布').catch(() => {}); }
+      // 头条存在“预览并发布”二次确认，成功统计必须等待真实成功页或结果确认。
 
       // 实测头条为“预览并发布”两步流：预览层稳定后再点确认，避免 7050 保存失败
       let secondConfirmed = false;
