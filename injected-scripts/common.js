@@ -3271,7 +3271,8 @@ if (typeof window.uploadVideo === "function"
     };
 
     // 发送统计接口（发布成功时调用）
-    // 🔒 GEO 与普通系统统一走去重锁：同一 publishId 只上报 1 次（GEO 曾是"每次记录"导致重复计数，已改为只报一次）
+    // 🛡️ 成功上报可靠性策略：先同步抢去重锁避免重复入口，再用 3 次短间隔重试确认后台 200；
+    //     仍失败时落入持久化补报队列，由后续页面/窗口/网络恢复时继续补发。发布结果本身不因此回滚。
     window.sendStatistics = async function (publishId, platform = "", options = {}) {
         const url = await getStatisticsUrl(false);
         const isGeo = window.isGeoStatisticsReport(url);
@@ -3287,33 +3288,25 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 📤 发送成功统计接口，ID: ${publishId}${isGeo ? " [GEO-仅一次]" : ""}`);
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
-            // 🔒 只发一次：成功与失败上报都不重试、不入补报队列（用户要求「只有一次」）
-            const result = await window.retryOperation(async () => {
-                // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 10000);
+            // ✅ 成功上报必须拿到后台确认：网络抖动/节点偶发失败时先本页重试 3 次。
+            const executeStatPost = async () => {
                 try {
-                    const response = await fetch(url, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(scanData),
-                        keepalive: true,
-                        signal: controller.signal,
-                    });
-                    const text = await response.text();
-                    let parsed = null;
-                    try { parsed = JSON.parse(text); } catch (_) {}
-                    const evaluation = evaluateStatisticsResponse(response, parsed);
-                    if (!evaluation.ok) {
-                        const error = new Error(formatStatisticsResponseError(response, parsed));
-                        error.statisticsEvaluation = evaluation;
-                        throw error;
+                    return await window.postStatisticsRequest(url, scanData, 10000);
+                } catch (error) {
+                    const message = String(error && error.message || "");
+                    const codeMatch = message.match(/code=([^\s]+)/);
+                    if (codeMatch) {
+                        error.statisticsEvaluation = {
+                            code: codeMatch[1] === "N/A" ? undefined : codeMatch[1],
+                            message,
+                        };
                     }
-                    return { response, parsed, evaluation };
-                } finally {
-                    clearTimeout(timeoutId);
+                    throw error;
                 }
-            }, 1, 0);
+            };
+            const result = typeof window.retryOperation === "function"
+                ? await window.retryOperation(executeStatPost, 3, 800)
+                : await executeStatPost();
 
             console.log(`[${platform || "发布"}] ✅ 成功统计接口已确认: code=${result.evaluation.code} reason=${result.evaluation.reason || "ok"}`);
             return { success: true, response: result.response, code: result.evaluation.code };
@@ -3322,12 +3315,32 @@ if (typeof window.uploadVideo === "function"
             const reportMessage = evaluation?.code !== undefined
                 ? markStatisticsReportFailure("success", "成功统计上报失败", evaluation, e)
                 : "";
-            // 🔒 失败/超时后不释放去重锁：10s abort 超时的请求可能已到达服务器并被记录，
-            //     释放锁会让后续判定路径重报同一 publishId（重复计数）。同一 publishId 最多只发出 1 次请求。
-            console.error(`[${platform || "发布"}] ❌ 成功统计上报失败（只发 1 次，不重试、不补报、不解锁）:`, e.message);
-            // 🔒 只发一次：不入补报队列。仅提示用户内容已发布成功、统计上报失败。
+            console.error(`[${platform || "发布"}] ❌ 成功统计上报暂未确认，准备落盘补报:`, e.message);
+
+            const queued = await window.enqueueFailedStatReport?.({
+                url,
+                scanData,
+                resultType: "success",
+                platform,
+                publishId,
+                taskToken,
+            });
+
+            if (queued) {
+                console.warn(`[${platform || "发布"}] 📥 成功统计已进入补报队列，后续会自动补发（ID: ${publishId}，任务: ${taskToken}）`);
+                try {
+                    setTimeout(() => window.flushFailedStatReports?.(), 3000);
+                } catch (_) {}
+                window.showPublishToast?.(
+                    "内容已发布成功！统计上报暂未确认，已加入自动补报队列。",
+                    "warning"
+                );
+                return { success: true, queued: true, code: evaluation?.code, message: reportMessage, error: e };
+            }
+
+            // 兜底：如果极端情况下补报队列也不可用，保留失败返回但绝不抛出，避免影响发布功能。
             window.showPublishToast?.(
-                "内容已发布成功！仅数据统计上报失败（不影响发布结果）。",
+                "内容已发布成功！但统计上报暂未确认，请保持应用在线后重试。",
                 "warning"
             );
             return { success: false, code: evaluation?.code, message: reportMessage, error: e };
@@ -3897,7 +3910,7 @@ if (typeof window.uploadVideo === "function"
     const STAT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   // 单条超过 7 天则丢弃（死信）
 
     // 入队：把一条彻底失败的上报存入补报队列
-    // @param {Object} item - { url, scanData, resultType('success'|'error'), platform, publishId }
+    // @param {Object} item - { url, scanData, resultType('success'|'error'), platform, publishId, taskToken }
     window.enqueueFailedStatReport = async function (item) {
         try {
             if (!window.browserAPI?.setGlobalData) {
@@ -3913,15 +3926,17 @@ if (typeof window.uploadVideo === "function"
                 return false;
             }
             const resultType = item.resultType || "unknown";
-            // publishId 缺失时用时间戳兜底，保证 key 唯一不互相覆盖
+            const taskToken = resolveStatisticsTaskToken(item.taskToken || item.scanData?.meta?.taskToken);
+            // publishId 缺失时用时间戳兜底，保证 key 唯一不互相覆盖；taskToken 纳入 key，避免同一 publishId 多任务覆盖。
             const pid = item.publishId || `noid_${Date.now()}`;
-            const key = `${STAT_PENDING_PREFIX}${pid}_${resultType}`;
+            const key = `${STAT_PENDING_PREFIX}${pid}_${resultType}_${taskToken}`;
             const record = {
                 url: item.url,
                 scanData: item.scanData,
                 resultType,
                 platform: item.platform || "",
                 publishId: item.publishId || "",
+                taskToken,
                 createdAt: Date.now(),
                 attempts: 0,
             };
@@ -3964,8 +3979,12 @@ if (typeof window.uploadVideo === "function"
                         continue;
                     }
                     const normalizedPublishId = String(item.publishId || "").trim();
+                    const normalizedTaskToken = resolveStatisticsTaskToken(item.taskToken || item.scanData?.meta?.taskToken);
+                    if (!item.taskToken || item.taskToken !== normalizedTaskToken) {
+                        item.taskToken = normalizedTaskToken;
+                    }
                     if (item.resultType === "error" && normalizedPublishId) {
-                        const successKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, "success");
+                        const successKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, "success", normalizedTaskToken);
                         const successCached = await getGlobalStatisticsReport(successKey);
                         if (String(successCached?.publishId || "") === normalizedPublishId) {
                             console.warn(`[统计补报] 🗑️ 已存在成功上报，清理历史失败待补报项：${key}`);
@@ -5764,6 +5783,14 @@ window.showReportTimeoutNotice = function() {
     }
 };
 
-// 🔒 已按「统计上报只发一次」移除离线补报队列的启动补发与周期性补发触发点。
-// enqueueFailedStatReport / flushFailedStatReports 函数体保留但不再被自动调用，
-// 上报失败即失败，不重试、不补发。
+// 🛡️ 统计补报队列启动器：只处理已落盘待补报项，不主动产生新上报。
+// 目的：发布成功页上报因网络/后台短暂异常失败后，后续页面加载或应用保持在线时能继续补发。
+try {
+    if (!window.__STAT_FLUSH_BOOTSTRAPPED__) {
+        window.__STAT_FLUSH_BOOTSTRAPPED__ = true;
+        setTimeout(() => window.flushFailedStatReports?.(), 3000);
+        setInterval(() => window.flushFailedStatReports?.(), 60000);
+    }
+} catch (e) {
+    console.warn("[统计补报] ⚠️ 启动补报调度失败:", e.message);
+}
