@@ -26,7 +26,7 @@
     // ===========================
     // 防止脚本重复注入
     // ===========================
-    const TXH_PUBLISH_SCRIPT_VERSION = "2026-07-17-hang-guard-dedup-v21";
+    const TXH_PUBLISH_SCRIPT_VERSION = "2026-08-15-title-selector-fallback-v22";
     if (window.__TXH_SCRIPT_LOADED__ && window.__TXH_PUBLISH_SCRIPT_VERSION__ === TXH_PUBLISH_SCRIPT_VERSION) {
         console.log("[腾讯号发布] ⚠️ 脚本已经加载过，跳过重复注入，版本:", TXH_PUBLISH_SCRIPT_VERSION);
         return;
@@ -198,6 +198,141 @@
         const textWrapper = document.createElement("div");
         textWrapper.innerHTML = htmlContent || "";
         return textWrapper.textContent || "";
+    }
+
+    function getTxhTitleSelectorCandidates() {
+        return [
+            ".omui-articletitle__input1 .omui-inputautogrowing__inner",
+            ".omu-articletitle__input1 .omu-inputautogrowing__inner",
+            ".omui-articletitle__input1 [contenteditable='true']",
+            ".omu-articletitle__input1 [contenteditable='true']",
+            ".omui-articletitle__input1 textarea",
+            ".omu-articletitle__input1 textarea",
+            ".omui-articletitle__input1 input",
+            ".omu-articletitle__input1 input",
+            "[class*='articletitle__input'] .omui-inputautogrowing__inner",
+            "[class*='articletitle__input'] [contenteditable='true']",
+            "[class*='articletitle__input'] textarea",
+            "[class*='articletitle__input'] input",
+            "[class*='articletitle'] [contenteditable='true'][data-placeholder*='标题']",
+            "[class*='articletitle'] [placeholder*='标题']",
+            "[class*='articletitle'] input",
+        ];
+    }
+
+    function isVisibleTxhTitleElement(element) {
+        if (!element || typeof element.getBoundingClientRect !== "function") {
+            return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
+
+        const style = typeof window.getComputedStyle === "function"
+            ? window.getComputedStyle(element)
+            : null;
+        if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none")) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function findTxhTitleElementOnce() {
+        const selectors = getTxhTitleSelectorCandidates();
+
+        for (const selector of selectors) {
+            try {
+                const directHit = document.querySelector(selector);
+                if (directHit && isVisibleTxhTitleElement(directHit)) {
+                    return { element: directHit, selector, source: "direct" };
+                }
+            } catch (error) {
+                console.warn("[腾讯号发布] ⚠️ 标题选择器 direct 检索失败:", selector, error.message);
+            }
+        }
+
+        if (typeof window.findElementInPageOrShadow === "function") {
+            for (const selector of selectors) {
+                try {
+                    const nestedHit = window.findElementInPageOrShadow(selector);
+                    if (nestedHit && isVisibleTxhTitleElement(nestedHit)) {
+                        return { element: nestedHit, selector, source: "nested" };
+                    }
+                } catch (error) {
+                    console.warn("[腾讯号发布] ⚠️ 标题选择器 nested 检索失败:", selector, error.message);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    async function waitForTxhTitleElement(timeout = 5000, checkInterval = 200) {
+        const startTime = Date.now();
+
+        while (Date.now() - startTime <= timeout) {
+            const found = findTxhTitleElementOnce();
+            if (found && found.element) {
+                if (found.source === "nested") {
+                    console.log('[腾讯号发布] ✅ 标题元素通过嵌套搜索找到: ' + found.selector);
+                }
+                return found.element;
+            }
+
+            await window.delay(checkInterval);
+        }
+
+        throw new Error('找不到标题输入元素（已尝试: ' + getTxhTitleSelectorCandidates().join(' | ') + '）');
+    }
+
+    function readTxhTitleElementValue(element) {
+        if (!element) return "";
+        if (typeof element.value !== "undefined") {
+            return String(element.value ?? "");
+        }
+        return String(element.innerText || element.textContent || "");
+    }
+
+    function applyTxhTitleValue(element, value) {
+        const targetValue = String(value ?? "");
+        if (!element) {
+            return false;
+        }
+
+        try {
+            if (element.isContentEditable) {
+                element.focus?.();
+                element.innerText = targetValue;
+                element.textContent = targetValue;
+            } else if (typeof setNativeValue === "function" && (element.tagName === "INPUT" || element.tagName === "TEXTAREA")) {
+                setNativeValue(element, targetValue);
+            } else if (typeof element.value !== "undefined") {
+                element.value = targetValue;
+            } else {
+                element.innerText = targetValue;
+                element.textContent = targetValue;
+            }
+
+            if (typeof element.dispatchEvent === "function") {
+                element.dispatchEvent(new Event("input", { bubbles: true }));
+                element.dispatchEvent(new Event("change", { bubbles: true }));
+                element.dispatchEvent(new InputEvent("input", {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: "insertText",
+                    data: targetValue,
+                }));
+                element.dispatchEvent(new Event("blur", { bubbles: true }));
+            }
+
+            return true;
+        } catch (error) {
+            console.error("[腾讯号发布] ❌ 写入标题值失败:", error);
+            return false;
+        }
     }
 
     function pickTxhUploadedImageSrc(originalUrl, imageData) {
@@ -1927,50 +2062,56 @@
             setTimeout(async () => {
                 // 标题（带重试和验证）：失败时上报并关窗，避免未捕获异常让窗口悬死
                 try {
-                await retryOperation(
-                    async () => {
-                        const titleEle = await waitForElement(".omui-articletitle__input1 .omui-inputautogrowing__inner", 5000);
-                        console.log("🚀 ~  ~ titleEle: ", titleEle);
+                    if (typeof waitForTxhTitleElement !== "function"
+                        || typeof applyTxhTitleValue !== "function"
+                        || typeof readTxhTitleElementValue !== "function") {
+                        throw new Error("腾讯号标题定位辅助函数未定义");
+                    }
 
-                        // 先触发focus事件
-                        if (typeof titleEle.focus === "function") {
-                            titleEle.focus();
-                        } else {
-                            titleEle.dispatchEvent(new Event("focus", { bubbles: true }));
-                        }
+                    await retryOperation(
+                        async () => {
+                            const titleEle = await waitForTxhTitleElement(5000);
+                            console.log("🚀 ~  ~ titleEle: ", titleEle);
 
-                        // 延迟执行，让React状态稳定
-                        await window.delay(300);
+                            // 先触发 focus，保证编辑器进入可输入状态
+                            if (typeof titleEle.focus === "function") {
+                                titleEle.focus();
+                            } else {
+                                titleEle.dispatchEvent(new Event("focus", { bubbles: true }));
+                            }
 
-                        const targetTitle = dataObj.video.video.title || ""
+                            // 延迟执行，让 React/编辑器状态稳定
+                            await window.delay(300);
 
-                        // 清空原有内容
-                        titleEle.innerText = "";
-                        await window.delay(100);
+                            const targetTitle = dataObj.video.video.title || "";
+                            const normalizedTitle = String(targetTitle).trim();
 
-                        // 设置新标题
-                        titleEle.innerText = targetTitle;
+                            // 清空原有内容并写入新标题
+                            if (!applyTxhTitleValue(titleEle, normalizedTitle)) {
+                                throw new Error("标题元素赋值失败");
+                            }
 
-                        // 🔴 触发多个事件确保 React 同步
-                        titleEle.dispatchEvent(new Event("input", { bubbles: true }));
-                        titleEle.dispatchEvent(new Event("change", { bubbles: true }));
-                        titleEle.dispatchEvent(new InputEvent("input", {
-                            bubbles: true,
-                            cancelable: true,
-                            inputType: "insertText",
-                            data: targetTitle
-                        }));
+                            await window.delay(100);
 
-                        // 模拟键盘输入结束
-                        titleEle.dispatchEvent(new Event("blur", { bubbles: true }));
-                        await window.delay(100);
-                        titleEle.focus();
+                            const currentValue = readTxhTitleElementValue(titleEle).trim();
+                            if (currentValue !== normalizedTitle) {
+                                console.warn("[腾讯号发布] ⚠️ 标题写入后校验不一致:", {
+                                    expected: normalizedTitle,
+                                    actual: currentValue,
+                                    selectorHint: titleEle?.className || titleEle?.tagName || "unknown"
+                                });
+                            }
 
-                        console.log("[腾讯号发布] ✅ 已填写标题:", targetTitle);
-                    },
-                    5,
-                    1000,
-                );
+                            // 模拟键盘输入结束
+                            titleEle.dispatchEvent(new Event("blur", { bubbles: true }));
+                            await window.delay(100);
+                            titleEle.focus?.();
+
+                            console.log("[腾讯号发布] ✅ 已填写标题:", normalizedTitle);
+                        },
+                        5,
+                        1000,
+                    );
                 } catch (e) {
                     console.log("[腾讯号发布] ❌ 标题填写失败:", e.message);
                     await reportTxhFailure(dataObj, e.message || "标题填写失败", "标题填写失败，刷新数据");
@@ -2552,9 +2693,9 @@
                                                                                     window.__sohuPublishSuccessFlag = true;
                                                                                     // 🔑 window 标志在整页跳转后会丢失，补 localStorage + globalData 兜底
                                                                                     try {
-                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null }));
+                                                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                                                                         if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null });
+                                                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                                                                         }
                                                                                     } catch (e) {
                                                                                         console.error("[腾讯号发布] ❌ 保存发布成功标记失败:", e);
@@ -2625,9 +2766,9 @@
                                                                         window.__sohuPublishSuccessFlag = true;
                                                                         // 🔑 window 标志在整页跳转后会丢失，补 localStorage + globalData 兜底
                                                                         try {
-                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null }));
+                                                                            localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: null, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
                                                                             if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null });
+                                                                                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: null, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
                                                                             }
                                                                         } catch (e) {
                                                                             console.error("[腾讯号发布] ❌ 保存发布成功标记失败:", e);
