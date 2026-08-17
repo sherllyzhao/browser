@@ -568,6 +568,7 @@
 
     console.log('[新浪授权] 最终 authData:', authData ? '有数据' : 'undefined');
 
+    authData.timestamp = Date.now();
     // 如果有跳转带来的数据，处理它
     if (authData && authData.timestamp) {
         const dataAge = Date.now() - authData.timestamp;
