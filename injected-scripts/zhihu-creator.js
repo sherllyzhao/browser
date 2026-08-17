@@ -174,12 +174,15 @@
             'Content-Type': 'application/json'
           }
      });
-     const authDataRes = await authDataResult.json();
-      console.log('[知乎授权] ✅ 从接口读取到授权数据:', authData);
-      authData = authDataRes;
+     authData = await authDataResult.json();
+     if(!authData.userInfo){
+         authData.userInfo = authData;
+     }
+    console.log('[知乎授权] ✅ 从接口读取到授权数据:', authData);
     }
 
     console.log('[知乎授权] 最终 authData:', authData ? '有数据' : 'undefined');
+    authData.timestamp = Date.now();
 
     if (authData && authData.timestamp) {
         // 检查数据是否在 5 分钟内（防止使用过期数据）
@@ -192,6 +195,7 @@
 
             const { messageData, userInfo, companyId: storedCompanyId } = authData;
             const result = userInfo;
+            console.log("🚀 ~  ~ result: ", result);
 
             try {
                 // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
@@ -227,8 +231,8 @@
                         uid: result.id,
                         favoriting_count: 0, // 收藏数
                         total_favorited: 0, // 总收藏数
-                        company_id: storedCompanyId,
-                        auth_type: messageData.auth_type,
+                        company_id: storedCompanyId ?? companyId,
+                        auth_type: messageData ? messageData.auth_type : 1,
                         cookies: cookiesData
                     })
                 };
