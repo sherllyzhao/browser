@@ -57,6 +57,14 @@ const FIX_MANAGED_WINDOW_LOADING_HINT = true;
 // 5 次全失败才上报失败
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：单次下载失败即上报）
 const FIX_TOUTIAO_COVER_RETRY = true;
+// 【特性开关】2026-08-18 腾讯内容管理窗口掉登录：判死清理（fix4/fix5）只保护发布窗口
+//（isPublishWindow 门槛），内容管理窗口（purpose='child'）恢复死 token 快照后：
+// ①服务端打回登录页但死 cookie 不清 → 扫码时新旧凭证混杂"登录后瞬间掉出" ②扫码成功后
+// collectWindowSessionSaveContext 强制要求 publishData 导致活 token 永远写不回缓存 → 死循环
+// 修法：判死清理/扫码接力放宽到 windowAccountMap 有映射的腾讯账号窗口；回跳目标非发布窗口用
+// expectedPageUrl（内容管理 URL）；接力成功后轻量回写活 cookie 到 latest_session 缓存
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：仅发布窗口受保护）
+const FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -4229,6 +4237,22 @@ function getTengxunhaoRecoverTargetUrl(context) {
   if (context && isTengxunhaoPublishUrl(context.expectedPageUrl)) {
     return context.expectedPageUrl;
   }
+  // 🔓 FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER：内容管理等非发布窗口回跳自己的期望页
+  //（om.qq.com 非登录页即可），不能错跳到发布页
+  if (
+    FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER
+    && context
+    && context.purpose !== 'publish'
+    && context.expectedPageUrl
+    && !isTengxunhaoLoginUrl(context.expectedPageUrl)
+  ) {
+    try {
+      const expectedHost = new URL(context.expectedPageUrl).hostname.toLowerCase();
+      if (expectedHost === 'om.qq.com' || expectedHost.endsWith('.om.qq.com')) {
+        return context.expectedPageUrl;
+      }
+    } catch (_) { /* URL 异常回退发布页兜底 */ }
+  }
   return (config.platformPublishUrls && config.platformPublishUrls.txh)
     || 'https://om.qq.com/main/creation/article';
 }
@@ -4399,10 +4423,15 @@ async function maybeRecoverTengxunhaoLoginWindow(targetWindow, currentURL, reaso
   }
 
   const publishData = getWindowPublishData(windowId);
-  const rawPlatform = context?.platform || publishData?.platform || '';
+  const rawPlatform = context?.platform || publishData?.platform || windowAccountMap.get(windowId)?.platform || '';
   const platform = normalizePlatformName(rawPlatform);
   const isPublishWindow = context?.purpose === 'publish' || !!publishData;
-  if (!isPublishWindow || platform !== 'tengxunhao') {
+  // 🔓 FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER：内容管理等账号窗口（windowAccountMap 有映射）
+  // 也纳入判死清理保护，否则死 token 快照恢复后死 cookie 不清、扫码登录被新旧凭证混杂打回
+  const isManagedAccountWindow = FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER
+    && !isPublishWindow
+    && windowAccountMap.has(windowId);
+  if ((!isPublishWindow && !isManagedAccountWindow) || platform !== 'tengxunhao') {
     return { redirected: false };
   }
 
@@ -4543,8 +4572,62 @@ async function maybeRelayTengxunhaoAfterManualLogin(targetWindow, currentURL, re
     return { redirected: false };
   }
   context.tengxunhaoManualLoginPending = false;
+  // 💾 FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER：内容管理等账号窗口扫码成功后，把活 cookie 轻量
+  // 回写进 latest_session 缓存。这类窗口没有 publishData，collectWindowSessionSaveContext 链路
+  // 必失败，不回写的话下次打开又被死缓存/死后台快照覆盖，掉登录死循环
+  if (FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER && context.purpose !== 'publish') {
+    try {
+      const mappedAccount = windowAccountMap.get(windowId);
+      const relayBackendAccountId = normalizeAccountIdValue(mappedAccount?.accountId || context.accountId);
+      if (relayBackendAccountId) {
+        const relaySession = targetWindow.webContents.session;
+        const relayAllCookies = await relaySession.cookies.get({});
+        const relayExpiration = getSessionSnapshotExpirationDate();
+        const relayCookiesArray = relayAllCookies
+          .filter(cookie => {
+            const d = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+            return d === 'qq.com' || d.endsWith('.qq.com');
+          })
+          .map(cookie => ({
+            name: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain,
+            path: cookie.path,
+            secure: cookie.secure,
+            httpOnly: cookie.httpOnly,
+            hostOnly: cookie.hostOnly,
+            session: cookie.session,
+            sameSite: cookie.sameSite,
+            expirationDate: relayExpiration
+          }));
+        if (relayCookiesArray.length > 0) {
+          const relayCachePayload = saveLatestSessionCache({
+            platform: 'tengxunhao',
+            backendAccountId: relayBackendAccountId,
+            cookieDomains: ['qq.com', 'om.qq.com'],
+            cookiesArray: relayCookiesArray,
+            source: 'tengxunhao-managed-manual-login'
+          });
+          console.log(`[Tengxunhao Manual Login] 💾 账号窗口扫码成功，活 cookie 已回写本地会话缓存: accountId=${relayBackendAccountId}, cookies=${relayCachePayload ? relayCachePayload.cookies.length : 0}`);
+        }
+      } else {
+        console.log('[Tengxunhao Manual Login] ℹ️ 账号窗口缺少 accountId 映射，跳过活 cookie 缓存回写');
+      }
+    } catch (relayCacheErr) {
+      console.warn('[Tengxunhao Manual Login] ⚠️ 活 cookie 缓存回写异常（不阻塞接力）:', relayCacheErr.message);
+    }
+  }
   if (isTengxunhaoPublishUrl(currentURL)) {
     console.log(`[Tengxunhao Manual Login] ✅ 用户手动登录成功且已在发布页，清除等待标志: windowId=${windowId}`);
+    return { redirected: false, relogined: true };
+  }
+  // 🔓 FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER：内容管理窗口扫码后若已落在期望页，无需再跳
+  if (
+    FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER
+    && context.purpose !== 'publish'
+    && matchesExpectedPage(currentURL, context.expectedPageUrl)
+  ) {
+    console.log(`[Tengxunhao Manual Login] ✅ 用户手动登录成功且已在期望页面，清除等待标志: windowId=${windowId}`);
     return { redirected: false, relogined: true };
   }
   const targetUrl = getTengxunhaoRecoverTargetUrl(context);
