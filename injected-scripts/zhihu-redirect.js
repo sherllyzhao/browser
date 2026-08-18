@@ -112,6 +112,83 @@
     let isProcessing = false;
     let hasProcessed = false;
 
+    // 🔑 轮询等登录：未登录（401/403）时用户可能还没扫码，持续轮询而不是一次就死
+    // shouldAbort: 可选回调，返回 true 时中止轮询（用于兜底模式被正常消息路径接管时退出）
+    const pollUserInfo = async (maxWaitMs = 5 * 60 * 1000, intervalMs = 3000, shouldAbort = null) => {
+        const startTime = Date.now();
+        let attempt = 0;
+        while (Date.now() - startTime < maxWaitMs) {
+            if (shouldAbort && shouldAbort()) {
+                await logAndSave('⏹️ 轮询中止（正常消息路径已接管）');
+                return null;
+            }
+            attempt++;
+            try {
+                const resp = await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', {
+                    method: 'GET',
+                    credentials: 'include',  // 自动携带 Cookie
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+                if (resp.ok) {
+                    const me = await resp.json();
+                    if (me && me.id) {
+                        await logAndSave(`📡 第 ${attempt} 次轮询成功: type=${me.type}, url_token=${me.url_token}`);
+                        return me;
+                    }
+                }
+                if (attempt === 1 || attempt % 10 === 0) {
+                    await logAndSave(`⏳ 第 ${attempt} 次轮询: HTTP ${resp.status}，等待扫码登录...`);
+                }
+            } catch (pollError) {
+                if (attempt === 1 || attempt % 10 === 0) {
+                    await logAndSave(`⏳ 第 ${attempt} 次轮询异常: ${pollError.message}`);
+                }
+            }
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+        return null;
+    };
+
+    // 🔑 跳转前存储数据（三方案）并带 hash 跳转个人主页，由 zhihu-creator.js 接手上报
+    const storeAndJump = async (messageData, userInfo, companyIdToUse) => {
+        await logAndSave('💾 准备存储 authData...');
+        await logAndSave('💾 当前域名: ' + window.location.origin);
+        const authDataToStore = {
+            messageData: messageData,
+            userInfo: userInfo,
+            companyId: companyIdToUse,
+            timestamp: Date.now()
+        };
+        const authDataStr = JSON.stringify(authDataToStore);
+
+        // 方案1: localStorage（同域名共享）
+        try {
+            localStorage.setItem('zhihu_auth_data', authDataStr);
+            // 立即验证
+            const verify = localStorage.getItem('zhihu_auth_data');
+            if (verify) {
+                await logAndSave('💾 localStorage 写入成功，验证通过，长度: ' + verify.length);
+            } else {
+                await logAndSave('❌ localStorage 写入后验证失败！');
+            }
+        } catch (e) {
+            await logAndSave('❌ localStorage 写入失败: ' + e.message);
+        }
+
+        // 方案2: globalData 备用
+        await window.browserAPI.setGlobalData('zhihu_auth_data', authDataToStore);
+        await logAndSave('💾 globalData 写入完成');
+
+        // 方案3: 通过 URL hash 传递（最可靠）
+        const targetUrl = 'https://www.zhihu.com/' + userInfo.type + '/' + userInfo.url_token;
+        const urlWithData = targetUrl + '#auth_data=' + encodeURIComponent(authDataStr);
+        await logAndSave('🚀 即将跳转到: ' + targetUrl);
+
+        hasProcessed = true;
+        window.location.href = urlWithData;
+    };
 
     if (!window.browserAPI) {
         await logAndSave('❌ browserAPI 不可用');
@@ -186,58 +263,13 @@
                             };
                             console.log('[知乎授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
 
-                            await logAndSave('📡 开始调用知乎 API...');
-                            const response = await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', {
-                                method: 'GET',
-                                credentials: 'include',  // 自动携带 Cookie
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                },
-                            });
-                            await logAndSave(`📡 API 响应: status=${response.status}, ok=${response.ok}`);
-
-                            if (!response.ok) {
-                                throw new Error(`HTTP error! status: ${response.status}`);
+                            await logAndSave('📡 开始轮询知乎 API（等待登录）...');
+                            const result = await pollUserInfo();
+                            if (!result) {
+                                throw new Error('轮询超时（5分钟），未获取到登录用户信息');
                             }
 
-                            const result = await response.json();
-                            await logAndSave(`📡 用户信息: type=${result.type}, url_token=${result.url_token}`);
-
-                            // 🔑 跳转前存储数据，供跳转后的页面读取
-                            await logAndSave('💾 准备存储 authData...');
-                            await logAndSave('💾 当前域名: ' + window.location.origin);
-                            const authDataToStore = {
-                                messageData: messageData,
-                                userInfo: result,
-                                companyId: companyId,
-                                timestamp: Date.now()
-                            };
-                            const authDataStr = JSON.stringify(authDataToStore);
-
-                            // 方案1: localStorage（同域名共享）
-                            try {
-                                localStorage.setItem('zhihu_auth_data', authDataStr);
-                                // 立即验证
-                                const verify = localStorage.getItem('zhihu_auth_data');
-                                if (verify) {
-                                    await logAndSave('💾 localStorage 写入成功，验证通过，长度: ' + verify.length);
-                                } else {
-                                    await logAndSave('❌ localStorage 写入后验证失败！');
-                                }
-                            } catch (e) {
-                                await logAndSave('❌ localStorage 写入失败: ' + e.message);
-                            }
-
-                            // 方案2: globalData 备用
-                            await window.browserAPI.setGlobalData('zhihu_auth_data', authDataToStore);
-                            await logAndSave('💾 globalData 写入完成');
-
-                            // 方案3: 通过 URL hash 传递（最可靠）
-                            const targetUrl = 'https://www.zhihu.com/' + result.type + '/' + result.url_token;
-                            const urlWithData = targetUrl + '#auth_data=' + encodeURIComponent(authDataStr);
-                            await logAndSave('🚀 即将跳转到: ' + targetUrl);
-
-                            window.location.href = urlWithData;
+                            await storeAndJump(messageData, result, companyId);
                         }
 
                         // 重置处理标志（无论成功或失败）
@@ -266,6 +298,69 @@
     console.log('[知乎授权] 页面加载完成，发送 页面加载完成 消息');
     await logAndSave('📤 发送"页面加载完成"消息给父窗口');
     sendMessageToParent('页面加载完成');
+
+    // ===========================
+    // 6.5 子窗口兜底：auth-data 消息丢失时也必须完成重定向
+    // ===========================
+    // 场景：子窗口停在推荐页且 auth-data 消息未送达（页面导航打断投递/父页面路由切走/时序错过），
+    // 正常消息路径永远不触发。子窗口一律兜底救援（管他从哪进来的），主窗口浏览不触发。
+    (async () => {
+        try {
+            const myWindowId = await window.browserAPI.getWindowId();
+            const isChildWindow = typeof myWindowId === 'number';
+            await logAndSave(`🛡️ 兜底检查: windowId=${myWindowId}, 子窗口=${isChildWindow}`);
+            if (!isChildWindow) {
+                console.log('[知乎授权] ℹ️ 主窗口浏览，兜底不启动');
+                return;
+            }
+            // 发布窗口不触发授权兜底（避免干扰发布流程）
+            if (await window.browserAPI.getGlobalData(`publish_data_window_${myWindowId}`)) {
+                await logAndSave('🛡️ 发布窗口，兜底不启动');
+                return;
+            }
+            // 本窗口已完成过授权上报就不再跳转（防止授权后浏览首页被反复劫持）
+            try {
+                if (sessionStorage.getItem('zhihu_auth_reported') === '1') {
+                    await logAndSave('🛡️ 本窗口已完成授权上报，兜底不启动');
+                    return;
+                }
+            } catch (e) { }
+
+            // 给正常 auth-data 消息路径留 15 秒
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            if (hasProcessed || isProcessing) {
+                await logAndSave('🛡️ 兜底退出：正常消息路径已在处理');
+                return;
+            }
+
+            await logAndSave('🛡️ 15秒未收到 auth-data，启动兜底轮询等登录...');
+            console.log('[知乎授权] 🛡️ 授权窗口未收到 auth-data 消息，启动兜底：轮询等登录后自动跳转个人主页');
+
+            const me = await pollUserInfo(5 * 60 * 1000, 3000, () => hasProcessed || isProcessing);
+            if (!me) {
+                await logAndSave('🛡️ 兜底轮询结束（超时或被正常路径接管），不跳转');
+                return;
+            }
+            // 轮询期间正常消息可能已接管，双检查
+            if (hasProcessed || isProcessing) {
+                await logAndSave('🛡️ 兜底退出：轮询完成时正常消息路径已在处理');
+                return;
+            }
+
+            isProcessing = true;
+            // auth-data 消息丢了，用 URL 参数重建 messageData（auth_type/company_id 授权 URL 上都有）
+            const fallbackMessageData = {
+                auth_type: authType,
+                company_id: companyId,
+            };
+            await logAndSave('🛡️ 兜底登录成功，跳转个人主页（messageData 来自 URL 参数）');
+            await storeAndJump(fallbackMessageData, me, companyId);
+        } catch (fallbackError) {
+            await logAndSave('❌ 兜底流程异常: ' + fallbackError.message);
+            console.error('[知乎授权] ❌ 兜底流程异常:', fallbackError);
+            isProcessing = false;
+        }
+    })();
 
     console.log('═══════════════════════════════════════');
     console.log('✅ 知乎授权脚本初始化完成');

@@ -153,6 +153,24 @@
     let hasProcessed = false;
     let hasHandledLoginGate = false;
 
+    // 窗口类型判定：子窗口一律授权（管他从哪进来的），主窗口浏览不触发
+    // 授权窗口标志仅用于决定"授权完成后是否自动关窗"
+    let isChildWindow = false;
+    let isAuthOriginWindow = false;
+    let hasPublishDataInWindow = false;
+    try {
+        const detectedWindowId = await window.browserAPI?.getWindowId?.();
+        isChildWindow = typeof detectedWindowId === 'number';
+        if (isChildWindow) {
+            isAuthOriginWindow = !!(await window.browserAPI?.getGlobalData?.(`auth_mode_window_${detectedWindowId}`));
+            // 发布窗口不触发授权兜底（避免发布中途上报+通知父页面刷新干扰发布流程）
+            hasPublishDataInWindow = !!(await window.browserAPI?.getGlobalData?.(`publish_data_window_${detectedWindowId}`));
+        }
+        console.log('[新浪授权] 窗口 ID:', detectedWindowId, '子窗口:', isChildWindow, '授权窗口标志:', isAuthOriginWindow, '发布窗口:', hasPublishDataInWindow);
+    } catch (e) {
+        console.warn('[新浪授权] ⚠️ 读取窗口信息失败:', e.message);
+    }
+
     function getXinlangLoginGateState() {
         const wrapper = document.querySelector('.notic_wapper');
         if (!wrapper) {
@@ -388,6 +406,7 @@
                 console.log('[新浪授权] ✅ 数据发送成功');
 
                 hasProcessed = true;
+                try { sessionStorage.setItem('xinlang_auth_reported', '1'); } catch (e) { }
 
                 // 🔑 迁移登录 Cookies 到持久化 session（新浪涉及多个域名）
                 try {
@@ -415,10 +434,14 @@
                 // API 成功后通知父页面刷新
                 sendMessageToParent('授权成功，刷新数据');
 
-                // 统计接口成功后关闭弹窗
-                setTimeout(() => {
-                    window.browserAPI.closeCurrentWindow();
-                }, window.getRandomDelayMs(10000));
+                // 统计接口成功后关闭弹窗（仅授权窗口自动关，其他入口保留窗口）
+                if (isAuthOriginWindow) {
+                    setTimeout(() => {
+                        window.browserAPI.closeCurrentWindow();
+                    }, window.getRandomDelayMs(10000));
+                } else {
+                    console.log('[新浪授权] ℹ️ 非授权窗口，授权完成后保留窗口');
+                }
             } else {
                 throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
             }
@@ -568,7 +591,10 @@
 
     console.log('[新浪授权] 最终 authData:', authData ? '有数据' : 'undefined');
 
-    authData.timestamp = Date.now();
+    // 🔑 authData 为 null 时不能强设 timestamp（否则 TypeError 打断整个脚本，后续兜底全部失效）
+    if (authData) {
+        authData.timestamp = Date.now();
+    }
     // 如果有跳转带来的数据，处理它
     if (authData && authData.timestamp) {
         const dataAge = Date.now() - authData.timestamp;
@@ -599,6 +625,95 @@
     } else {
         console.log('[新浪授权] ℹ️ 没有跳转数据，等待父页面消息...');
     }
+
+    // ===========================
+    // 6.5 兜底模式：子窗口必须完成授权（管他从哪进来的；auth-data 丢失/跳转断链时接口轮询）
+    // ===========================
+    (async () => {
+        try {
+            if (!isChildWindow) {
+                console.log('[新浪授权] ℹ️ 主窗口浏览，不启动兜底授权');
+                return;
+            }
+            if (hasPublishDataInWindow) {
+                console.log('[新浪授权] ℹ️ 发布窗口，不启动兜底授权');
+                return;
+            }
+            // 本窗口已成功上报过就不再兜底（上报失败不置位，下次导航可重试）
+            try {
+                if (sessionStorage.getItem('xinlang_auth_reported') === '1') {
+                    console.log('[新浪授权] ℹ️ 本窗口已完成过授权上报，兜底不启动');
+                    return;
+                }
+            } catch (dedupError) { }
+
+            // 给正常 auth-data 消息 / 跳转数据处理 15 秒时间
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            if (hasProcessed) {
+                console.log('[新浪授权] ℹ️ 正常流程已完成授权，兜底退出');
+                return;
+            }
+
+            console.log('[新浪授权] 🚀 启动兜底授权：轮询 getbaseinfo 等待登录...');
+            const startTime = Date.now();
+            const maxWaitMs = 5 * 60 * 1000;
+            let attempt = 0;
+            while (Date.now() - startTime < maxWaitMs) {
+                if (hasProcessed) {
+                    console.log('[新浪授权] ℹ️ 授权已完成，兜底轮询退出');
+                    return;
+                }
+                if (isProcessing) {
+                    // 正常流程正在处理，等它结束再看结果
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    continue;
+                }
+
+                // 登录公告页拦截：触发登录点击后继续轮询等页面跳转
+                const gateState = getXinlangLoginGateState();
+                if (gateState.matched) {
+                    await handleXinlangLoginGate({
+                        messageData: { auth_type: authType },
+                        storedCompanyId: companyId,
+                        source: 'auth-fallback',
+                    });
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    continue;
+                }
+
+                attempt++;
+                try {
+                    const probe = await fetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', {
+                        credentials: 'include',
+                    });
+                    if (probe.ok) {
+                        const probeResult = await probe.json();
+                        if (probeResult && probeResult.code === 200 && probeResult.data?.userInfo?.uid) {
+                            console.log(`[新浪授权] ✅ 兜底第 ${attempt} 次轮询检测到已登录，执行授权流程`);
+                            await processAuthorization({ auth_type: authType }, companyId);
+                            if (hasProcessed) {
+                                return;
+                            }
+                            // 上报失败，10 秒后重试
+                            await new Promise(resolve => setTimeout(resolve, 10000));
+                            continue;
+                        }
+                    }
+                    if (attempt === 1 || attempt % 10 === 0) {
+                        console.log(`[新浪授权] ⏳ 兜底第 ${attempt} 次轮询：未登录，等待扫码...`);
+                    }
+                } catch (probeError) {
+                    if (attempt === 1 || attempt % 10 === 0) {
+                        console.warn(`[新浪授权] ⏳ 兜底第 ${attempt} 次轮询异常:`, probeError.message);
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+            console.error('[新浪授权] ❌ 兜底轮询超时（5分钟），未完成授权');
+        } catch (fallbackError) {
+            console.error('[新浪授权] ❌ 兜底授权异常:', fallbackError);
+        }
+    })();
 
     // ===========================
     // 7. 页面加载完成向父窗口发送消息

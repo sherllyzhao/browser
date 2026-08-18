@@ -1515,6 +1515,17 @@
                                                         return;
                                                     }
                                                     await delay(2000);
+                                                    // 选择声明
+                                                    const declarationArea = document.querySelector('#info-source-signature');
+                                                    console.log("🚀 ~ tryUploadImage ~ declarationBtns: ", declarationBtns);
+                                                    if (declarationBtns.length) {
+                                                        for (const btn of declarationBtns) {
+                                                            if (btn.textContent.trim().includes('我已阅读并同意')) {
+                                                                btn.click();
+                                                            }
+                                                        }
+                                                    }
+                                                    await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
                                                     console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
                                                     //return

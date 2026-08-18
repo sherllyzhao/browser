@@ -118,6 +118,23 @@
     let isProcessing = false;
     let hasProcessed = false;
 
+    // 窗口类型判定：子窗口一律授权（管他从哪进来的），主窗口浏览不触发
+    // 授权窗口标志仅用于决定"授权完成后是否自动关窗"
+    let isChildWindow = false;
+    let isAuthModeWindow = false;
+    let hasPublishData = false;
+    try {
+        const detectedWindowId = await window.browserAPI?.getWindowId();
+        isChildWindow = typeof detectedWindowId === 'number';
+        if (isChildWindow) {
+            isAuthModeWindow = !!(await window.browserAPI.getGlobalData(`auth_mode_window_${detectedWindowId}`));
+            // 发布窗口不触发授权兜底（避免发布中途上报+通知父页面刷新干扰发布流程）
+            hasPublishData = !!(await window.browserAPI.getGlobalData(`publish_data_window_${detectedWindowId}`));
+        }
+        console.log('[网易号授权] 窗口 ID:', detectedWindowId, '子窗口:', isChildWindow, '授权窗口标志:', isAuthModeWindow, '发布窗口:', hasPublishData);
+    } catch (e) {
+        console.warn('[网易号授权] ⚠️ 读取窗口信息失败:', e.message);
+    }
 
     if (!window.browserAPI) {
         console.error('[网易号授权] ❌ browserAPI 不可用！');
@@ -129,60 +146,21 @@
         } else {
             console.log('[网易号授权] ✅ browserAPI.onMessageFromHome 可用，正在注册...');
 
-            window.browserAPI.onMessageFromHome(async (message) => {
+            // ===========================
+            // 核心授权流程（消息模式与兜底模式共用；接口优先获取用户信息）
+            // ===========================
+            async function processAuthorization(messageData) {
+                if (isProcessing) {
+                    console.warn('[网易号授权] ⚠️ 正在处理中，忽略重复调用');
+                    return;
+                }
+                if (hasProcessed) {
+                    console.warn('[网易号授权] ⚠️ 已经处理过，忽略重复调用');
+                    return;
+                }
+                isProcessing = true;
                 try {
-                    console.log('═══════════════════════════════════════');
-                    console.log('[网易号授权] 🎉 收到来自父窗口的消息!');
-                    console.log('[网易号授权] 消息类型:', typeof message);
-                    console.log('[网易号授权] 消息内容:', message);
-                    console.log('[网易号授权] 消息.type:', message?.type);
-                    console.log('[网易号授权] 消息.data:', message?.data);
-                    console.log('═══════════════════════════════════════');
-
-                    // 接收完整的授权数据
-                    if (message.type === 'auth-data') {
-                        console.log('[网易号授权] ✅ 收到授权数据:', message.data);
-
-                        // 🔑 强制检查 windowId（必须匹配，否则立即返回）
-                        const myWindowId = await window.browserAPI.getWindowId();
-                        console.log('[网易号授权] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
-
-                        if (!message.windowId) {
-                          console.error('[网易号授权] ❌ 收到的 auth-data 消息缺少 windowId，这不应该发生！已拒绝处理');
-                          return;
-                        }
-
-                        if (myWindowId !== message.windowId) {
-                          console.warn('[网易号授权] ⚠️ 消息不是发给我的（我是 ' + myWindowId + '，消息发给 ' + message.windowId + '），拒绝处理');
-                          return;
-                        }
-
-                        console.log('[网易号授权] ✅ windowId 匹配，安全处理消息');
-
-                        // 防重复检查
-                        if (isProcessing) {
-                            console.warn('[网易号授权] ⚠️ 正在处理中，忽略重复消息');
-                            return;
-                        }
-                        if (hasProcessed) {
-                            console.warn('[网易号授权] ⚠️ 已经处理过，忽略重复消息');
-                            return;
-                        }
-
-                        // 标记为正在处理
-                        isProcessing = true;
-
-                        // 更新全局变量
-                        if (message.data) {
-                            const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-                            window.__AUTH_DATA__ = {
-                                ...window.__AUTH_DATA__,
-                                message: messageData,
-                                receivedAt: Date.now()
-                            };
-                            console.log('[网易号授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
-
-                            const response = await fetch('/wemedia/index/count.do', {
+                            const response = await fetch('https://mp.163.com/wemedia/index/count.do', {
                                 method: 'GET',
                                 credentials: 'include',  // 自动携带 Cookie
                                 headers: {
@@ -293,7 +271,7 @@
                                             favoriting_count: data.yesterdayRecommendCount, // 收藏数
                                             total_favorited: data.totalRecommendCount, // 总收藏数
                                             company_id: companyId,
-                                            auth_type: messageData.auth_type,
+                                            auth_type: messageData?.auth_type ?? authType,
                                             cookies: cookiesData
                                         })
                                     };
@@ -324,6 +302,7 @@
 
                                         // 标记已完成（防止重复发送）
                                         hasProcessed = true;
+                                        try { sessionStorage.setItem('wangyihao_auth_reported', '1'); } catch (e) { }
 
                                         // 🔑 迁移登录 Cookies 到持久化 session
                                         // 因为授权窗口使用临时 session，需要把登录状态复制到持久化 session
@@ -362,10 +341,14 @@
                                         // API 成功后通知父页面刷新
                                         sendMessageToParent('授权成功，刷新数据');
 
-                                        // 统计接口成功后关闭弹窗
-                                        setTimeout(() => {
-                                            window.browserAPI.closeCurrentWindow();
-                                        }, window.getRandomDelayMs(10000));
+                                        // 统计接口成功后关闭弹窗（仅授权窗口自动关，其他入口保留窗口）
+                                        if (isAuthModeWindow) {
+                                            setTimeout(() => {
+                                                window.browserAPI.closeCurrentWindow();
+                                            }, window.getRandomDelayMs(10000));
+                                        } else {
+                                            console.log('[网易号授权] ℹ️ 非授权窗口，授权完成后保留窗口');
+                                        }
                                     } else {
                                         throw new Error(apiResult.msg || apiResult.message || '上报数据失败');
                                     }
@@ -375,19 +358,139 @@
                             }else{
                                 throw new Error(result.msg || result.message || '获取数据失败');
                             }
+                } catch (error) {
+                    console.error('[网易号授权] ❌ 处理授权数据出错:', error);
+                } finally {
+                    isProcessing = false;
+                    console.log('[网易号授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+                }
+            }
+
+            // ===========================
+            // 消息模式：监听父窗口 auth-data（windowId 强校验后调用核心流程）
+            // ===========================
+            window.browserAPI.onMessageFromHome(async (message) => {
+                try {
+                    console.log('═══════════════════════════════════════');
+                    console.log('[网易号授权] 🎉 收到来自父窗口的消息!');
+                    console.log('[网易号授权] 消息内容:', message);
+                    console.log('═══════════════════════════════════════');
+
+                    // 接收完整的授权数据
+                    if (message.type === 'auth-data') {
+                        console.log('[网易号授权] ✅ 收到授权数据:', message.data);
+
+                        // 🔑 强制检查 windowId（必须匹配，否则立即返回）
+                        const myWindowId = await window.browserAPI.getWindowId();
+                        console.log('[网易号授权] 我的窗口 ID:', myWindowId, '消息目标窗口 ID:', message.windowId);
+
+                        if (!message.windowId) {
+                          console.error('[网易号授权] ❌ 收到的 auth-data 消息缺少 windowId，这不应该发生！已拒绝处理');
+                          return;
                         }
 
-                        // 重置处理标志（无论成功或失败）
-                        isProcessing = false;
-                        console.log('[网易号授权] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+                        if (myWindowId !== message.windowId) {
+                          console.warn('[网易号授权] ⚠️ 消息不是发给我的（我是 ' + myWindowId + '，消息发给 ' + message.windowId + '），拒绝处理');
+                          return;
+                        }
+
+                        console.log('[网易号授权] ✅ windowId 匹配，安全处理消息');
+
+                        if (message.data) {
+                            const messageData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+                            window.__AUTH_DATA__ = {
+                                ...window.__AUTH_DATA__,
+                                message: messageData,
+                                receivedAt: Date.now()
+                            };
+                            console.log('[网易号授权] ✅ 授权数据已更新:', window.__AUTH_DATA__);
+                            await processAuthorization(messageData);
+                        }
                     }
                 } catch (error) {
                     console.error('[网易号授权] ❌ 消息处理出错:', error);
-                    isProcessing = false;
                 }
             });
 
             console.log('[网易号授权] ✅ 消息监听器注册成功');
+
+            // ===========================
+            // 兜底模式：子窗口必须完成授权（管他从哪进来的；auth-data 丢失/一次性失败时接口轮询）
+            // ===========================
+            (async () => {
+                try {
+                    if (!isChildWindow) {
+                        console.log('[网易号授权] ℹ️ 主窗口浏览，不启动兜底授权');
+                        return;
+                    }
+                    if (hasPublishData) {
+                        console.log('[网易号授权] ℹ️ 发布窗口，不启动兜底授权');
+                        return;
+                    }
+                    // 本窗口已成功上报过就不再兜底（上报失败不置位，下次导航可重试）
+                    try {
+                        if (sessionStorage.getItem('wangyihao_auth_reported') === '1') {
+                            console.log('[网易号授权] ℹ️ 本窗口已完成过授权上报，兜底不启动');
+                            return;
+                        }
+                    } catch (dedupError) { }
+
+                    // 给正常 auth-data 消息 15 秒到达时间
+                    await new Promise(resolve => setTimeout(resolve, 15000));
+                    if (hasProcessed) {
+                        console.log('[网易号授权] ℹ️ 消息模式已完成授权，兜底退出');
+                        return;
+                    }
+
+                    console.log('[网易号授权] 🚀 启动兜底授权：轮询 count.do 等待登录...');
+                    const startTime = Date.now();
+                    const maxWaitMs = 5 * 60 * 1000;
+                    let attempt = 0;
+                    while (Date.now() - startTime < maxWaitMs) {
+                        if (hasProcessed) {
+                            console.log('[网易号授权] ℹ️ 授权已完成，兜底轮询退出');
+                            return;
+                        }
+                        if (isProcessing) {
+                            // 消息模式正在处理，等它结束再看结果
+                            await new Promise(resolve => setTimeout(resolve, 3000));
+                            continue;
+                        }
+                        attempt++;
+                        try {
+                            const probe = await fetch('https://mp.163.com/wemedia/index/count.do', {
+                                method: 'GET',
+                                credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                            });
+                            if (probe.ok) {
+                                const probeResult = await probe.json();
+                                if (probeResult && probeResult.code === 1) {
+                                    console.log(`[网易号授权] ✅ 兜底第 ${attempt} 次轮询检测到已登录，执行授权流程`);
+                                    await processAuthorization({ auth_type: authType });
+                                    if (hasProcessed) {
+                                        return;
+                                    }
+                                    // 上报失败，10 秒后重试
+                                    await new Promise(resolve => setTimeout(resolve, 10000));
+                                    continue;
+                                }
+                            }
+                            if (attempt === 1 || attempt % 10 === 0) {
+                                console.log(`[网易号授权] ⏳ 兜底第 ${attempt} 次轮询：未登录，等待扫码...`);
+                            }
+                        } catch (probeError) {
+                            if (attempt === 1 || attempt % 10 === 0) {
+                                console.warn(`[网易号授权] ⏳ 兜底第 ${attempt} 次轮询异常:`, probeError.message);
+                            }
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
+                    console.error('[网易号授权] ❌ 兜底轮询超时（5分钟），未完成授权');
+                } catch (fallbackError) {
+                    console.error('[网易号授权] ❌ 兜底授权异常:', fallbackError);
+                }
+            })();
         }
     }
 

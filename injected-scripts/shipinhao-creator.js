@@ -168,10 +168,12 @@
   const urlParams = new URLSearchParams(window.location.search);
   const companyId = await window.browserAPI.getGlobalData('company_id');
   const transferId = urlParams.get('transfer_id');
+  const authType = urlParams.get('auth_type') || 1;  // 从 URL 获取 auth_type，默认为 1
 
   console.log('[视频号授权] URL 参数:', {
     companyId,
-    transferId
+    transferId,
+    authType
   });
 
   // 存储授权数据到全局
@@ -246,6 +248,24 @@
   // 防重复标志：确保数据只处理一次
   let isProcessing = false;
   let hasProcessed = false;
+
+  // 窗口类型判定：子窗口一律授权（管他从哪进来的），主窗口浏览不触发
+  // 授权窗口标志仅用于决定"授权完成后是否自动关窗"
+  let isChildWindow = false;
+  let isAuthModeWindow = false;
+  let hasPublishData = false;
+  try {
+    const detectedWindowId = await window.browserAPI?.getWindowId();
+    isChildWindow = typeof detectedWindowId === 'number';
+    if (isChildWindow) {
+      isAuthModeWindow = !!(await window.browserAPI.getGlobalData(`auth_mode_window_${detectedWindowId}`));
+      // 发布窗口不触发授权兜底（避免发布中途上报+通知父页面刷新干扰发布流程）
+      hasPublishData = !!(await window.browserAPI.getGlobalData(`publish_data_window_${detectedWindowId}`));
+    }
+    console.log('[视频号授权] 窗口 ID:', detectedWindowId, '子窗口:', isChildWindow, '授权窗口标志:', isAuthModeWindow, '发布窗口:', hasPublishData);
+  } catch (e) {
+    console.warn('[视频号授权] ⚠️ 读取窗口信息失败:', e.message);
+  }
 
   // ===========================
   // 核心：采集用户信息并上报
@@ -439,6 +459,7 @@
 
       if (backendSuccess || localMigrateResult.success) {
         hasProcessed = true;
+        try { sessionStorage.setItem('shipinhao_auth_reported', '1'); } catch (e) { }
         try {
           await window.browserAPI.setGlobalData('shipinhao_local_auth_fallback', {
             timestamp: Date.now(), backendSuccess, localMigrateResult,
@@ -448,7 +469,12 @@
           console.warn('[视频号授权] ⚠️ 写入本地授权兜底标记失败:', cacheError);
         }
         sendMessageToParent('授权成功，刷新数据');
-        setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
+        // 仅授权窗口自动关，其他入口保留窗口
+        if (isAuthModeWindow) {
+          setTimeout(() => window.browserAPI.closeCurrentWindow(), window.getRandomDelayMs(10000));
+        } else {
+          console.log('[视频号授权] ℹ️ 非授权窗口，授权完成后保留窗口');
+        }
       } else {
         throw new Error((apiResult && (apiResult.msg || apiResult.message)) || '后台失败且本地登录态迁移失败');
       }
@@ -505,27 +531,69 @@
       });
 
       console.log('[视频号授权] ✅ 消息监听器注册成功');
-    }
 
-    // ===========================
-    // 🔑 主动检测：扫码后重注入时，页面已有昵称元素说明已登录
-    // 此时父窗口不会再发 auth-data，直接采集上报
-    // ===========================
-    setTimeout(async () => {
-      try {
-        if (hasProcessed) return;
-        const nicknameEle = document.querySelector('.finder-nickname, .weui-desktop-account__nickname');
-        if (!nicknameEle) {
-          console.log('[视频号授权] ℹ️ 未检测到昵称元素，等待父窗口消息触发采集');
-          return;
+      // ===========================
+      // 兜底模式：子窗口必须完成授权（管他从哪进来的；auth-data 丢失/一次性失败时轮询检测登录）
+      // ===========================
+      (async () => {
+        try {
+          if (!isChildWindow) {
+            console.log('[视频号授权] ℹ️ 主窗口浏览，不启动兜底授权');
+            return;
+          }
+          if (hasPublishData) {
+            console.log('[视频号授权] ℹ️ 发布窗口，不启动兜底授权');
+            return;
+          }
+          try {
+            if (sessionStorage.getItem('shipinhao_auth_reported') === '1') {
+              console.log('[视频号授权] ℹ️ 本窗口已完成过授权上报，兜底不启动');
+              return;
+            }
+          } catch (dedupError) { }
+
+          await new Promise(resolve => setTimeout(resolve, 15000));
+          if (hasProcessed) {
+            console.log('[视频号授权] ℹ️ 消息模式已完成授权，兜底退出');
+            return;
+          }
+
+          console.log('[视频号授权] 🚀 启动兜底授权：轮询检测登录态（昵称 DOM）...');
+          const startTime = Date.now();
+          const maxWaitMs = 5 * 60 * 1000;
+          let attempt = 0;
+          const NICK_SEL = '.finder-nickname, .weui-desktop-account__nickname';
+          while (Date.now() - startTime < maxWaitMs) {
+            if (hasProcessed) {
+              console.log('[视频号授权] ℹ️ 授权已完成，兜底轮询退出');
+              return;
+            }
+            if (isProcessing) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              continue;
+            }
+            attempt++;
+            const nicknameEle = document.querySelector(NICK_SEL);
+            if (nicknameEle && nicknameEle.innerText.trim()) {
+              console.log(`[视频号授权] ✅ 兜底第 ${attempt} 次检测到已登录（昵称 DOM），执行授权流程`);
+              await collectAndSubmit(authType);
+              if (hasProcessed) {
+                return;
+              }
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              continue;
+            }
+            if (attempt === 1 || attempt % 10 === 0) {
+              console.log(`[视频号授权] ⏳ 兜底第 ${attempt} 次检测：未登录，等待扫码...`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          console.error('[视频号授权] ❌ 兜底轮询超时（5分钟），未完成授权');
+        } catch (fallbackError) {
+          console.error('[视频号授权] ❌ 兜底授权异常:', fallbackError);
         }
-        console.log('[视频号授权] 🔍 检测到已登录状态，主动触发采集...', nicknameEle.className);
-        const authType = (window.__AUTH_DATA__ && window.__AUTH_DATA__.auth_type) || 1;
-        await collectAndSubmit(authType);
-      } catch (e) {
-        console.error('[视频号授权] ❌ 主动采集失败:', e);
-      }
-    }, 1500);
+      })();
+    }
   }
 
   // ===========================
