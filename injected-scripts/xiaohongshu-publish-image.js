@@ -611,6 +611,11 @@ if (location.search.includes("published=true")) {
                             return;
                         }
 
+                        // 🔑 掉登录被弹回登录页时不消费发布数据，停窗等待用户手动登录后 reload 续发
+                        if (stopIfXhsLoginPage("message-entry")) {
+                            return;
+                        }
+
                         // 标记为正在处理
                         isProcessing = true;
                         console.log("[小红书发布] 📝 开始处理视频 ID:", videoId);
@@ -641,20 +646,24 @@ if (location.search.includes("published=true")) {
               console.error('[小红书发布] ❌ 保存发布页URL失败:', e);
             } */
 
-                            // 查找是否有提示消息
-                            const tipsEle = await waitForElement(".progetto-sugger-warn .tips", 2000);
-                            console.log("🚀 ~  ~ tipsEle: ", tipsEle);
-                            if (tipsEle) {
-                                const tipsText = tipsEle.textContent.trim();
-                                console.log("[小红书发布] ✅ 提示消息:", tipsText);
-                                const canToError = tipsText.includes("未绑定手机号");
-                                if (canToError) {
-                                    console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
-                                    const publishId = messageData?.video?.dyPlatform?.id;
-                                    await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
-                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                    return;
+                            // 查找是否有提示消息（这是可选提示，不存在时不能中断首次发布流程）
+                            try {
+                                const tipsEle = await waitForElement(".progetto-sugger-warn .tips", 2000);
+                                console.log("🚀 ~  ~ tipsEle: ", tipsEle);
+                                if (tipsEle) {
+                                    const tipsText = tipsEle.textContent.trim();
+                                    console.log("[小红书发布] ✅ 提示消息:", tipsText);
+                                    const canToError = tipsText.includes("未绑定手机号");
+                                    if (canToError) {
+                                        console.log("[小红书发布] ✅ 提示消息包含未绑定手机号，跳转到错误页面");
+                                        const publishId = messageData?.video?.dyPlatform?.id;
+                                        await sendStatisticsError(publishId, "未绑定手机号", "小红书发布");
+                                        await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                        return;
+                                    }
                                 }
+                            } catch (e) {
+                                console.log("[小红书发布] ℹ️ 未检测到发布前提示，继续发布流程:", e.message);
                             }
 
                             try {
@@ -745,6 +754,11 @@ if (location.search.includes("published=true")) {
                     // 这样如果登录跳转后跳回来，数据仍然可用
                     // 使用 hasProcessed 标记防止重复处理
                     console.log("[小红书发布] 📝 保留 publish_data_window_" + windowId + " 数据，待发布完成后清理");
+
+                    // 🔑 掉登录被弹回登录页时不消费发布数据，停窗等待用户手动登录后 reload 续发
+                    if (stopIfXhsLoginPage("restore-entry")) {
+                        return;
+                    }
 
                     // 标记为正在处理
                     isProcessing = true;
@@ -882,6 +896,67 @@ if (location.search.includes("published=true")) {
         localStorage.removeItem("PUBLISH_SUCCESS_DATA");
     }
 
+    function readXhsPublishSignal() {
+        const selectors = [
+            ".d-toast-description",
+            ".d-message-content",
+            ".semi-toast-content-text",
+            ".cheetah-message-custom-content span:last-child",
+            ".el-message__content",
+            '[class*="toast"]',
+            '[class*="message"]',
+            '[class*="notification"]',
+        ];
+        const successKeywords = ["发布成功", "提交成功", "已发布", "已提交", "审核中"];
+        const failureKeywords = ["发布失败", "提交失败", "发布错误", "提交错误", "校验失败", "失败", "错误", "未绑定手机号", "不能为空", "不支持", "违规", "禁止"];
+        const roots = [document, ...(window.__xhsShadowRoots || [])];
+
+        for (const root of roots) {
+            for (const selector of selectors) {
+                try {
+                    const elements = root.querySelectorAll(selector);
+                    for (const element of elements) {
+                        const text = (element.textContent || element.innerText || "").trim();
+                        if (!text) continue;
+                        if (successKeywords.some(keyword => text.includes(keyword))) {
+                            return { type: "success", text };
+                        }
+                        if (failureKeywords.some(keyword => text.includes(keyword))) {
+                            return { type: "failure", text };
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+
+        return { type: "none", text: "" };
+    }
+
+    async function completeXhsPublishAsSuccess(publishId, windowId, reason) {
+        console.log("[小红书发布] ✅ 按成功收口:", reason);
+        try {
+            await sendStatistics(publishId, "小红书发布");
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 成功统计上报异常:", error.message);
+        }
+        try {
+            await clearPublishSuccessData(windowId);
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 清理发布临时数据异常:", error.message);
+        }
+        publishRunning = false;
+        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+        if (typeof window.gotoContentVerify === 'function'
+            && await window.gotoContentVerify('xiaohongshu', publishId, '小红书发布')) {
+            return;
+        }
+        try {
+            await closeWindowWithMessage("发布成功，刷新数据", 1000);
+        } catch (error) {
+            console.warn("[小红书发布] ⚠️ 成功后关闭窗口异常:", error.message);
+        }
+    }
+
     async function publishApi(dataObj) {
         console.log("🚀 ~ publishApi ~ dataObj: ", dataObj);
 
@@ -996,6 +1071,8 @@ if (location.search.includes("published=true")) {
             }
 
             console.log("[小红书发布] ✅ 发布按钮已点击");
+            // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
+            if (publishId) { window.sendOptimisticSuccess(publishId, '小红书发布').catch(() => {}); }
             console.log("[小红书发布] 📨 平台提示:", clickResult.message);
 
             // 开发环境弹窗显示平台提示信息
@@ -1015,12 +1092,11 @@ if (location.search.includes("published=true")) {
             hasProcessed = true;
 
             // 等待页面跳转到成功页，超时 30 秒
-            console.log("[小红书发布] ⏳ 等待跳转到成功页（30秒超时）...");
+            console.log("[小红书发布] ⏳ 等待跳转到成功页（90秒超时）...");
             const currentUrl = window.location.href;
             const startTime = Date.now();
-            const timeout = 30000; // 30秒
-            // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
-            let lastToastMessage = clickResult.message || "";
+            const timeout = 90000; // 90秒：对齐全平台，网慢兜底，避免误报超时失败
+            let lastFailureMessage = "";
 
             while (Date.now() - startTime < timeout) {
                 await delay(2000); // 每 2 秒检查一次
@@ -1040,23 +1116,15 @@ if (location.search.includes("published=true")) {
                     return;
                 }
 
-                // 检测是否出现 toast 提示，记录消息内容
-                // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
-                const successKeywords = ["成功", "发布成功", "提交成功", "上传成功"];
-                try {
-                    const toastEl = document.querySelector(".d-toast-description");
-                    if (toastEl) {
-                        const text = (toastEl.textContent || "").trim();
-                        const isSuccess = successKeywords.some(keyword => text.includes(keyword));
-                        if (text && !isSuccess) {
-                            lastToastMessage = text;
-                            console.log("[小红书发布] 📨 检测到提示:", text);
-                        } else if (isSuccess) {
-                            console.log("[小红书发布] ✅ 检测到成功提示，忽略:", text);
-                        }
-                    }
-                } catch (e) {
-                    // 忽略检测错误
+                const signal = readXhsPublishSignal();
+                if (signal.type === "success") {
+                    await completeXhsPublishAsSuccess(publishId, windowId, signal.text);
+                    return;
+                }
+                if (signal.type === "failure") {
+                    lastFailureMessage = signal.text;
+                    console.log("[小红书发布] ❌ 检测到明确失败提示:", signal.text);
+                    break;
                 }
             }
 
@@ -1069,11 +1137,14 @@ if (location.search.includes("published=true")) {
                 return;
             }
 
-            // 真正的超时失败
-            console.log("[小红书发布] ❌ 等待超时（30秒），判定发布失败");
-            // 清除数据（窗口专属 key 和通用 key）
+            if (!lastFailureMessage) {
+                await completeXhsPublishAsSuccess(publishId, windowId, "点击已成功但平台未跳转成功页");
+                return;
+            }
+
+            console.log("[小红书发布] ❌ 检测到明确失败，结束发布:", lastFailureMessage);
             await clearPublishSuccessData(windowId);
-            await sendStatisticsError(publishId, lastToastMessage || "发布超时，未跳转到成功页", "小红书发布");
+            await sendStatisticsError(publishId, lastFailureMessage, "小红书发布");
             publishRunning = false;
             await closeWindowWithMessage("发布失败，刷新数据", 1000);
         } catch (error) {
@@ -1088,6 +1159,84 @@ if (location.search.includes("published=true")) {
         }
     }
 
+    // ===========================
+    // 🔐 登录页守卫：掉登录时小红书 SPA 路由跳到 /login，
+    // 发布流程必须停在登录页等用户手动登录，禁止直接上报失败关窗。
+    // 登录成功回到发布页后 reload 一次（绕过 __XHS_SCRIPT_LOADED__ 防重），
+    // 脚本重新注入后从 publish_data_window_${windowId} 恢复数据继续发布；
+    // 主进程「登录页→业务页」导航检测会自动保存新登录态到后台。
+    // ===========================
+    function isXhsLoginPage() {
+        try {
+            const url = new URL(window.location.href);
+            return url.hostname === "creator.xiaohongshu.com" && url.pathname.startsWith("/login");
+        } catch (_) {
+            return String(window.location.href || "").includes("creator.xiaohongshu.com/login");
+        }
+    }
+
+    // 登录等待提示条：fixed 顶部 + pointer-events:none，不遮挡、不拦截登录表单操作
+    function showXhsLoginWaitTip() {
+        try {
+            if (document.getElementById("__xhs_login_wait_tip__")) {
+                return;
+            }
+            const tip = document.createElement("div");
+            tip.id = "__xhs_login_wait_tip__";
+            tip.textContent = "小红书登录已失效，请在本窗口重新登录，登录成功后将自动继续发布";
+            tip.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#fff7e6;color:#d46b08;border-bottom:1px solid #ffd591;font-size:14px;font-weight:600;text-align:center;pointer-events:none;";
+            (document.body || document.documentElement).appendChild(tip);
+        } catch (e) {
+            console.warn("[小红书发布] ⚠️ 显示登录提示条失败:", e.message);
+        }
+    }
+
+    // 返回 true 表示当前在登录页，调用方应停止发布流程（不上报失败、不关窗）
+    function stopIfXhsLoginPage(source) {
+        if (!isXhsLoginPage()) {
+            return false;
+        }
+        console.warn(`[小红书发布] 🔐 检测到登录页，暂停发布流程等待用户手动登录，source=${source}, url=${window.location.href}`);
+        if (typeof hideOperationBanner === "function") {
+            hideOperationBanner();
+        }
+        showXhsLoginWaitTip();
+        watchXhsLoginRecovery();
+        return true;
+    }
+
+    // 🔑 监听登录恢复：SPA 跳回发布页时脚本重注入会被 __XHS_SCRIPT_LOADED__ 防重挡住，
+    // 这里 reload 一次让脚本干净地重新注入续发。
+    // 用发布页白名单而非「离开登录页」做条件，避免验证码等登录中间页误触发刷新打断用户。
+    function watchXhsLoginRecovery() {
+        if (window.__xhsLoginRecoveryWatcher__) {
+            return;
+        }
+        console.log("[小红书发布] 👀 开始监听登录恢复，用户登录成功后将自动刷新继续发布");
+        window.__xhsLoginRecoveryWatcher__ = setInterval(() => {
+            let onPublishPage = false;
+            try {
+                const url = new URL(window.location.href);
+                onPublishPage = url.hostname === "creator.xiaohongshu.com" && url.pathname.startsWith("/publish/publish");
+            } catch (_) {}
+            if (onPublishPage) {
+                clearInterval(window.__xhsLoginRecoveryWatcher__);
+                window.__xhsLoginRecoveryWatcher__ = null;
+                console.log("[小红书发布] 🔄 检测到已登录并回到发布页（用户已重新登录），刷新页面以继续发布流程");
+                window.location.reload();
+            }
+        }, 1000);
+    }
+
+    // 🔐 全程守望：填表/上传任意时刻被弹回登录页都能接住（幂等，重注入不会重复启动）
+    if (!window.__xhsLoginKickoutWatcher__) {
+        window.__xhsLoginKickoutWatcher__ = setInterval(() => {
+            if (isXhsLoginPage() && !window.__xhsLoginRecoveryWatcher__) {
+                stopIfXhsLoginPage("kickout-watcher");
+            }
+        }, 1500);
+    }
+
     // 填写表单数据
     async function fillFormData(dataObj) {
         // 防止重复执行
@@ -1095,6 +1244,12 @@ if (location.search.includes("published=true")) {
             return;
         }
         fillFormRunning = true;
+
+        // 🔑 掉登录被弹回登录页时不再继续填表，停窗等待用户手动登录
+        if (stopIfXhsLoginPage("fillFormData")) {
+            fillFormRunning = false;
+            return;
+        }
 
         try {
             const externalDependencyStatus = {
@@ -1502,6 +1657,10 @@ if (location.search.includes("published=true")) {
             await publishApi(dataObj);
         } catch (error) {
             console.error("[小红书发布] fillFormData 错误:", error);
+            // 🔑 失败原因若是被弹回登录页，不上报失败、不关窗，停窗等待用户手动登录续发
+            if (stopIfXhsLoginPage("fillFormData-catch")) {
+                return;
+            }
             // 发送错误上报
             const publishId = dataObj?.video?.dyPlatform?.id;
             if (publishId) {

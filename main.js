@@ -484,6 +484,10 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
     const host = String(hostname || '').toLowerCase();
     return host === 'douyin.com'
       || host.endsWith('.douyin.com')
+      || host === 'zhihu.com'
+      || host.endsWith('.zhihu.com')
+      || host === 'zhimg.com'
+      || host.endsWith('.zhimg.com')
       || host === 'channels.weixin.qq.com'
       || host.endsWith('.channels.weixin.qq.com')
       || host === 'weixin.qq.com'
@@ -500,6 +504,8 @@ function shouldUseStandardUserAgentForUrl(rawUrl = '') {
   } catch (_) {
     const urlText = String(rawUrl || '').toLowerCase();
     return urlText.includes('douyin.com')
+      || urlText.includes('zhihu.com')
+      || urlText.includes('zhimg.com')
       || urlText.includes('channels.weixin.qq.com')
       || urlText.includes('weixin.qq.com')
       || urlText.includes('wx.qq.com')
@@ -3835,6 +3841,100 @@ function buildWindowContext(targetUrl, options = {}) {
   };
 }
 
+function normalizeSohuhaoAuthEntryUrl(targetUrl = '', options = {}) {
+  if (normalizePlatformName(options.platform) !== 'sohuhao' || options.windowContext?.purpose !== 'auth') {
+    return targetUrl;
+  }
+
+  try {
+    const parsed = new URL(targetUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page');
+    const isSohuMpfeRoot = parsed.hostname === 'mp.sohu.com' && /^\/mpfe\/v4\/?$/.test(parsed.pathname);
+    const isSohuFirstPage = parsed.hostname === 'mp.sohu.com'
+      && parsed.pathname === '/mpfe/v4/contentManagement/first/page';
+
+    if (!isSohuMpfeRoot && !isSohuFirstPage) {
+      return targetUrl;
+    }
+
+    const authUrl = new URL('https://mp.sohu.com/mpfe/v4/contentManagement/first/page');
+    parsed.searchParams.forEach((value, key) => {
+      if (key !== 'from') {
+        authUrl.searchParams.append(key, value);
+      }
+    });
+    authUrl.searchParams.set('from', 'auth');
+    return authUrl.toString();
+  } catch (_) {
+    return 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=auth';
+  }
+}
+
+function isSohuhaoAuthInjectablePageUrl(targetUrl = '') {
+  try {
+    const parsed = new URL(targetUrl || '');
+    return parsed.hostname === 'mp.sohu.com'
+      && (
+        /^\/mpfe\/v4\/?$/.test(parsed.pathname)
+        || parsed.pathname === '/mpfe/v4/login'
+        || parsed.pathname === '/mpfe/v4/contentManagement/first/page'
+      );
+  } catch (_) {
+    const urlText = String(targetUrl || '');
+    return urlText.includes('mp.sohu.com/mpfe/v4')
+      && (
+        urlText.includes('/login')
+        || urlText.includes('/contentManagement/first/page')
+        || /mp\.sohu\.com\/mpfe\/v4\/?(?:[?#].*)?$/.test(urlText)
+      );
+  }
+}
+
+function inferSohuhaoAuthWindowContext(windowId, targetUrl = '', context = null) {
+  const candidateUrl = targetUrl || context?.expectedPageUrl || '';
+  const normalizedPlatform = normalizePlatformName(context?.platform);
+
+  if (normalizedPlatform === 'sohuhao' && context?.purpose === 'auth') {
+    return context;
+  }
+
+  if (context?.purpose === 'auth' && isSohuhaoAuthInjectablePageUrl(candidateUrl)) {
+    return {
+      ...context,
+      platform: 'sohuhao',
+      expectedPageUrl: context.expectedPageUrl || candidateUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page'
+    };
+  }
+
+  if (windowId && globalStorage?.[`auth_mode_window_${windowId}`] && isSohuhaoAuthInjectablePageUrl(candidateUrl)) {
+    return {
+      ...(context || {}),
+      purpose: 'auth',
+      platform: 'sohuhao',
+      expectedPageUrl: context?.expectedPageUrl || candidateUrl || 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page',
+      inferredFromAuthWindowFlag: true
+    };
+  }
+
+  return context;
+}
+
+function getSohuhaoAuthInjectionMatchUrl(actualUrl = '', context = null) {
+  const targetUrl = actualUrl || context?.expectedPageUrl || '';
+  const isSohuhaoAuthContext = normalizePlatformName(context?.platform) === 'sohuhao'
+    && context?.purpose === 'auth';
+  const isInferredSohuhaoAuthContext = context?.purpose === 'auth'
+    && isSohuhaoAuthInjectablePageUrl(targetUrl);
+
+  if (!isSohuhaoAuthContext && !isInferredSohuhaoAuthContext) {
+    return actualUrl;
+  }
+
+  return normalizeSohuhaoAuthEntryUrl(targetUrl, {
+    platform: 'sohuhao',
+    windowContext: context
+  });
+}
+
 function matchesExpectedPage(currentUrl = '', expectedUrl = '') {
   if (!currentUrl || !expectedUrl) return false;
   if (currentUrl === expectedUrl) return true;
@@ -4184,16 +4284,21 @@ async function inspectSourceTextDocument(webContents) {
           .length;
 
         const cssPatterns = [
-          '@charset',
-          '@font-face',
-          ':hover{',
-          ':focus{',
-          '@media ',
-          '@keyframes ',
-          'text-decoration:none',
-          'background-color:transparent',
-          'display:block',
-          'position:absolute'
+          /@charset/i,
+          /@font-face/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /@keyframes\\s+/i,
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /border-radius\\s*:/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
         const jsonMarkers = [
           '"userAgent"',
@@ -4205,11 +4310,12 @@ async function inspectSourceTextDocument(webContents) {
           '"ctx"',
           '"register"'
         ];
-        const cssScore = cssPatterns.filter((pattern) => bodyText.includes(pattern)).length;
+        const cssScore = cssPatterns.filter((pattern) => pattern.test(bodyText)).length;
         const jsonScore = jsonMarkers.filter((pattern) => bodyText.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyText) || /^"[^"]+"\\s*:/.test(bodyText);
         const compactTextDocument = body.children.length <= 2 && visibleElementCount <= 3;
-        const isCssSource = compactTextDocument && cssScore >= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyText) && cssScore >= 2;
+        const isCssSource = compactTextDocument && (cssScore >= 4 || hasBrowserHeaderCss);
         const isJsonSource = compactTextDocument && bodyText.length > 800 && startsLikeJson && jsonScore >= 3;
 
         return {
@@ -4427,6 +4533,8 @@ const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
 const STARTUP_LOAD_MAX_WAIT_MS = 20000;
+const STARTUP_LOAD_DIALOG_RECHECK_MS = 2500;
+const STARTUP_LOAD_DIALOG_RECHECK_INTERVAL_MS = 500;
 const REFRESH_LOAD_READY_CHECK_DELAY = 600;
 const REFRESH_LOAD_MAX_WAIT_MS = 15000;
 
@@ -5060,18 +5168,23 @@ async function inspectBrowserViewReadiness() {
           .length;
         const bodyTextPreview = (body.innerText || '').trim().slice(0, 5000);
         const cssTextPatterns = [
-          '@charset',
-          '@font-face',
-          ':hover{',
-          ':focus{',
-          '@media ',
-          '@keyframes ',
-          'text-decoration:none',
-          'background-color:transparent',
-          'display:block',
-          'position:absolute'
+          /@charset/i,
+          /@font-face/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /@keyframes\\s+/i,
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /border-radius\\s*:/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
-        const cssTextMatchCount = cssTextPatterns.filter((pattern) => bodyTextPreview.includes(pattern)).length;
+        const cssTextMatchCount = cssTextPatterns.filter((pattern) => pattern.test(bodyTextPreview)).length;
         const jsonTextMarkers = [
           '"userAgent"',
           '"appViewConfig"',
@@ -5084,7 +5197,8 @@ async function inspectBrowserViewReadiness() {
         ];
         const jsonTextMarkerCount = jsonTextMarkers.filter((pattern) => bodyTextPreview.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyTextPreview) || /^"[^"]+"\\s*:/.test(bodyTextPreview);
-        const looksLikeCssSource = cssTextMatchCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyTextPreview) && cssTextMatchCount >= 2;
+        const looksLikeCssSource = (cssTextMatchCount >= 4 || hasBrowserHeaderCss) && childCount <= 2 && visibleSampleElements <= 3;
         const looksLikeJsonSource = bodyTextPreview.length > 800 && startsLikeJson && jsonTextMarkerCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
         if (looksLikeCssSource || looksLikeJsonSource) {
           return {
@@ -5139,6 +5253,45 @@ async function inspectBrowserViewReadiness() {
   `, true);
 }
 
+async function recheckStartupReadinessBeforeDialog(reason) {
+  const startedAt = Date.now();
+  let lastState = null;
+  let lastLoading = false;
+
+  while (Date.now() - startedAt <= STARTUP_LOAD_DIALOG_RECHECK_MS) {
+    if (!startupLoadGuard.active) {
+      return { ready: true, reason: 'guard-inactive', state: lastState };
+    }
+    if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) {
+      return { ready: false, reason: 'browserview-destroyed', state: lastState, isLoading: false };
+    }
+
+    lastLoading = browserView.webContents.isLoading();
+    if (lastLoading) {
+      lastState = { ready: false, reason: 'still-loading-before-dialog' };
+    } else {
+      try {
+        lastState = await inspectBrowserViewReadiness();
+      } catch (err) {
+        lastState = {
+          ready: false,
+          reason: 'recheck-error-before-dialog',
+          error: err && err.message ? err.message : String(err)
+        };
+      }
+      if (lastState && lastState.ready) {
+        console.log('[Startup Guard] ✅ 弹窗前复检通过，取消告警:', { reason, state: lastState });
+        return { ready: true, reason: 'visual-ready-before-dialog', state: lastState };
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, STARTUP_LOAD_DIALOG_RECHECK_INTERVAL_MS));
+  }
+
+  console.warn('[Startup Guard] ⚠️ 弹窗前复检仍未就绪:', { reason, state: lastState, isLoading: lastLoading });
+  return { ready: false, reason: 'still-not-ready-before-dialog', state: lastState, isLoading: lastLoading };
+}
+
 function retryStartupLoad(reason) {
   if (!startupLoadGuard.active) return false;
   if (!browserView || !browserView.webContents || browserView.webContents.isDestroyed()) return false;
@@ -5180,11 +5333,18 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
       console.warn(`[Startup Guard] ⚠️ 首屏等待超时: ${elapsed}ms`);
       if (retryStartupLoad(`首屏等待超时 ${elapsed}ms`)) return;
 
+      const recheck = await recheckStartupReadinessBeforeDialog(`timeout:${reason}`);
+      if (recheck.ready) {
+        finishStartupLoadGuard('timeout-recheck-ready');
+        return;
+      }
+
       finishStartupLoadGuard('timeout');
+      const finalState = recheck.state || {};
       const result = await showPageErrorDialog({
         title: '页面加载较慢',
         message: '启动页加载超时，是否尝试恢复？',
-        detail: `触发点: ${reason}，等待时长: ${elapsed}ms`
+        detail: `触发点: ${reason}，等待时长: ${elapsed}ms，复检: ${finalState.reason || recheck.reason || 'unknown'}`
       });
 
       if (result.response === 0) {
@@ -5212,11 +5372,22 @@ function scheduleStartupReadinessCheck(reason, delayMs = STARTUP_LOAD_READY_CHEC
 
       if (retryStartupLoad(`首屏检查未通过 (${state.reason || 'unknown'})`)) return;
 
+      const recheck = await recheckStartupReadinessBeforeDialog(`visual-check-failed:${reason}`);
+      if (recheck.ready) {
+        finishStartupLoadGuard('visual-recheck-ready');
+        return;
+      }
+      if (recheck.isLoading) {
+        scheduleStartupReadinessCheck(`${reason}:dialog-recheck-loading`, 1200);
+        return;
+      }
+
       finishStartupLoadGuard('visual-check-failed');
+      const finalState = recheck.state || state;
       const result = await showPageErrorDialog({
         title: '页面可能空白',
         message: '启动后页面仍未正常渲染，是否尝试恢复？',
-        detail: `原因: ${state.reason || 'unknown'} | html=${state.htmlLength || 0} text=${state.textLength || 0} child=${state.childCount || 0}`
+        detail: `原因: ${finalState.reason || 'unknown'} | html=${finalState.htmlLength || 0} text=${finalState.textLength || 0} child=${finalState.childCount || 0}`
       });
 
       if (result.response === 0) {
@@ -5681,8 +5852,19 @@ function isToutiaoUrl(rawUrl = '') {
   }
 }
 
+function isToutiaoPublishUrl(rawUrl = '') {
+  try {
+    const parsed = new URL(rawUrl);
+    return isToutiaoHost(parsed.hostname)
+      && parsed.pathname.toLowerCase().includes('/profile_v4/graphic/publish');
+  } catch (_) {
+    return false;
+  }
+}
+
 function shouldSkipScriptInjection(url = '') {
-  return FORCE_BARE_TOUTIAO && isToutiaoUrl(url);
+  // 只保留发布页的 bare publish 兼容逻辑；授权入口和创作者首页必须允许脚本注入。
+  return FORCE_BARE_TOUTIAO && isToutiaoPublishUrl(url);
 }
 
 const childWindows = []; // 跟踪所有打开的子窗口
@@ -6857,11 +7039,16 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
         href: result?.href || currentURL
       });
       toutiaoBarePublishState.set(windowId, 'done');
-      setTimeout(() => {
-        if (!targetWindow.isDestroyed()) {
-          targetWindow.close();
-        }
-      }, 1200);
+      // 开发环境（npm start，app.isPackaged=false）保留发布窗口，方便调试；与 common.js closeWindowWithMessage 的豁免一致
+      if (isProduction) {
+        setTimeout(() => {
+          if (!targetWindow.isDestroyed()) {
+            targetWindow.close();
+          }
+        }, 1200);
+      } else {
+        console.log('[Toutiao Bare Publish] ⚠️ 开发环境，发布成功后跳过关闭窗口，方便调试');
+      }
       return;
     }
 
@@ -7998,22 +8185,38 @@ function createWindow() {
 
         const bodyText = document.body.innerText || '';
         const cssPatterns = [
-          'text-decoration:none',
-          'background-color:transparent',
-          'cursor:pointer',
-          'border-radius:',
-          'display:block',
-          'position:absolute',
-          ':hover{',
-          '@media '
+          /text-decoration\\s*:\\s*none/i,
+          /background-color\\s*:\\s*transparent/i,
+          /cursor\\s*:\\s*pointer/i,
+          /border-radius\\s*:/i,
+          /display\\s*:\\s*(block|flex|inline-block|grid)/i,
+          /position\\s*:\\s*(absolute|fixed|relative|sticky)/i,
+          /:\\s*(hover|focus)\\s*\\{/i,
+          /@media\\s+/i,
+          /box-sizing\\s*:\\s*border-box/i,
+          /font-family\\s*:/i,
+          /justify-content\\s*:/i,
+          /#__browser_common_header__/i,
+          /--header-height\\s*:/i
         ];
 
-        let cssMatchCount = 0;
-        for (const pattern of cssPatterns) {
-          if (bodyText.includes(pattern)) cssMatchCount++;
-        }
+        const cssMatchCount = cssPatterns.filter(pattern => pattern.test(bodyText)).length;
+        const visibleElementCount = Array.from(document.querySelectorAll('body *'))
+          .slice(0, 80)
+          .filter((el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && Number(style.opacity || '1') !== 0
+              && rect.width >= 12
+              && rect.height >= 12;
+          })
+          .length;
+        const compactTextDocument = document.body.children.length <= 2 && visibleElementCount <= 3;
+        const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyText) && cssMatchCount >= 2;
 
-        if (cssMatchCount >= 3) {
+        if (compactTextDocument && (cssMatchCount >= 4 || hasBrowserHeaderCss)) {
           // 页面异常，保持隐藏状态，添加遮罩 + loading动画
           if (!document.getElementById('__page_loading_mask__')) {
             const mask = document.createElement('div');
@@ -8023,7 +8226,13 @@ function createWindow() {
             document.documentElement.appendChild(mask);
           }
 
-          return { ready: false, reason: 'css-as-text', matchCount: cssMatchCount };
+          return {
+            ready: false,
+            reason: 'css-as-text',
+            matchCount: cssMatchCount,
+            childCount: document.body.children.length,
+            visibleElementCount
+          };
         }
 
         // 页面正常，移除预防性隐藏样式
@@ -8052,6 +8261,16 @@ function createWindow() {
 
         if (!pageState.ready) {
           console.log(`[Script Injection] ⚠️ 页面状态异常: ${pageState.reason}，已隐藏页面内容`);
+
+          const isMainBrowserView = browserView?.webContents
+            && !browserView.webContents.isDestroyed()
+            && browserView.webContents.id === webContents.id;
+          if (isMainBrowserView && pageState.reason === 'css-as-text') {
+            const recovered = await recoverBrowserViewFromSourceTextPage('script-injection-page-check', lastValidUrl);
+            if (recovered) {
+              return;
+            }
+          }
 
           // 最多重试2次，每次间隔1.5秒，然后刷新
           if (retryCount < 2) {
@@ -9422,7 +9641,64 @@ app.whenReady().then(async () => {
   // 设置日志文件（便携版和生产环境）
   if (isProduction) {
     const logPath = path.join(app.getPath('userData'), 'app.log');
-    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const logBackupPath = logPath + '.1';
+    const LOG_MAX_SIZE = 10 * 1024 * 1024;        // 单文件上限 10MB，超过则轮转为 app.log.1
+    const LOG_DISCARD_SIZE = 50 * 1024 * 1024;    // 历史文件超过 50MB 时备份已无排查价值，直接删除
+
+    // 启动时轮转：处理历史遗留的超大日志（曾出现 393MB 无轮转累积）
+    try {
+      const existing = fs.statSync(logPath);
+      if (existing.size > LOG_DISCARD_SIZE) {
+        fs.unlinkSync(logPath);
+      } else if (existing.size > LOG_MAX_SIZE) {
+        if (fs.existsSync(logBackupPath)) fs.unlinkSync(logBackupPath);
+        fs.renameSync(logPath, logBackupPath);
+      }
+    } catch (rotateError) {
+      // 文件不存在或被占用（如另一实例）时忽略，继续追加写入
+    }
+
+    let logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    let logWrittenBytes = 0;
+    try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) {}
+    let logRotating = false;
+
+    // Windows 无法重命名持有打开句柄的文件，必须先 end() 刷盘关闭 fd，再在回调里改名并重开新流。
+    // 轮转窗口（毫秒级）内的日志安全丢弃，不阻塞不抛错。
+    function rotateAppLog() {
+      if (logRotating) return;
+      logRotating = true;
+      const oldStream = logStream;
+      logStream = null;
+      oldStream.end(() => {
+        try {
+          if (fs.existsSync(logBackupPath)) fs.unlinkSync(logBackupPath);
+          fs.renameSync(logPath, logBackupPath);
+        } catch (renameError) {
+          // 改名失败（文件被占用等）则放弃本次轮转，继续追加到原文件
+        }
+        try {
+          logStream = fs.createWriteStream(logPath, { flags: 'a' });
+          try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) { logWrittenBytes = 0; }
+        } catch (reopenError) {
+          logStream = null; // 重开失败则本次会话不再写文件日志，控制台输出不受影响
+        }
+        logRotating = false;
+      });
+    }
+
+    function writeAppLog(line) {
+      try {
+        if (!logStream) return;
+        logStream.write(line);
+        logWrittenBytes += Buffer.byteLength(line);
+        if (logWrittenBytes > LOG_MAX_SIZE) {
+          rotateAppLog();
+        }
+      } catch (_) {
+        // 日志写入永远不能影响主流程
+      }
+    }
 
     // 保存原始 console 方法
     const originalLog = console.log;
@@ -9432,24 +9708,24 @@ app.whenReady().then(async () => {
     // 重定向 console 输出到文件和控制台
     console.log = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[LOG ${new Date().toLocaleString()}] ${msg}\n`);
       originalLog.apply(console, args);
     };
 
     console.error = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[ERROR ${new Date().toLocaleString()}] ${msg}\n`);
       originalError.apply(console, args);
     };
 
     console.warn = function(...args) {
       const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-      logStream.write(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
+      writeAppLog(`[WARN ${new Date().toLocaleString()}] ${msg}\n`);
       originalWarn.apply(console, args);
     };
 
     console.log('=================================');
-    console.log('📝 日志文件已启用');
+    console.log('📝 日志文件已启用（单文件上限 10MB，超出自动轮转为 app.log.1）');
     console.log('📂 日志路径:', logPath);
     console.log('=================================');
   }
@@ -11007,6 +11283,39 @@ function findSohuhaoAuthWindowUrlForRelaunch() {
   return 'https://mp.sohu.com/mpfe/v4/';
 }
 
+async function ensureSohuhaoAuthWindowInjectableUrl(targetWindow, reason = 'auth-window-reuse') {
+  if (!targetWindow || targetWindow.isDestroyed() || !targetWindow.webContents || targetWindow.webContents.isDestroyed()) {
+    return false;
+  }
+
+  const context = windowContextMap.get(targetWindow.id) || null;
+  if (normalizePlatformName(context?.platform) !== 'sohuhao' || context?.purpose !== 'auth') {
+    return false;
+  }
+
+  const currentUrl = targetWindow.webContents.getURL() || context.expectedPageUrl || 'https://mp.sohu.com/mpfe/v4/';
+  const normalizedUrl = normalizeSohuhaoAuthEntryUrl(currentUrl, {
+    platform: 'sohuhao',
+    windowContext: context
+  });
+  if (normalizedUrl === currentUrl) {
+    return false;
+  }
+
+  context.expectedPageUrl = normalizedUrl;
+  context.safeOrigin = getUrlInfo(normalizedUrl).origin || 'https://mp.sohu.com';
+  context.bootstrapUrl = 'https://mp.sohu.com/';
+  windowContextMap.set(targetWindow.id, context);
+  console.log('[IPC] 🔧 搜狐号授权复用窗口当前是不可注入入口，重新导航到可注入 URL:', {
+    windowId: targetWindow.id,
+    reason,
+    currentUrl,
+    normalizedUrl
+  });
+  await targetWindow.webContents.loadURL(normalizedUrl);
+  return true;
+}
+
 function closeUnboundSohuhaoAuthWindows(exceptWindowId = null) {
   for (const childWindow of childWindows) {
     if (!childWindow || childWindow.isDestroyed() || !childWindow.webContents || childWindow.webContents.isDestroyed()) {
@@ -11155,6 +11464,12 @@ async function routeSohuhaoAuthDataToAccountWindow(message, sourceSession = null
 
   if (!targetWindow) {
     return { routed: false, reason: 'target-window-unavailable', accountId: resolvedAccount.accountId };
+  }
+
+  try {
+    await ensureSohuhaoAuthWindowInjectableUrl(targetWindow, 'route-auth-data-before-post-message');
+  } catch (injectableUrlErr) {
+    console.warn('[IPC] ⚠️ 搜狐号授权窗口可注入 URL 规范化失败，继续尝试投递消息:', injectableUrlErr.message);
   }
 
   const targetWindowId = targetWindow.id;
@@ -11621,7 +11936,8 @@ ipcMain.handle('show-user-menu', async (event) => {
             finish({ selected: false, action: null });
             return;
           }
-          const display = acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
+          const companyDisplay = acc.companyName || acc.company_name || acc.company?.name || acc.company?.company_name || '';
+          const display = companyDisplay || acc.nickname || maskPhoneForMenu(acc.phone) || acc.username || '该账号';
           const { response } = await dialog.showMessageBox(mainWindow, {
             type: 'question',
             buttons: ['取消', '确定切换'],
@@ -12053,6 +12369,21 @@ async function openManagedChildWindow(url, options = {}) {
   if (shipinhaoLoginResetUrl) {
     url = shipinhaoLoginResetUrl;
     console.log('[Window Manager] 🔧 视频号登录显式重置 URL 追加 force_reset=1:', url);
+  }
+
+  const normalizedSohuhaoAuthUrl = normalizeSohuhaoAuthEntryUrl(url, options);
+  if (normalizedSohuhaoAuthUrl !== url) {
+    url = normalizedSohuhaoAuthUrl;
+    options = {
+      ...options,
+      windowContext: {
+        ...options.windowContext,
+        expectedPageUrl: url,
+        safeOrigin: getUrlInfo(url).origin || 'https://mp.sohu.com',
+        bootstrapUrl: 'https://mp.sohu.com/'
+      }
+    };
+    console.log('[Window Manager] 🔧 搜狐号授权入口 URL 已规范化，确保脚本可注入:', url);
   }
 
   const isShipinhaoPublishUrl = isShipinhaoPublishPageUrl(url);
@@ -12851,7 +13182,10 @@ async function openManagedChildWindow(url, options = {}) {
     windowContextMap.set(newWindow.id, windowContext);
     console.log('[Window Manager] 窗口上下文:', windowContext);
     const showManagedWindow = (reason) => {
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentURL = !newWindow.isDestroyed() && !newWindow.webContents.isDestroyed()
+        ? newWindow.webContents.getURL()
+        : '';
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log(`[Window Manager] bootstrap 进行中，暂不显示窗口 (${reason})`);
         return;
@@ -13550,7 +13884,7 @@ async function openManagedChildWindow(url, options = {}) {
     newWindow.webContents.on('dom-ready', safeAsyncHandler('managed-window dom-ready inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] DOM ready:', currentURL);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] 跳过 bootstrap 页面注入:', currentURL);
         return;
@@ -13577,14 +13911,18 @@ async function openManagedChildWindow(url, options = {}) {
       }
 
       // 🔑 优先走统一注入函数，避免 dom-ready / did-finish-load / SPA 导航各自重复执行脚本。
-      await injectScriptForUrl(newWindow.webContents, currentURL);
+      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+      if (injectionUrl !== currentURL) {
+        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+      }
+      await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
 
     // 页面完全加载后通知首页 + 补充脚本注入（作为 dom-ready 的保底机制）
     newWindow.webContents.on('did-finish-load', safeAsyncHandler('managed-window did-finish-load inject', async () => {
       const currentURL = newWindow.webContents.getURL();
       console.log('[New Window API] Page loaded:', currentURL);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, currentURL, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 页面加载完成，跳过通知和注入:', currentURL);
         return;
@@ -13622,13 +13960,17 @@ async function openManagedChildWindow(url, options = {}) {
         console.log('[New Window API] Skip script injection for Toutiao:', currentURL);
         await maybeRunBareToutiaoPublish(newWindow);
       } else {
-        await injectScriptForUrl(newWindow.webContents, currentURL);
+        const injectionUrl = getSohuhaoAuthInjectionMatchUrl(currentURL, currentContext);
+        if (injectionUrl !== currentURL) {
+          console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { currentURL, injectionUrl });
+        }
+        await injectScriptForUrl(newWindow.webContents, injectionUrl);
       }
     }));
 
     newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate recover', async (event, navUrl) => {
       console.log('[New Window API] Navigation:', navUrl);
-      const currentContext = windowContextMap.get(newWindow.id);
+      const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, navUrl, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 导航完成，跳过导航守卫:', navUrl);
         return;
@@ -13688,7 +14030,11 @@ async function openManagedChildWindow(url, options = {}) {
         await maybeRunBareToutiaoPublish(newWindow);
         return;
       }
-      await injectScriptForUrl(newWindow.webContents, navUrl);
+      const injectionUrl = getSohuhaoAuthInjectionMatchUrl(navUrl, currentContext);
+      if (injectionUrl !== navUrl) {
+        console.log('[New Window API] 搜狐号授权页使用可注入匹配 URL:', { navUrl, injectionUrl });
+      }
+      await injectScriptForUrl(newWindow.webContents, injectionUrl);
     }));
 
     // 🔑 检查是否需要预设 storage（解决首次打开跳转首页/掉登录的问题）
@@ -14001,9 +14347,15 @@ ipcMain.handle('get-window-context', async (event) => {
       return { success: false, error: 'Cannot determine window' };
     }
 
+    const currentUrl = senderWindow.webContents && !senderWindow.webContents.isDestroyed()
+      ? senderWindow.webContents.getURL()
+      : '';
+    const storedContext = windowContextMap.get(senderWindow.id) || null;
+    const inferredContext = inferSohuhaoAuthWindowContext(senderWindow.id, currentUrl, storedContext);
+
     return {
       success: true,
-      context: windowContextMap.get(senderWindow.id) || null
+      context: inferredContext || null
     };
   } catch (err) {
     return { success: false, error: err.message };

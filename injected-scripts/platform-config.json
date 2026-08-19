@@ -11,7 +11,7 @@
         "video": "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle",
         "article": "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle"
       },
-      "firstPageUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+      "firstPageUrl": "https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=content",
       "domain": "mp.sohu.com",
       "cookies": {
         "domain": "mp.sohu.com"
@@ -140,6 +140,7 @@
     "publishPagePath: 相对路径，用于 localStorage 中的 toPath",
     "publishPageUrl: 完整 URL，用于重定向",
     "publishPageUrls: 按内容类型区分的发布入口，支持 video/article 两种",
+    "firstPageUrl: 内容管理入口；搜狐号追加 from=content，用于区分同路径授权页并清理 toPath",
     "domain: 平台的主域名，用于 cookies 操作",
     "cookies.domain: 用于设置和清除 cookies 的域名"
   ]

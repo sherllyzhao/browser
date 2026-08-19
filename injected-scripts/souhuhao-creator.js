@@ -877,6 +877,51 @@
         }
     })();
 
+    // ===========================
+    // 6.6 登录页守望
+    // 场景：授权窗口落在登录页时本脚本已注入并置 __SOUHUHAO_SCRIPT_LOADED__；
+    // 用户登录后搜狐走 SPA 路由跳到 firstPage，脚本重注入会被防重标志挡住，
+    // 授权流程卡在「等待登录后页面跳转自动继续」，只能手动刷新。
+    // 这里检测到进入业务页后 reload 一次，让脚本干净地重新注入继续授权
+    // （授权数据缓存在 globalData，不受刷新影响）。
+    // 用业务页白名单而非「离开登录页」做条件，避免短信验证等登录中间页误触发刷新。
+    // 整页跳转场景下本 window 连同定时器一起销毁，不会产生副作用。
+    // ===========================
+    (function watchAuthLoginRecovery() {
+        const isOnSohuLoginPage = () => {
+            try {
+                const url = new URL(window.location.href);
+                return url.hostname === 'mp.sohu.com' && url.pathname.includes('/mpfe/v4/login');
+            } catch (_) {
+                return String(window.location.href || '').includes('/mpfe/v4/login');
+            }
+        };
+        const isOnSohuBusinessPage = () => {
+            try {
+                const url = new URL(window.location.href);
+                return url.hostname === 'mp.sohu.com' && url.pathname.startsWith('/mpfe/v4/contentManagement');
+            } catch (_) {
+                return false;
+            }
+        };
+
+        if (!isOnSohuLoginPage()) {
+            return; // 只在授权窗口停在登录页时才需要守望
+        }
+        if (window.__sohuAuthLoginRecoveryWatcher__) {
+            return;
+        }
+        console.log('[搜狐号授权] 👀 当前在登录页，开始监听登录完成，进入业务页后将自动刷新继续授权');
+        window.__sohuAuthLoginRecoveryWatcher__ = setInterval(() => {
+            if (isOnSohuBusinessPage()) {
+                clearInterval(window.__sohuAuthLoginRecoveryWatcher__);
+                window.__sohuAuthLoginRecoveryWatcher__ = null;
+                console.log('[搜狐号授权] 🔄 检测到已登录并进入业务页（SPA 跳转），刷新页面让授权脚本重新注入');
+                window.location.reload();
+            }
+        }, 1000);
+    })();
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 搜狐号授权脚本初始化完成');
     console.log('📝 全局方法: window.__SOUHUHAO_AUTH__');

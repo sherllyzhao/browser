@@ -2722,6 +2722,100 @@ if (typeof window.uploadVideo === "function"
         return null;
     };
 
+    // ===========================
+    // 🔎 发布后内容管理页验证（发布成功 → 跳内容管理页确认列表里真的有这篇内容）
+    // 流程：发布脚本成功收尾时调 gotoContentVerify → 存 CONTENT_VERIFY_DATA_${windowId} →
+    //       跳转到平台内容管理页 → content-verify.js 在管理页轮询标题 → 命中才再走一次成功流程
+    // ===========================
+    // 平台 key → 内容管理页 URL（与 scripts-config.json 中 content-verify.js 的注入 URL 对应）
+    window.CONTENT_MANAGE_URLS = {
+        xinlang: "https://me.weibo.com/content/article",
+        sohuhao: "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+        tengxunhao: "https://om.qq.com/main",
+        baijiahao: "https://baijiahao.baidu.com/builder/rc/content?currentPage=1&pageSize=10&search=&type=&collection=&startDate=&endDate=",
+        zhihu: "https://www.zhihu.com/creator/manage/creation/all",
+        wangyihao: "https://mp.163.com/subscribe_v4/index.html#/content-manage",
+        douyin: "https://creator.douyin.com/creator-micro/content/manage",
+        xiaohongshu: "https://creator.xiaohongshu.com/new/note-manager",
+        shipinhao: "https://channels.weixin.qq.com/platform/post/list",
+        toutiao: "https://mp.toutiao.com/profile_v4/manage/content/all",
+    };
+
+    // 从发布数据中提取内容标题（视频/图文/文章各有不同字段，按常见优先级取）
+    window.extractPublishTitle = function (publishData) {
+        const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
+        if (!rawData || typeof rawData !== "object") {
+            return "";
+        }
+        const title = getFirstMeaningfulValue(
+            rawData?.video?.video?.title,
+            rawData?.video?.formData?.title,
+            rawData?.image?.formData?.title,
+            rawData?.element?.title,
+            rawData?.title
+        );
+        return title ? String(title).trim() : "";
+    };
+
+    /**
+     * 发布成功后跳转到内容管理页做二次验证
+     * @param {string} platformKey - CONTENT_MANAGE_URLS 的 key（如 'toutiao'）
+     * @param {string|number} publishId - 发布 ID
+     * @param {string} displayName - 平台显示名（用于统计上报，如 '头条发布'）
+     * @returns {Promise<boolean>} true=已发起跳转（调用方不要再关窗）；false=无法验证（调用方走原关窗流程）
+     */
+    window.gotoContentVerify = async function (platformKey, publishId, displayName = "") {
+        const logPrefix = `[内容验证][${displayName || platformKey}]`;
+        try {
+            const manageUrl = window.CONTENT_MANAGE_URLS && window.CONTENT_MANAGE_URLS[platformKey];
+            if (!manageUrl) {
+                console.warn(`${logPrefix} ⚠️ 未配置管理页 URL，回退原流程`);
+                return false;
+            }
+            if (!publishId) {
+                console.warn(`${logPrefix} ⚠️ publishId 为空，回退原流程`);
+                return false;
+            }
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.setGlobalData) {
+                console.warn(`${logPrefix} ⚠️ browserAPI 不可用，回退原流程`);
+                return false;
+            }
+
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId || windowId === "main") {
+                console.warn(`${logPrefix} ⚠️ 非发布子窗口（windowId=${windowId}），回退原流程`);
+                return false;
+            }
+
+            const publishData = await window.getCurrentPublishDataForStatistics(logPrefix);
+            const title = window.extractPublishTitle(publishData);
+            if (!title) {
+                console.warn(`${logPrefix} ⚠️ 提取不到内容标题，无法验证，回退原流程`);
+                return false;
+            }
+
+            const verifyData = {
+                platform: platformKey,
+                displayName: displayName || platformKey,
+                publishId: String(publishId),
+                title,
+                manageUrl,
+                createdAt: Date.now(),
+            };
+            await window.browserAPI.setGlobalData(`CONTENT_VERIFY_DATA_${windowId}`, verifyData);
+            console.log(`${logPrefix} ✅ 验证标记已写入，跳转内容管理页:`, manageUrl, "| 标题:", title);
+
+            // 跳转前先通知首页刷新（第一次成功流程的通知不能丢）
+            try { window.sendMessageToParent?.("发布成功，刷新数据"); } catch (_) {}
+
+            window.location.href = manageUrl;
+            return true;
+        } catch (e) {
+            console.warn(`${logPrefix} ⚠️ 发起验证跳转失败，回退原流程:`, e && e.message);
+            return false;
+        }
+    };
+
     window.extractStatisticsMeta = async function (platform = "", logPrefix = "[统计接口]") {
         const publishData = await window.getCurrentPublishDataForStatistics(logPrefix);
         const rawData = Array.isArray(publishData) ? publishData[0] : publishData;
@@ -2809,10 +2903,64 @@ if (typeof window.uploadVideo === "function"
         return `PUBLISH_STATISTICS_REPORTED_${windowId || "default"}_${resultType}`;
     }
 
+    function getStatisticsGlobalReportCacheKey(publishId, resultType = "unknown") {
+        const normalizedPublishId = String(publishId || "").trim();
+        if (!normalizedPublishId) {
+            return null;
+        }
+        return `PUBLISH_STATISTICS_REPORTED_GLOBAL_${resultType}_${encodeURIComponent(normalizedPublishId)}`;
+    }
+
+    function parseStatisticsReportCache(value) {
+        if (!value) {
+            return null;
+        }
+        if (typeof value === "object") {
+            return value;
+        }
+        if (typeof value === "string") {
+            try {
+                return JSON.parse(value);
+            } catch (_) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    async function getGlobalStatisticsReport(globalKey) {
+        if (!globalKey || !window.browserAPI?.getGlobalData) {
+            return null;
+        }
+        try {
+            return parseStatisticsReportCache(await window.browserAPI.getGlobalData(globalKey));
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 读取全局统计去重锁失败:", e.message);
+            return null;
+        }
+    }
+
+    async function setGlobalStatisticsReport(globalKey, data) {
+        if (!globalKey || !window.browserAPI?.setGlobalData) {
+            return;
+        }
+        try {
+            await window.browserAPI.setGlobalData(globalKey, data);
+        } catch (e) {
+            console.warn("[统计接口] ⚠️ 写入全局统计去重锁失败:", e.message);
+        }
+    }
+
     window.acquireStatisticsReportLock = async function (publishId, resultType = "unknown", platform = "") {
         if (!publishId) {
-            return { acquired: true, key: null, windowId: null };
+            return { acquired: true, key: null, globalKey: null, windowId: null };
         }
+
+        const normalizedPublishId = String(publishId).trim();
+        const globalKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, resultType);
+        const globalSuccessKey = resultType === "error"
+            ? getStatisticsGlobalReportCacheKey(normalizedPublishId, "success")
+            : null;
 
         let windowId = null;
         try {
@@ -2828,61 +2976,91 @@ if (typeof window.uploadVideo === "function"
         try {
             if (resultType === "error") {
                 const successKey = getStatisticsReportCacheKey(windowId, "success");
-                const successCachedRaw = sessionStorage.getItem(successKey);
-                if (successCachedRaw) {
-                    const successCached = JSON.parse(successCachedRaw);
-                    if (String(successCached?.publishId || "") === String(publishId)) {
+                const successCached = parseStatisticsReportCache(sessionStorage.getItem(successKey));
+                if (successCached) {
+                    if (String(successCached?.publishId || "") === normalizedPublishId) {
                         console.warn(`[${platform || "发布"}][统计接口] ⚠️ 已存在成功上报，跳过失败上报`, successCached);
                         return {
                             acquired: false,
                             key: successKey,
+                            globalKey: globalSuccessKey,
                             windowId,
                             cached: successCached,
                             reason: "success-already-reported",
                         };
                     }
                 }
-            }
 
-            const cachedRaw = sessionStorage.getItem(key);
-            if (cachedRaw) {
-                const cached = JSON.parse(cachedRaw);
-                if (String(cached?.publishId || "") === String(publishId)) {
-                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报，跳过`, cached);
-                    return { acquired: false, key, windowId, cached };
+                const globalSuccessCached = await getGlobalStatisticsReport(globalSuccessKey);
+                if (String(globalSuccessCached?.publishId || "") === normalizedPublishId) {
+                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 全局已存在成功上报，跳过失败上报`, globalSuccessCached);
+                    return {
+                        acquired: false,
+                        key: successKey,
+                        globalKey: globalSuccessKey,
+                        windowId,
+                        cached: globalSuccessCached,
+                        reason: "success-already-reported",
+                    };
                 }
             }
 
-            sessionStorage.setItem(key, JSON.stringify({
-                publishId,
+            const cached = parseStatisticsReportCache(sessionStorage.getItem(key));
+            if (cached) {
+                if (String(cached?.publishId || "") === normalizedPublishId) {
+                    console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到重复上报，跳过`, cached);
+                    return { acquired: false, key, globalKey, windowId, cached };
+                }
+            }
+
+            const globalCached = await getGlobalStatisticsReport(globalKey);
+            if (String(globalCached?.publishId || "") === normalizedPublishId) {
+                console.warn(`[${platform || "发布"}][统计接口] ⚠️ 检测到全局重复上报，跳过`, globalCached);
+                return { acquired: false, key, globalKey, windowId, cached: globalCached };
+            }
+
+            const cacheData = {
+                publishId: normalizedPublishId,
                 resultType,
                 platform: platform || "",
+                windowId,
                 timestamp: Date.now(),
-            }));
+            };
+            sessionStorage.setItem(key, JSON.stringify(cacheData));
+            await setGlobalStatisticsReport(globalKey, cacheData);
         } catch (e) {
             console.warn(`[${platform || "发布"}][统计接口] ⚠️ 统计去重锁写入失败，继续发送请求:`, e.message);
         }
 
-        return { acquired: true, key, windowId };
+        return { acquired: true, key, globalKey, windowId };
     };
 
-    window.releaseStatisticsReportLock = function (key, publishId = "") {
-        if (!key) {
+    window.releaseStatisticsReportLock = async function (lockOrKey, publishId = "") {
+        const key = typeof lockOrKey === "object" ? lockOrKey?.key : lockOrKey;
+        const globalKey = typeof lockOrKey === "object" ? lockOrKey?.globalKey : null;
+        const normalizedPublishId = String(publishId || "").trim();
+        if (!key && !globalKey) {
             return;
         }
 
         try {
-            const cachedRaw = sessionStorage.getItem(key);
-            if (!cachedRaw) {
-                return;
-            }
-
-            const cached = JSON.parse(cachedRaw);
-            if (!publishId || String(cached?.publishId || "") === String(publishId)) {
+            const cached = parseStatisticsReportCache(key ? sessionStorage.getItem(key) : null);
+            if (key && (!cached || !normalizedPublishId || String(cached?.publishId || "") === normalizedPublishId)) {
                 sessionStorage.removeItem(key);
             }
         } catch (e) {
             console.warn("[统计接口] ⚠️ 清理统计去重锁失败:", e.message);
+        }
+
+        if (globalKey && window.browserAPI?.removeGlobalData) {
+            try {
+                const cached = await getGlobalStatisticsReport(globalKey);
+                if (!cached || !normalizedPublishId || String(cached?.publishId || "") === normalizedPublishId) {
+                    await window.browserAPI.removeGlobalData(globalKey);
+                }
+            } catch (e) {
+                console.warn("[统计接口] ⚠️ 清理全局统计去重锁失败:", e.message);
+            }
         }
     };
 
@@ -2906,8 +3084,8 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 3;
-            const retryDelay = isGeo ? 0 : 1000;
+            const retryCount = isGeo ? 1 : 6;
+            const retryDelay = isGeo ? 0 : 600;
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -2939,7 +3117,7 @@ if (typeof window.uploadVideo === "function"
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
-                window.releaseStatisticsReportLock(reportLock.key, publishId);
+                await window.releaseStatisticsReportLock(reportLock, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 成功统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
             if (isGeo) {
@@ -2957,6 +3135,32 @@ if (typeof window.uploadVideo === "function"
                     "warning"
                 );
             }
+            return { success: false, error: e };
+        }
+    };
+
+    // ===========================
+    // 🚀 乐观成功上报（点击发布按钮成功后立即调用）
+    // ===========================
+    // 背景：平台点了发布按钮后大多会发布成功，但脚本常等不到跳转/toast 而误报超时失败。
+    //       故点击成功后先「乐观」上报一次成功；后续跳转成功再报会被去重锁挡掉（不重复），
+    //       后续若捕获明确失败则照常报错（后台以失败覆盖）。
+    // ⚠️ GEO 系统每次记录、不去重，若点击时也报会与后续「确认成功」重复计数，
+    //     故 GEO 一律跳过乐观上报，保持「真正确认成功才记 1 次」的原有行为。
+    window.sendOptimisticSuccess = async function (publishId, platform = "") {
+        try {
+            if (!publishId) {
+                return { success: false, skipped: true, reason: "no-publishId" };
+            }
+            const url = await getStatisticsUrl(false);
+            if (window.isGeoStatisticsReport(url)) {
+                console.log(`[${platform || "发布"}] ℹ️ GEO 系统跳过「点击即上报成功」，避免重复记录`);
+                return { success: true, skipped: true, reason: "geo-skip-optimistic" };
+            }
+            console.log(`[${platform || "发布"}] 🚀 点击发布成功，乐观上报一次成功（ID: ${publishId}）`);
+            return await window.sendStatistics(publishId, platform);
+        } catch (e) {
+            console.warn(`[${platform || "发布"}] ⚠️ 乐观成功上报异常（不阻断发布流程）:`, e.message);
             return { success: false, error: e };
         }
     };
@@ -3039,8 +3243,8 @@ if (typeof window.uploadVideo === "function"
             console.log(`[${platform || "发布"}] 统计接口地址: ${url}`);
 
             // GEO 每次记录，不重试（window 关闭后 keepalive 请求会继续跑，重试会造重复）
-            const retryCount = isGeo ? 1 : 3;
-            const retryDelay = isGeo ? 0 : 1000;
+            const retryCount = isGeo ? 1 : 6;
+            const retryDelay = isGeo ? 0 : 600;
             const result = await window.retryOperation(async () => {
                 // 每个 fetch 带 10s 超时，网慢时超时报错触发重试
                 const controller = new AbortController();
@@ -3072,7 +3276,7 @@ if (typeof window.uploadVideo === "function"
             return { success: true, response: result.response, code: result.evaluation.code };
         } catch (e) {
             if (reportLock) {
-                window.releaseStatisticsReportLock(reportLock.key, publishId);
+                await window.releaseStatisticsReportLock(reportLock, publishId);
             }
             console.error(`[${platform || "发布"}] ❌ 失败统计上报失败${isGeo ? "（GEO 只发 1 次，不重试）" : "（已重试 3 次）"}:`, e.message);
             if (isGeo) {
@@ -3164,6 +3368,16 @@ if (typeof window.uploadVideo === "function"
                         await window.browserAPI.removeGlobalData(key);
                         continue;
                     }
+                    const normalizedPublishId = String(item.publishId || "").trim();
+                    if (item.resultType === "error" && normalizedPublishId) {
+                        const successKey = getStatisticsGlobalReportCacheKey(normalizedPublishId, "success");
+                        const successCached = await getGlobalStatisticsReport(successKey);
+                        if (String(successCached?.publishId || "") === normalizedPublishId) {
+                            console.warn(`[统计补报] 🗑️ 已存在成功上报，清理历史失败待补报项：${key}`);
+                            await window.browserAPI.removeGlobalData(key);
+                            continue;
+                        }
+                    }
                     // 死信检查：超次数 / 超时长 → 丢弃
                     const age = Date.now() - (item.createdAt || 0);
                     if ((item.attempts || 0) >= STAT_MAX_ATTEMPTS || age > STAT_MAX_AGE_MS) {
@@ -3171,9 +3385,16 @@ if (typeof window.uploadVideo === "function"
                         await window.browserAPI.removeGlobalData(key);
                         continue;
                     }
-                    // 尝试补发
+                    // 尝试补发（单条带 3 次重试，应对后台部分节点间歇性失败：
+                    //   撞坏节点≈50%时，单次补发也≈50%成功，带3次重试后单条成功率大幅提升；
+                    //   与外层 attempts 累计形成「本轮内3重试 + 跨轮/跨窗口重试」双层兜底）
                     try {
-                        await window.postStatisticsRequest(item.url, item.scanData);
+                        const doPost = () => window.postStatisticsRequest(item.url, item.scanData);
+                        if (typeof window.retryOperation === "function") {
+                            await window.retryOperation(doPost, 3, 600);
+                        } else {
+                            await doPost();
+                        }
                         await window.browserAPI.removeGlobalData(key);
                         console.log(`[统计补报] ✅ 补发成功并移除：${key}`);
                     } catch (e) {
@@ -4799,3 +5020,17 @@ setTimeout(() => {
         window.flushFailedStatReports?.().catch(() => {});
     } catch (_) {}
 }, 5000);
+
+// ===========================
+// 🔁 周期性补报：只要发布窗口还开着，每 60s 尝试把积压的失败上报补回
+// 解决「发完即关窗，补报只能等下次开窗」的延迟问题。
+// 防重复注册：每次开窗都会执行本脚本，用全局标志确保 interval 只挂一次。
+// 开销极小：flushFailedStatReports 内部有 __STAT_FLUSH_RUNNING__ 并发锁 + 空队列早退。
+// ===========================
+if (!window.__STAT_FLUSH_INTERVAL__) {
+    window.__STAT_FLUSH_INTERVAL__ = setInterval(() => {
+        try {
+            window.flushFailedStatReports?.().catch(() => {});
+        } catch (_) {}
+    }, 60000);
+}

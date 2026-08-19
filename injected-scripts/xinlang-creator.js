@@ -297,6 +297,25 @@
                 return;
             }
 
+            // ===========================
+            // 🔥 预热 weibo.com 主站，补种主站凭证后再采集快照
+            // 授权流程只在 mp.sina.com.cn + passport.weibo.com 完成 SSO，从未触达 weibo.com 主站，
+            // SCF（长效「保持登录」续签凭证）、WBPSESS 等主站 cookie 不会种下，
+            // 快照先天残缺 → 发布页 card.weibo.com 无法续签 → 授权成功后掉登录。
+            // 带凭证请求一次 weibo.com / card.weibo.com，让服务端基于 SUB 补种主站 cookie。
+            // no-cors 模式拿不到响应内容，但 Set-Cookie 仍会写入本窗口 session。
+            // ===========================
+            try {
+                console.log('[新浪授权] 🔥 预热 weibo.com 主站，补种 SCF 等主站凭证...');
+                await fetch('https://weibo.com/', { mode: 'no-cors', credentials: 'include' });
+                await new Promise(resolve => setTimeout(resolve, 1500)); // 等 Set-Cookie 落地
+                await fetch('https://card.weibo.com/', { mode: 'no-cors', credentials: 'include' });
+                await new Promise(resolve => setTimeout(resolve, 800));
+                console.log('[新浪授权] ✅ weibo.com 主站预热完成');
+            } catch (warmupError) {
+                console.warn('[新浪授权] ⚠️ 预热 weibo.com 主站失败（不阻断授权流程）:', warmupError?.message || warmupError);
+            }
+
             // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
             let cookiesData = '';

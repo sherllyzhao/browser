@@ -1872,9 +1872,77 @@ contextBridge.exposeInMainWorld('browserAPI', {
   nativeMouseHover: (points, options) => ipcRenderer.invoke('native-mouse-hover', points, options)
 });
 
+function isSohuhaoAuthInjectablePage(rawUrl = '') {
+  try {
+    const url = new URL(rawUrl || window.location.href);
+    return url.hostname === 'mp.sohu.com'
+      && (
+        url.pathname === '/mpfe/v4/contentManagement/first/page'
+        || url.pathname === '/mpfe/v4'
+        || url.pathname === '/mpfe/v4/'
+      );
+  } catch (_) {
+    return String(rawUrl || window.location.href).includes('mp.sohu.com/mpfe/v4');
+  }
+}
+
+async function injectSohuhaoAuthScriptFallback() {
+  try {
+    if (!isSohuhaoAuthInjectablePage(window.location.href)) {
+      return;
+    }
+
+    const contextResult = await ipcRenderer.invoke('get-window-context');
+    const context = contextResult && contextResult.success ? contextResult.context : null;
+    const platform = String(context?.platform || '').toLowerCase();
+    if (!['sohuhao', 'souhuhao'].includes(platform) || context?.purpose !== 'auth') {
+      console.log('[SohuAuthFallback] 当前不是搜狐号授权窗口，跳过 preload 兜底注入:', {
+        href: window.location.href,
+        context
+      });
+      return;
+    }
+
+    const alreadyInjected = await webFrame.executeJavaScript(`
+      Boolean(
+        window.__SOUHUHAO_SCRIPT_LOADED__
+        || window.__SOHUHAO_AUTH_PRELOAD_FALLBACK_INJECTING__
+        || (window.__INJECTED_SCRIPT_SOURCE__ && Array.isArray(window.__INJECTED_SCRIPT_SOURCE__.files) && window.__INJECTED_SCRIPT_SOURCE__.files.includes('souhuhao-creator.js'))
+      )
+    `, true).catch(() => false);
+    if (alreadyInjected) {
+      console.log('[SohuAuthFallback] 搜狐号授权脚本已存在，跳过 preload 兜底注入');
+      return;
+    }
+
+    await webFrame.executeJavaScript('window.__SOHUHAO_AUTH_PRELOAD_FALLBACK_INJECTING__ = true;', true).catch(() => {});
+    const script = await ipcRenderer.invoke('get-inject-script', 'https://mp.sohu.com/mpfe/v4/contentManagement/first/page?from=auth');
+    if (!script) {
+      console.warn('[SohuAuthFallback] 未获取到搜狐号授权注入脚本');
+      await webFrame.executeJavaScript('window.__SOHUHAO_AUTH_PRELOAD_FALLBACK_INJECTING__ = false;', true).catch(() => {});
+      return;
+    }
+
+    console.warn('[SohuAuthFallback] 主进程注入未命中，preload 兜底注入搜狐号授权脚本:', {
+      href: window.location.href,
+      scriptLength: script.length
+    });
+    await webFrame.executeJavaScript(script, true);
+    console.log('[SohuAuthFallback] ✅ preload 兜底注入完成');
+  } catch (error) {
+    console.warn('[SohuAuthFallback] ⚠️ preload 兜底注入失败:', error && error.message ? error.message : error);
+    try {
+      await webFrame.executeJavaScript('window.__SOHUHAO_AUTH_PRELOAD_FALLBACK_INJECTING__ = false;', true);
+    } catch (_) {}
+  }
+}
+
 // 在页面加载时注入通信代码和协议拦截
 window.addEventListener('DOMContentLoaded', () => {
   console.log('BrowserAPI ready:', window.location.href);
+  setTimeout(() => {
+    injectSohuhaoAuthScriptFallback();
+  }, 0);
 
   // 注入协议拦截代码到页面上下文
   const script = document.createElement('script');

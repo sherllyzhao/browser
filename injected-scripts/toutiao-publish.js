@@ -1298,7 +1298,8 @@
 
   const waitForPublishResult = async (publishId, originalUrl, options = {}) => {
     const start = Date.now();
-    const timeout = 45000;
+    // 接口成功信号(code=0)是主判据，超时仅作网络极慢时的兜底；对齐全平台统一放宽到 90s，避免误报 timeout
+    const timeout = 90000;
     const allowAutoConfirm = options.allowAutoConfirm !== false;
     let autoConfirmClicked = false;
     let autoConfirmDetectedAt = 0;
@@ -1320,6 +1321,16 @@
       if (window.location.href.includes('/profile_v4/graphic/articles')) {
         console.log(`${LOG_PREFIX} ✅ 跳转到文章列表页，视为成功`);
         return { success: true, reason: 'articles-page', message: '' };
+      }
+
+      // 🔑 最强成功判据：发布接口 /mp/agw/article/publish 返回 code=0
+      //    latestPublishApiSuccessAt 在 publishArticle 开头（发布流程启动时）已清零，
+      //    因此这里 >0 必然代表「本次」发布接口成功、内容已提交。头条发布成功后经常不跳转、
+      //    不弹成功 toast、也不消费 localStorage 标记，若不认这个接口信号，循环会空等到超时→误报失败。
+      //    放在 explicitError 之前，确保接口权威成功优先于表现层的疑似错误提示。
+      if (latestPublishApiSuccessAt > 0) {
+        console.log(`${LOG_PREFIX} ✅ 检测到发布接口成功响应(code=0)，视为发布成功`);
+        return { success: true, reason: 'publish-api-success', message: '' };
       }
 
       const explicitError = getLatestError();
@@ -1394,6 +1405,12 @@
       }
     }
 
+    // 🔑 超时兜底（范式对齐小红书）：走到这里说明循环内既未判成功、也未 return 失败toast/失败接口。
+    //    点击发布已提交，若无明确失败接口信号，视为发布成功，避免「发成功了只是没跳转/没弹提示」被误报 timeout 失败。
+    if (!latestPublishApiFailure) {
+      console.log(`${LOG_PREFIX} ✅ 超时未捕获明确失败信号，点击已提交，视为发布成功`);
+      return { success: true, reason: 'timeout-no-failure', message: '' };
+    }
     return { success: false, reason: 'timeout', message: lastToast || '发布超时，未检测到成功状态' };
   };
 
@@ -1461,6 +1478,8 @@
         throw new Error(clickResult.message || '点击发布按钮失败');
       }
       console.log(`${LOG_PREFIX} ✅ 已点击发布按钮`);
+      // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 由 sendOptimisticSuccess 内部跳过；不 await 避免阻塞发布流程）
+      if (publishId) { window.sendOptimisticSuccess(publishId, '头条发布').catch(() => {}); }
 
       // 实测头条为“预览并发布”两步流：预览层稳定后再点确认，避免 7050 保存失败
       let secondConfirmed = false;
@@ -1502,6 +1521,11 @@
       }
 
       if (!urlChanged) {
+        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+        if (typeof window.gotoContentVerify === 'function'
+          && await window.gotoContentVerify('toutiao', publishId, '头条发布')) {
+          return;
+        }
         await closeWindowWithMessage('发布成功，刷新数据', 1000);
       }
     } catch (error) {

@@ -169,44 +169,100 @@
         }).join('');
     }
 
-    async function resolveXinlangUploadUid(dataObj) {
-        const candidates = [
-            dataObj?.uid,
-            dataObj?.platformUid,
-            dataObj?.account_info?.uid,
-            dataObj?.account_info?.platformUid,
-            dataObj?.video?.uid,
-            dataObj?.video?.platformUid,
-            dataObj?.video?.account_info?.uid,
-            dataObj?.video?.account_info?.platformUid,
-            dataObj?.video?.dyPlatform?.uid,
-            dataObj?.video?.dyPlatform?.platformUid,
-            dataObj?.video?.mediaAuth?.uid,
-            dataObj?.video?.media_auth?.uid,
-            window.$CONFIG?.uid,
-            window.$CONFIG?.oid,
-            localStorage.getItem('uid'),
-            localStorage.getItem('platformUid')
-        ];
-
+    // 🔑 兜底：本地候选全部落空时，跨域调 mp.sina.com.cn 用户信息接口实时获取 uid
+    // card.weibo.com 跨域受 CORS 限制，走主进程 proxyFetch（携带本窗口 session 的 cookies）
+    // 授权脚本 xinlang-creator.js 就是用这个接口拿 uid 的，返回结构 data.userInfo.uid
+    async function fetchXinlangUidFromBaseinfo() {
         try {
-            if (window.browserAPI?.getCurrentAccount) {
-                const accountResult = await window.browserAPI.getCurrentAccount();
-                const account = accountResult?.success ? accountResult.account : accountResult?.account;
-                candidates.push(account?.platformUid, account?.uid, account?.userId);
+            if (!window.browserAPI?.proxyFetch) {
+                console.warn('[新浪发布] ⚠️ proxyFetch 不可用，无法接口兜底获取 uid');
+                return '';
             }
+            const result = await window.browserAPI.proxyFetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
+            const uid = (result?.success && result?.ok)
+                ? String(result?.data?.data?.userInfo?.uid || '').trim()
+                : '';
+            if (/^\d+$/.test(uid)) {
+                console.log('[新浪发布] ✅ 已从 getbaseinfo 接口兜底获取图片接口 uid');
+                try { localStorage.setItem('uid', uid); } catch (_) {}
+                return uid;
+            }
+            console.warn('[新浪发布] ⚠️ getbaseinfo 接口未返回有效 uid，疑似登录态失效:', {
+                status: result?.status,
+                code: result?.data?.code,
+                msg: result?.data?.msg
+            });
         } catch (error) {
-            console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
+            console.warn('[新浪发布] ⚠️ getbaseinfo 接口兜底获取 uid 异常:', error?.message || error);
+        }
+        return '';
+    }
+
+    // 🔑 单次发布流程内缓存已解析的 uid，避免每张正文图片都重复调 getbaseinfo 接口。
+    // 发布窗口 = 单账号单 session，页面生命周期内 uid 不变；切换账号是换新窗口（脚本重注入、此变量重置），故安全。
+    let cachedXinlangUploadUid = '';
+
+    async function resolveXinlangUploadUid(dataObj) {
+        // 0. 内存缓存命中直接返回（同一发布流程多张图复用，只在首张图请求一次接口）
+        if (/^\d+$/.test(cachedXinlangUploadUid)) {
+            return cachedXinlangUploadUid;
         }
 
-        const uid = candidates
-            .map(value => String(value || '').trim())
-            .find(value => /^\d+$/.test(value));
+        // 1. 【优先】getbaseinfo 权威源：与授权脚本 xinlang-creator.js 的 user.uid 完全同源
+        //    （result.data.userInfo.uid），保证 uid 是当前微博登录用户、card 图片接口认的那个，
+        //    杜绝后台发布数据里的「新浪号平台 uid」污染导致传错账号。命中后会写 localStorage('uid') 缓存。
+        let uid = await fetchXinlangUidFromBaseinfo();
+
+        // 2. getbaseinfo 不可用时（proxyFetch 缺失 / 接口超时 / 登录态异常）降级到本地候选。
+        //    降级链按可信度排序：$CONFIG.uid（card 页当前微博用户）> localStorage('uid')（上次 getbaseinfo 缓存）
+        //    > 后台发布数据 uid（可能是平台 uid，最不可信，排最后）。
+        if (!uid) {
+            const candidates = [
+                window.$CONFIG?.uid,
+                window.$CONFIG?.oid,
+                localStorage.getItem('uid'),
+                localStorage.getItem('platformUid'),
+                dataObj?.uid,
+                dataObj?.platformUid,
+                dataObj?.account_info?.uid,
+                dataObj?.account_info?.platformUid,
+                dataObj?.video?.uid,
+                dataObj?.video?.platformUid,
+                dataObj?.video?.account_info?.uid,
+                dataObj?.video?.account_info?.platformUid,
+                dataObj?.video?.dyPlatform?.uid,
+                dataObj?.video?.dyPlatform?.platformUid,
+                dataObj?.video?.mediaAuth?.uid,
+                dataObj?.video?.media_auth?.uid
+            ];
+
+            try {
+                if (window.browserAPI?.getCurrentAccount) {
+                    const accountResult = await window.browserAPI.getCurrentAccount();
+                    const account = accountResult?.success ? accountResult.account : accountResult?.account;
+                    candidates.push(account?.platformUid, account?.uid, account?.userId);
+                }
+            } catch (error) {
+                console.warn('[新浪发布] ⚠️ 获取当前账号 uid 失败，继续使用已有候选:', error?.message || error);
+            }
+
+            uid = candidates
+                .map(value => String(value || '').trim())
+                .find(value => /^\d+$/.test(value));
+
+            if (uid) {
+                console.warn('[新浪发布] ⚠️ getbaseinfo 不可用，降级使用本地候选 uid（可能非当前微博用户，请留意传图账号）:', uid);
+            }
+        }
 
         if (!uid) {
-            throw new Error('未获取到新浪图片接口 uid');
+            throw new Error('未获取到新浪图片接口 uid（getbaseinfo 与本地候选均失败，疑似登录态失效，请重新授权）');
         }
 
+        cachedXinlangUploadUid = uid;   // 落内存缓存，本流程后续图片复用
         return uid;
     }
 
@@ -791,6 +847,11 @@
 
                         // 关闭窗口
                         stopErrorListener();
+                        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                        if (typeof window.gotoContentVerify === 'function'
+                            && await window.gotoContentVerify('xinlang', publishIdForSuccess, '新浪发布')) {
+                            return;
+                        }
                         await closeWindowWithMessage("发布成功，刷新数据", 1000);
                         return;
                     }
@@ -927,6 +988,11 @@
 
                         // 关闭窗口
                         stopErrorListener();
+                        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                        if (typeof window.gotoContentVerify === 'function'
+                            && await window.gotoContentVerify('xinlang', publishIdForInstant, '新浪发布')) {
+                            return;
+                        }
                         await closeWindowWithMessage("发布成功，刷新数据", 1000);
                     }
                 } catch (dialogError) {
@@ -1320,6 +1386,11 @@
                         // 忽略清除失败
                     }
 
+                    // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+                    if (typeof window.gotoContentVerify === 'function'
+                        && await window.gotoContentVerify('xinlang', publishId, '新浪发布')) {
+                        return;
+                    }
                     await closeWindowWithMessage("发布成功，刷新数据", 1000);
                 }
 
@@ -1692,7 +1763,10 @@
         }
 
         // 🔴 步骤3：兜底直接清空 DOM（确保至少视觉上是空的）
-        if (getXinlangEditorText(editorEle)) {
+        // ⚠️ 不能只看文本：编辑器可能只剩「无文本的残留图片」（如 src=null 的坏图），
+        //    getXinlangEditorText 仅统计文本会漏判，导致坏图残留、重填后新旧图混杂。
+        //    故文本或图片任一存在都执行清空。
+        if (getXinlangEditorText(editorEle) || editorEle.querySelector('img')) {
             editorEle.innerHTML = '';
             try {
                 editorEle.dispatchEvent(new InputEvent('input', {
@@ -1881,6 +1955,33 @@
         };
     }
 
+    // 🔴 关键修复：新浪文章编辑器是 Tiptap/ProseMirror 受控编辑器，图片节点是自定义
+    //    figure 节点（parseHTML 命中 figure[data-type="figure"]）。直接 paste 裸 <img> 会被
+    //    PM 解析成 src=null 的空节点。这里把每个 <img> 包裹成 <figure data-type="figure"><img></figure>，
+    //    以命中它的 parseHTML，让 src 得以保留。
+    function wrapImagesAsXinlangFigures(html) {
+        if (!html) return html;
+        const box = document.createElement('div');
+        box.innerHTML = html;
+        const imgs = Array.from(box.querySelectorAll('img'));
+        imgs.forEach((img) => {
+            const src = img.getAttribute('src') || '';
+            if (!src) return;
+            if (img.closest('figure[data-type="figure"]')) return; // 已包裹则跳过
+            const figure = document.createElement('figure');
+            figure.setAttribute('data-type', 'figure');
+            const newImg = document.createElement('img');
+            newImg.setAttribute('src', src);
+            const w = img.getAttribute('width') || img.getAttribute('data-width');
+            const h = img.getAttribute('height') || img.getAttribute('data-height');
+            if (w) newImg.setAttribute('width', w);
+            if (h) newImg.setAttribute('height', h);
+            figure.appendChild(newImg);
+            img.replaceWith(figure);
+        });
+        return box.innerHTML;
+    }
+
     async function fillXinlangEditorContent(rawHtml, dataObj) {
         const editorEle = await waitForElement('.wb-editor', 20000);
 
@@ -1894,6 +1995,8 @@
             }
             console.log('[新浪发布] ✅ 正文图片代传完成，成功处理', replaceResult.handledImageCount, '张图片');
             resolvedHtml = imageContainer.innerHTML;
+            // 🔴 把裸 <img> 包成 Tiptap figure 节点结构，命中编辑器 parseHTML，避免 paste 后 src 丢失
+            resolvedHtml = wrapImagesAsXinlangFigures(resolvedHtml);
         }
 
         // 🔴 先 prepare 拿到期望的 plainText，便于和现有内容比对
@@ -1913,14 +2016,31 @@
             const expectedNormalized = normalize(plainText);
             const currentNormalized = normalize(currentText);
 
-            // 完全一致才跳过（已经填好了，避免脚本重复触发时再填一次）
-            if (expectedNormalized && currentNormalized === expectedNormalized) {
-                console.log(`[新浪发布] ⏭️ 编辑器内容已与期望一致（${currentText.length}字），跳过填写`);
+            const textConsistent = !!expectedNormalized && currentNormalized === expectedNormalized;
+
+            // 🔴 图片一致性校验：文本一致 ≠ 图片对位。
+            //    统计编辑器里"已是新浪图床域名"的合格图片数，必须 ≥ 期望图片数才算图片齐。
+            //    src=null / 外链(www.hrblsxh.cn) / 数量不足 都判为不齐 → 不跳过，强制重填。
+            const expectedImageCount = Number(richFeatures.images || 0);
+            const validEditorImageCount = Array.from(editorEle.querySelectorAll('img')).filter((img) => {
+                const s = img.getAttribute('src') || img.src || '';
+                // 🔴 修正：真实新浪图床是 wxN.sinaimg.cn/large/xxx.jpg（无 article），旧正则匹配不到导致误判
+                return /sinaimg\.cn\/|\/large\/article\//i.test(s);
+            }).length;
+            const imageConsistent = expectedImageCount === 0 || validEditorImageCount >= expectedImageCount;
+
+            // 完全一致才跳过（文本一致 且 图片齐），避免脚本重复触发时再填一次
+            if (textConsistent && imageConsistent) {
+                console.log(`[新浪发布] ⏭️ 编辑器内容已与期望一致（${currentText.length}字，图片 ${validEditorImageCount}/${expectedImageCount}），跳过填写`);
                 return;
             }
 
-            // 内容不一致说明是上一篇残留或脏数据，必须强制清空重填
-            console.warn(`[新浪发布] ⚠️ 检测到残留内容（${currentText.length}字），与期望（${plainText.length}字）不一致，强制清空重填`);
+            // 文本不一致 或 图片不齐 → 必须强制清空重填
+            if (textConsistent && !imageConsistent) {
+                console.warn(`[新浪发布] ⚠️ 文本一致但图片不齐（编辑器合格图 ${validEditorImageCount}/${expectedImageCount}，多为 src 空或外链残留），强制清空重填`);
+            } else {
+                console.warn(`[新浪发布] ⚠️ 检测到残留内容（${currentText.length}字），与期望（${plainText.length}字）不一致，强制清空重填`);
+            }
             clearXinlangEditor(editorEle);
             await delay(300);
 
@@ -1945,32 +2065,54 @@
             // 🔴 给富文本编辑器更长时间异步解析多段 HTML（之前 800ms 太短，paste 多段时只能拿到第一段）
             await delay(1500);
 
-            const afterText = getXinlangEditorText(editorEle);
-            const afterImageCount = editorEle.querySelectorAll('img').length;
             const expectedImageCount = Number(richFeatures.images || 0);
-            const pastedImageUrls = Array.from(editorEle.querySelectorAll('img'))
-                .map(img => img.getAttribute('src') || img.src || '')
-                .filter(Boolean);
             const expectedLen = (plainText || '').length;
-            const actualLen = afterText.length;
             // 🔴 严格校验：至少达到目标长度 80%，且不少于 5 字；避免只填了第一段就被判为成功
             const minLen = expectedLen <= 5 ? expectedLen : Math.max(5, Math.floor(expectedLen * 0.8));
-            const textPassed = expectedLen === 0 || (!!afterText && actualLen >= minLen);
-            const imagePassed = expectedImageCount === 0 || afterImageCount >= expectedImageCount;
-            if (pastedImageUrls.length) {
-                console.log('[新浪发布] 🖼️ 当前编辑器图片 URL:', pastedImageUrls);
-            }
-            if (textPassed && imagePassed) {
-                console.log(`[新浪发布] ✅ ${name} 正文设置成功，长度: ${actualLen}/${expectedLen}，图片: ${afterImageCount}/${expectedImageCount}`);
-                return true;
+
+            // 🔴 只统计"有效新浪图床图片"，src=null / 外链的 <img> 不算数（旧版只数标签数量导致假通过）
+            const countValidImages = () => Array.from(editorEle.querySelectorAll('img')).filter((img) => {
+                const s = img.getAttribute('src') || img.src || '';
+                // 🔴 修正：真实新浪图床是 wxN.sinaimg.cn/large/xxx.jpg（无 article），旧正则匹配不到导致误判
+                return /sinaimg\.cn\/|\/large\/article\//i.test(s);
+            }).length;
+
+            const checkPass = (label) => {
+                const afterText = getXinlangEditorText(editorEle);
+                const validImageCount = countValidImages();
+                const actualLen = afterText.length;
+                const textPassed = expectedLen === 0 || (!!afterText && actualLen >= minLen);
+                const imagePassed = expectedImageCount === 0 || validImageCount >= expectedImageCount;
+                console.log(`[新浪发布] 🖼️ ${label} 编辑器图片 URL:`, Array.from(editorEle.querySelectorAll('img')).map(i => i.getAttribute('src') || i.src || 'null'));
+                return { afterText, actualLen, validImageCount, textPassed, imagePassed };
+            };
+
+            // 第一次校验（写入后即时）
+            const first = checkPass('写入后');
+            if (!(first.textPassed && first.imagePassed)) {
+                if (first.afterText) {
+                    console.warn(`[新浪发布] ⚠️ ${name} 未通过即时校验（长度 ${first.actualLen}/${expectedLen}，有效图 ${first.validImageCount}/${expectedImageCount}），换下一策略`);
+                } else {
+                    console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空（有效图 ${first.validImageCount}/${expectedImageCount}）`);
+                }
+                return false;
             }
 
-            if (afterText) {
-                console.warn(`[新浪发布] ⚠️ ${name} 正文未通过验证（长度 ${actualLen}/${expectedLen}，图片 ${afterImageCount}/${expectedImageCount}），尝试下一种策略`);
-            } else {
-                console.warn(`[新浪发布] ⚠️ ${name} 执行后正文仍为空，图片 ${afterImageCount}/${expectedImageCount}`);
+            // 🔴 关键：blur 触发编辑器 model 重渲染，再等 800ms 复查——图片若被受控编辑器丢弃这里会暴露
+            try {
+                editorEle.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+            } catch (e) {
+                editorEle.dispatchEvent(new Event('blur', { bubbles: true }));
             }
-            return false;
+            await delay(800);
+            const second = checkPass('blur后');
+            if (!(second.textPassed && second.imagePassed)) {
+                console.warn(`[新浪发布] ⚠️ ${name} 即时通过但 blur 后图片/正文被丢弃（长度 ${second.actualLen}/${expectedLen}，有效图 ${second.validImageCount}/${expectedImageCount}），换下一策略`);
+                return false;
+            }
+
+            console.log(`[新浪发布] ✅ ${name} 正文设置成功且存活，长度: ${second.actualLen}/${expectedLen}，有效图: ${second.validImageCount}/${expectedImageCount}`);
+            return true;
         };
 
         const strategies = [
@@ -2252,8 +2394,15 @@
 
                                         // 🔑 验证是否成功设置
                                         const updatedValue = (introEle.value || '').trim();
-                                        if (updatedValue !== targetContent) {
+                                        // 平台对导语有字数上限，超长时会主动截断，此时 updatedValue 是 targetContent 的前缀，视为正常（不硬编码上限字数）
+                                        const introTruncatedByPlatform = updatedValue.length > 0
+                                            && updatedValue.length < targetContent.length
+                                            && targetContent.startsWith(updatedValue);
+                                        if (updatedValue !== targetContent && !introTruncatedByPlatform) {
                                             throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedValue.substring(0, 50)}..."`);
+                                        }
+                                        if (introTruncatedByPlatform) {
+                                            console.log(`[新浪发布] ℹ️ 导语超平台字数上限，已存入前 ${updatedValue.length} 字（目标 ${targetContent.length} 字），视为正常`);
                                         }
 
                                         console.log('[新浪发布] ✅ 简介填写完成');
@@ -2303,43 +2452,33 @@
                         await closeXinlangCoverDialogs('cover-upload-attempt-start');
                         await delay(1000);
 
-                        // 🔴 先检查是否已经有封面（防止重复上传）
-                        const existingCover = document.querySelector(".cover-preview .cover-img");
-                        if (existingCover && existingCover.getAttribute("src")) {
-                            console.log("[新浪发布] ✅ 检测到已有封面图片，跳过上传步骤");
-                            // 继续发布流程
-                            await delay(2000);
-                            const publishBtns = document.querySelectorAll(".common-footer .footer-item button");
-                            let publishBtn = null;
-                            let saveBtn = null;
-                            if (publishBtns.length > 0) {
-                                publishBtns.forEach(btn => {
-                                    if (btn.textContent.trim() === "下一步") {
-                                        publishBtn = btn;
-                                    } else if (btn.textContent.trim().includes("保存")) {
-                                        saveBtn = btn;
-                                    }
-                                });
-                            }
-                            if (saveBtn) {
-                                saveBtn.click();
-                            }
-                            await delay(5000);
-                            if (publishBtn) {
-                                // 调用全局函数（传入必要的依赖）
-                                await window.__xinlangTryUploadImage(
-                                    dataObj,
-                                    sendStatisticsError,
-                                    sendStatistics,
-                                    closeWindowWithMessage,
-                                    selectScheduledTime
-                                );
-                            }
-                            return;
-                        }
-
+                        // 🔴 不再"检测到已有封面就跳过"：新浪进文章编辑器会自动塞一张默认/遗留封面(如随机猫图)，
+                        // 见到任何 .cover-img 有 src 就跳，会导致数据里的正确封面(video.video.cover)永远传不上去
+                        // （用户实测封面变成无关猫图 wx3.sinaimg.cn/…）。改为每次都上传数据里的正确封面，覆盖新浪的自动封面。
                         const {blob, contentType} = await downloadFile(pathImage, "image/png");
-                        var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
+                        // 🔴 生成安全文件名：极长的自动标题+写死.png 会导致文件名超长(255字节)或扩展名与真实类型不符，被新浪上传接口静默拒收
+                        // 1) 扩展名按真实 contentType 内联推导，兜底从 URL 尾缀，再兜底 .jpg
+                        const coverType = String(contentType || "").toLowerCase();
+                        let coverExt =
+                            coverType.includes("jpeg") || coverType.includes("jpg") ? ".jpg" :
+                            coverType.includes("png")  ? ".png"  :
+                            coverType.includes("webp") ? ".webp" :
+                            coverType.includes("gif")  ? ".gif"  :
+                            coverType.includes("bmp")  ? ".bmp"  : "";
+                        if (!coverExt && pathImage && pathImage.includes(".")) {
+                            const urlExt = pathImage.split(".").pop().split(/[?#]/)[0].toLowerCase();
+                            if (["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(urlExt)) {
+                                coverExt = urlExt === "jpeg" ? ".jpg" : `.${urlExt}`;
+                            }
+                        }
+                        if (!coverExt) coverExt = ".jpg";
+                        // 2) 标题去非法字符+空白转下划线+截断到40字，空标题兜底 cover
+                        const rawCoverTitle = (dataObj?.video?.formData?.title || "").toString();
+                        const safeCoverName =
+                            (rawCoverTitle.replace(/[\\/:*?"<>|\r\n\t]+/g, "_").replace(/\s+/g, "_").slice(0, 40).trim() || "cover");
+                        const coverFileName = `${safeCoverName}${coverExt}`;
+                        console.log("[新浪发布] 📄 封面文件名:", coverFileName, "| 类型:", contentType, "| 大小:", blob?.size);
+                        var file = new File([blob], coverFileName, {type: contentType || "image/png"});
                         // 选中本地上传（点击"选择封面"按钮）
                         await delay(1000);
 
@@ -2476,10 +2615,16 @@
 
                             // 上传图片（带重试）
                             let input;
-                            // 🔴 重新获取 uploadModal 与文件输入框（带重试，防止引用失效或DOM未渲染）
+                            // 🔴 优先复用已验证过的 uploadModal 引用（前面 tabs 切换、清空旧图都是在它范围内查询的），
+                            // 不再用 document.querySelector(".n-dialog") 重新在整个页面找第一个弹窗——
+                            // naive-ui 的 .n-dialog 是通用 class，页面上如果同时存在其它未关闭动画的弹窗残留，
+                            // querySelector 抓到的未必是含 input 的上传弹窗，导致误报"找不到文件输入框"。
+                            // 只有当 uploadModal 已脱离 DOM（比如被新浪自己关闭重建）时，才降级用可见弹窗兜底。
                             const maxFindRetries = 5;
                             for (let findAttempt = 1; findAttempt <= maxFindRetries; findAttempt++) {
-                                const currentModal = document.querySelector(".n-dialog");
+                                const currentModal = document.body.contains(uploadModal)
+                                    ? uploadModal
+                                    : getVisibleXinlangDialogs()[0];
                                 if (currentModal) {
                                     input = currentModal.querySelector("input[type='file']");
                                     if (input) {

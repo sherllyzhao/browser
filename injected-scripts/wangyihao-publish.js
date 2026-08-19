@@ -786,6 +786,23 @@
                                 }
 
                                 removeLeadingEmptyNodes(tempCleaner);
+
+                                // 🔢 修复有序列表序号：被段落打断的多个 <ol> 经 paste 原生渲染时会各自从 1 开始，
+                                //    这里按文档顺序用 start 属性接续编号，Draft.js 会保留该属性
+                                (function fixOrderedListNumbering(root) {
+                                    let counter = 1;
+                                    root.querySelectorAll('ol').forEach((ol) => {
+                                        if (ol.closest('li')) return; // 跳过嵌套列表
+                                        ol.setAttribute('start', String(counter));
+                                        ol.querySelectorAll(':scope > li').forEach((li) => {
+                                            counter++;
+                                        });
+                                    });
+                                    if (counter > 1) {
+                                        console.log('[网易号发布] 🔢 有序列表序号已接续编号，共', counter - 1, '项');
+                                    }
+                                })(tempCleaner);
+
                                 htmlContent = tempCleaner.innerHTML.replace(/\u200B/g, '').trim();
                                 console.log('[网易号发布] 🧹 已清理开头所有空白内容');
 
@@ -1378,6 +1395,8 @@
                                                 });
                                                 publishBtn.dispatchEvent(clickEvent);
                                                 console.log('[网易号发布] ✅ 已点击发布按钮');
+                                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                                if (publishId) { window.sendOptimisticSuccess(publishId, '网易号发布').catch(() => {}); }
 
                                                 // 检查是否有发文前检测提示
                                                 await delay(1000);

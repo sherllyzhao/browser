@@ -1233,6 +1233,9 @@
                                 });
                                 publishBtn.dispatchEvent(clickEvent);
                                 console.log('[百家号发布] ✅ 已点击发布（模拟鼠标事件）');
+                                // 🚀 点击发布成功 → 立即乐观上报一次成功（GEO 内部跳过；不 await 避免阻塞）
+                                const bjhOptId = dataObj.video?.dyPlatform?.id;
+                                if (bjhOptId) { window.sendOptimisticSuccess(bjhOptId, '百家号发布').catch(() => {}); }
                                 await checkPublishResult(dataObj, true);
                               }else{
                                 console.error('[百家号发布] ❌ 找不到提交图片按钮，上报失败');
@@ -1398,6 +1401,26 @@
 
     const publishErrorMsg = getLatestError();
     if (publishErrorMsg) {
+      // ✅ 结果判定范式：捕获到提示但未命中"明确失败关键词"时，视为发布已提交成功
+      // （避免平台只弹非失败提示 / 未跳转，导致"其实已发布成功"被误报为失败）
+      const FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
+      const hasExplicitFailure = publishErrorMsg && FAIL_KEYWORDS.some(k => publishErrorMsg.includes(k));
+      if (!hasExplicitFailure) {
+        console.log('[百家号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');
+        stopErrorListener();
+        stopSmsVerificationDetector();
+        const publishIdForSuccess = dataObj.video?.dyPlatform?.id;
+        if (publishIdForSuccess) {
+          await sendStatistics(publishIdForSuccess, '百家号发布');
+        }
+        // 🔎 跳内容管理页二次验证，跳转成功则由 content-verify.js 收尾
+        if (typeof window.gotoContentVerify === 'function'
+          && await window.gotoContentVerify('baijiahao', publishIdForSuccess, '百家号发布')) {
+          return true;
+        }
+        await closeWindowWithMessage('发布成功，刷新数据', 1000);
+        return true;
+      }
       console.log('[百家号发布] ❌ 检测到发布错误:', publishErrorMsg);
       stopErrorListener();
       stopSmsVerificationDetector();
