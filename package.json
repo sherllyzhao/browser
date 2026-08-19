@@ -4,8 +4,8 @@
   "description": "资海云运营助手，用于多平台自动化运营管理",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "start:debug": "electron . --remote-debugging-port=9222",
+    "start": "node node_modules/electron/cli.js .",
+    "start:debug": "node node_modules/electron/cli.js . --remote-debugging-port=9222",
     "build:dev": "node build-scripts/set-env.js dev && electron-builder --win nsis --ia32",
     "build:prod": "node build-scripts/set-env.js prod && electron-builder --win nsis --ia32",
     "build:dev:portable": "node build-scripts/set-env.js dev && electron-builder --win portable --ia32",
