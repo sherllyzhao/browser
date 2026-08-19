@@ -1516,14 +1516,18 @@
                                                     }
                                                     await delay(2000);
                                                     // 选择声明
-                                                    const declarationArea = document.querySelector('#info-source-signature');
-                                                    console.log("🚀 ~ tryUploadImage ~ declarationBtns: ", declarationBtns);
-                                                    if (declarationBtns.length) {
-                                                        for (const btn of declarationBtns) {
-                                                            if (btn.textContent.trim().includes('我已阅读并同意')) {
-                                                                btn.click();
-                                                            }
-                                                        }
+                                                    try{
+                                                        const declarationArea = document.querySelector('#info-source-signature');
+                                                        const optionItem = declarationArea.querySelector('.option-item:not(.additional-item)');
+                                                        const firstRadio = optionItem.querySelector('.el-radio:first-child');
+                                                        const clickEvent = new MouseEvent('click', {
+                                                            view: window,
+                                                            bubbles: true,
+                                                            cancelable: true
+                                                        });
+                                                        firstRadio.dispatchEvent(clickEvent);
+                                                    } catch (e){
+                                                        console.log(e);
                                                     }
                                                     await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
