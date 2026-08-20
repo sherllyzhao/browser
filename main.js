@@ -6097,9 +6097,24 @@ async function inspectBrowserViewReadiness() {
         const jsonTextMarkerCount = jsonTextMarkers.filter((pattern) => bodyTextPreview.includes(pattern)).length;
         const startsLikeJson = /^[{\\[]/.test(bodyTextPreview) || /^"[^"]+"\\s*:/.test(bodyTextPreview);
         const hasBrowserHeaderCss = /#__browser_common_header__/i.test(bodyTextPreview) && cssTextMatchCount >= 2;
-        const looksLikeCssSource = (cssTextMatchCount >= 4 || hasBrowserHeaderCss) && childCount <= 2 && visibleSampleElements <= 3;
-        const looksLikeJsonSource = bodyTextPreview.length > 800 && startsLikeJson && jsonTextMarkerCount >= 3 && childCount <= 2 && visibleSampleElements <= 3;
+        // 【FIX_LOGIN_SPINNER_SOURCE_DETECTION】放宽源码文本判定条件，减少误判：
+        // - CSS 特征匹配从 >= 4 提高到 >= 6
+        // - JSON 标记匹配从 >= 3 提高到 >= 5
+        // - 子元素数从 <= 2 降低到 <= 1（真正的源码页基本只有 1 个 <pre> 或 <body>）
+        // - 可见元素从 <= 3 降低到 === 0（正常页面至少有几个可见元素）
+        // - 增加文本长度要求 > 2000（短文本不太可能是完整源码）
+        const looksLikeCssSource = cssTextMatchCount >= 6 && childCount <= 1 && visibleSampleElements === 0 && bodyTextPreview.length > 2000;
+        const looksLikeJsonSource = bodyTextPreview.length > 2000 && startsLikeJson && jsonTextMarkerCount >= 5 && childCount <= 1 && visibleSampleElements === 0;
         if (looksLikeCssSource || looksLikeJsonSource) {
+          console.warn('[Startup Guard] ⚠️ 页面被判定为源码文本:', {
+            type: looksLikeCssSource ? 'CSS' : 'JSON',
+            cssMatchCount: cssTextMatchCount,
+            jsonMarkerCount: jsonTextMarkerCount,
+            childCount,
+            visibleSampleElements,
+            bodyTextLength: bodyTextPreview.length,
+            textPreview: bodyTextPreview.slice(0, 200)
+          });
           return {
             ready: false,
             reason: looksLikeCssSource ? 'css-source-text' : 'json-source-text',
