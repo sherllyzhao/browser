@@ -1515,19 +1515,56 @@
                                                         return;
                                                     }
                                                     await delay(2000);
-                                                    // 选择声明
-                                                    try{
-                                                        const declarationArea = document.querySelector('#info-source-signature');
+                                                    
+                                                    // 选择声明（必选项，失败则上报）
+                                                    console.log('[搜狐号发布] 🔍 开始选择声明...');
+                                                    try {
+                                                        // 等待声明区域加载（最多 10 秒）
+                                                        const declarationArea = await waitForElement('#info-source-signature', 10000);
+                                                        if (!declarationArea) {
+                                                            throw new Error('声明区域未加载');
+                                                        }
+                                                        
+                                                        await delay(500); // 等待内部选项渲染
+                                                        
                                                         const optionItem = declarationArea.querySelector('.option-item:not(.additional-item)');
+                                                        if (!optionItem) {
+                                                            throw new Error('找不到声明选项容器');
+                                                        }
+                                                        
                                                         const firstRadio = optionItem.querySelector('.el-radio:first-child');
+                                                        if (!firstRadio) {
+                                                            throw new Error('找不到第一个声明单选框');
+                                                        }
+                                                        
+                                                        console.log('[搜狐号发布] 📝 找到声明单选框，准备点击...');
                                                         const clickEvent = new MouseEvent('click', {
                                                             view: window,
                                                             bubbles: true,
                                                             cancelable: true
                                                         });
                                                         firstRadio.dispatchEvent(clickEvent);
-                                                    } catch (e){
-                                                        console.log(e);
+                                                        
+                                                        await delay(500); // 等待选中状态更新
+                                                        
+                                                        // 验证是否选中（检查 is-checked class 或 input checked 属性）
+                                                        const isChecked = firstRadio.classList.contains('is-checked') || 
+                                                                         firstRadio.querySelector('input[type="radio"]:checked');
+                                                        
+                                                        if (isChecked) {
+                                                            console.log('[搜狐号发布] ✅ 声明已成功选中');
+                                                        } else {
+                                                            console.warn('[搜狐号发布] ⚠️ 声明点击后未检测到选中状态，但继续发布');
+                                                        }
+                                                    } catch (e) {
+                                                        console.error('[搜狐号发布] ❌ 声明选择失败:', e.message);
+                                                        stopErrorListener();
+                                                        const publishId = dataObj.video?.dyPlatform?.id;
+                                                        if (publishId) {
+                                                            await sendStatisticsError(publishId, `声明选择失败: ${e.message}`, '搜狐号发布');
+                                                        }
+                                                        await closeWindowWithMessage('发布失败：声明选择失败', 1000);
+                                                        return;
                                                     }
                                                     await delay(2000);
                                                     const publishTime = dataObj.video.formData.send_set;
