@@ -3600,6 +3600,53 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
     }
   }
 
+  // 🔧 FIX_WANGYI_LOCALSTORAGE_CONFLICT (v1.2.8, 2026-08-20)
+  // 网易号草稿机制特殊处理：不恢复旧 localStorage，避免草稿与当前账号不匹配导致"掉登录"
+  if (normalizedPlatform === 'wangyihao') {
+    console.log('[Window Manager] 🔍 网易号诊断 - 进入专属逻辑分支');
+    console.log('[Window Manager] 🔍 incoming cookies 数量:', incomingCookies.length);
+    console.log('[Window Manager] 🔍 cached cookies 数量:', cachedCookies.length);
+    console.log('[Window Manager] 🔍 incoming 有 storage?', incomingHasStorage);
+    console.log('[Window Manager] 🔍 cached 有 storage?', cachedHasStorage);
+
+    // 网易号只使用 incoming cookies（最新登录状态），不合并缓存的 localStorage
+    if (incomingCookies.length > 0) {
+      console.log('[Window Manager] 🔧 网易号专属逻辑：仅恢复 cookies，不恢复旧草稿 localStorage');
+      console.log('[Window Manager] 🔍 关键 cookie 检查:');
+      const keyCookies = ['NTES_YD_SESS', 'S_INFO', 'P_INFO', 'NTESwebSI'];
+      keyCookies.forEach(name => {
+        const found = incomingCookies.find(c => c.name === name);
+        console.log(`  - ${name}: ${found ? '✅ 存在' : '❌ 缺失'}`);
+      });
+
+      return {
+        sessionData: {
+          cookies: incomingCookies,
+          domain: collectSessionDomains(parsedIncoming)[0] || '',
+          domains: collectSessionDomains(parsedIncoming),
+          cookieDomains: collectSessionDomains(parsedIncoming),
+          timestamp: incomingTimestamp || Date.now()
+        },
+        source: 'incoming-cookies-only-wangyihao'
+      };
+    }
+    // 如果后台没传 cookies，降级使用缓存的 cookies（仅 cookies，不含 localStorage）
+    if (cachedCookies.length > 0) {
+      console.log('[Window Manager] 🔧 网易号降级：使用缓存 cookies，不恢复 localStorage');
+      return {
+        sessionData: {
+          cookies: cachedCookies,
+          domain: collectSessionDomains(parsedCached)[0] || '',
+          domains: collectSessionDomains(parsedCached),
+          cookieDomains: collectSessionDomains(parsedCached),
+          timestamp: cachedTimestamp || Date.now()
+        },
+        source: 'latest-cache-cookies-only-wangyihao'
+      };
+    }
+    console.log('[Window Manager] ⚠️ 网易号专属逻辑：incoming 和 cached 都没有 cookies，继续执行通用逻辑');
+  }
+
   if (!cachedHasStorage && incomingHasStorage) {
     const mergedSessionData = cloneSerializable(parsedIncoming) || {};
     const shouldUseCachedCookies = cachedCookies.length > 0
@@ -14669,7 +14716,10 @@ async function openManagedChildWindowInternal(url, options = {}) {
           // 1.5 🔑 搜狐号必须清理旧 storage。
           // 搜狐前端会从 localStorage.currentAccount 初始化账号信息；即使 cookie 已换成客户号，
           // 旧 storage 仍可能让发布页显示成上一个账号（例如 sherllyzhao）。
+          // ⚠️ 网易号/腾讯号排除：清空 localStorage 会导致登录态失效（可能依赖 localStorage 判断登录）
           const shouldClearStorageBeforeRestore = !isShipinhaoPublishUrl
+            && normalizePlatformName(options.platform) !== 'wangyihao'
+            && normalizePlatformName(options.platform) !== 'tengxunhao'
             && (hasStoragePayload || normalizePlatformName(options.platform) === 'sohuhao');
           if (isShipinhaoPublishUrl) {
             console.log(`[Window Manager][${__wmTs()}] ⏭️ 视频号发布页跳过 storage 清理，仅恢复 cookies，避免目标页加载阶段崩溃`);
@@ -19793,6 +19843,23 @@ ipcMain.handle('clear-all-auth-data', async () => {
 
 // ========== 手动保存会话数据到后台（开发调试用） ==========
 // 让发布脚本可以在不关闭窗口的情况下保存最新 cookies
+// 🔍 渲染进程诊断日志落盘：用于页面 alert/reload 发生前抢先写盘的场景（如登录态检测）
+// payload 里带敏感值时调用方需自行做指纹化处理，这里不做二次脱敏
+ipcMain.handle('write-diag-log', async (event, eventName, payload) => {
+  try {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    const windowId = senderWindow ? senderWindow.id : null;
+    appendPublishSessionDiagLog(String(eventName || 'renderer-diag'), {
+      windowId,
+      url: event.sender.getURL ? event.sender.getURL() : undefined,
+      ...(payload && typeof payload === 'object' ? payload : { value: payload })
+    });
+    return { success: true, logPath: getPublishSessionDiagLogPath() };
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) };
+  }
+});
+
 ipcMain.handle('save-session-to-backend', async (event) => {
   console.log('[Save Session] ========== 手动保存会话数据 ==========');
 

@@ -53,6 +53,95 @@
     console.log("[腾讯号发布] 🧪 当前脚本版本:", TXH_PUBLISH_SCRIPT_VERSION);
 
     // ===========================
+    // 🔑 腾讯号登录态检测（检测服务端是否认可当前 cookies）
+    // ===========================
+    async function checkAndCleanInvalidCookies() {
+        if (window.__TXH_LOGIN_CHECK_DONE__) {
+            return;
+        }
+        window.__TXH_LOGIN_CHECK_DONE__ = true;
+
+        console.log('[腾讯号发布] 🔍 开始检测服务端登录状态...');
+
+        try {
+            const response = await fetch('https://om.qq.com/mindex/homeInfo?app=all&relogin=1', {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                    'Accept': 'application/json',
+                    'Referer': 'https://om.qq.com/main'
+                }
+            });
+
+            const userInfoRes = await response.json();
+
+            // 写入诊断日志
+            if (window.browserAPI?.writeDiagLog) {
+                await window.browserAPI.writeDiagLog('tengxunhao-login-check', {
+                    timestamp: Date.now(),
+                    url: window.location.href,
+                    homeInfoCode: userInfoRes.code,
+                    homeInfoMsg: userInfoRes.msg,
+                    hasUserInfo: !!(userInfoRes.data && userInfoRes.data.userInfo),
+                    responseOk: response.ok,
+                    responseStatus: response.status
+                }).catch(err => console.error('[腾讯号发布] writeDiagLog 失败:', err));
+            }
+
+            // 检测未登录状态
+            if (userInfoRes.code === -10403 || /not\s*login/i.test(String(userInfoRes.msg || ''))) {
+                console.error('[腾讯号发布] ❌ 服务端判定未登录，后台 cookies 已失效');
+                console.error('[腾讯号发布] homeInfo 接口返回:', JSON.stringify(userInfoRes, null, 2));
+
+                // 写入失败日志
+                if (window.browserAPI?.writeDiagLog) {
+                    await window.browserAPI.writeDiagLog('tengxunhao-login-check-failed', {
+                        code: userInfoRes.code,
+                        msg: userInfoRes.msg,
+                        url: window.location.href,
+                        timestamp: Date.now(),
+                        reason: 'server-rejected-cookies'
+                    }).catch(err => console.error('[腾讯号发布] writeDiagLog 失败:', err));
+                }
+
+                // 弹窗提示
+                alert('登录状态已失效，请重新授权腾讯号账号。\n\n可能原因：\n1. 授权时间过久，会话已过期\n2. 在其他地方重复授权，挤掉了当前登录\n3. 后台保存的登录信息已被腾讯服务端作废\n\n点击确定后将清除失效登录信息并刷新页面。');
+
+                // 清除 qq.com 域名的所有 cookies
+                if (window.browserAPI?.clearDomainCookies) {
+                    try {
+                        const clearResult = await window.browserAPI.clearDomainCookies('qq.com');
+                        console.log('[腾讯号发布] 🧹 已清除 qq.com cookies:', clearResult);
+                    } catch (clearErr) {
+                        console.error('[腾讯号发布] 清除 cookies 失败:', clearErr);
+                    }
+                }
+
+                // 刷新页面
+                window.location.reload();
+                return;
+            }
+
+            console.log('[腾讯号发布] ✅ 服务端登录态有效，code:', userInfoRes.code);
+        } catch (error) {
+            console.error('[腾讯号发布] ⚠️ 登录态检测异常:', error);
+
+            // 写入异常日志
+            if (window.browserAPI?.writeDiagLog) {
+                await window.browserAPI.writeDiagLog('tengxunhao-login-check-error', {
+                    timestamp: Date.now(),
+                    url: window.location.href,
+                    error: error.message,
+                    stack: error.stack
+                }).catch(err => console.error('[腾讯号发布] writeDiagLog 失败:', err));
+            }
+        }
+    }
+
+    // 立即执行登录态检测
+    await checkAndCleanInvalidCookies();
+
+    // ===========================
     // 🔑 腾讯号白屏检测和自动恢复（使用公共函数）
     // ===========================
     if (typeof window.checkBlankPageAndReload === "function") {

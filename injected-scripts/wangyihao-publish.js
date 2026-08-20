@@ -55,9 +55,44 @@
             });
             const userInfoRes = await userInfoResult.json();
 
+            // 🩹 诊断输出：把完整响应写到 global-storage
+            try {
+                const diagnosticData = {
+                    timestamp: new Date().toISOString(),
+                    url: 'https://mp.163.com/wemedia/navinfo.do',
+                    response: userInfoRes,
+                    cookies: document.cookie.split(';').map(c => c.trim()).filter(c =>
+                        c.includes('NTES_YD_SESS') || c.includes('NTESwebSI') ||
+                        c.includes('P_INFO') || c.includes('S_INFO')
+                    )
+                };
+                if (window.browserAPI?.setGlobalData) {
+                    await window.browserAPI.setGlobalData('wangyihao_login_diagnostic', JSON.stringify(diagnosticData, null, 2));
+                }
+            } catch (diagErr) {
+                // 静默失败，不影响主流程
+            }
+
             if (userInfoRes.code !== 1) {
                 console.warn('[网易号发布] ⚠️ 登录态无效，code:', userInfoRes.code, 'msg:', userInfoRes.msg);
                 console.log('[网易号发布] 🧹 自动清理旧 Cookies...');
+
+                // 📝 写诊断日志到文件（在 alert 之前，确保数据持久化）
+                if (window.browserAPI?.writeDiagLog) {
+                    try {
+                        await window.browserAPI.writeDiagLog('wangyihao-publish-invalid-login-detected', {
+                            platform: 'wangyihao',
+                            endpoint: 'https://mp.163.com/wemedia/navinfo.do',
+                            responseCode: userInfoRes.code,
+                            responseMsg: userInfoRes.msg,
+                            timestamp: new Date().toISOString(),
+                            action: 'auto-clear-and-reload'
+                        });
+                        console.log('[网易号发布] ✅ 诊断日志已写入（文件路径见日志输出）');
+                    } catch (logErr) {
+                        console.warn('[网易号发布] ⚠️ 写诊断日志失败:', logErr?.message || logErr);
+                    }
+                }
 
                 // 清理 163.com 域名的所有 cookies
                 if (window.browserAPI?.clearDomainCookies) {

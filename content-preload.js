@@ -1968,7 +1968,12 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 原生鼠标移动（触发真实 hover，不执行点击）
   nativeMouseMove: (x, y, options) => ipcRenderer.invoke('native-mouse-move', x, y, options),
   // 原生连续 hover（批量移动并停留，用于触发依赖真实鼠标移入的提示）
-  nativeMouseHover: (points, options) => ipcRenderer.invoke('native-mouse-hover', points, options)
+  nativeMouseHover: (points, options) => ipcRenderer.invoke('native-mouse-hover', points, options),
+
+  // 🔍 写诊断日志到文件（主进程落盘，不受页面 alert/reload 影响）
+  // 用于登录态检测等场景：在 alert 弹窗之前调用，确保诊断数据已经写入磁盘
+  // 返回: { success: true, logPath: '...' } 或 { success: false, error: '...' }
+  writeDiagLog: (eventName, payload) => ipcRenderer.invoke('write-diag-log', eventName, payload)
 });
 
 function isSohuhaoAuthInjectablePage(rawUrl = '') {
