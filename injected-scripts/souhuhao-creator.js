@@ -906,6 +906,81 @@
     })();
 
     // ===========================
+    // 6.7 兜底模式：子窗口必须完成授权（管他从哪进来的；auth-data 丢失/自愈失败时轮询检测登录）
+    // ===========================
+    (async () => {
+        try {
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.getGlobalData) {
+                console.log('[搜狐号授权] ℹ️ browserAPI 不可用，兜底不启动');
+                return;
+            }
+            const myWindowId = await window.browserAPI.getWindowId();
+            const isChildWindow = typeof myWindowId === 'number';
+            if (!isChildWindow) {
+                console.log('[搜狐号授权] ℹ️ 主窗口浏览，不启动兜底授权');
+                return;
+            }
+            const hasPublishData = !!(await window.browserAPI.getGlobalData(`publish_data_window_${myWindowId}`));
+            if (hasPublishData) {
+                console.log('[搜狐号授权] ℹ️ 发布窗口，不启动兜底授权');
+                return;
+            }
+            // 本窗口已成功上报过就不再兜底
+            try {
+                if (sessionStorage.getItem('souhuhao_auth_reported') === '1') {
+                    console.log('[搜狐号授权] ℹ️ 本窗口已完成过授权上报，兜底不启动');
+                    return;
+                }
+            } catch (dedupError) { }
+
+            // 给正常 auth-data 消息和自愈机制 15 秒到达/完成时间
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            if (hasProcessed) {
+                console.log('[搜狐号授权] ℹ️ 消息模式或自愈已完成授权，兜底退出');
+                return;
+            }
+
+            console.log('[搜狐号授权] 🚀 启动兜底授权：轮询 newsInfo 等待登录...');
+            const startTime = Date.now();
+            const maxWaitMs = 5 * 60 * 1000;
+            let attempt = 0;
+            while (Date.now() - startTime < maxWaitMs) {
+                if (hasProcessed) {
+                    console.log('[搜狐号授权] ℹ️ 授权已完成，兜底轮询退出');
+                    return;
+                }
+                if (isProcessing) {
+                    // 消息模式或自愈正在处理，等它结束再看结果
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    continue;
+                }
+                attempt++;
+                try {
+                    // 轮询检测登录态：localStorage.currentAccount 存在表示已登录
+                    const currentAccount = localStorage.getItem('currentAccount') ? JSON.parse(localStorage.getItem('currentAccount')) : null;
+                    if (currentAccount && currentAccount.id) {
+                        console.log(`[搜狐号授权] ✅ 兜底第 ${attempt} 次轮询检测到已登录，触发自愈机制处理待授权数据`);
+                        // 不直接调用 processSohuhaoAuthData，而是刷新页面让自愈机制处理
+                        window.location.reload();
+                        return;
+                    }
+                    if (attempt === 1 || attempt % 10 === 0) {
+                        console.log(`[搜狐号授权] ⏳ 兜底第 ${attempt} 次轮询：未登录，等待扫码...`);
+                    }
+                } catch (probeError) {
+                    if (attempt === 1 || attempt % 10 === 0) {
+                        console.warn(`[搜狐号授权] ⏳ 兜底第 ${attempt} 次轮询异常:`, probeError.message);
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+            console.error('[搜狐号授权] ❌ 兜底轮询超时（5分钟），未完成授权');
+        } catch (fallbackError) {
+            console.error('[搜狐号授权] ❌ 兜底授权异常:', fallbackError);
+        }
+    })();
+
+    // ===========================
     // 6.6 登录页守望
     // 场景：授权窗口落在登录页时本脚本已注入并置 __SOUHUHAO_SCRIPT_LOADED__；
     // 用户登录后搜狐走 SPA 路由跳到 firstPage，脚本重注入会被防重标志挡住，
@@ -959,4 +1034,3 @@
     console.log('═══════════════════════════════════════');
 
 })();
-

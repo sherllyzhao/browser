@@ -36,7 +36,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.6',
+        version: '1.2.7',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
@@ -51,7 +51,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
       FIX_SOHU_AUTH_IDENTITY_BINDING: {
         enabled: true,
-        version: '1.2.6',
+        version: '1.2.7',
         risk: 'medium',
         files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
         description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
@@ -65,7 +65,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
       FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
         enabled: true,
-        version: '1.2.6',
+        version: '1.2.7',
         risk: 'low',
         files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
         description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'

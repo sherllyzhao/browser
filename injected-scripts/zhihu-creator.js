@@ -369,28 +369,67 @@
         alreadyReportedInWindow = sessionStorage.getItem('zhihu_auth_reported') === '1';
     } catch (e) { }
 
+    // ===========================
+    // 兜底模式：子窗口必须完成授权（管他从哪进来的；跳转数据丢失/一次性失败时接口轮询）
+    // ===========================
     if (alreadyReportedInWindow) {
         console.log('[知乎授权] ℹ️ 本窗口已完成过授权上报，跳过');
-    } else if ((isChildWindow && !hasPublishData) || freshAuthData) {
-        console.log('[知乎授权] 🚀 检测到授权意图（子窗口=' + isChildWindow + ', 授权窗口=' + isAuthWindow + ', 跳转数据=' + !!freshAuthData + '），接口优先获取用户信息...');
-        const me = await pollZhihuUserInfo();
-        if (me) {
-            await processAuthorization(
-                freshAuthData?.messageData ?? { auth_type: authType },
-                me,
-                freshAuthData?.companyId ?? companyId
-            );
-        } else if (freshAuthData?.userInfo?.id) {
-            // 接口轮询超时，降级使用跳转数据里的 userInfo（比完全失败好）
-            console.warn('[知乎授权] ⚠️ 接口轮询超时，降级使用跳转数据中的 userInfo');
-            await processAuthorization(
-                freshAuthData.messageData ?? { auth_type: authType },
-                freshAuthData.userInfo,
-                freshAuthData.companyId ?? companyId
-            );
-        }
     } else {
-        console.log('[知乎授权] ℹ️ 主窗口浏览或发布窗口，不执行授权');
+        (async () => {
+            try {
+                if (!isChildWindow) {
+                    console.log('[知乎授权] ℹ️ 主窗口浏览，不启动兜底授权');
+                    return;
+                }
+                if (hasPublishData) {
+                    console.log('[知乎授权] ℹ️ 发布窗口，不启动兜底授权');
+                    return;
+                }
+
+                // 给正常跳转数据或消息模式 15 秒到达时间
+                await new Promise(resolve => setTimeout(resolve, 15000));
+                if (hasReported) {
+                    console.log('[知乎授权] ℹ️ 已完成授权（通过跳转数据或其他路径），兜底退出');
+                    return;
+                }
+
+                console.log('[知乎授权] 🚀 启动兜底授权：轮询 /api/v4/me 等待登录...');
+                const startTime = Date.now();
+                const maxWaitMs = 5 * 60 * 1000;
+                let attempt = 0;
+                while (Date.now() - startTime < maxWaitMs) {
+                    if (hasReported) {
+                        console.log('[知乎授权] ℹ️ 授权已完成，兜底轮询退出');
+                        return;
+                    }
+                    if (isReporting) {
+                        // 其他路径正在处理，等它结束再看结果
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        continue;
+                    }
+                    attempt++;
+                    const me = await pollZhihuUserInfo(10000, 0);  // 单次尝试，10秒超时
+                    if (me) {
+                        console.log(`[知乎授权] ✅ 兜底第 ${attempt} 次轮询检测到已登录，执行授权流程`);
+                        await processAuthorization(
+                            freshAuthData?.messageData ?? { auth_type: authType },
+                            me,
+                            freshAuthData?.companyId ?? companyId
+                        );
+                        if (hasReported) return;
+                        await new Promise(resolve => setTimeout(resolve, 10000));
+                        continue;
+                    }
+                    if (attempt === 1 || attempt % 10 === 0) {
+                        console.log(`[知乎授权] ⏳ 兜底第 ${attempt} 次轮询：未登录，等待扫码...`);
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+                console.error('[知乎授权] ❌ 兜底轮询超时（5分钟），未完成授权');
+            } catch (fallbackError) {
+                console.error('[知乎授权] ❌ 兜底授权异常:', fallbackError);
+            }
+        })();
     }
 
     console.log('═══════════════════════════════════════');
@@ -402,4 +441,3 @@
     console.log('═══════════════════════════════════════');
 
 })();
-
