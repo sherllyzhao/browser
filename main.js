@@ -18029,11 +18029,34 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
   };
 }
 
-async function uploadSessionToBackend({ apiOrigin, saveSessionApi, backendAccountId, cookieDomains, cookiesArray, accountInfo }) {
+async function uploadSessionToBackend({ apiOrigin, saveSessionApi, backendAccountId, cookieDomains, cookiesArray, sessionData, accountInfo }) {
   const uploadCookiesArray = dedupeCookiesForSessionSave(accountInfo?.platform, cookiesArray, 'backend-upload');
+
+  // 🔑 构建完整会话数据（包含 localStorage/sessionStorage/indexedDB）
+  let cookiesPayload;
+  if (sessionData && typeof sessionData === 'object' && !Array.isArray(sessionData)) {
+    // 使用完整会话数据（getFullSessionDataFromWebContents 返回的格式）
+    cookiesPayload = {
+      domain: cookieDomains[0],
+      cookieDomains: cookieDomains,
+      domains: cookieDomains,
+      timestamp: sessionData.timestamp || Date.now(),
+      cookies: uploadCookiesArray,
+      localStorage: sessionData.localStorage || {},
+      sessionStorage: sessionData.sessionStorage || {},
+      indexedDB: sessionData.indexedDB || {}
+    };
+  } else {
+    // 降级为仅 cookies 的格式（向后兼容）
+    cookiesPayload = {
+      domain: cookieDomains[0],
+      cookies: uploadCookiesArray
+    };
+  }
+
   const postData = JSON.stringify({
     id: backendAccountId,
-    cookies: JSON.stringify({ domain: cookieDomains[0], cookies: uploadCookiesArray })
+    cookies: JSON.stringify(cookiesPayload)
   });
 
   const apiUrl = new URL(saveSessionApi, apiOrigin);
