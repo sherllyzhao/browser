@@ -700,6 +700,48 @@
     console.log('═══════════════════════════════════════');
 
     // ===========================
+    // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
+    // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+    // 搜狐号 newsInfo 接口需要 accountId 参数，从发布数据里拿；拿不到就跳过检测按未知处理。
+    // code=200 正常，code=1211 登录已失效判死（项目已确认的事实，比"非 200 就判死"安全）。
+    // ===========================
+    const probeSohuhaoLogin = async () => {
+        try {
+            const windowId = await window.browserAPI.getWindowId();
+            if (!windowId) return 'unknown';
+            const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+            if (!publishData) return 'unknown';
+            // 搜狐号从 account_info.id 或 account_info.account_id 取 accountId（不是后台授权 ID）
+            const accountId = publishData.account_info?.id || publishData.account_info?.account_id
+                || publishData.accountInfo?.id || publishData.accountInfo?.account_id;
+            if (!accountId) return 'unknown';
+            const res = await fetch(
+                `https://mp.sohu.com/mpbp/bp/news/v4/users/newsInfo?accountId=${accountId}`,
+                { method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' } }
+            );
+            if (!res.ok) return 'unknown';
+            const json = await res.json();
+            if (Number(json?.code) === 200) return 'logged-in';
+            if (Number(json?.code) === 1211) return 'logged-out';
+            return 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
+    };
+
+    const shhLoginState = await probeSohuhaoLogin();
+    console.log('[搜狐号发布] 🔐 发布前登录态探测:', shhLoginState);
+    if (shhLoginState === 'logged-out') {
+        if (typeof window.startPublishLoginWatch === 'function') {
+            window.startPublishLoginWatch('搜狐号', {
+                probeLoggedIn: async () => (await probeSohuhaoLogin()) === 'logged-in'
+            });
+            return;
+        }
+        console.warn('[搜狐号发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+    }
+
+    // ===========================
     // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
     // ===========================
     await (async () => {

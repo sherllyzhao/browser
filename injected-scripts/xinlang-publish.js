@@ -1587,6 +1587,43 @@
     console.log("═══════════════════════════════════════");
 
     // ===========================
+    // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
+    // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+    // 新浪发布页在 card.weibo.com，探测接口在 mp.sina.com.cn，是跨域的，必须走 proxyFetch。
+    // ===========================
+    const probeXinlangLogin = async () => {
+        if (!window.browserAPI?.proxyFetch) return 'unknown';
+        try {
+            const result = await window.browserAPI.proxyFetch('https://mp.sina.com.cn/aj/media/info/getbaseinfo', {
+                method: 'GET', credentials: 'include', headers: { 'Content-Type': 'application/json' }
+            });
+            if (!result.success || !result.ok) return 'unknown';
+            const uid = result.data?.data?.userInfo?.uid;
+            if (uid && String(uid).trim()) return 'logged-in';
+            // 有结构但取不到 uid 才算掉登录
+            if (result.data && typeof result.data === 'object'
+                && ('data' in result.data || 'code' in result.data || 'msg' in result.data)) {
+                return 'logged-out';
+            }
+            return 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
+    };
+
+    const xlLoginState = await probeXinlangLogin();
+    console.log('[新浪发布] 🔐 发布前登录态探测:', xlLoginState);
+    if (xlLoginState === 'logged-out') {
+        if (typeof window.startPublishLoginWatch === 'function') {
+            window.startPublishLoginWatch('新浪号', {
+                probeLoggedIn: async () => (await probeXinlangLogin()) === 'logged-in'
+            });
+            return;
+        }
+        console.warn('[新浪发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+    }
+
+    // ===========================
     // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
     // ===========================
     await (async () => {

@@ -212,23 +212,45 @@
                 await purgeWangyihaoLatestSessionCache();
 
                 // 清理 163.com 域名的所有 cookies
+                //（死 cookie 必须清掉：留着会让登录页新旧凭证混杂，用户登了也可能被打回）
                 if (window.browserAPI?.clearDomainCookies) {
                     const clearResult = await window.browserAPI.clearDomainCookies('163.com');
                     if (clearResult.success) {
                         console.log(`[网易号发布] ✅ 已清理 ${clearResult.deletedCount} 个旧 Cookies`);
-
-                        // 延迟500ms后刷新页面，让浏览器有时间完成清理
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 500);
-
-                        return true; // 停止脚本执行
+                    } else {
+                        console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
                     }
-                    console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
-                    return true;
+                } else {
+                    console.warn('[网易号发布] ⚠️ clearDomainCookies API 不可用，无法自动清理');
                 }
-                console.warn('[网易号发布] ⚠️ clearDomainCookies API 不可用，无法自动清理');
-                return true;
+
+                // 🔐 停窗等用户重新登录：轮询 navinfo，登录成功就自动 reload 回发布页继续发布。
+                //    比原来"清完盲刷一次"强的地方是能自动续上 —— 盲刷只会又落到登录页，
+                //    用户登完还得自己摸回 #/article-publish，发布任务实际就断在这儿了。
+                //    用户重新登录后主进程的「登录页 → 业务页」导航检测会把新登录态回存后台，
+                //    绑定是被修好而不是被丢掉。
+                if (typeof window.startPublishLoginWatch === 'function') {
+                    window.startPublishLoginWatch('网易号', {
+                        probeLoggedIn: async () => {
+                            const res = await fetch('https://mp.163.com/wemedia/navinfo.do', {
+                                method: 'GET',
+                                credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                            if (!res.ok) return false;
+                            const json = await res.json();
+                            return Number(json?.code) === 1;
+                        }
+                    });
+                } else {
+                    // common.js 版本较旧时退回原行为：延迟刷新，至少让用户看到登录页
+                    console.warn('[网易号发布] ⚠️ startPublishLoginWatch 不可用，退回延迟刷新');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 500);
+                }
+
+                return true; // 停止脚本执行
             }
 
             console.log('[网易号发布] ✅ 登录态有效，用户:', userInfoRes.data?.tname);

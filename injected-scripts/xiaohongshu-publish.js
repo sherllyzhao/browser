@@ -317,6 +317,44 @@ if (location.search.includes("published=true")) {
         console.log("═══════════════════════════════════════");
 
         // ===========================
+        // 🔐 发布前登录态检测：提前探测，掉登录就停窗等用户重新登录
+        // 与下面 792 行的「登录页守卫」互补：那套在 SPA 跳到 /login 后才启动，
+        // 这里在发布流程启动前就探测，避免「已掉登录但 SPA 还没跳」导致的盲发。
+        // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+        // ===========================
+        const probeXhsLogin = async () => {
+            try {
+                const res = await fetch('https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info', {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                if (!res.ok) return 'unknown';
+                const json = await res.json();
+                if (json && json.data && json.data.red_num) return 'logged-in';
+                // 有结构但取不到 red_num 才算掉登录；结构不认识按未知放过
+                if (json && typeof json === 'object' && ('data' in json || 'success' in json || 'code' in json)) {
+                    return 'logged-out';
+                }
+                return 'unknown';
+            } catch (e) {
+                return 'unknown';
+            }
+        };
+
+        const xhsLoginState = await probeXhsLogin();
+        console.log('[小红书发布] 🔐 发布前登录态探测:', xhsLoginState);
+        if (xhsLoginState === 'logged-out') {
+            if (typeof window.startPublishLoginWatch === 'function') {
+                window.startPublishLoginWatch('小红书', {
+                    probeLoggedIn: async () => (await probeXhsLogin()) === 'logged-in'
+                });
+                return;
+            }
+            console.warn('[小红书发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+        }
+
+        // ===========================
         // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
         // ===========================
         await (async () => {

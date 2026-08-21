@@ -5599,6 +5599,103 @@ if (typeof showOperationBanner === "undefined") window.showOperationBanner && (s
 if (typeof hideOperationBanner === "undefined") window.hideOperationBanner && (hideOperationBanner = window.hideOperationBanner);
 
 // ===========================
+// 🔐 发布中掉登录：停窗等用户重新登录（各平台通用）
+//
+// 设计取自抖音发布脚本已验证的做法，之所以是「停窗等待」而不是「清 cookie + 上报失败 + 关窗」：
+//   1. 清 cookie 会把好账号的登录态毁掉，误判一次就是真掉绑定；
+//   2. 上报失败会被去重锁固化成「发布失败」，后台不支持失败覆盖成功，用户得手动改状态；
+//   3. 用户在本窗口重新登录后，主进程的「登录页 → 业务页」导航检测（LOGIN_URL_PATTERNS）
+//      会自动把新登录态回存后台并同步 latest_session 缓存 —— 绑定是被修好，而不是被丢掉。
+// 所以入口条件（判定掉登录）宁可误判：代价只是这一窗停下来等人，不会毁数据。
+// 出口条件（判定已重新登录）必须是正向信号，探测异常就继续等。
+// ===========================
+window.startPublishLoginWatch = function (platformLabel, options) {
+    const opts = options || {};
+    const label = platformLabel || "发布";
+    const intervalMs = Number.isFinite(Number(opts.intervalMs)) ? Math.max(1000, Number(opts.intervalMs)) : 3000;
+    const tipText = opts.tipText || `${label}登录已失效，请在本窗口重新登录，登录成功后将自动继续发布`;
+    const probeLoggedIn = typeof opts.probeLoggedIn === "function" ? opts.probeLoggedIn : null;
+
+    if (window.__publishLoginWatcher__) {
+        return false;
+    }
+    if (!probeLoggedIn) {
+        console.warn(`[${label}] ⚠️ startPublishLoginWatch 缺少 probeLoggedIn，无法探测重新登录`);
+        return false;
+    }
+
+    window.__publishLoginWatchActive__ = true;
+    console.log(`[${label}] 👀 检测到登录失效，停窗等待用户重新登录（不清 cookie、不上报失败）`);
+
+    // 发布横幅会盖住"请重新登录"的提示，先收起来
+    try {
+        if (typeof window.hideOperationBanner === "function") {
+            window.hideOperationBanner();
+        }
+    } catch (e) { /* 收横幅失败不影响等待 */ }
+
+    // 提示条：pointer-events:none 保证不挡住登录框的点击
+    try {
+        if (!document.getElementById("__publish_login_wait_tip__")) {
+            const tip = document.createElement("div");
+            tip.id = "__publish_login_wait_tip__";
+            tip.textContent = tipText;
+            tip.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#fff7e6;color:#d46b08;border-bottom:1px solid #ffd591;font-size:14px;font-weight:600;text-align:center;pointer-events:none;";
+            (document.body || document.documentElement).appendChild(tip);
+        }
+    } catch (e) {
+        console.warn(`[${label}] ⚠️ 显示登录提示条失败:`, e.message);
+    }
+
+    // 诊断留痕：便于事后区分"真掉登录"与"探测误判"
+    try {
+        if (window.browserAPI && window.browserAPI.writeDiagLog) {
+            window.browserAPI.writeDiagLog("publish-login-expired-waiting", {
+                platform: label,
+                url: window.location.href,
+                timestamp: Date.now(),
+                action: "hold-window-and-wait-manual-login"
+            }).catch(() => { });
+        }
+    } catch (e) { /* 诊断失败不影响等待 */ }
+
+    window.__publishLoginWatcher__ = setInterval(async () => {
+        let loggedIn = false;
+        try {
+            loggedIn = !!(await probeLoggedIn());
+        } catch (e) {
+            // 未登录 / 网络抖动 —— 继续等，绝不因为探测报错就放弃
+            return;
+        }
+        if (!loggedIn) {
+            return;
+        }
+        try {
+            clearInterval(window.__publishLoginWatcher__);
+        } catch (e) { /* ignore */ }
+        window.__publishLoginWatcher__ = null;
+        window.__publishLoginWatchActive__ = false;
+        console.log(`[${label}] 🔄 检测到已重新登录，刷新页面继续发布流程`);
+        try {
+            window.location.reload();
+        } catch (e) {
+            console.warn(`[${label}] ⚠️ 刷新失败:`, e.message);
+        }
+    }, intervalMs);
+
+    return true;
+};
+
+// 发布脚本用它来判断"是否正在等重新登录"，从而跳过后续发布动作（别往死 session 里灌内容）
+window.isPublishLoginWatchActive = function () {
+    return !!window.__publishLoginWatchActive__;
+};
+
+// 裸名别名必须放在定义之后（上面那批别名在文件更前面，那时这两个函数还没定义）
+if (typeof startPublishLoginWatch === "undefined") window.startPublishLoginWatch && (startPublishLoginWatch = window.startPublishLoginWatch);
+if (typeof isPublishLoginWatchActive === "undefined") window.isPublishLoginWatchActive && (isPublishLoginWatchActive = window.isPublishLoginWatchActive);
+
+// ===========================
 // 前端拦截自定义协议（如 bitbrowser://）
 // ===========================
 (function () {

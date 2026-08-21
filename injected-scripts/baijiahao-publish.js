@@ -504,6 +504,60 @@
   console.log('═══════════════════════════════════════');
 
   // ===========================
+  // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录（不清 cookie、不上报失败、不关窗）
+  //
+  // 清 cookie 误判一次就是真掉绑定；上报失败会被去重锁固化成「发布失败」而后台不支持失败覆盖成功。
+  // 用户在本窗口重新登录后，主进程的「登录页 → 业务页」导航检测会自动把新登录态回存后台。
+  //
+  // 判据取自 baijiahao-creator.js 的 appinfo 用法：data.user.id / data.user.name 就是授权落库的身份字段。
+  // 只有「HTTP 2xx + 合法 JSON + 结构认得出却取不到身份」才算掉登录；非 2xx、JSON 解析失败、
+  // fetch 抛错、结构不认识一律按未知放行继续发布 —— 停错窗只是白等，拦下好账号的发布代价更大。
+  // 这里必须在消息监听器注册之后再 await，否则父窗口的 publish-data 会在 await 期间丢掉。
+  // ===========================
+  const probeBaijiahaoLoginState = async () => {
+    let response;
+    try {
+      response = await fetch('https://baijiahao.baidu.com/builder/app/appinfo', {
+        method: 'get'
+      });
+    } catch (e) {
+      return 'unknown';
+    }
+    if (!response.ok) {
+      return 'unknown';
+    }
+    let result;
+    try {
+      result = await response.json();
+    } catch (e) {
+      return 'unknown';
+    }
+    const user = result?.data?.user;
+    if (user && (user.id || user.name)) {
+      return 'logged-in';
+    }
+    // 未登录时返回的仍是 appinfo 的信封结构（errno/errmsg/data），只是取不到 user
+    if (result && typeof result === 'object'
+      && ('data' in result || 'errno' in result || 'errmsg' in result || 'code' in result)) {
+      return 'logged-out';
+    }
+    return 'unknown';
+  };
+
+  const bjhLoginState = await probeBaijiahaoLoginState();
+  console.log('[百家号发布] 🔐 发布前登录态探测:', bjhLoginState);
+  if (bjhLoginState === 'logged-out') {
+    if (typeof window.startPublishLoginWatch === 'function') {
+      window.startPublishLoginWatch('百家号发布', {
+        probeLoggedIn: async () => (await probeBaijiahaoLoginState()) === 'logged-in'
+      });
+      return;
+    }
+    // common.js 过旧没有这个函数时宁可继续发布，也别把窗口停在没人接管的状态
+    console.warn('[百家号发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+  }
+
+  // ===========================
   // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
   await (async () => {

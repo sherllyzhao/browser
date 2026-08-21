@@ -627,6 +627,65 @@ let hasProcessed = false;
   console.log('═══════════════════════════════════════');
 
   // ===========================
+  // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
+  // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+  // 视频号接口需要 POST + query params + JSON body，照抄 creator 脚本的调用方式。
+  // ===========================
+  const probeShipinhaoLogin = async () => {
+    try {
+      const aid = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || '';
+      const logFinderId = localStorage.getItem('finder_username') || '';
+      if (!aid || !logFinderId) return 'unknown';
+      const params = new URLSearchParams({
+        _aid: aid,
+        _rid: String(Date.now()).slice(0, 10),
+        _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
+      });
+      const body = {
+        timestamp: String(Date.now()),
+        _log_finder_id: logFinderId,
+        _log_finder_uin: '',
+        pluginSessionId: null,
+        rawKeyBuff: null,
+        reqScene: 7,
+        scene: 7
+      };
+      const res = await fetch(
+        `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include'
+        }
+      );
+      if (!res.ok) return 'unknown';
+      const json = await res.json();
+      const d = json && json.data;
+      if (d && (d.finderUser || d.userAttr)) return 'logged-in';
+      // 有结构但取不到 finderUser/userAttr 才算掉登录
+      if (json && typeof json === 'object' && ('errCode' in json || 'errMsg' in json || 'ret' in json)) {
+        return 'logged-out';
+      }
+      return 'unknown';
+    } catch (e) {
+      return 'unknown';
+    }
+  };
+
+  const sphLoginState = await probeShipinhaoLogin();
+  console.log('[视频号发布] 🔐 发布前登录态探测:', sphLoginState);
+  if (sphLoginState === 'logged-out') {
+    if (typeof window.startPublishLoginWatch === 'function') {
+      window.startPublishLoginWatch('视频号', {
+        probeLoggedIn: async () => (await probeShipinhaoLogin()) === 'logged-in'
+      });
+      return;
+    }
+    console.warn('[视频号发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+  }
+
+  // ===========================
   // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
   // ===========================
   await (async () => {

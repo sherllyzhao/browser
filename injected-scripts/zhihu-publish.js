@@ -849,6 +849,43 @@
     console.log("═══════════════════════════════════════");
 
     // ===========================
+    // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
+    // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+    // 发布页在 zhuanlan.zhihu.com，接口在 www.zhihu.com，跨域但共享 .zhihu.com cookies。
+    // ===========================
+    const probeZhihuLogin = async () => {
+        try {
+            const res = await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            if (!res.ok) return 'unknown';
+            const me = await res.json();
+            if (me && me.id) return 'logged-in';
+            // 有结构但取不到 id 才算掉登录
+            if (me && typeof me === 'object' && ('error' in me || 'code' in me || 'message' in me)) {
+                return 'logged-out';
+            }
+            return 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
+    };
+
+    const zhLoginState = await probeZhihuLogin();
+    console.log('[知乎发布] 🔐 发布前登录态探测:', zhLoginState);
+    if (zhLoginState === 'logged-out') {
+        if (typeof window.startPublishLoginWatch === 'function') {
+            window.startPublishLoginWatch('知乎', {
+                probeLoggedIn: async () => (await probeZhihuLogin()) === 'logged-in'
+            });
+            return;
+        }
+        console.warn('[知乎发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+    }
+
+    // ===========================
     // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
     // ===========================
     await (async () => {
