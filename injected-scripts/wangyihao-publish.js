@@ -44,8 +44,71 @@
 
     // ===========================
     // 🔑 检测登录态，如果无效则自动清理旧 Cookies
+    //
+    // 判定原则（宁可漏判，不可误判）：只有「HTTP 正常 + 响应是合法 JSON + code 是数字且 ≠ 1」
+    // 才算服务端明确判死。网络抖动、Mixed Content 被拦、302 返回 HTML、code 缺失等一律按
+    // 「未知」处理并继续发布 —— 误判会把好账号的 163.com cookie 全清光，那才是真的掉绑定。
+    // 返回 true 表示已判死并清理，调用方必须中止后续发布流程。
     // ===========================
-    (async function checkAndCleanInvalidCookies() {
+    const WYH_DEAD_LOGIN_NOTICE_KEY = '__wyh_dead_login_notified__';
+
+    /**
+     * 清除本地"最新会话"缓存（latest_session_wangyihao_<后台账号ID>）。
+     * 候选顺序照抄 main.js 的 getPublishBackendAccountId，并且拒绝对象/数组
+     * —— 旧版 payload 的 media_auth_id 可能是数组，String() 会串出错误的号。
+     * 多删几个候选键是安全的：删掉缓存只会让下次发布回退到后台快照，不会丢绑定。
+     */
+    async function purgeWangyihaoLatestSessionCache() {
+        try {
+            if (!window.browserAPI?.getWindowId || !window.browserAPI?.removeGlobalData) {
+                console.warn('[网易号发布] ⚠️ 缺少 getWindowId/removeGlobalData API，跳过本地会话缓存清理');
+                return;
+            }
+
+            const windowId = await window.browserAPI.getWindowId();
+            const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+            if (!publishData) {
+                console.warn('[网易号发布] ⚠️ 未取到发布数据，无法定位本地会话缓存键');
+                return;
+            }
+
+            const element = publishData.element || {};
+            const candidates = [
+                element.backend_account_id, element.backendAccountId,
+                publishData.backend_account_id, publishData.backendAccountId,
+                element.media_auth?.id, element.mediaAuth?.id,
+                publishData.media_auth?.id, publishData.mediaAuth?.id,
+                element.media_auth_id, element.mediaAuthId,
+                publishData.media_auth_id, publishData.mediaAuthId
+            ];
+
+            const accountIds = [...new Set(candidates
+                .filter(v => v !== undefined && v !== null && typeof v !== 'object')
+                .map(v => String(v).trim())
+                .filter(Boolean))];
+
+            if (accountIds.length === 0) {
+                console.warn('[网易号发布] ⚠️ 发布数据里没有可用的后台账号 ID，跳过本地会话缓存清理');
+                return;
+            }
+
+            for (const accountId of accountIds) {
+                for (const platformKey of ['wangyihao', 'wyh']) {
+                    const cacheKey = `latest_session_${platformKey}_${accountId}`;
+                    try {
+                        await window.browserAPI.removeGlobalData(cacheKey);
+                        console.log(`[网易号发布] 🧹 已清除本地会话缓存: ${cacheKey}`);
+                    } catch (removeErr) {
+                        console.warn(`[网易号发布] ⚠️ 清除 ${cacheKey} 失败:`, removeErr?.message || removeErr);
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[网易号发布] ⚠️ 清理本地会话缓存异常（不影响后续清 cookie）:', err?.message || err);
+        }
+    }
+
+    async function checkAndCleanInvalidCookies() {
         try {
             console.log('[网易号发布] 🔍 检测登录态...');
             const userInfoResult = await fetch('https://mp.163.com/wemedia/navinfo.do', {
@@ -53,13 +116,23 @@
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' }
             });
-            const userInfoRes = await userInfoResult.json();
+
+            let userInfoRes = null;
+            let parseError = null;
+            try {
+                userInfoRes = await userInfoResult.json();
+            } catch (jsonErr) {
+                parseError = jsonErr;
+            }
 
             // 🩹 诊断输出：把完整响应写到 global-storage
             try {
                 const diagnosticData = {
                     timestamp: new Date().toISOString(),
                     url: 'https://mp.163.com/wemedia/navinfo.do',
+                    httpStatus: userInfoResult.status,
+                    httpOk: userInfoResult.ok,
+                    parseError: parseError ? (parseError.message || String(parseError)) : null,
                     response: userInfoRes,
                     cookies: document.cookie.split(';').map(c => c.trim()).filter(c =>
                         c.includes('NTES_YD_SESS') || c.includes('NTESwebSI') ||
@@ -73,11 +146,25 @@
                 // 静默失败，不影响主流程
             }
 
-            if (userInfoRes.code !== 1) {
+            // 只认「明确判死」这一种情况，其余全按未知放过
+            const codeValue = Number(userInfoRes?.code);
+            const isWellFormed = userInfoResult.ok && !parseError
+                && userInfoRes && typeof userInfoRes === 'object' && Number.isFinite(codeValue);
+
+            if (!isWellFormed) {
+                console.warn('[网易号发布] ⚠️ 登录态探测结果不可判定（按未知处理，继续发布）:', {
+                    httpStatus: userInfoResult.status,
+                    parseError: parseError ? (parseError.message || String(parseError)) : null,
+                    rawCode: userInfoRes?.code
+                });
+                return false;
+            }
+
+            if (codeValue !== 1) {
                 console.warn('[网易号发布] ⚠️ 登录态无效，code:', userInfoRes.code, 'msg:', userInfoRes.msg);
                 console.log('[网易号发布] 🧹 自动清理旧 Cookies...');
 
-                // 📝 写诊断日志到文件（在 alert 之前，确保数据持久化）
+                // 📝 写诊断日志到文件（在清理之前，确保数据持久化）
                 if (window.browserAPI?.writeDiagLog) {
                     try {
                         await window.browserAPI.writeDiagLog('wangyihao-publish-invalid-login-detected', {
@@ -94,37 +181,71 @@
                     }
                 }
 
+                // 🚫 非阻塞提示：批量发布无人值守，alert() 会卡死渲染进程等人点确定，窗口悬死
+                try {
+                    if (typeof window.showOperationBanner === 'function') {
+                        window.showOperationBanner('登录状态已失效，请重新授权网易号账号后再发布');
+                    }
+                } catch (bannerErr) {
+                    console.warn('[网易号发布] ⚠️ 横幅提示失败:', bannerErr?.message || bannerErr);
+                }
+
+                // 🛡️ 跨刷新一次性闸门：清完 cookie 刷新后本页还会再注入一次脚本，
+                //    没有这个标记会陷入「探测失败 → 清理 → 刷新」的死循环。
+                let alreadyHandled = false;
+                try {
+                    alreadyHandled = sessionStorage.getItem(WYH_DEAD_LOGIN_NOTICE_KEY) === '1';
+                    sessionStorage.setItem(WYH_DEAD_LOGIN_NOTICE_KEY, '1');
+                } catch (_) { /* sessionStorage 不可用则退化为原行为 */ }
+
+                if (alreadyHandled) {
+                    console.warn('[网易号发布] ⏭️ 本会话已处理过失效登录态，不再重复清理与刷新');
+                    return true;
+                }
+
+                // 🧹 关键一步：清掉被死 cookie 污染的本地"最新会话"缓存。
+                //    main.js 每次发布窗口关闭都会把窗口 session 写进
+                //    globalStorage['latest_session_wangyihao_<后台账号ID>'] 并盖上新时间戳，
+                //    下次发布优先用这份本地缓存而不是后台快照。死快照留在里面就会被反复复用，
+                //    表现就是"重新授权了也照样一打开就掉登录"。腾讯号在 main.js 里有对应的
+                //    判死清缓存逻辑，网易号没有，所以这里由脚本自己补上。
+                await purgeWangyihaoLatestSessionCache();
+
                 // 清理 163.com 域名的所有 cookies
                 if (window.browserAPI?.clearDomainCookies) {
                     const clearResult = await window.browserAPI.clearDomainCookies('163.com');
                     if (clearResult.success) {
                         console.log(`[网易号发布] ✅ 已清理 ${clearResult.deletedCount} 个旧 Cookies`);
 
-                        // 提示用户需要重新登录
-                        alert(
-                            '检测到登录状态已失效，已自动清理旧数据。\n\n' +
-                            '页面即将刷新，请重新登录。'
-                        );
-
                         // 延迟500ms后刷新页面，让浏览器有时间完成清理
                         setTimeout(() => {
                             window.location.reload();
                         }, 500);
 
-                        return; // 停止脚本执行
-                    } else {
-                        console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
+                        return true; // 停止脚本执行
                     }
-                } else {
-                    console.warn('[网易号发布] ⚠️ clearDomainCookies API 不可用，无法自动清理');
+                    console.error('[网易号发布] ❌ 清理 Cookies 失败:', clearResult.error);
+                    return true;
                 }
-            } else {
-                console.log('[网易号发布] ✅ 登录态有效，用户:', userInfoRes.data?.tname);
+                console.warn('[网易号发布] ⚠️ clearDomainCookies API 不可用，无法自动清理');
+                return true;
             }
+
+            console.log('[网易号发布] ✅ 登录态有效，用户:', userInfoRes.data?.tname);
+            return false;
         } catch (err) {
-            console.error('[网易号发布] ❌ 检测登录态失败:', err);
+            // 探测本身抛错（网络/Mixed Content）按未知处理，绝不清登录态
+            console.error('[网易号发布] ❌ 检测登录态失败（按未知处理，继续发布）:', err);
+            return false;
         }
-    })();
+    }
+
+    // ⚠️ 必须 await：早先这里是不带 await 的 IIFE，探测在发布流程跑起来之后才返回，
+    //    一旦判死就会在「正在发布中」把 cookie 清掉并刷新页面，发到一半直接被掀桌。
+    if (await checkAndCleanInvalidCookies()) {
+        console.error('[网易号发布] 🛑 服务端登录态已失效，中止本次发布流程');
+        return;
+    }
 
     // ===========================
     // 🔑 网易号白屏检测和自动恢复（使用公共函数）

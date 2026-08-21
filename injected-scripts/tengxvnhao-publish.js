@@ -54,10 +54,21 @@
 
     // ===========================
     // 🔑 腾讯号登录态检测（检测服务端是否认可当前 cookies）
+    //
+    // ⚠️ 本函数只做「检测 + 提示 + 中止发布」，绝不自己清 cookie / reload：
+    //    main.js 的 handleTengxunhaoLoginPageRecover 才是判死清理的正主，它在登录页
+    //    先用 hasValidLoginCookies() 确认本地还有 cookie，才会去清被死 token 污染的
+    //    latest_session 本地缓存（buildLatestSessionCacheKey）。如果这里提前把 qq.com
+    //    cookie 清光，main.js 那边 hasValidLoginCookies 为 false 会直接 return，
+    //    污染缓存留在本地且每次发布都被重新盖时间戳，永远比后台快照"新"而反复中选
+    //    —— 结果就是这次弹窗清了、下次发布照样掉登录。
+    // 返回 true 表示服务端判死，调用方必须中止后续发布流程。
     // ===========================
-    async function checkAndCleanInvalidCookies() {
+    const TXH_DEAD_LOGIN_NOTICE_KEY = '__txh_dead_login_notified__';
+
+    async function checkServerLoginState() {
         if (window.__TXH_LOGIN_CHECK_DONE__) {
-            return;
+            return false;
         }
         window.__TXH_LOGIN_CHECK_DONE__ = true;
 
@@ -100,31 +111,54 @@
                         msg: userInfoRes.msg,
                         url: window.location.href,
                         timestamp: Date.now(),
-                        reason: 'server-rejected-cookies'
+                        reason: 'server-rejected-cookies',
+                        action: 'abort-publish-and-delegate-cleanup-to-main'
                     }).catch(err => console.error('[腾讯号发布] writeDiagLog 失败:', err));
                 }
 
-                // 弹窗提示
-                alert('登录状态已失效，请重新授权腾讯号账号。\n\n可能原因：\n1. 授权时间过久，会话已过期\n2. 在其他地方重复授权，挤掉了当前登录\n3. 后台保存的登录信息已被腾讯服务端作废\n\n点击确定后将清除失效登录信息并刷新页面。');
-
-                // 清除 qq.com 域名的所有 cookies
-                if (window.browserAPI?.clearDomainCookies) {
-                    try {
-                        const clearResult = await window.browserAPI.clearDomainCookies('qq.com');
-                        console.log('[腾讯号发布] 🧹 已清除 qq.com cookies:', clearResult);
-                    } catch (clearErr) {
-                        console.error('[腾讯号发布] 清除 cookies 失败:', clearErr);
+                // 🚫 非阻塞提示：批量发布是无人值守的，alert() 会把渲染进程卡死等人点确定，
+                //    窗口悬死后整条发布任务卡住（历史上的"卡窗"事故就是这么来的）。
+                try {
+                    if (typeof window.showOperationBanner === 'function') {
+                        window.showOperationBanner('登录状态已失效，请重新授权腾讯号账号后再发布');
                     }
+                } catch (bannerErr) {
+                    console.warn('[腾讯号发布] ⚠️ 横幅提示失败:', bannerErr?.message || bannerErr);
                 }
 
-                // 刷新页面
-                window.location.reload();
-                return;
+                // 🧹 清理交给 main.js：这里不清 cookie、不 reload。
+                //    main.js 的 handleTengxunhaoLoginPageRecover 只在「腾讯登录页」上触发，
+                //    且要求本地 cookie 还在（hasValidLoginCookies）才会去清被死 token 污染的
+                //    latest_session 缓存。所以这里主动把窗口导到登录页把接力棒交出去，
+                //    不能干等 SPA 自己跳（它可能只在页面内显示未登录而不换 URL，
+                //    那样清理永远不触发，下次发布又复用同一份死快照）。
+                let alreadyHandled = false;
+                try {
+                    alreadyHandled = !!sessionStorage.getItem(TXH_DEAD_LOGIN_NOTICE_KEY);
+                    sessionStorage.setItem(TXH_DEAD_LOGIN_NOTICE_KEY, String(Date.now()));
+                } catch (_) { /* sessionStorage 不可用则退化为不导航 */ }
+
+                if (alreadyHandled) {
+                    console.warn('[腾讯号发布] ⏭️ 本会话已移交过判死清理，不再重复导航');
+                    return true;
+                }
+
+                try {
+                    console.warn('[腾讯号发布] 🔁 导航到腾讯登录页，移交 main.js 完成判死清理');
+                    window.location.href = 'https://om.qq.com/userAuth/index';
+                } catch (navErr) {
+                    console.warn('[腾讯号发布] ⚠️ 导航登录页失败，等待服务端自行打回:', navErr?.message || navErr);
+                }
+
+                return true;
             }
 
             console.log('[腾讯号发布] ✅ 服务端登录态有效，code:', userInfoRes.code);
+            return false;
         } catch (error) {
-            console.error('[腾讯号发布] ⚠️ 登录态检测异常:', error);
+            // ⚠️ 探测异常（网络抖动 / 非 JSON 响应）一律按"未知"处理，绝不因此中止发布或清登录态，
+            //    否则一次网络抖动就会把好账号误判成掉登录。
+            console.error('[腾讯号发布] ⚠️ 登录态检测异常（按未知处理，继续发布）:', error);
 
             // 写入异常日志
             if (window.browserAPI?.writeDiagLog) {
@@ -136,10 +170,14 @@
                 }).catch(err => console.error('[腾讯号发布] writeDiagLog 失败:', err));
             }
         }
+        return false;
     }
 
-    // 立即执行登录态检测
-    await checkAndCleanInvalidCookies();
+    // 立即执行登录态检测：服务端判死就中止发布，避免往死 session 里灌内容
+    if (await checkServerLoginState()) {
+        console.error('[腾讯号发布] 🛑 服务端登录态已失效，中止本次发布流程，等待 main.js 完成判死清理');
+        return;
+    }
 
     // ===========================
     // 🔑 腾讯号白屏检测和自动恢复（使用公共函数）
