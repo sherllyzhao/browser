@@ -79,7 +79,7 @@ const DOMAINS = {
     authRedirect:      'account.china9.cn',
 
     // 远程脚本 baseUrl
-    remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/',
+    remoteScriptsBase: 'https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/v2/',
     //remoteScriptsBase: 'http://localhost:5173/injected-scripts/',
 
     // 统计接口特殊域名映射
