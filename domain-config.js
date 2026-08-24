@@ -314,6 +314,39 @@ const platformLoginCookies = {
   zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
 
+// 🔐 平台「会话凭证」Cookie 名称（严格口径，只列登出后一定会被平台清掉的会话 token）
+// 与 platformLoginCookies 的区别：
+//   platformLoginCookies 是宽口径「相关名单」，里面混着登出后仍残留的身份/设备 cookie
+//   （如抖音/头条 uid_tt、网易 P_INFO、微信/视频号 wxuin、腾讯 uin、知乎 d_c0/_xsrf）。
+//   用宽名单做「是否登录」判定会出现假阳性：登出态被判成已登录 →
+//     ①窗口关闭时把死快照回存后台，覆盖刚授权的好快照（毒化）
+//     ②打开发布窗口时判定「本地已登录」跳过后台快照恢复 → 页面直接跳登录页
+//   搜狐（ppmdig 残留）和腾讯（userid 残留）历史上已各自特化处理，这里把同一口径推广到全平台。
+// 用法：判断「这份 cookies 是否代表活着的登录态」一律用此表，命中任一即视为有登录凭证；
+//      平台未在此表登记时自动退回 platformLoginCookies（保持旧行为，不新增风险）。
+const platformSessionCredentialCookies = {
+  // 抖音/头条：sessionid 系为服务端会话；uid_tt/uid_tt_ss/passport_csrf_token 登出后仍在，排除
+  douyin: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'],
+  toutiao: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'],
+  // 小红书：web_session 是唯一会话凭证；websectiga/sec_poison_id 是风控埋点，登出仍在，排除
+  xiaohongshu: ['web_session'],
+  // 微信公众号/视频号：pass_ticket/wxsid 随登录下发；wxuin 登出后残留，排除
+  weixin: ['pass_ticket', 'wxsid'],
+  shipinhao: ['sessionid', 'pass_ticket', 'wxsid'],
+  // 百家号：BDUSS/STOKEN 登出即清（本平台历史上没出过掉登录，口径与宽名单一致）
+  baijiahao: ['BDUSS', 'STOKEN'],
+  // 网易号：NTES_YD_SESS/NTESwebSI/S_INFO 随登录下发；P_INFO 是账号身份，登出后残留，排除
+  wangyihao: ['NTES_YD_SESS', 'NTESwebSI', 'S_INFO'],
+  // 搜狐号：main.js 侧另有严格组合判定（sct 或 ppinf+pprdig），此处仅作兜底，绝不含 ppmdig
+  sohuhao: ['sct', 'ppinf', 'pprdig'],
+  // 腾讯号：om* token 才是会话；userid/uin/p_uin 是 QQ 记住的账号号码，登出后残留，排除
+  tengxunhao: ['omaccesstoken', 'omtoken', 'sraccesstoken', 'skey', 'p_skey'],
+  // 新浪号：SUB/SUBP/SCF/SSOLoginState 登出即清
+  xinlang: ['SUB', 'SUBP', 'SCF', 'SSOLoginState'],
+  // 知乎：z_c0 是账号凭证；d_c0（设备指纹）/_xsrf（CSRF）未登录也有，排除
+  zhihu: ['z_c0']
+};
+
 // 平台短名称到长名称的映射
 const platformNameMap = {
   'dy': 'douyin',
@@ -394,6 +427,7 @@ if (typeof module !== 'undefined' && module.exports) {
     platformDomains,
     platformLoginCookies,
     platformIdentityCookies,
+    platformSessionCredentialCookies,
     platformNameMap,
     platformIdMap,
     platformPublishUrls,
@@ -424,6 +458,7 @@ if (typeof window !== 'undefined') {
     platformDomains,
     platformLoginCookies,
     platformIdentityCookies,
+    platformSessionCredentialCookies,
     platformNameMap,
     platformIdMap,
     platformPublishUrls,

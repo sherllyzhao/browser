@@ -65,6 +65,22 @@ const FIX_TOUTIAO_COVER_RETRY = true;
 // expectedPageUrl（内容管理 URL）；接力成功后轻量回写活 cookie 到 latest_session 缓存
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：仅发布窗口受保护）
 const FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER = true;
+// 【特性开关】2026-08-24 全平台「授权成功后发布窗口打开就跳登录」：登录态判定用的是宽口径
+// platformLoginCookies，里面混着登出后仍残留的身份/设备 cookie（抖音/头条 uid_tt、网易 P_INFO、
+// 微信/视频号 wxuin、腾讯 uin/userid、知乎 d_c0/_xsrf、小红书 websectiga）。"任一命中即已登录"
+// 于是登出态被判成已登录，同一个假阳性同时毒化三条链路：
+//   ①关窗回存：死快照通过 collectWindowSessionSaveContext 的守卫，POST 覆盖后台刚授权的好快照
+//   ②本地缓存：死快照写入 latest_session_ 且时间戳最新，之后永远赢过后台快照
+//   ③打开发布窗口：hasValidLoginCookies 判本地"已登录"→ shouldSkipSessionRestore 跳过后台恢复
+//     → 死 session 直接打开 → 服务端打回登录页（正是用户反馈的现象）
+// 搜狐（ppmdig 残留）和腾讯（userid 残留）历史上已各自特化，本修复把严格凭证口径推广到全平台：
+// 修法：domain-config.js 新增 platformSessionCredentialCookies（严格口径，只列登出必清的会话 token），
+//   hasValidLoginCookies / sessionDataHasValidLoginCookies / 关窗回存守卫 三处统一改用严格口径；
+//   守卫判死时顺手清掉该账号的 latest_session_ 缓存（原本只有腾讯有）；
+//   会话仲裁新增「后台有真凭证而本地缓存没有 → 必用后台」前置规则，防死缓存靠时间戳赢过新授权。
+// 未在严格表登记的平台自动退回宽名单，行为不变。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：宽口径判定 + 无判死清缓存）
+const FIX_STRICT_LOGIN_CREDENTIAL_GUARD = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -1939,6 +1955,41 @@ function hasRequiredSohuhaoCredentialCookies(cookies = []) {
   };
 }
 
+// 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：严格会话凭证口径
+// 宽口径 platformLoginCookies 里混着登出后仍残留的身份/设备 cookie（uid_tt / P_INFO / wxuin /
+// uin / d_c0 / _xsrf 等），"任一命中即已登录"会把登出态判成已登录，进而毒化回存与恢复两条链路。
+// 这里改用 platformSessionCredentialCookies（只列登出必清的会话 token）做判定。
+// 平台未在严格表登记时返回宽名单，行为与修复前一致（不新增风险）。
+function getSessionCredentialCookieNames(platform) {
+  const normalizedPlatform = normalizePlatformName(platform);
+  const wideNames = (config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform]) || [];
+  if (!FIX_STRICT_LOGIN_CREDENTIAL_GUARD) {
+    return { names: wideNames, strict: false };
+  }
+  const strictNames = (config.platformSessionCredentialCookies && config.platformSessionCredentialCookies[normalizedPlatform]) || [];
+  if (Array.isArray(strictNames) && strictNames.length > 0) {
+    return { names: strictNames, strict: true };
+  }
+  return { names: wideNames, strict: false };
+}
+
+// 判断一组 cookies 是否含「活着的登录凭证」（严格口径）
+// 返回 { valid, strict, names, foundNames }；names 为本次采用的判定名单，便于日志定位
+function hasSessionCredentialCookies(cookies = [], platform = '') {
+  const { names, strict } = getSessionCredentialCookieNames(platform);
+  if (!Array.isArray(names) || names.length === 0) {
+    return { valid: false, strict, names: [], foundNames: [] };
+  }
+  const nameSet = new Set(names);
+  const foundNames = [];
+  for (const cookie of (cookies || [])) {
+    if (cookie && cookie.value && nameSet.has(cookie.name) && !foundNames.includes(cookie.name)) {
+      foundNames.push(cookie.name);
+    }
+  }
+  return { valid: foundNames.length > 0, strict, names, foundNames };
+}
+
 function getCookieRestoreExpirationDate(cookie, fallbackSeconds = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60) {
   const expirationDate = Number(cookie && cookie.expirationDate);
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -1993,6 +2044,18 @@ async function hasValidLoginCookies(windowSession, platform) {
       return false;
     }
     const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
+    // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：改用严格会话凭证口径，避免登出残留的身份/设备 cookie
+    // （uid_tt / P_INFO / wxuin / d_c0 等）把登出态误判为已登录 → 跳过后台快照恢复 → 打开即跳登录页
+    const credential = hasSessionCredentialCookies(cookies, normalizedPlatform);
+    if (credential.valid) {
+      console.log(`[hasValidLoginCookies] ✅ 本地 session 已登录（命中${credential.strict ? '严格' : ''}凭证: ${credential.foundNames.join(', ')}）, platform=${normalizedPlatform}`);
+      return true;
+    }
+    if (credential.strict) {
+      const residualNames = loginCookieNames.filter(name => cookieNames.has(name));
+      console.log(`[hasValidLoginCookies] ⚠️ 本地 session 无有效会话凭证, platform=${normalizedPlatform}, 需要任一: [${credential.names.join(', ')}], 残留的宽口径 cookie: [${residualNames.join(', ') || '无'}]`);
+      return false;
+    }
     const hit = loginCookieNames.find(name => cookieNames.has(name));
     if (hit) {
       console.log(`[hasValidLoginCookies] ✅ 本地 session 已登录（命中 cookie: ${hit}）, platform=${normalizedPlatform}`);
@@ -2034,6 +2097,18 @@ function sessionDataHasValidLoginCookies(sessionData, platform) {
     return false;
   }
   const cookieNames = new Set(cookies.filter(c => c && c.value).map(c => c.name));
+  // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：同 hasValidLoginCookies，后台快照也用严格口径判定，
+  // 否则一份只剩身份 cookie 的死快照会被判成"含登录凭证"，被恢复进窗口后直接跳登录页
+  const credential = hasSessionCredentialCookies(cookies, normalizedPlatform);
+  if (credential.valid) {
+    console.log(`[sessionDataHasValidLoginCookies] ✅ sessionData 含${credential.strict ? '严格' : ''}登录凭证（命中: ${credential.foundNames.join(', ')}）, platform=${normalizedPlatform}`);
+    return true;
+  }
+  if (credential.strict) {
+    const residualNames = loginCookieNames.filter(name => cookieNames.has(name));
+    console.log(`[sessionDataHasValidLoginCookies] ⚠️ sessionData 无有效会话凭证, platform=${normalizedPlatform}, 需要任一: [${credential.names.join(', ')}], 残留的宽口径 cookie: [${residualNames.join(', ') || '无'}]`);
+    return false;
+  }
   const hit = loginCookieNames.find(name => cookieNames.has(name));
   if (hit) {
     console.log(`[sessionDataHasValidLoginCookies] ✅ sessionData 含登录凭证（命中 cookie: ${hit}）, platform=${normalizedPlatform}`);
@@ -3645,6 +3720,30 @@ function buildEffectiveSessionRestoreData(cachedSessionData, incomingSessionData
       };
     }
     console.log('[Window Manager] ⚠️ 网易号专属逻辑：incoming 和 cached 都没有 cookies，继续执行通用逻辑');
+  }
+
+  // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：后台快照有活凭证、本地缓存没有 → 必须用后台。
+  // 否则死缓存靠"时间戳更新"（每次关窗都会被重新盖时间戳）永远赢过刚授权的后台快照，
+  // 表现为"刚授权完打开发布窗口就跳登录，重新授权也没用"。
+  // 位置说明：必须放在腾讯/搜狐/网易三个平台特化分支之后 —— 那三家各有更细的仲裁口径
+  // （尤其网易的"仅恢复 cookies 不恢复旧草稿 localStorage"，抢在它前面会让草稿冲突修复失效）。
+  // 只在「本地缓存缺凭证而后台有」这一种情况下强制改判，其余全部走原有仲裁逻辑。
+  if (FIX_STRICT_LOGIN_CREDENTIAL_GUARD && !['sohuhao', 'tengxunhao', 'wangyihao'].includes(normalizedPlatform)) {
+    const incomingCredential = hasSessionCredentialCookies(incomingCookies, normalizedPlatform);
+    const cachedCredential = hasSessionCredentialCookies(cachedCookies, normalizedPlatform);
+    if (incomingCredential.valid && !cachedCredential.valid && cachedCookies.length > 0) {
+      console.log('[Window Manager] 🔄 后台会话含有效登录凭证而本地缓存已失效，强制使用后台会话', {
+        platform: normalizedPlatform,
+        incomingFoundNames: incomingCredential.foundNames,
+        cachedCookieCount: cachedCookies.length,
+        cachedTimestamp,
+        incomingTimestamp
+      });
+      return {
+        sessionData: incomingSessionData,
+        source: 'incoming-session-live-credentials'
+      };
+    }
   }
 
   if (!cachedHasStorage && incomingHasStorage) {
@@ -10196,6 +10295,15 @@ function createWindow() {
         } catch (diagErr) {
           console.warn('[SessionDiag] 登录页弹跳日志失败:', diagErr.message);
         }
+        // 🧹 被打回登录页且窗口已无有效凭证 → 清掉死掉的本地会话缓存（全平台通用）
+        try {
+          const bouncePlatform = (config.platformNameMap && config.platformNameMap[
+            (windowAccountMap.get(windowId)?.platform) || (getWindowPublishData(windowId)?.platform)
+          ]) || (windowAccountMap.get(windowId)?.platform) || (getWindowPublishData(windowId)?.platform) || null;
+          await purgeDeadLatestSessionCacheOnLoginBounce(newWindow, windowId, bouncePlatform, 'bounced-to-login:did-create-window');
+        } catch (purgeErr) {
+          console.warn('[SessionDiag] 登录页弹跳清缓存失败:', purgeErr.message);
+        }
       }
 
       if (!prevWasLogin || currIsLogin) return;
@@ -10371,17 +10479,29 @@ function createWindow() {
             || publishDataForSave?.platform
             || null;
           let hasRealLogin = true;
-          if (targetPlatform === 'shipinhao' && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+          // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：关窗前登录态预检放开到全平台（原先只有视频号）
+          const normalizedTargetPlatform = normalizePlatformName(targetPlatform);
+          const shouldPrecheckLoginBeforeClose = FIX_STRICT_LOGIN_CREDENTIAL_GUARD
+            ? !!normalizedTargetPlatform
+            : targetPlatform === 'shipinhao';
+          if (shouldPrecheckLoginBeforeClose && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
             try {
               hasRealLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
             } catch (loginCheckErr) {
               hasRealLogin = false;
-              console.warn('[did-create-window] ⚠️ 关闭前视频号登录态预检异常:', loginCheckErr.message);
+              console.warn(`[did-create-window] ⚠️ 关闭前 ${normalizedTargetPlatform || '未知平台'} 登录态预检异常:`, loginCheckErr.message);
             }
           }
 
-          if (targetPlatform === 'shipinhao' && !hasRealLogin) {
-            console.log('[did-create-window] 🚫 视频号发布窗口关闭前未检测到真实登录态，跳过保存接口调用');
+          if (shouldPrecheckLoginBeforeClose && !hasRealLogin) {
+            console.log(`[did-create-window] 🚫 ${normalizedTargetPlatform || '未知平台'} 发布窗口关闭前未检测到真实登录态，跳过保存接口调用`);
+            try {
+              const closeBackendAccountId = normalizeAccountIdValue(accountInfo?.accountId)
+                || getPublishBackendAccountId(publishDataForSave);
+              purgeLatestSessionCacheForAccount(normalizedTargetPlatform, closeBackendAccountId, 'close-logged-out');
+            } catch (purgeErr) {
+              console.warn('[did-create-window] ⚠️ 关窗判死清缓存异常:', purgeErr.message);
+            }
             await persistWindowSessionBeforeClose(newWindow, `did-create-window:${windowId}:close-skip-login`);
             isSavingSession = false;
             newWindow.destroy();
@@ -15276,6 +15396,15 @@ async function openManagedChildWindowInternal(url, options = {}) {
         } catch (diagErr) {
           console.warn('[SessionDiag] 登录页弹跳日志失败:', diagErr.message);
         }
+        // 🧹 被打回登录页且窗口已无有效凭证 → 清掉死掉的本地会话缓存（全平台通用）
+        try {
+          const bouncePlatform = (config.platformNameMap && config.platformNameMap[
+            (windowAccountMap.get(windowId)?.platform) || (getWindowPublishData(windowId)?.platform)
+          ]) || (windowAccountMap.get(windowId)?.platform) || (getWindowPublishData(windowId)?.platform) || null;
+          await purgeDeadLatestSessionCacheOnLoginBounce(newWindow, windowId, bouncePlatform, 'bounced-to-login:managed-window');
+        } catch (purgeErr) {
+          console.warn('[SessionDiag] 登录页弹跳清缓存失败:', purgeErr.message);
+        }
       }
 
       if (!prevWasLogin || currIsLogin) return;
@@ -15476,7 +15605,14 @@ async function openManagedChildWindowInternal(url, options = {}) {
             || null;
           const normalizedTargetPlatform = normalizePlatformName(targetPlatform);
           let hasRealLogin = true;
-          if (['shipinhao', 'sohuhao'].includes(normalizedTargetPlatform) && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
+          // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：关窗前登录态预检从「仅视频号/搜狐」放开到全平台。
+          // 关键漏洞：脚本侧保存（runPublishSaveSessionScript，10 个平台都走）不经过
+          // collectWindowSessionSaveContext 的守卫，登出态关窗时脚本照样把死 cookies 上报后台，
+          // 把刚授权的好快照覆盖掉——守卫只挡住了主进程兜底那一条路，脚本这条路一直是敞开的。
+          const shouldPrecheckLoginBeforeClose = FIX_STRICT_LOGIN_CREDENTIAL_GUARD
+            ? !!normalizedTargetPlatform
+            : ['shipinhao', 'sohuhao'].includes(normalizedTargetPlatform);
+          if (shouldPrecheckLoginBeforeClose && newWindow.webContents && !newWindow.webContents.isDestroyed()) {
             try {
               hasRealLogin = await hasValidLoginCookies(newWindow.webContents.session, targetPlatform);
             } catch (loginCheckErr) {
@@ -15485,8 +15621,16 @@ async function openManagedChildWindowInternal(url, options = {}) {
             }
           }
 
-          if (['shipinhao', 'sohuhao'].includes(normalizedTargetPlatform) && !hasRealLogin) {
+          if (shouldPrecheckLoginBeforeClose && !hasRealLogin) {
             console.log(`[Window Manager] 🚫 ${normalizedTargetPlatform} 发布窗口关闭前未检测到真实登录态，跳过脚本保存和后台保存`);
+            // 🧹 死快照对应的本地会话缓存一并清掉，否则下次打开发布窗口它还会靠时间戳中选
+            try {
+              const closeBackendAccountId = normalizeAccountIdValue(accountInfo?.accountId)
+                || getPublishBackendAccountId(publishDataForSave);
+              purgeLatestSessionCacheForAccount(normalizedTargetPlatform, closeBackendAccountId, 'close-logged-out');
+            } catch (purgeErr) {
+              console.warn('[Window Manager] ⚠️ 关窗判死清缓存异常:', purgeErr.message);
+            }
             await persistWindowSessionBeforeClose(newWindow, `Window Manager:${windowId}:close-skip-login`);
             isSavingSession = false;
             newWindow.destroy();
@@ -17338,6 +17482,82 @@ function getLatestSessionCache(platform, backendAccountId) {
 
 const SHIPINHAO_SAVE_DEDUP_COOKIE_NAMES = new Set(['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']);
 
+// 🧹 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：判死时清掉该账号的本地最新会话缓存（全平台通用）
+// 死快照的 latest_session_ 缓存每次关窗都会被重新盖时间戳，不清就永远比后台快照"新"而反复中选，
+// 形成"重新授权也救不回来"的循环。原先只有腾讯号在服务端判死时清，这里推广到全平台判死路径。
+function purgeLatestSessionCacheForAccount(platform, backendAccountId, reason = 'dead-session') {
+  if (!FIX_STRICT_LOGIN_CREDENTIAL_GUARD) {
+    return { removed: false, skipReason: 'feature-disabled' };
+  }
+  const targetAccountId = normalizeAccountIdValue(backendAccountId);
+  if (!targetAccountId) {
+    return { removed: false, skipReason: 'missing-account' };
+  }
+  const cacheKeys = [...new Set([
+    buildLatestSessionCacheKey(String(platform || ''), targetAccountId),
+    buildLatestSessionCacheKey(normalizePlatformName(platform), targetAccountId)
+  ])].filter(Boolean);
+
+  const removedKeys = [];
+  for (const cacheKey of cacheKeys) {
+    if (globalStorage[cacheKey]) {
+      delete globalStorage[cacheKey];
+      removedKeys.push(cacheKey);
+    }
+  }
+  if (removedKeys.length === 0) {
+    return { removed: false, skipReason: 'cache-not-found', cacheKeys };
+  }
+  try {
+    saveGlobalStorage();
+  } catch (saveErr) {
+    console.warn('[Save Session] ⚠️ 清除本地会话缓存后持久化失败:', saveErr.message);
+  }
+  console.warn(`[Save Session] 🧹 已清除被死登录态污染的本地会话缓存 (${reason}): ${removedKeys.join(', ')}`);
+  return { removed: true, reason, cacheKeys: removedKeys };
+}
+
+// 🧹 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：业务页被服务端打回登录页 = 该账号快照已死（全平台通用）。
+// 此刻窗口 session 若已无有效会话凭证，本地 latest_session_ 缓存必然也是死的（它就是它的来源），
+// 留着会在下次打开发布窗口时靠"时间戳更新"再次中选，形成"重新授权也没用"的循环。
+// 原先只有腾讯号在服务端探测判死时清缓存，搜狐/网易靠各自脚本清，其余 7 个平台完全没有保护。
+// 谨慎条件：只有窗口 session 确实缺凭证才清（避免登录态正常的 SPA 顺路访问登录路由被误清）。
+async function purgeDeadLatestSessionCacheOnLoginBounce(targetWindow, windowId, platform, reason = 'bounced-to-login') {
+  if (!FIX_STRICT_LOGIN_CREDENTIAL_GUARD) {
+    return { removed: false, skipReason: 'feature-disabled' };
+  }
+  const normalizedPlatform = normalizePlatformName(platform);
+  if (!normalizedPlatform) {
+    return { removed: false, skipReason: 'missing-platform' };
+  }
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { removed: false, skipReason: 'window-destroyed' };
+  }
+  try {
+    const accountInfo = windowAccountMap.get(windowId) || null;
+    const publishData = getWindowPublishData(windowId);
+    const backendAccountId = normalizeAccountIdValue(accountInfo?.accountId)
+      || getPublishBackendAccountId(publishData);
+    if (!backendAccountId) {
+      return { removed: false, skipReason: 'missing-account' };
+    }
+
+    const windowCookies = await targetWindow.webContents.session.cookies.get({});
+    const stillLoggedIn = normalizedPlatform === 'sohuhao'
+      ? hasRequiredSohuhaoCredentialCookies(windowCookies).valid
+      : hasSessionCredentialCookies(windowCookies, normalizedPlatform).valid;
+    if (stillLoggedIn) {
+      return { removed: false, skipReason: 'window-still-logged-in' };
+    }
+
+    return purgeLatestSessionCacheForAccount(normalizedPlatform, backendAccountId, reason);
+  } catch (err) {
+    console.warn('[Save Session] ⚠️ 登录页弹跳清缓存异常:', err.message);
+    return { removed: false, skipReason: 'error', error: err.message };
+  }
+}
+
+
 function normalizeCookieDomainForSave(domain) {
   return String(domain || '').toLowerCase().replace(/^\./, '');
 }
@@ -17958,16 +18178,26 @@ async function collectWindowSessionSaveContext(targetWindow, windowId) {
     const sohuSaveCredential = hasRequiredSohuhaoCredentialCookies(platformCookies);
     if (!sohuSaveCredential.valid) {
       console.warn(`[Save Session] 🛡️ 搜狐号窗口 session 缺少真实会话凭证（找到: ${sohuSaveCredential.summary.foundNames.join(', ') || '无'}，需要 sct 或 ppinf+pprdig），判定为登出状态，跳过保存，避免死 cookies 覆盖后台/本地缓存 (accountId=${accountInfo.accountId})`);
+      purgeLatestSessionCacheForAccount(accountInfo.platform, backendAccountId, 'sohuhao-window-logged-out');
       return { success: false, error: '窗口登录态无效，跳过保存防止污染' };
     }
   } else {
+    // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：改用严格会话凭证口径。
+    // 旧逻辑用宽名单"任一命中即算已登录"，而 uid_tt / P_INFO / wxuin / uin / d_c0 等在登出后仍残留，
+    // 于是登出态窗口照样通过守卫，把死快照 POST 覆盖后台刚授权的好快照 + 写进本地缓存（时间戳最新），
+    // 形成"重新授权也救不回来"的毒化循环。命中假阳性的正是除知乎/百家号之外的全部平台。
+    const saveCredential = hasSessionCredentialCookies(platformCookies, saveGuardPlatform);
     const saveGuardLoginNames = (config.platformLoginCookies && config.platformLoginCookies[saveGuardPlatform]) || [];
-    if (saveGuardLoginNames.length > 0) {
-      const hasLoginCredential = platformCookies.some(cookie => cookie.value && saveGuardLoginNames.includes(cookie.name));
-      if (!hasLoginCredential) {
-        console.warn(`[Save Session] 🛡️ 窗口 session 缺少登录凭证 cookie（期望任一: ${saveGuardLoginNames.join(', ')}），判定为登出状态，跳过保存，避免死 cookies 覆盖后台/本地缓存 (platform=${accountInfo.platform}, accountId=${accountInfo.accountId})`);
+    if (saveCredential.names.length > 0) {
+      if (!saveCredential.valid) {
+        const residualNames = platformCookies
+          .filter(cookie => cookie.value && saveGuardLoginNames.includes(cookie.name))
+          .map(cookie => cookie.name);
+        console.warn(`[Save Session] 🛡️ 窗口 session 缺少${saveCredential.strict ? '有效会话凭证' : '登录凭证 cookie'}（期望任一: ${saveCredential.names.join(', ')}；仅剩登出后残留的身份/设备 cookie: ${[...new Set(residualNames)].join(', ') || '无'}），判定为登出状态，跳过保存，避免死 cookies 覆盖后台/本地缓存 (platform=${accountInfo.platform}, accountId=${accountInfo.accountId})`);
+        purgeLatestSessionCacheForAccount(accountInfo.platform, backendAccountId, 'window-logged-out');
         return { success: false, error: '窗口登录态无效，跳过保存防止污染' };
       }
+      console.log(`[Save Session] ✅ 窗口 session 含${saveCredential.strict ? '严格' : ''}登录凭证: ${saveCredential.foundNames.join(', ')}`);
     }
   }
 

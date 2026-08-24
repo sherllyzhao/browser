@@ -36,7 +36,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.9',
+        version: '1.2.10',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
@@ -51,7 +51,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
       FIX_SOHU_AUTH_IDENTITY_BINDING: {
         enabled: true,
-        version: '1.2.9',
+        version: '1.2.10',
         risk: 'medium',
         files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
         description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
@@ -65,10 +65,31 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
       FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
         enabled: true,
-        version: '1.2.9',
+        version: '1.2.10',
         risk: 'low',
         files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
         description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'
+      },
+
+      // 【修复】2026-08-24 全平台"授权成功后发布窗口打开就跳登录"（除知乎/百家号外全中）
+      // 根因：登录态判定用宽口径 platformLoginCookies，里面混着登出后仍残留的身份/设备 cookie
+      //       （抖音/头条 uid_tt、网易 P_INFO、微信/视频号 wxuin、腾讯 uin/userid、知乎 d_c0/_xsrf、
+      //       小红书 websectiga），"任一命中即已登录"把登出态判成已登录，同一假阳性毒化三条链路：
+      //       ①关窗回存把死快照 POST 覆盖后台刚授权的好快照 ②死快照写进 latest_session_ 且时间戳最新，
+      //       之后永远赢过后台快照 ③打开发布窗口时判本地"已登录"→跳过后台恢复→死 session 直接打开→被打回登录页
+      //       另有独立漏洞：关窗时脚本侧保存（10 平台都走）不经过主进程守卫，登出态照样上报
+      // 修复：新增 platformSessionCredentialCookies 严格名单（只列登出必清的会话 token），
+      //       主进程三处判定统一改严格口径；关窗前登录态预检从"仅视频号/搜狐"放开到全平台；
+      //       判死时清掉该账号 latest_session_ 缓存（原先只有腾讯有）；
+      //       会话仲裁新增"后台有真凭证而本地缓存没有→必用后台"前置规则
+      // 风险：严格名单若漏列某平台真实凭证，该平台会跳过回存（后台保留上一份好快照，不会掉登录，
+      //       但窗口内刷新的 token 不落库）；未登记平台自动退回宽名单，行为不变
+      FIX_STRICT_LOGIN_CREDENTIAL_GUARD: {
+        enabled: true,
+        version: '1.2.10',
+        risk: 'high',
+        files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount'],
+        description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存'
       },
 
       // 【预留】未来的修复/功能添加在下方
