@@ -3616,10 +3616,11 @@ if (typeof window.uploadVideo === "function"
             const taskToken = resolveStatisticsTaskToken(options.taskToken);
             const scopeKey = getStatisticsTaskScopeKey(normalizedPublishId, taskToken);
             const url = await getStatisticsUrl(false);
-            if (window.isGeoStatisticsReport(url)) {
-                console.log(`[${platform || "发布"}] ℹ️ GEO 系统跳过「点击即上报成功」，避免重复记录`);
-                return { success: true, skipped: true, reason: "geo-skip-optimistic" };
-            }
+            // 🔴 GEO 系统不再跳过延迟乐观上报 —— 与普通系统行为一致，都走延迟 + 去重锁
+            // if (window.isGeoStatisticsReport(url)) {
+            //     console.log(`[${platform || "发布"}] ℹ️ GEO 系统跳过「点击即上报成功」，避免重复记录`);
+            //     return { success: true, skipped: true, reason: "geo-skip-optimistic" };
+            // }
             if (scopeKey && optimisticPendingReports.has(scopeKey)) {
                 return { success: true, skipped: true, reason: "optimistic-already-pending" };
             }

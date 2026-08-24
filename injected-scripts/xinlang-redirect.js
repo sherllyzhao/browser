@@ -23,6 +23,35 @@
     }
     window.__XINLANG_REDIRECT_LOADED__ = true;
 
+    // 🛡️ 乒乓循环熔断器：检测 weibo.com ↔ 新浪创作后台之间的往返次数
+    // 场景：账号本地有残留 cookie 但服务端已失效 → 新浪踢回首页 → 脚本又跳回 → 死循环
+    // 用 sessionStorage 跨页面刷新计数，超过阈值就停止跳转并提示用户
+    const PING_PONG_KEY = 'xinlang_redirect_ping_pong_count';
+    const PING_PONG_THRESHOLD = 3;
+    let pingPongCount = 0;
+    try {
+        pingPongCount = parseInt(sessionStorage.getItem(PING_PONG_KEY) || '0', 10);
+    } catch (e) {
+        console.warn('[新浪重定向] ⚠️ 读取乒乓计数失败:', e.message);
+    }
+
+    if (pingPongCount >= PING_PONG_THRESHOLD) {
+        console.error('[新浪重定向] 🛑 检测到循环跳转（已尝试', pingPongCount, '次），停止自动跳转');
+        console.error('[新浪重定向] 💡 可能原因：账号登录态已失效，请手动重新登录');
+
+        // 清空计数，避免永久卡死（用户刷新或关窗重开后可重试）
+        try {
+            sessionStorage.removeItem(PING_PONG_KEY);
+        } catch (e) {}
+
+        // 显示提示横幅
+        if (typeof showOperationBanner === 'function') {
+            showOperationBanner('⚠️ 检测到登录态异常，已停止自动跳转。请手动扫码登录或联系管理员。', 0);
+        }
+
+        return; // 停止脚本执行
+    }
+
     console.log('═══════════════════════════════════════');
     console.log('✅ 新浪重定向脚本已注入');
     console.log('📍 当前 URL:', window.location.href);
@@ -152,6 +181,14 @@
         targetUrl = publishUrl;
         targetLabel = '发布页';
         scenario = '已登录且有发布恢复数据';
+    }
+
+    // 🔢 跳转前递增乒乓计数
+    try {
+        sessionStorage.setItem(PING_PONG_KEY, String(pingPongCount + 1));
+        console.log('[新浪重定向] 🔢 乒乓计数:', pingPongCount, '→', pingPongCount + 1);
+    } catch (e) {
+        console.warn('[新浪重定向] ⚠️ 写入乒乓计数失败:', e.message);
     }
 
     console.log(`[新浪重定向] 🚀 检测到${scenario}场景，重定向到${targetLabel}:`, targetUrl);
