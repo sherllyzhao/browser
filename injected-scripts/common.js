@@ -36,7 +36,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.10',
+        version: '1.2.11',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
@@ -51,7 +51,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
       FIX_SOHU_AUTH_IDENTITY_BINDING: {
         enabled: true,
-        version: '1.2.10',
+        version: '1.2.11',
         risk: 'medium',
         files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
         description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
@@ -65,7 +65,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
       FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
         enabled: true,
-        version: '1.2.10',
+        version: '1.2.11',
         risk: 'low',
         files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
         description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'
@@ -91,7 +91,7 @@ if (typeof window.uploadVideo === "function"
       //       但窗口内刷新的 token 不落库）；未登记平台自动退回宽名单，行为不变
       FIX_STRICT_LOGIN_CREDENTIAL_GUARD: {
         enabled: true,
-        version: '1.2.10',
+        version: '1.2.11',
         risk: 'high',
         files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:cookiesHaveLiveLoginCredential', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount', 'main.js:ipc check-session-status', 'main.js:ipc check-account-login-status'],
         description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存 + 前端查登录态 IPC 同步收严并扩到全平台'
