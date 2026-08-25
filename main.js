@@ -1990,6 +1990,24 @@ function hasSessionCredentialCookies(cookies = [], platform = '') {
   return { valid: foundNames.length > 0, strict, names, foundNames };
 }
 
+// 🔐 统一入口：给定一组 cookies，判断某平台「是否还有活着的登录凭证」
+// 腾讯号/搜狐号历史上各自有组合式严格判定（腾讯需 userid + om*token，搜狐需 sct 或 ppinf+pprdig
+// 且要剔除已过期凭证），走各自专用函数；其余平台走 platformSessionCredentialCookies 严格名单。
+// 用于所有「只有 cookies 数组、没有 session 对象」的判定场景，避免各处再手写宽名单。
+function cookiesHaveLiveLoginCredential(cookies = [], platform = '') {
+  const normalizedPlatform = normalizePlatformName(platform) || String(platform || '');
+  if (normalizedPlatform === 'tengxunhao') {
+    const txh = hasRequiredTengxunhaoCredentialCookies(cookies);
+    return { valid: !!txh.valid, strict: true, foundNames: (txh.summary && txh.summary.foundNames) || [] };
+  }
+  if (normalizedPlatform === 'sohuhao') {
+    const shh = hasRequiredSohuhaoCredentialCookies(cookies);
+    return { valid: !!shh.valid, strict: true, foundNames: (shh.summary && shh.summary.foundNames) || [] };
+  }
+  const credential = hasSessionCredentialCookies(cookies, normalizedPlatform);
+  return { valid: !!credential.valid, strict: !!credential.strict, foundNames: credential.foundNames || [] };
+}
+
 function getCookieRestoreExpirationDate(cookie, fallbackSeconds = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60) {
   const expirationDate = Number(cookie && cookie.expirationDate);
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -2019,8 +2037,10 @@ function buildCookieValueSignature(cookies = [], names = []) {
 async function hasValidLoginCookies(windowSession, platform) {
   if (!windowSession || !platform) return false;
   const normalizedPlatform = normalizePlatformName(platform);
-  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform];
-  if (!Array.isArray(loginCookieNames) || loginCookieNames.length === 0) {
+  const loginCookieNames = (config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform]) || [];
+  // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：早退守卫要同时看严格名单，
+  // 否则「只登记严格名单、漏登记宽名单」的新平台会在这里直接 return false，判定被静默跳过
+  if (loginCookieNames.length === 0 && getSessionCredentialCookieNames(normalizedPlatform).names.length === 0) {
     return false;
   }
   try {
@@ -2072,8 +2092,9 @@ async function hasValidLoginCookies(windowSession, platform) {
 function sessionDataHasValidLoginCookies(sessionData, platform) {
   if (!platform) return false;
   const normalizedPlatform = normalizePlatformName(platform);
-  const loginCookieNames = config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform];
-  if (!Array.isArray(loginCookieNames) || loginCookieNames.length === 0) {
+  const loginCookieNames = (config.platformLoginCookies && config.platformLoginCookies[normalizedPlatform]) || [];
+  // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：早退守卫同上，避免漏登记宽名单时判定被静默跳过
+  if (loginCookieNames.length === 0 && getSessionCredentialCookieNames(normalizedPlatform).names.length === 0) {
     return false;
   }
 
@@ -11787,60 +11808,57 @@ ipcMain.handle('check-session-status', async () => {
     const ses = browserView.webContents.session;
     const cookies = await ses.cookies.get({});
 
-    // 检查特定平台的登录凭证 cookies（不只是数量，而是关键的登录 cookie）
-    const douyinCookies = cookies.filter(c => c.domain.includes('douyin.com'));
-    const xiaohongshuCookies = cookies.filter(c => c.domain.includes('xiaohongshu.com'));
-    const weixinCookies = cookies.filter(c => c.domain.includes('weixin.qq.com'));
-    const baijiahaoCookies = cookies.filter(c => c.domain.includes('baidu.com'));
-
-    // 检查关键登录凭证（这些 cookie 存在才表示真正登录）
-    // 扩大检测范围，避免漏检
-    const douyinLoggedIn = douyinCookies.some(c =>
-      c.name === 'sessionid' ||
-      c.name === 'sessionid_ss' ||
-      c.name === 'passport_csrf_token' ||
-      c.name === 'sid_guard' ||
-      c.name === 'uid_tt' ||
-      c.name === 'uid_tt_ss' ||
-      c.name === 'ttwid' ||
-      c.name === 'passport_auth_status'
-    );
-
-    const xiaohongshuLoggedIn = xiaohongshuCookies.some(c =>
-      c.name === 'web_session' ||
-      c.name === 'websectiga' ||
-      c.name === 'sec_poison_id' ||
-      c.name === 'a1' ||
-      c.name === 'webId'
-    );
-
-    const weixinLoggedIn = weixinCookies.some(c =>
-      c.name === 'wxuin' ||
-      c.name === 'pass_ticket' ||
-      c.name === 'slave_user' ||
-      c.name === 'slave_sid'
-    );
-
-    const baijiahaoLoggedIn = baijiahaoCookies.some(c =>
-      c.name === 'BDUSS' ||
-      c.name === 'STOKEN' ||
-      c.name === 'BAIDUID' ||
-      c.name === 'BIDUPSID'
-    );
-
-    const platformStatus = {
-      douyin: { count: douyinCookies.length, loggedIn: douyinLoggedIn },
-      xiaohongshu: { count: xiaohongshuCookies.length, loggedIn: xiaohongshuLoggedIn },
-      weixin: { count: weixinCookies.length, loggedIn: weixinLoggedIn },
-      baijiahao: { count: baijiahaoCookies.length, loggedIn: baijiahaoLoggedIn }
+    // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：改为 config 驱动 + 严格会话凭证口径
+    // 旧代码用硬编码宽名单，混进了纯游客/设备 cookie（抖音 ttwid/passport_auth_status、
+    // 小红书 a1/webId、百家号 BAIDUID/BIDUPSID），从没登录过也会命中 → loggedIn 恒为 true，
+    // 前端据此以为账号还活着、不再补传后台快照 → 发布窗口拿着死 session 打开 → 被打回登录页。
+    // 顺带把覆盖平台从 4 家扩到全平台（原先网易/搜狐/腾讯/新浪/知乎/头条根本查不到状态）。
+    // 关掉开关时逐字回到旧硬编码名单（保证特性开关能真正回滚，不是换成另一套行为）
+    const LEGACY_SESSION_STATUS_COOKIE_NAMES = {
+      douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss', 'ttwid', 'passport_auth_status'],
+      xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
+      weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
+      baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID', 'BIDUPSID']
     };
+    const LEGACY_SESSION_STATUS_DOMAINS = {
+      douyin: 'douyin.com',
+      xiaohongshu: 'xiaohongshu.com',
+      weixin: 'weixin.qq.com',
+      baijiahao: 'baidu.com'
+    };
+    const legacyPlatformKeys = Object.keys(LEGACY_SESSION_STATUS_COOKIE_NAMES);
+    const allPlatformKeys = FIX_STRICT_LOGIN_CREDENTIAL_GUARD
+      ? Array.from(new Set([...legacyPlatformKeys, ...Object.keys(config.platformDomains || {})]))
+      : legacyPlatformKeys;
+    const platformStatus = {};
+    const statusSummary = {};
+    allPlatformKeys.forEach(platformKey => {
+      if (!FIX_STRICT_LOGIN_CREDENTIAL_GUARD) {
+        const legacyDomain = LEGACY_SESSION_STATUS_DOMAINS[platformKey];
+        const legacyCookies = cookies.filter(c => String((c && c.domain) || '').includes(legacyDomain));
+        const legacyNames = LEGACY_SESSION_STATUS_COOKIE_NAMES[platformKey];
+        const legacyLoggedIn = legacyCookies.some(c => legacyNames.includes(c.name));
+        platformStatus[platformKey] = { count: legacyCookies.length, loggedIn: legacyLoggedIn };
+        statusSummary[platformKey] = `${legacyCookies.length} cookies, loggedIn: ${legacyLoggedIn}`;
+        return;
+      }
+      const cookieDomains = (config.platformDomains && config.platformDomains[platformKey]) || [];
+      const platformCookies = cookieDomains.length === 0 ? [] : cookies.filter(c => {
+        const domain = String((c && c.domain) || '').toLowerCase();
+        return cookieDomains.some(d => domain.includes(String(d).replace(/^\./, '').toLowerCase()));
+      });
+      const credential = cookiesHaveLiveLoginCredential(platformCookies, platformKey);
+      platformStatus[platformKey] = {
+        count: platformCookies.length,
+        loggedIn: credential.valid
+      };
+      statusSummary[platformKey] = `${platformCookies.length} cookies, loggedIn: ${credential.valid}`
+        + (credential.foundNames.length ? ` (凭证: ${credential.foundNames.join(',')})` : '');
+    });
 
     console.log('[Session Check] Cookie 统计:', {
       total: cookies.length,
-      douyin: `${douyinCookies.length} cookies, loggedIn: ${douyinLoggedIn}`,
-      xiaohongshu: `${xiaohongshuCookies.length} cookies, loggedIn: ${xiaohongshuLoggedIn}`,
-      weixin: `${weixinCookies.length} cookies, loggedIn: ${weixinLoggedIn}`,
-      baijiahao: `${baijiahaoCookies.length} cookies, loggedIn: ${baijiahaoLoggedIn}`
+      ...statusSummary
     });
 
     return {
@@ -19583,19 +19601,35 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
     const accountSession = getAccountSession(platform, accountId);
     const cookies = await accountSession.cookies.get({});
 
-    // 平台登录凭证 cookie 名称
-    const loginCookies = {
-      douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
-      xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
-      baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
-      weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
-      shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']
-    };
+    // 🔐 FIX_STRICT_LOGIN_CREDENTIAL_GUARD：改用严格会话凭证口径 + 平台名归一化
+    // 旧代码有两个问题，两个方向都会造成「掉登录」：
+    //   ① 硬编码名单比宽口径还宽，混进了纯游客 cookie（小红书 a1/webId、百家号 BAIDUID、
+    //      抖音 uid_tt），从没登录过也判 isLoggedIn=true → 前端以为账号还活着、不补传后台快照
+    //      → 发布窗口拿着死 session 打开 → 被打回登录页；
+    //   ② 只列了 5 个平台且直接用 platform 原值查表，短名（dy/shh/wyh）与网易/搜狐/腾讯/
+    //      新浪/知乎/头条全部取到空名单 → isLoggedIn 恒为 false。
+    const normalizedAccountPlatform = normalizePlatformName(platform) || String(platform || '');
+    let hasLoginCookie = false;
+    let credentialFoundNames = [];
+    if (FIX_STRICT_LOGIN_CREDENTIAL_GUARD) {
+      const credential = cookiesHaveLiveLoginCredential(cookies, normalizedAccountPlatform);
+      hasLoginCookie = credential.valid;
+      credentialFoundNames = credential.foundNames;
+    } else {
+      const legacyLoginCookies = {
+        douyin: ['sessionid', 'sessionid_ss', 'passport_csrf_token', 'sid_guard', 'uid_tt', 'uid_tt_ss'],
+        xiaohongshu: ['web_session', 'websectiga', 'sec_poison_id', 'a1', 'webId'],
+        baijiahao: ['BDUSS', 'STOKEN', 'BAIDUID'],
+        weixin: ['wxuin', 'pass_ticket', 'slave_user', 'slave_sid'],
+        shipinhao: ['sessionid', 'wxuin', 'pass_ticket', 'wxsid', 'wxload']
+      };
+      const requiredCookies = legacyLoginCookies[platform] || [];
+      hasLoginCookie = cookies.some(c => requiredCookies.includes(c.name));
+    }
 
-    const requiredCookies = loginCookies[platform] || [];
-    const hasLoginCookie = cookies.some(c => requiredCookies.includes(c.name));
-
-    console.log(`[Account Manager] ${platform}/${accountId} 登录状态: ${hasLoginCookie}`);
+    console.log(`[Account Manager] ${normalizedAccountPlatform}/${accountId} 登录状态: ${hasLoginCookie}`
+      + (credentialFoundNames.length ? `（命中凭证: ${credentialFoundNames.join(', ')}）` : '')
+      + `, cookie 总数: ${cookies.length}`);
     return { success: true, isLoggedIn: hasLoginCookie, cookieCount: cookies.length };
   } catch (err) {
     console.error('[Account Manager] 检查登录状态失败:', err);

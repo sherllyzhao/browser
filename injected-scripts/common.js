@@ -81,15 +81,20 @@ if (typeof window.uploadVideo === "function"
       // 修复：新增 platformSessionCredentialCookies 严格名单（只列登出必清的会话 token），
       //       主进程三处判定统一改严格口径；关窗前登录态预检从"仅视频号/搜狐"放开到全平台；
       //       判死时清掉该账号 latest_session_ 缓存（原先只有腾讯有）；
-      //       会话仲裁新增"后台有真凭证而本地缓存没有→必用后台"前置规则
+      //       会话仲裁新增"后台有真凭证而本地缓存没有→必用后台"前置规则；
+      //       前端可见的两个查登录态 IPC（check-session-status / check-account-login-status）原本用
+      //       硬编码名单，比宽名单还宽（混进小红书 a1/webId、百家号 BAIDUID、抖音 ttwid 等纯游客 cookie，
+      //       从没登录过也判已登录 → 前端以为账号还活着、不补传后台快照 → 死 session 开窗跳登录），
+      //       且只覆盖 4~5 个平台又不做平台名归一化（短名与网易/搜狐/腾讯/新浪/知乎/头条恒判未登录），
+      //       现统一走 cookiesHaveLiveLoginCredential 并由 config 驱动扩到全部 11 个平台
       // 风险：严格名单若漏列某平台真实凭证，该平台会跳过回存（后台保留上一份好快照，不会掉登录，
       //       但窗口内刷新的 token 不落库）；未登记平台自动退回宽名单，行为不变
       FIX_STRICT_LOGIN_CREDENTIAL_GUARD: {
         enabled: true,
         version: '1.2.10',
         risk: 'high',
-        files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount'],
-        description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存'
+        files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:cookiesHaveLiveLoginCredential', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount', 'main.js:ipc check-session-status', 'main.js:ipc check-account-login-status'],
+        description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存 + 前端查登录态 IPC 同步收严并扩到全平台'
       },
 
       // 【预留】未来的修复/功能添加在下方
