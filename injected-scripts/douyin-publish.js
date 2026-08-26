@@ -786,13 +786,16 @@ async function publishApi(dataObj) {
     // 检测封面是否通过检测
     console.log('[抖音发布] ⏳ 等待封面检测通过...');
     const coverCheckStartTime = Date.now();
-    const coverCheckTimeout = 120000; // 2分钟超时
+    const coverCheckTimeout = 180000; // 3分钟超时（增加到3分钟，给封面检测更多时间）
     const coverCheckInterval = 2000;
-    const maxCoverRetries = 30; // 🔑 最大重试次数（30次 * 2秒 = 60秒内尝试设置封面）
+    const maxCoverRetries = 90; // 🔑 最大重试次数（90次 * 2秒 = 180秒，与超时时间一致）
     let coverRetryCount = 0;
 
     while (Date.now() - coverCheckStartTime < coverCheckTimeout && coverRetryCount < maxCoverRetries) {
       coverRetryCount++;
+      const elapsedTime = Math.round((Date.now() - coverCheckStartTime) / 1000);
+      console.log(`[封面检测] 第 ${coverRetryCount}/${maxCoverRetries} 次检查，已耗时 ${elapsedTime} 秒`);
+
       let checkElement = null;
       try {
         checkElement = await waitForElement('.cover-check [class*="title-"]', 10000); // 🔑 增加到 10 秒
