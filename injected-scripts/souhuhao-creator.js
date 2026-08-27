@@ -447,6 +447,11 @@
         }
 
         setTimeout(() => {
+            if (isOnSohuClientAuthPage()) {
+                console.log('[搜狐号授权] ⏸️ 账号 Session 重开关窗时检测到验证码页面，保留窗口供用户输入验证码');
+                startSohuClientAuthRecoveryWatch();
+                return;
+            }
             if (window.browserAPI?.closeCurrentWindow) {
                 window.browserAPI.closeCurrentWindow();
             }
@@ -467,6 +472,82 @@
     // 防重复标志：确保数据只处理一次
     let isProcessing = false;
     let hasProcessed = false;
+
+    function isOnSohuClientAuthPage() {
+        try {
+            const url = new URL(window.location.href);
+            if (url.hostname !== 'mp.sohu.com') {
+                return false;
+            }
+            if (url.pathname.toLowerCase() === '/mpfe/v4/clientauth') {
+                return true;
+            }
+        } catch (_) {
+            if (String(window.location.href || '').toLowerCase().includes('mp.sohu.com/mpfe/v4/clientauth')) {
+                return true;
+            }
+        }
+
+        const pageText = String(document.body?.innerText || '').replace(/\s+/g, '');
+        return (
+            pageText.includes('为保障您的账号安全')
+            && pageText.includes('完成短信验证')
+        ) || (
+            pageText.includes('选择接收短信的手机号')
+            && pageText.includes('获取验证码')
+            && pageText.includes('短信验证码')
+        );
+    }
+
+    function startSohuClientAuthRecoveryWatch() {
+        if (window.__sohuClientAuthRecoveryWatcher__) {
+            return;
+        }
+
+        console.log('[搜狐号授权] 👀 正在等待用户完成验证码，进入业务页后将继续授权');
+        window.__sohuClientAuthRecoveryWatcher__ = setInterval(() => {
+            let isBusinessPage = false;
+            try {
+                const url = new URL(window.location.href);
+                isBusinessPage = url.hostname === 'mp.sohu.com'
+                    && url.pathname.toLowerCase().startsWith('/mpfe/v4/contentmanagement');
+            } catch (_) {}
+
+            if (!isBusinessPage) {
+                return;
+            }
+
+            clearInterval(window.__sohuClientAuthRecoveryWatcher__);
+            window.__sohuClientAuthRecoveryWatcher__ = null;
+            console.log('[搜狐号授权] 🔄 验证码页面已完成，刷新业务页继续授权');
+            window.location.reload();
+        }, 1000);
+    }
+
+    async function pauseSohuAuthOnClientAuthPage(messageData, source) {
+        if (!isOnSohuClientAuthPage()) {
+            return false;
+        }
+
+        try {
+            const myWindowId = await window.browserAPI?.getWindowId?.();
+            if (myWindowId && messageData && window.browserAPI?.setGlobalData) {
+                await window.browserAPI.setGlobalData(
+                    `sohuhao_pending_auth_data_window_${myWindowId}`,
+                    typeof messageData === 'string' ? messageData : JSON.stringify(messageData)
+                );
+            }
+        } catch (cacheError) {
+            console.warn('[搜狐号授权] ⚠️ 验证码页缓存待处理授权数据失败:', cacheError.message);
+        }
+
+        if (typeof hideOperationBanner === 'function') {
+            hideOperationBanner();
+        }
+        console.log(`[搜狐号授权] ⏸️ 当前为验证码页面，暂停${source || '授权流程'}，不会上报授权或自动关闭窗口`);
+        startSohuClientAuthRecoveryWatch();
+        return true;
+    }
 
 
     if (!window.browserAPI) {
@@ -547,6 +628,11 @@
     // 读写外层闭包的 isProcessing / hasProcessed 标志
     // ===========================
     async function processSohuhaoAuthData(messageData) {
+                            if (await pauseSohuAuthOnClientAuthPage(messageData, '授权处理')) {
+                                isProcessing = false;
+                                return;
+                            }
+
                             window.__AUTH_DATA__ = {
                                 ...window.__AUTH_DATA__,
                                 message: messageData,
@@ -699,6 +785,14 @@
                                     cookies: cookiesData
                                 })
                             };
+
+                            // 搜狐可能在授权处理期间跳转到短信验证码页。提交前再次确认，
+                            // 避免沿用 localStorage.currentAccount 误判为已完成验证。
+                            if (await pauseSohuAuthOnClientAuthPage(messageData, '授权上报')) {
+                                isProcessing = false;
+                                return;
+                            }
+
                             console.log(JSON.stringify(cookiesData));
                             console.log("🚀 ~  ~ scanData: ", scanData);
                             //return;
@@ -845,6 +939,11 @@
                                 }else{
                                     // 统计接口成功后关闭弹窗
                                     setTimeout(() => {
+                                        if (isOnSohuClientAuthPage()) {
+                                            console.log('[搜狐号授权] ⏸️ 自动关窗时检测到验证码页面，保留窗口供用户输入验证码');
+                                            startSohuClientAuthRecoveryWatch();
+                                            return;
+                                        }
                                         window.browserAPI.closeCurrentWindow();
                                     }, window.getRandomDelayMs(10000));
                                 }
@@ -877,6 +976,10 @@
             const pendingKey = `sohuhao_pending_auth_data_window_${myWindowId}`;
             const pendingRaw = await window.browserAPI.getGlobalData(pendingKey);
             if (!pendingRaw) return;
+
+            if (await pauseSohuAuthOnClientAuthPage(pendingRaw, '待处理授权恢复')) {
+                return;
+            }
 
             // currentAccount 由页面框架异步写入，轮询等待最多 20 秒
             let waitedMs = 0;
@@ -956,6 +1059,11 @@
                 }
                 attempt++;
                 try {
+                    if (await pauseSohuAuthOnClientAuthPage(null, '兜底授权')) {
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        continue;
+                    }
+
                     // 轮询检测登录态：localStorage.currentAccount 存在表示已登录
                     const currentAccount = localStorage.getItem('currentAccount') ? JSON.parse(localStorage.getItem('currentAccount')) : null;
                     if (currentAccount && currentAccount.id) {

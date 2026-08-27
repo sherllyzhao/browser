@@ -276,6 +276,50 @@
     let publishDataRecovering = false;
     let requiredElementRecovering = false;
 
+    const isSohuManualVerificationPage = () => {
+        try {
+            const url = new URL(window.location.href);
+            if (url.hostname !== 'mp.sohu.com') {
+                return false;
+            }
+            if (url.pathname.toLowerCase() === '/mpfe/v4/clientauth') {
+                return true;
+            }
+        } catch (_) {
+            if (String(window.location.href || '').toLowerCase().includes('mp.sohu.com/mpfe/v4/clientauth')) {
+                return true;
+            }
+        }
+
+        const pageText = String(document.body?.innerText || '').replace(/\s+/g, '');
+        return (
+            pageText.includes('为保障您的账号安全')
+            && pageText.includes('完成短信验证')
+        ) || (
+            pageText.includes('选择接收短信的手机号')
+            && pageText.includes('获取验证码')
+            && pageText.includes('短信验证码')
+        );
+    };
+
+    const pauseForSohuManualVerification = (source = 'unknown') => {
+        const isVerificationPage = isSohuManualVerificationPage();
+        if (!isVerificationPage && !window.__sohuManualVerificationPaused__) {
+            return false;
+        }
+
+        if (isVerificationPage && !window.__sohuManualVerificationPaused__) {
+            console.warn(`[搜狐号发布] ⏸️ 检测到短信验证码页面，暂停自动发布、结果上报和关窗，source=${source}, url=${window.location.href}`);
+        }
+        window.__sohuManualVerificationPaused__ = true;
+        isProcessing = false;
+        fillFormRunning = false;
+        if (typeof hideOperationBanner === 'function') {
+            hideOperationBanner();
+        }
+        return true;
+    };
+
     const hasPublishSuccessMarker = () => {
         if (window.__sohuPublishSuccessFlag) {
             return true;
@@ -376,6 +420,10 @@
     };
 
     const handleRequiredElementMissing = async (selector, label, error) => {
+        if (pauseForSohuManualVerification(`required-element-${label || selector}`)) {
+            return true;
+        }
+
         const missCount = bumpRequiredElementMissCount();
         console.warn(`[搜狐号发布] ⚠️ 必需元素缺失 ${missCount}/${MAX_REQUIRED_ELEMENT_MISS_COUNT}: ${label || selector}`, error?.message || error);
 
@@ -529,6 +577,81 @@
     const stopErrorListener = () => errorListener?.stop();
     const getLatestError = () => errorListener?.getLatestError() || null;
 
+    const installSohuManualVerificationGuard = () => {
+        if (window.__sohuManualVerificationGuardInstalled__) {
+            return;
+        }
+        if (typeof isSohuManualVerificationPage !== 'function'
+            || typeof pauseForSohuManualVerification !== 'function') {
+            console.error('[搜狐号发布] ❌ 短信验证码页面守卫依赖未定义，停止安装');
+            return;
+        }
+        window.__sohuManualVerificationGuardInstalled__ = true;
+
+        const wrapAsyncAction = (functionName, blockedResult) => {
+            const original = window[functionName];
+            if (typeof original !== 'function') {
+                return;
+            }
+            window[functionName] = async function (...args) {
+                if (pauseForSohuManualVerification(functionName)) {
+                    stopErrorListener();
+                    console.log(`[搜狐号发布] ⏸️ 验证码页面已拦截 ${functionName}`);
+                    return blockedResult;
+                }
+                return original.apply(this, args);
+            };
+        };
+
+        wrapAsyncAction('closeWindowWithMessage', false);
+        wrapAsyncAction('sendStatistics', false);
+        wrapAsyncAction('sendStatisticsError', false);
+
+        const checkVerificationPage = () => {
+            if (isSohuManualVerificationPage()) {
+                pauseForSohuManualVerification('page-watcher');
+                stopErrorListener();
+                return;
+            }
+
+            if (!window.__sohuManualVerificationPaused__) {
+                return;
+            }
+
+            let isBusinessPage = false;
+            try {
+                const url = new URL(window.location.href);
+                isBusinessPage = url.hostname === 'mp.sohu.com'
+                    && url.pathname.toLowerCase().startsWith('/mpfe/v4/contentmanagement');
+            } catch (_) {}
+
+            if (isBusinessPage && !window.__sohuManualVerificationRecoveryReloading__) {
+                window.__sohuManualVerificationRecoveryReloading__ = true;
+                if (window.__sohuManualVerificationWatcher__) {
+                    clearInterval(window.__sohuManualVerificationWatcher__);
+                    window.__sohuManualVerificationWatcher__ = null;
+                }
+                window.__sohuManualVerificationObserver__?.disconnect();
+                console.log('[搜狐号发布] 🔄 短信验证已完成并返回业务页，刷新后从保留的 publish-data 恢复发布流程');
+                window.location.reload();
+            }
+        };
+
+        window.__sohuManualVerificationWatcher__ = setInterval(checkVerificationPage, 500);
+        if (document.documentElement && typeof MutationObserver === 'function') {
+            window.__sohuManualVerificationObserver__ = new MutationObserver(checkVerificationPage);
+            window.__sohuManualVerificationObserver__.observe(document.documentElement, {
+                childList: true,
+                subtree: true,
+                characterData: true
+            });
+        }
+        checkVerificationPage();
+        console.log('[搜狐号发布] ✅ 已安装短信验证码页面守卫（URL + 页面内容双重识别）');
+    };
+
+    installSohuManualVerificationGuard();
+
     // 🔑 注意：getPublishSuccessKey() 使用 IIFE 外部定义的全局函数
     // 返回固定的 'sohu_publish_success_data'，与 souhuhao-redirect.js 保持一致
 
@@ -580,6 +703,10 @@
                     // 使用公共方法检查 windowId 是否匹配
                     const isMatch = await checkWindowIdMatch(message, '[搜狐号发布]');
                     if (!isMatch) return;
+
+                    if (pauseForSohuManualVerification('publish-data-message')) {
+                        return;
+                    }
 
                     // 使用公共方法恢复会话数据
                     const needReload = await restoreSessionAndReload(messageData, '[搜狐号发布]');
@@ -698,6 +825,11 @@
     console.log('  - sendMessage(msg) : 发送自定义消息');
     console.log('  - getAuthData()    : 获取发布数据');
     console.log('═══════════════════════════════════════');
+
+    if (pauseForSohuManualVerification('initialization')) {
+        console.log('[搜狐号发布] ⏸️ 初始化时已在短信验证码页面，等待用户操作');
+        return;
+    }
 
     // ===========================
     // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
@@ -886,6 +1018,12 @@
     }
 
     async function failPublishAndClose(dataObj, message, detail = message) {
+        if (pauseForSohuManualVerification('failPublishAndClose')) {
+            stopErrorListener();
+            console.log('[搜狐号发布] ⏸️ 验证码页面不按发布失败处理');
+            return false;
+        }
+
         stopErrorListener();
         await clearPublishSuccessMarker();
 
@@ -1023,6 +1161,10 @@
     // 填写表单数据
     async function fillFormData(dataObj) {
         console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
+        if (pauseForSohuManualVerification('fillFormData-entry')) {
+            return false;
+        }
+
         // 防止重复执行
         if (fillFormRunning) {
             return;
@@ -1055,6 +1197,11 @@
             }
 
             setTimeout(async () => {
+                if (pauseForSohuManualVerification('fillFormData-delayed')) {
+                    fillFormRunning = false;
+                    return;
+                }
+
                 // 🔑 延迟窗口内页面可能被搜狐弹回登录页，真正开始填表前再确认一次
                 if (await stopIfLoginPage(dataObj, 'fillFormData-delayed')) {
                     fillFormRunning = false;
@@ -1874,7 +2021,17 @@
         console.log('[搜狐号发布] ⏳ 等待检测发布结果...');
         await delay(1000);
 
+        if (pauseForSohuManualVerification('checkPublishResult-entry')) {
+            stopErrorListener();
+            return false;
+        }
+
         const handlePublishSuccess = async (reason, feedbackText = '') => {
+            if (pauseForSohuManualVerification('handlePublishSuccess')) {
+                stopErrorListener();
+                return false;
+            }
+
             stopErrorListener();
             const markerData = await savePublishSuccessMarker(dataObj);
             if (!markerData.publishId) {
@@ -1938,6 +2095,11 @@
         let lastFeedbackText = '';
 
         while (Date.now() - startedAt < timeoutMs) {
+            if (pauseForSohuManualVerification('checkPublishResult-loop')) {
+                stopErrorListener();
+                return false;
+            }
+
             await handleExtraConfirmButtons();
 
             const href = window.location.href;
@@ -1967,6 +2129,11 @@
             }
 
             await delay(1500);
+        }
+
+        if (pauseForSohuManualVerification('checkPublishResult-timeout')) {
+            stopErrorListener();
+            return false;
         }
 
         // 🔑 超时无明确失败信号 → 视为发布成功（范式对齐小红书：点击已提交、平台未跳转但也无明确失败反馈）
