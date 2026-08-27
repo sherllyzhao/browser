@@ -737,7 +737,14 @@ async function publishApi(dataObj) {
 
     // 等待发布按钮可用
     const publishBtn = await retryOperation(async () => {
-      const btn = document.querySelector(".button-dhlUZE");
+      // 抖音用 CSS Modules，类名带哈希后缀，只能模糊匹配；元素常含多个 class，用 *= 而非 ^=
+      const candidates = document.querySelectorAll('[class*="content-confirm-container-"] [class*="primary-"]');
+      // primary- 系可能同时命中预览/存草稿，用文本"发布"锁定目标按钮
+      let btn = Array.from(candidates).find(el => /发布/.test(el.textContent || ''));
+      // 兜底：文本没匹配上时退回第一个 primary- 元素
+      if (!btn) {
+        btn = candidates[0];
+      }
       if (!btn) {
         throw new Error('发布按钮未找到');
       }
