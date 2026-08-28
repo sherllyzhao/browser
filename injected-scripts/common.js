@@ -118,6 +118,28 @@ if (typeof window.uploadVideo === "function"
         description: '知乎正文重复修复：重试前清空编辑器实现写入幂等 + 缺段不再静默吞掉 + 堵外层整篇重填隐患'
       },
 
+      // 【修复】2026-08-28 抖音两个封面坑位只成功一个（用户实测：横封面没换上，只有竖封面生效）
+      // 根因：坑位#1 的 item.click() 没能打开弹窗时，旧代码不但不停，还把 searchRoot 退化成
+      //       整个 document，然后照样往"整页第一个 .semi-upload-hidden-input"里塞文件。
+      //       页面主体封面区自己就有隐藏 input —— 图被塞到不知道哪去，横封面纹丝不动，
+      //       还白等 30 秒 waitUploadSettled，最后因为 modal 为空而"跳过确认按钮"静默失败。
+      //       次生原因：coverListWrapEle 是循环开始前存下的静态 NodeList，上一个坑位传完
+      //       React 重渲染封面区后旧节点脱离文档，click() 打在孤儿节点上不报错也没反应。
+      // 修复：①开弹窗四级重试（滚动到可视区+原生click → MouseEvent序列 → 子元素click → 原生鼠标）；
+      //       ②没打开弹窗就整个坑位放弃并把封面退回 usedCovers，绝不在整页乱塞文件；
+      //       ③每个坑位现查坑位节点，不用静态 NodeList；
+      //       ④封面预加载加 10 秒超时（new Image 不响应时既不 onload 也不 onerror，Promise.all 永挂）；
+      //       ⑤补全诊断日志：预加载结果对照表 + 匹配失败时逐张说明原因
+      // 风险：禁用后回退旧行为（只点一级、modal 为空时退化到整页找 input）。
+      //       加固全是"更早放弃"而非"更激进操作"，不会影响已经能成功的坑位。
+      FIX_DOUYIN_COVER_SLOT_GUARD: {
+        enabled: true,
+        version: '1.2.12',
+        risk: 'low',
+        files: ['douyin-publish.js:openModal四级重试', 'douyin-publish.js:无弹窗放弃坑位', 'douyin-publish.js:querySlots现查坑位', 'douyin-publish.js:封面预加载超时'],
+        description: '抖音封面坑位加固：开弹窗四级重试 + 没弹窗就放弃该坑位（不再整页乱塞文件）+ 坑位节点现查'
+      },
+
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
       //   enabled: false,
