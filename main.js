@@ -81,6 +81,18 @@ const FIX_TENGXUNHAO_MANAGED_LOGIN_RECOVER = true;
 // 未在严格表登记的平台自动退回宽名单，行为不变。
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：宽口径判定 + 无判死清缓存）
 const FIX_STRICT_LOGIN_CREDENTIAL_GUARD = true;
+// 【特性开关】2026-08-28 便携版数据目录不可用致静默打不开：便携版把 userData 固定设到
+// %LOCALAPPDATA%\资海云运营助手-Portable，而该路径可能是用户为省 C 盘空间做的目录软链。
+// 一旦软链目标被删（本机实锤：指向 D:\浏览器\资海云运营助手-Portable，目标已不存在）：
+//   fs.existsSync 跟随链接 → false（判断被骗过，进入创建分支）
+//   → fs.mkdirSync 沿断链走到不存在的目标，抛 ENOENT → catch 只打日志，不中断
+//   → 照样 setPath('userData', 不可用路径) → Chromium 初始化用户数据目录失败
+//   → 主进程起不来，双击没反应也没报错（安装版走 app.getPath 不碰软链，故不受影响）
+// 修法：①存在性判断后补一次读写探测（存在≠可用，无权限/盘符掉了同样在这现形）
+//   ②断链软链用 lstat+readlink 识别并补建链接目标（不删用户的软链，那可能是有意的迁移）
+//   ③自愈失败回退系统默认 userData 目录，宁可数据换地方也不能让应用起不来，并在启动后提示用户
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：仅在不存在时创建，失败只打日志）
+const FIX_PORTABLE_DATA_DIR_GUARD = true;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -5825,15 +5837,80 @@ function resolveCustomDataDir(defaultDataDir) {
 // 记录默认数据目录（指针文件读写都基于它，与当前是否启用自定义目录无关）
 let defaultDataDirForConfig = null;
 
+// 【FIX_PORTABLE_DATA_DIR_GUARD】便携版数据目录回退记录，供 whenReady 后提示用户（null 表示没发生回退）
+let portableDataDirFallbackNotice = null;
+
+// 探测目录是否真的可读写：存在 ≠ 可用，断链软链、权限不足、盘符掉了都只能在这一步现形
+function probeDataDirWritable(dir) {
+  const probeFile = path.join(dir, `.write-probe-${process.pid}`);
+  try {
+    fs.writeFileSync(probeFile, 'probe');
+    fs.unlinkSync(probeFile);
+    return true;
+  } catch (err) {
+    console.warn('[Portable Mode] ⚠️ 数据目录读写探测失败:', dir, err && err.code ? err.code : err);
+    return false;
+  }
+}
+
+// 【FIX_PORTABLE_DATA_DIR_GUARD】便携版数据目录自愈
+// 返回 { dir, fallback }：dir 一定是探测过可读写的目录，fallback 标记是否已偏离期望位置
+function ensurePortableDataDir(portableDataPath) {
+  if (fs.existsSync(portableDataPath) && probeDataDirWritable(portableDataPath)) {
+    return { dir: portableDataPath, fallback: false };
+  }
+
+  if (!fs.existsSync(portableDataPath)) {
+    try {
+      fs.mkdirSync(portableDataPath, { recursive: true });
+      console.log('[Portable Mode] 已创建数据目录:', portableDataPath);
+    } catch (err) {
+      // 断链软链时这里抛 ENOENT：existsSync 跟随链接说"不存在"，mkdir 沿链走到不存在的目标同样失败
+      console.error('[Portable Mode] 创建目录失败:', err && err.code ? err.code : '', err && err.message ? err.message : err);
+    }
+  }
+
+  // 断链软链自愈：补建链接目标即可复活。不删用户的软链 —— 那多半是为省 C 盘空间有意做的迁移，
+  // 目标也可能只是暂时不可用（移动硬盘没插、网络盘没连），删了反而毁掉用户的布局
+  if (!fs.existsSync(portableDataPath)) {
+    try {
+      const linkStat = fs.lstatSync(portableDataPath);
+      if (linkStat.isSymbolicLink()) {
+        const linkTarget = fs.readlinkSync(portableDataPath);
+        console.warn('[Portable Mode] ⚠️ 数据目录是断链软链，尝试补建链接目标:', linkTarget);
+        fs.mkdirSync(linkTarget, { recursive: true });
+        console.log('[Portable Mode] ✅ 已补建软链目标目录:', linkTarget);
+      }
+    } catch (err) {
+      console.error('[Portable Mode] 软链自愈失败:', err && err.code ? err.code : '', err && err.message ? err.message : err);
+    }
+  }
+
+  if (fs.existsSync(portableDataPath) && probeDataDirWritable(portableDataPath)) {
+    return { dir: portableDataPath, fallback: false };
+  }
+
+  // 自愈无效就回退系统默认目录。数据换个地方总好过应用起不来 —— 后者用户只会看到"双击没反应"
+  const fallbackDir = app.getPath('userData');
+  console.error('[Portable Mode] ❌ 便携版数据目录不可用，回退系统默认目录');
+  console.error('[Portable Mode]    期望位置:', portableDataPath);
+  console.error('[Portable Mode]    实际位置:', fallbackDir);
+  portableDataDirFallbackNotice = { expected: portableDataPath, actual: fallbackDir };
+  return { dir: fallbackDir, fallback: true };
+}
+
 // 设置用户数据路径
 if (isProduction) {
   if (isPortable) {
     // 便携版：数据存储在固定的 %LOCALAPPDATA%\运营助手-Portable 目录
     // 这样无论 exe 放在哪个位置，数据都在同一个地方，不会因为移动 exe 而丢失数据
     const portableDataPath = path.join(process.env.LOCALAPPDATA || app.getPath('appData'), '资海云运营助手-Portable');
+    let resolvedPortableDir = portableDataPath;
 
-    // 确保目录存在
-    if (!fs.existsSync(portableDataPath)) {
+    if (FIX_PORTABLE_DATA_DIR_GUARD) {
+      resolvedPortableDir = ensurePortableDataDir(portableDataPath).dir;
+    } else if (!fs.existsSync(portableDataPath)) {
+      // 旧行为：仅在不存在时创建，失败只打日志（断链软链会在这里静默失守）
       try {
         fs.mkdirSync(portableDataPath, { recursive: true });
         console.log('[Portable Mode] 已创建数据目录:', portableDataPath);
@@ -5842,8 +5919,8 @@ if (isProduction) {
       }
     }
 
-    defaultDataDirForConfig = portableDataPath;
-    const effectiveDataPath = FIX_CUSTOM_DATA_PATH ? resolveCustomDataDir(portableDataPath) : portableDataPath;
+    defaultDataDirForConfig = resolvedPortableDir;
+    const effectiveDataPath = FIX_CUSTOM_DATA_PATH ? resolveCustomDataDir(resolvedPortableDir) : resolvedPortableDir;
     app.setPath('userData', effectiveDataPath);
     console.log('[Portable Mode] ✅ 便携版模式启用');
     console.log('[Portable Mode] 数据存储在固定位置:', effectiveDataPath);
@@ -11069,7 +11146,7 @@ app.whenReady().then(async () => {
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
   console.log(`[Build] 版本: v${APP_VERSION}`);
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试，登录信息保留）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1+portable-data-dir-guard-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试+便携版数据目录断链自愈与回退，登录信息保留）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -11116,6 +11193,25 @@ app.whenReady().then(async () => {
     setTimeout(() => {
       cleanupStalePortableUnpackDirs();
     }, 15000);
+  }
+
+  // 【FIX_PORTABLE_DATA_DIR_GUARD】数据目录回退提示：应用已经正常起来了，但数据不在期望位置，
+  // 用户会看到"登录都没了"，必须说清原因和恢复办法，否则只会当成又一次数据丢失
+  if (FIX_PORTABLE_DATA_DIR_GUARD && portableDataDirFallbackNotice) {
+    setTimeout(() => {
+      const { expected, actual } = portableDataDirFallbackNotice;
+      dialog.showMessageBox({
+        type: 'warning',
+        title: '数据目录已临时切换',
+        message: '便携版原本的数据目录无法访问，已临时改用系统默认目录，程序功能不受影响。',
+        detail: `原目录：${expected}\n当前使用：${actual}\n\n`
+          + '常见原因：该目录是指向其他磁盘的快捷方式（软链接），而目标目录被删除或所在磁盘未连接。\n\n'
+          + '本次会用新目录重新开始，各平台需要重新授权。若想恢复到原目录，请恢复原目标目录后重启程序。',
+        buttons: ['我知道了']
+      }).catch(err => {
+        console.warn('[Portable Mode] ⚠️ 回退提示弹窗失败:', err && err.message ? err.message : err);
+      });
+    }, 10000);
   }
 
   // 注册全局快捷键：只打开公共头部（主窗口）的 DevTools (Ctrl+Shift+F11)
