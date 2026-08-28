@@ -97,6 +97,27 @@ if (typeof window.uploadVideo === "function"
         description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存 + 前端查登录态 IPC 同步收严并扩到全平台'
       },
 
+      // 【修复】2026-08-28 知乎发文章正文重复（"红线处该结束，后面又复制了一段"）
+      // 根因：内容填写整块被 retryOperation(3次) 包着，而 Draft.js 的 paste 语义是"在光标处插入"
+      //       不是"覆盖全文"。回调内任一环节抛错（正文图片上传超时/找不到上传 input/图片下载失败），
+      //       retryOperation 会在【不清空编辑器】的前提下整块重跑 → 第二遍内容原样追加在第一遍后面。
+      //       同源第二症状：pasteHtmlIntoEditor 验证失败只 return false 不抛错，两处调用又都不接
+      //       返回值，于是"某段没粘进去"被静默吞掉 → 第一遍缺段（用户截图里缺了"2. 核实教学场地"）。
+      // 修复：①新增 clearZhihuEditor()（selectNodeContents + execCommand delete，复用腾讯号温和清空，
+      //       禁止 innerHTML="" 否则 Draft.js 内部 state 与 DOM 脱节）；
+      //       ②retryOperation 回调开头先清空编辑器，把写入变成幂等操作；
+      //       ③pasteHtmlIntoEditor 验证失败改抛错、fallback 分段粘贴接住返回值，让缺段也能被重试救回；
+      //       ④fillFormData 新增终态标志，堵住"关窗抛错 → 外层 retryOperation 把整篇重填一遍"的隐患路径
+      // 风险：禁用后回退旧行为（重试不清空 → 可能重复；验证失败静默 → 可能缺段）。
+      //       清空只作用于知乎发布页编辑器，且清空失败会抛错交给重试，不会带着脏内容往下走。
+      FIX_ZHIHU_CONTENT_DUPLICATE: {
+        enabled: true,
+        version: '1.2.11',
+        risk: 'medium',
+        files: ['zhihu-publish.js:clearZhihuEditor', 'zhihu-publish.js:pasteHtmlIntoEditor验证失败抛错', 'zhihu-publish.js:内容填写retryOperation回调开头清空', 'zhihu-publish.js:insertContentWithZhihuEditorFallback接返回值', 'zhihu-publish.js:fillFormData终态标志'],
+        description: '知乎正文重复修复：重试前清空编辑器实现写入幂等 + 缺段不再静默吞掉 + 堵外层整篇重填隐患'
+      },
+
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
       //   enabled: false,

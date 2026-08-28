@@ -30,7 +30,7 @@
     // 这里把知乎的等待整体拉长并改为双向抖动，让耗时分布更自然。
     // 仅作用于知乎发布页（profile 按页面 window 生效，其它平台发布页不受影响）。
     if (typeof window.setDelayProfile === "function") {
-        window.setDelayProfile({ scale: 1.8, jitterRatio: 0.6, bidirectional: true });
+        window.setDelayProfile({scale: 1.8, jitterRatio: 0.6, bidirectional: true});
         console.log("[知乎发布] 🛡️ 已启用放缓的发布节奏");
     } else {
         console.warn("[知乎发布] ⚠️ setDelayProfile 不可用（common.js 版本较旧），沿用默认节奏");
@@ -75,6 +75,13 @@
     // 变量声明（放在防重复检查之后）
     let fillFormRunning = false; // 标记 fillFormData 是否正在执行
 
+    // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：fillFormData 终态标志（一旦真正开跑就永不复位）
+    // 背景：fillFormData 自己也被 retryOperation(3次) 包着（消息路径 + 全局存储路径两处），
+    // 而它的 catch 分支会先把 fillFormRunning 复位成 false 再 closeWindowWithMessage。
+    // 关窗那步一旦抛错，外层 retryOperation 就会把「标题 + 正文 + 封面」整篇重跑一遍。
+    // fillFormRunning 是「正在执行」的瞬时锁，拦不住这种复位后的重入，故另设终态标志。
+    let fillFormDone = false;
+
     // 防重复标志：确保数据只处理一次
     let isProcessing = false;
     let hasProcessed = false;
@@ -100,8 +107,16 @@
             errorListener = createErrorListener({
                 logPrefix: "[知乎发布]",
                 selectors: [
-                    { containerClass: "WriteIndexMain", textSelector: ".WriteIndex-LengthStatus-warning", recursiveSelector: ".WriteIndexMain" },
-                    { containerClass: "Notification-red", textSelector: ".Notification-textSection", recursiveSelector: ".Notification" }
+                    {
+                        containerClass: "WriteIndexMain",
+                        textSelector: ".WriteIndex-LengthStatus-warning",
+                        recursiveSelector: ".WriteIndexMain"
+                    },
+                    {
+                        containerClass: "Notification-red",
+                        textSelector: ".Notification-textSection",
+                        recursiveSelector: ".Notification"
+                    }
                 ],
             });
             console.log("[知乎发布] ⚠️ 使用本地错误监听器配置");
@@ -256,6 +271,63 @@
             || editorEle;
     }
 
+    // ===========================
+    // 🧹 清空知乎编辑器（FIX_ZHIHU_CONTENT_DUPLICATE）
+    // ===========================
+    // 为什么需要：Draft.js 的 paste 是「在光标处插入」而非「覆盖全文」，
+    // 内容填写整块被 retryOperation 包着，任一环节抛错重跑时若不清空，
+    // 第二遍会原样追加在第一遍后面 —— 这就是「正文重复」的根因。
+    // 为什么用 execCommand 而不是 innerHTML=""：直接改 innerHTML 会让 Draft.js
+    // 内部 EditorState 与真实 DOM 脱节，后续操作报 RangeError（腾讯号已踩过同款坑）。
+    async function clearZhihuEditor(editorEle) {
+        const fresh = getFreshEditorEle(editorEle);
+        if (!fresh) return false;
+
+        const getLength = () => {
+            const cur = getFreshEditorEle(editorEle);
+            return (cur?.innerText || cur?.textContent || "").trim().length;
+        };
+
+        const beforeLength = getLength();
+        if (beforeLength === 0) {
+            return true; // 本来就是空的，不碰它（对空编辑器执行 execCommand 可能触发 Draft.js 异常）
+        }
+
+        console.log("[知乎发布] 🧹 清空编辑器残留内容，长度:", beforeLength);
+
+        // 内层重试 2 轮：清空是「重试路径」上的必经关卡，一旦卡死会导致正文彻底写不进去
+        // （发出空正文文章比重复更糟），所以这里多给一次机会再抛错。
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                const target = getFreshEditorEle(editorEle);
+                target.focus();
+                await delay(150);
+
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(target);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand("delete", false, null);
+                await delay(300);
+            } catch (error) {
+                console.warn(`[知乎发布] ⚠️ 编辑器清空异常（第 ${attempt} 次）:`, error?.message || error);
+            }
+
+            const afterLength = getLength();
+            if (afterLength === 0) {
+                console.log("[知乎发布] ✅ 编辑器已清空");
+                return true;
+            }
+
+            console.warn(`[知乎发布] ⚠️ 第 ${attempt} 次清空后仍残留 ${afterLength} 字符`);
+            await delay(300);
+        }
+
+        // 两轮都没清干净就抛错，交给外层 retryOperation；绝不带着脏内容继续写入（那就是重复的来源）
+        throw new Error(`编辑器清空失败，仍残留 ${getLength()} 字符`);
+    }
+
     async function pasteHtmlIntoEditor(editorEle, htmlContent, plainText = "") {
         if (!htmlContent) return false;
 
@@ -297,7 +369,7 @@
         clipboardData.setData("text/html", htmlContent);
         clipboardData.setData("text/plain", expectedPlainText);
 
-        fresh.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+        fresh.dispatchEvent(new ClipboardEvent("paste", {clipboardData, bubbles: true, cancelable: true}));
         console.log("[知乎发布] ✅ 已触发粘贴事件");
 
         // 验证增量（每次验证也重新查询）
@@ -306,26 +378,35 @@
             const cur = getFreshEditorEle(editorEle);
             const afterLength = (cur.innerText || cur.textContent || "").trim().length;
             const increase = afterLength - beforeLength;
-            console.log(`[知乎发布] 第${i+1}次验证: 增加=${increase}, 预期=${expectedLength}, 总长=${afterLength}`);
+            console.log(`[知乎发布] 第${i + 1}次验证: 增加=${increase}, 预期=${expectedLength}, 总长=${afterLength}`);
             if (increase >= expectedLength * 0.8) {
-                console.log("[知乎发布] ✅ 验证通过:", (increase/expectedLength*100).toFixed(1) + "%");
+                console.log("[知乎发布] ✅ 验证通过:", (increase / expectedLength * 100).toFixed(1) + "%");
                 return true;
             }
         }
 
         console.error("[知乎发布] ❌ 内容验证失败");
+
+        // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：验证失败必须抛错
+        // 旧行为只 return false，而两处调用点都不接返回值 → 缺段被静默吞掉，
+        // 用户看到的就是「正文少了一整段」。抛错后交给外层 retryOperation，
+        // 重试前会先 clearZhihuEditor 清空，所以不会造成叠加重复。
+        if (window.isFeatureEnabled?.('FIX_ZHIHU_CONTENT_DUPLICATE')) {
+            throw new Error(`正文粘贴验证失败：预期增加 ${expectedLength} 字符，实际未达标`);
+        }
+
         return false;
     }
 
     async function tryUploadImageByUrlToZhihu(img) {
         const originalSrc = img?.getAttribute("src") || img?.src || "";
         if (!originalSrc || originalSrc.startsWith("data:")) {
-            return { skipped: true };
+            return {skipped: true};
         }
 
         if (originalSrc.includes("zhihu.com")) {
             console.log("[知乎发布] ⏭️ 跳过已有图片:", originalSrc.substring(0, 80));
-            return { skipped: true };
+            return {skipped: true};
         }
 
         const formData = new FormData();
@@ -351,7 +432,7 @@
 
         img.src = result.src;
         console.log("[知乎发布] ✅ URL 代传成功:", result.src);
-        return { success: true, src: result.src };
+        return {success: true, src: result.src};
     }
 
     async function replaceImagesWithZhihuUrls(tempDiv) {
@@ -400,7 +481,7 @@
 
         if (node.nodeType === Node.TEXT_NODE) {
             const normalizedText = String(node.textContent || "").replace(/\u00a0/g, " ");
-            return normalizedText.trim() ? [{ type: "nodes", nodes: [node.cloneNode(true)] }] : [];
+            return normalizedText.trim() ? [{type: "nodes", nodes: [node.cloneNode(true)]}] : [];
         }
 
         if (node.nodeType !== Node.ELEMENT_NODE) {
@@ -409,11 +490,11 @@
 
         if (node.tagName === "IMG") {
             const src = node.getAttribute("src") || node.src || "";
-            return src ? [{ type: "image", src, alt: node.getAttribute("alt") || "" }] : [];
+            return src ? [{type: "image", src, alt: node.getAttribute("alt") || ""}] : [];
         }
 
         if (!node.querySelector("img")) {
-            return [{ type: "nodes", nodes: [node.cloneNode(true)] }];
+            return [{type: "nodes", nodes: [node.cloneNode(true)]}];
         }
 
         const segments = [];
@@ -425,7 +506,7 @@
                 currentWrapper = node.cloneNode(false);
                 return;
             }
-            segments.push({ type: "nodes", nodes: [currentWrapper] });
+            segments.push({type: "nodes", nodes: [currentWrapper]});
             currentWrapper = node.cloneNode(false);
             hasCurrentChildren = false;
         };
@@ -527,14 +608,14 @@
             throw new Error("downloadFile 未定义，无法回退编辑器原生上传");
         }
 
-        const { blob, contentType } = await downloadFile(imageUrl, "image/jpeg");
+        const {blob, contentType} = await downloadFile(imageUrl, "image/jpeg");
         const extension = resolveImageExtension(imageUrl, contentType);
         const safeBaseName = String(baseName || "zhihu-image")
             .replace(/[\\/:*?"<>|]+/g, " ")
             .trim() || "zhihu-image";
         const fileName = `${safeBaseName}-image-${index}${extension}`;
 
-        return new File([blob], fileName, { type: contentType || "image/jpeg" });
+        return new File([blob], fileName, {type: contentType || "image/jpeg"});
     }
 
     function getZhihuBodyImageInputs(editorRoot) {
@@ -672,7 +753,12 @@
 
         for (const segment of segments) {
             if (segment.type === "html") {
-                await pasteHtmlIntoEditor(editorEle, segment.html, segment.plainText);
+                const pasted = await pasteHtmlIntoEditor(editorEle, segment.html, segment.plainText);
+                // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：旧代码丢弃返回值，某段没粘进去也照样往下走
+                // → 正文静默缺一段。现在失败就抛错交给外层重试（重试前会清空编辑器，不会叠加）。
+                if (!pasted && window.isFeatureEnabled?.('FIX_ZHIHU_CONTENT_DUPLICATE')) {
+                    throw new Error("正文分段粘贴失败（编辑器节点丢失或内容为空）");
+                }
                 continue;
             }
 
@@ -858,7 +944,7 @@
             const res = await fetch('https://www.zhihu.com/api/v4/me?include=is_realname', {
                 method: 'GET',
                 credentials: 'include',
-                headers: { 'Content-Type': 'application/json' }
+                headers: {'Content-Type': 'application/json'}
             });
             if (!res.ok) return 'unknown';
             const me = await res.json();
@@ -963,6 +1049,13 @@
         if (fillFormRunning) {
             return;
         }
+
+        // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：终态拦截，杜绝整篇（标题+正文+封面）被重跑
+        if (fillFormDone && window.isFeatureEnabled?.('FIX_ZHIHU_CONTENT_DUPLICATE')) {
+            console.warn("[知乎发布] ⚠️ fillFormData 已执行过，拒绝重复执行（防止正文叠加）");
+            return;
+        }
+
         fillFormRunning = true;
 
         const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
@@ -986,407 +1079,430 @@
             }
 
             await delay(window.getRandomDelayMs(10000));
+
+            // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：越过早退分支、即将真正写入页面，此刻起标记终态。
+            // 必须在写入【之前】置位而非结束时：中途抛错才是重跑的高发场景，
+            // 结束时才置等于没防护。
+            fillFormDone = true;
+
             // 标题（带重试和验证）
             await retryOperation(async () => {
-                    const titleEle = await waitForElement(".WriteIndex-titleInput textarea", 10000); // 🔑 增加到 10 秒
+                const titleEle = await waitForElement(".WriteIndex-titleInput textarea", 10000); // 🔑 增加到 10 秒
 
-                    // 先触发focus事件
-                    if (typeof titleEle.focus === 'function') {
-                        titleEle.focus();
-                    } else {
-                        titleEle.dispatchEvent(new Event('focus', { bubbles: true }));
-                    }
-
-                    // 延迟执行，让React状态稳定
-                    await window.delay(300);
-
-                    const targetTitle = dataObj.video.video.title || '';
-                    setNativeValue(titleEle, targetTitle);
-
-                    // 额外触发input事件
-                    titleEle.dispatchEvent(new Event('input', { bubbles: true }));
-
-                    // 等待 React 更新
-                    await window.delay(200);
-
-                    // 🔑 验证是否成功设置
-                    const currentValue = (titleEle.value || '').trim();
-                    const expectedValue = targetTitle.trim();
-                    if (currentValue !== expectedValue) {
-                        throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
-                    }
-
-                    console.log('[百家号发布] ✅ 标题设置成功:', currentValue);
-                }, 5, 1000);
-
-                try {
-                    // 内容（带重试，必须 await 完成后才能继续封面上传）
-                    await delay(window.getRandomDelayMs(200));
-                    try {
-                        await retryOperation(async () => {
-                                const editorIframeEle = await waitForElement(".PostEditor", 20000); // 🔑 增加到 20 秒
-                                const editorEle = editorIframeEle.querySelector(".public-DraftEditor-content > div");
-                                let htmlContent = dataObj.video.video.content;
-
-                                // 🔑 如果没有文字内容（只有图片没有文字），跳过内容填写
-                                // 避免对空内容触发粘贴事件导致 Draft.js handlePastedText 报错:
-                                // "Cannot read properties of null (reading 'trim')"
-                                if (!htmlContent || !htmlContent.trim()) {
-                                    console.log('[知乎发布] ℹ️ 无文字内容（content 为空），跳过内容填写');
-                                    return;
-                                }
-
-                                if (looksLikeZhihuSerializedPageState(htmlContent)) {
-                                    console.warn("[知乎发布] ⚠️ 正文疑似知乎页面状态 JSON，已跳过填充，避免把源码写入编辑器");
-                                    await dumpSuspiciousZhihuContent(htmlContent, "serialized-page-state");
-                                    return;
-                                }
-
-                                const normalizedOriginalHtml = normalizeZhihuHtmlContent(htmlContent);
-                                if (!normalizedOriginalHtml) {
-                                    console.log("[知乎发布] ℹ️ 清理空白后无正文内容，跳过内容填写");
-                                    return;
-                                }
-                                console.log("[知乎发布] 🧹 已清理开头空白内容");
-
-                                // 🔑 检查 editorEle 是否存在
-                                if (!editorEle) {
-                                    console.error('[知乎发布] ❌ 编辑器元素未找到');
-                                    throw new Error('编辑器元素未找到');
-                                }
-                                console.log('[知乎发布] ✅ 编辑器元素已找到:', editorEle.tagName, editorEle.className);
-
-                                const tempDiv = document.createElement("div");
-                                tempDiv.innerHTML = normalizedOriginalHtml;
-                                const replaceResult = await replaceImagesWithZhihuUrls(tempDiv);
-
-                                if (replaceResult.success) {
-                                    const normalizedConvertedHtml = normalizeZhihuHtmlContent(tempDiv.innerHTML);
-                                    console.log("[知乎发布] 📋 正文图片 URL 代传成功，准备整体粘贴内容...");
-                                    await pasteHtmlIntoEditor(
-                                        editorEle,
-                                        normalizedConvertedHtml,
-                                        extractPlainTextFromHtml(normalizedConvertedHtml)
-                                    );
-                                } else {
-                                    console.log("[知乎发布] 🔄 正文图片 URL 代传失败，切换为编辑器原生上传模式:", replaceResult);
-                                    await insertContentWithZhihuEditorFallback(
-                                        editorEle,
-                                        normalizedOriginalHtml,
-                                        dataObj?.video?.formData?.title || dataObj?.video?.video?.title || "zhihu"
-                                    );
-                                }
-
-                                console.log('[知乎发布] ✅ 内容填写完成');
-                            }, 3, 1000);
-                        } catch (e) {
-                            console.log('[知乎发布] ❌ 内容填写失败:', e.message);
-                            // 🔑 内容填写失败时，停止错误监听器，避免影响后续封面上传
-                            stopErrorListener();
-                        }
-                } catch (e) {
-                    console.log('[知乎发布] ❌ 内容填写失败:', e.message);
-                    stopErrorListener();
+                // 先触发focus事件
+                if (typeof titleEle.focus === 'function') {
+                    titleEle.focus();
+                } else {
+                    titleEle.dispatchEvent(new Event('focus', {bubbles: true}));
                 }
 
-                // 🔴 内容填写完成后，重启错误监听器（清除之前的错误状态）
-                stopErrorListener();
-                await delay(500);
-                startErrorListener();
-                console.log('[知乎发布] 🔄 已重启错误监听器，开始封面上传');
+                // 延迟执行，让React状态稳定
+                await window.delay(300);
 
-                // 设置封面（使用主进程下载绕过跨域）
-                await (async () => {
-                    try {
-                        const { blob, contentType } = await downloadFile(pathImage, "image/png");
-                        var file = new File([blob], dataObj?.video?.formData?.title + ".png", { type: contentType || "image/png" });
+                const targetTitle = dataObj.video.video.title || '';
+                setNativeValue(titleEle, targetTitle);
 
-                        await delay(window.getRandomDelayMs(1000));
-                        // 选中本地上传（点击"选择封面"按钮）
-                        await delay(window.getRandomDelayMs(2000));
-                        // 等待封面选择区域出现
-                        await waitForElement(".UploadPicture-wrapper");
-                        await delay(500); // 等待渲染完成
+                // 额外触发input事件
+                titleEle.dispatchEvent(new Event('input', {bubbles: true}));
 
-                        // 查找并点击"选择封面"按钮
-                        const coverBtn = document.querySelector(".UploadPicture-wrapper");
-                        console.log("🚀 ~  ~ coverBtn: ", coverBtn);
+                // 等待 React 更新
+                await window.delay(200);
 
-                                //检查是否已经有图片
-                                const coverWrapperEle = coverBtn.parentElement;
-                                console.log("🚀 ~  ~ coverWrapperEle: ", coverWrapperEle);
-                                if (coverWrapperEle) {
-                                    const imgEle = coverWrapperEle.querySelector("img");
-                                    console.log("🚀 ~  ~ imgEle: ", imgEle);
-                                    if (imgEle) {
-                                        const coverBg = imgEle.getAttribute("src");
-                                        // 检查是否有图片
-                                        if (coverBg) {
-                                            console.log("[知乎发布] ✅ 已经有图片");
-                                            const closeBtns = coverWrapperEle.querySelectorAll(".WriteCoverV2-buttonGroup button");
-                                            closeBtns.forEach(btn => {
-                                                if (btn.textContent.trim() === "删除") {
-                                                    btn.click();
-                                                }
-                                            });
-                                        } else {
-                                            console.log("[知乎发布] ❌ 没有图片");
-                                        }
-                                    }
-                                }
-                                await delay(1000); // 等待渲染完成
+                // 🔑 验证是否成功设置
+                const currentValue = (titleEle.value || '').trim();
+                const expectedValue = targetTitle.trim();
+                if (currentValue !== expectedValue) {
+                    throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+                }
 
-                                await delay(window.getRandomDelayMs(1000));
-                                const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
-                                const dataTransfer = new DataTransfer();
-                                // 创建 DataTransfer 对象模拟文件上传
-                                dataTransfer.items.add(file);
-                                input.files = dataTransfer.files;
-                                const event = new Event("change", { bubbles: true });
-                                input.dispatchEvent(event);
+                console.log('[百家号发布] ✅ 标题设置成功:', currentValue);
+            }, 5, 1000);
 
-                                // 封装上传检测与重试逻辑
-                                const tryUploadImage = async (retryCount = 0) => {
-                                        const maxRetries = 3;
+            try {
+                // 内容（带重试，必须 await 完成后才能继续封面上传）
+                await delay(window.getRandomDelayMs(200));
+                try {
+                    await retryOperation(async () => {
+                        const editorIframeEle = await waitForElement(".PostEditor", 20000); // 🔑 增加到 20 秒
+                        const editorEle = editorIframeEle.querySelector(".public-DraftEditor-content > div");
+                        let htmlContent = dataObj.video.video.content;
 
-                                        // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
-                                        const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
-                                            const startTime = Date.now();
-                                            const checkInterval = 500; // 🔑 增加到 500ms
-
-                                            while (Date.now() - startTime < timeout) {
-                                                // 1. 先检查是否有错误信息（优先级更高）
-                                                const errorMsg = getLatestError();
-                                                if (errorMsg) {
-                                                    return { type: "error", message: errorMsg };
-                                                }
-
-                                                // 2. 再检查图片元素是否出现（知乎的封面区域是 .UploadPicture-wrapper 的父元素）
-                                                const coverWrapper = document.querySelector(".UploadPicture-wrapper");
-                                                const coverParent = coverWrapper?.parentElement;
-                                                console.log("🚀 ~ waitForImageOrError ~ coverParent: ", coverParent);
-                                                if (coverParent) {
-                                                    const imgEle = coverParent.querySelector("img");
-                                                    if (imgEle && imgEle.getAttribute("src")) {
-                                                        // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
-                                                        // 因为 MutationObserver 是异步的，错误信息可能还在路上
-                                                        console.log("[知乎发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...");
-                                                        await delay(500);
-                                                        const confirmError = getLatestError();
-                                                        if (confirmError) {
-                                                            console.log("[知乎发布] ⚠️ 确认期间检测到错误:", confirmError);
-                                                            return { type: "error", message: confirmError };
-                                                        }
-                                                        return { type: "success", element: coverParent };
-                                                    }
-
-                                                    // 等待下一次检查
-                                                    await delay(checkInterval);
-                                                }
-
-                                                // 等待下一次检查
-                                                await delay(checkInterval);
-                                            }
-
-                                            // 超时，再检查一次错误信息
-                                            const finalError = getLatestError();
-                                            if (finalError) {
-                                                return { type: "error", message: finalError };
-                                            }
-
-                                            return { type: "timeout" };
-                                        };
-
-                                        const result = await waitForImageOrError(10000);
-                                        const myWindowId = await window.browserAPI.getWindowId();
-
-                                        // 🔴 检测到错误信息，直接上报失败
-                                        if (result.type === "error") {
-                                            console.log(`[知乎发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
-                                            stopErrorListener();
-                                            const publishId = dataObj.video?.dyPlatform?.id;
-                                            if (publishId) {
-                                                await sendStatisticsError(publishId, result.message, "知乎发布");
-                                            }
-                                            await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                            return; // 不再继续
-                                        }
-
-                                        if (result.type === "success") {
-                                            console.log("[知乎发布] ✅ 图片上传成功");
-
-                                            await delay(2000); // 等待渲染完成
-
-                                            const publishTime = dataObj.video.formData.send_set;
-                                            console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
-
-                                            // 找发布按钮
-                                            const publishBtns = document.querySelectorAll(".Button--primary");
-                                            console.log("🚀 ~ tryUploadImage ~ publishBtns: ", publishBtns);
-                                            let publishBtn = null;
-                                            if (publishBtns.length > 0) {
-                                                publishBtns.forEach(btn => {
-                                                    if (btn.textContent.trim() === "发布") {
-                                                        publishBtn = btn;
-                                                    }
-                                                });
-                                            }
-                                            if (publishBtn) {
-                                                console.log("🚀 ~ tryUploadImage ~ publishBtn: ", publishBtn);
-                                                console.log(publishBtn.disabled, 'publishBtn.disabled');
-                                                console.log(publishBtn.classList.contains("is--disabled"), 'publishBtn.classList.contains("is--disabled")');
-                                                console.log(publishBtn.getAttribute("disabled") !== null, 'publishBtn.getAttribute("disabled") !== null');
-                                                // 🔑 检查发布按钮是否 disabled
-                                                if (publishBtn.disabled || publishBtn.getAttribute("disabled") !== null) {
-                                                    console.error("[知乎发布] ❌ 发布按钮不可用(disabled)");
-                                                    stopErrorListener();
-                                                    const publishIdForError = dataObj.video?.dyPlatform?.id;
-                                                    if (publishIdForError) {
-                                                        await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "知乎发布");
-                                                    }
-                                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                                    return;
-                                                }
-
-                                                // 🔑 在点击发布前保存 publishId，让首页可以调用统计接口
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    try {
-                                                        // 同时设置全局变量和 localStorage，确保标志能被检测到
-                                                        window.__sohuPublishSuccessFlag = true;
-                                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
-                                                        console.log("[知乎发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
-
-                                                        // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
-                                                        if (window.browserAPI && window.browserAPI.setGlobalData) {
-                                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
-                                                            console.log('[知乎发布] 💾 已保存 publishId 到 globalData');
-                                                        }
-                                                    } catch (e) {
-                                                        console.error("[知乎发布] ❌ 保存 publishId 失败:", e);
-                                                    }
-                                                } else {
-                                                    // 即使没有 publishId，也要设置全局变量允许跳转
-                                                    window.__sohuPublishSuccessFlag = true;
-                                                    console.log("[知乎发布] ℹ️ 没有 publishId，但已设置跳转标志");
-                                                }
-
-                                                const clickEvent = new MouseEvent("click", {
-                                                    view: window,
-                                                    bubbles: true,
-                                                    cancelable: true,
-                                                });
-                                                publishBtn.dispatchEvent(clickEvent);
-                                                //return;
-                                                console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
-                                                // 成功统计仅由成功页发送，避免点击成功抢占真实结果的去重锁。
-
-                                                // 🔴 等待 2 秒后检查是否有错误消息
-                                                await delay(2000);
-                                                const publishErrorMsg = getLatestError();
-                                                if (publishErrorMsg) {
-                                                    console.log("[知乎发布] ❌ 点击发布后检测到错误:", publishErrorMsg);
-                                                    stopErrorListener();
-                                                    const publishId = dataObj.video?.dyPlatform?.id;
-                                                    if (publishId) {
-                                                        await sendStatisticsError(publishId, publishErrorMsg, "知乎发布");
-                                                    }
-                                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                                    return;
-                                                } else {
-                                                    console.log("[知乎发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）");
-                                                    stopErrorListener();
-                                                }
-                                            } else {
-                                                console.error("[知乎发布] ❌ 找不到发布按钮，上报失败");
-                                                stopErrorListener();
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    await sendStatisticsError(publishId, "发布按钮不可用", "知乎发布");
-                                                }
-                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                            }
-                                        } else {
-                                            // 图片上传失败（timeout），检查是否有错误信息
-                                            const myWindowId = await window.browserAPI.getWindowId();
-                                            console.log(`[知乎发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
-
-                                            // 优先使用全局错误监听器捕获的错误
-                                            const errorMessage = getLatestError();
-                                            console.log(`[知乎发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
-
-                                            // 🔴 有错误信息就直接走失败接口，不再重试
-                                            if (errorMessage) {
-                                                console.log(`[知乎发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
-                                                stopErrorListener(); // 停止监听
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                console.log(`[知乎发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
-                                                console.log(`[知乎发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
-                                                if (publishId) {
-                                                    console.log(`[知乎发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
-                                                    await sendStatisticsError(publishId, errorMessage, "知乎发布");
-                                                    console.log(`[知乎发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
-                                                } else {
-                                                    console.error(`[知乎发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
-                                                }
-                                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
-                                                return; // 不再继续
-                                            }
-
-                                            // 没有错误信息才重试
-                                            if (retryCount < maxRetries) {
-                                                console.log(`[知乎发布] 🔄 ${2}秒后重新上传图片...`);
-                                                await delay(2000);
-
-                                                // 重新触发文件上传
-                                                const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
-                                                if (input) {
-                                                    input.files = dataTransfer.files;
-                                                    const event = new Event("change", { bubbles: true });
-                                                    input.dispatchEvent(event);
-                                                    console.log("[知乎发布] 🔄 已重新触发上传");
-
-                                                    // 递归重试
-                                                    await delay(2000);
-                                                    await tryUploadImage(retryCount + 1);
-                                                } else {
-                                                    console.error("[知乎发布] ❌ 无法找到上传输入框，无法重试");
-                                                    stopErrorListener();
-                                                    const publishId = dataObj.video?.dyPlatform?.id;
-                                                    if (publishId) {
-                                                        await sendStatisticsError(publishId, "图片上传失败，无法找到上传输入框", "知乎发布");
-                                                    }
-                                                    await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
-                                                }
-                                            } else {
-                                                // 超过最大重试次数
-                                                console.error("[知乎发布] ❌ 图片上传重试次数已用尽");
-                                                stopErrorListener();
-                                                const publishId = dataObj.video?.dyPlatform?.id;
-                                                if (publishId) {
-                                                    await sendStatisticsError(publishId, "图片上传失败，重试次数已用尽", "知乎发布");
-                                                }
-                                                await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
-                                            }
-                                        }
-                                    };
-
-                                    // 启动上传检测（延迟2秒等待上传开始）
-                                    await delay(window.getRandomDelayMs(2000));
-                                    await tryUploadImage(0);
-                    } catch (error) {
-                        console.log("[知乎发布] ❌ 封面下载失败:", error);
-                        stopErrorListener();
-                        const publishId = dataObj?.video?.dyPlatform?.id;
-                        if (publishId) {
-                            await sendStatisticsError(publishId, error.message || "封面下载失败", "知乎发布");
+                        // 🔑 如果没有文字内容（只有图片没有文字），跳过内容填写
+                        // 避免对空内容触发粘贴事件导致 Draft.js handlePastedText 报错:
+                        // "Cannot read properties of null (reading 'trim')"
+                        if (!htmlContent || !htmlContent.trim()) {
+                            console.log('[知乎发布] ℹ️ 无文字内容（content 为空），跳过内容填写');
+                            return;
                         }
-                        await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
-                    }
-                })();
 
-                fillFormRunning = false;
-                // alert('Automation process completed');
+                        if (looksLikeZhihuSerializedPageState(htmlContent)) {
+                            console.warn("[知乎发布] ⚠️ 正文疑似知乎页面状态 JSON，已跳过填充，避免把源码写入编辑器");
+                            await dumpSuspiciousZhihuContent(htmlContent, "serialized-page-state");
+                            return;
+                        }
+
+                        const normalizedOriginalHtml = normalizeZhihuHtmlContent(htmlContent);
+                        if (!normalizedOriginalHtml) {
+                            console.log("[知乎发布] ℹ️ 清理空白后无正文内容，跳过内容填写");
+                            return;
+                        }
+                        console.log("[知乎发布] 🧹 已清理开头空白内容");
+
+                        // 🔑 检查 editorEle 是否存在
+                        if (!editorEle) {
+                            console.error('[知乎发布] ❌ 编辑器元素未找到');
+                            throw new Error('编辑器元素未找到');
+                        }
+                        console.log('[知乎发布] ✅ 编辑器元素已找到:', editorEle.tagName, editorEle.className);
+
+                        // 🔑 FIX_ZHIHU_CONTENT_DUPLICATE：写入前清空编辑器，把整块变成幂等操作
+                        // 这是「正文重复」的核心修复：本回调被 retryOperation 包着，
+                        // 下面任一环节抛错（图片上传超时 / 找不到上传 input / 图片下载失败 /
+                        // 粘贴验证失败）都会整块重跑。Draft.js 的 paste 是插入语义，
+                        // 不清空的话第二遍就会原样追加在第一遍后面。
+                        // 放在此处而非回调开头：前面几个早退分支（无正文 / 疑似页面状态 JSON /
+                        // 清理后为空）不写入任何内容，不该动用户编辑器里已有的东西。
+                        if (window.isFeatureEnabled?.('FIX_ZHIHU_CONTENT_DUPLICATE')) {
+                            await clearZhihuEditor(editorEle);
+                        }
+
+                        const tempDiv = document.createElement("div");
+                        tempDiv.innerHTML = normalizedOriginalHtml;
+                        const replaceResult = await replaceImagesWithZhihuUrls(tempDiv);
+
+                        if (replaceResult.success) {
+                            const normalizedConvertedHtml = normalizeZhihuHtmlContent(tempDiv.innerHTML);
+                            console.log("[知乎发布] 📋 正文图片 URL 代传成功，准备整体粘贴内容...");
+                            await pasteHtmlIntoEditor(
+                                editorEle,
+                                normalizedConvertedHtml,
+                                extractPlainTextFromHtml(normalizedConvertedHtml)
+                            );
+                        } else {
+                            console.log("[知乎发布] 🔄 正文图片 URL 代传失败，切换为编辑器原生上传模式:", replaceResult);
+                            await insertContentWithZhihuEditorFallback(
+                                editorEle,
+                                normalizedOriginalHtml,
+                                dataObj?.video?.formData?.title || dataObj?.video?.video?.title || "zhihu"
+                            );
+                        }
+
+                        console.log('[知乎发布] ✅ 内容填写完成');
+                    }, 3, 1000);
+                } catch (e) {
+                    console.log('[知乎发布] ❌ 内容填写失败:', e.message);
+                    // 🔑 内容填写失败时，停止错误监听器，避免影响后续封面上传
+                    stopErrorListener();
+                }
+            } catch (e) {
+                console.log('[知乎发布] ❌ 内容填写失败:', e.message);
+                stopErrorListener();
+            }
+
+            // 🔴 内容填写完成后，重启错误监听器（清除之前的错误状态）
+            stopErrorListener();
+            await delay(500);
+            startErrorListener();
+            console.log('[知乎发布] 🔄 已重启错误监听器，开始封面上传');
+
+            // 设置封面（使用主进程下载绕过跨域）
+            await (async () => {
+                try {
+                    const {blob, contentType} = await downloadFile(pathImage, "image/png");
+                    var file = new File([blob], dataObj?.video?.formData?.title + ".png", {type: contentType || "image/png"});
+
+                    await delay(window.getRandomDelayMs(1000));
+                    // 选中本地上传（点击"选择封面"按钮）
+                    await delay(window.getRandomDelayMs(2000));
+                    // 等待封面选择区域出现
+                    await waitForElement(".UploadPicture-wrapper");
+                    await delay(500); // 等待渲染完成
+
+                    // 查找并点击"选择封面"按钮
+                    const coverBtn = document.querySelector(".UploadPicture-wrapper");
+                    console.log("🚀 ~  ~ coverBtn: ", coverBtn);
+
+                    //检查是否已经有图片
+                    const coverWrapperEle = coverBtn.parentElement;
+                    console.log("🚀 ~  ~ coverWrapperEle: ", coverWrapperEle);
+                    if (coverWrapperEle) {
+                        const imgEle = coverWrapperEle.querySelector("img");
+                        console.log("🚀 ~  ~ imgEle: ", imgEle);
+                        if (imgEle) {
+                            const coverBg = imgEle.getAttribute("src");
+                            // 检查是否有图片
+                            if (coverBg) {
+                                console.log("[知乎发布] ✅ 已经有图片");
+                                const closeBtns = coverWrapperEle.querySelectorAll(".WriteCoverV2-buttonGroup button");
+                                closeBtns.forEach(btn => {
+                                    if (btn.textContent.trim() === "删除") {
+                                        btn.click();
+                                    }
+                                });
+                            } else {
+                                console.log("[知乎发布] ❌ 没有图片");
+                            }
+                        }
+                    }
+                    await delay(1000); // 等待渲染完成
+
+                    await delay(window.getRandomDelayMs(1000));
+                    const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
+                    const dataTransfer = new DataTransfer();
+                    // 创建 DataTransfer 对象模拟文件上传
+                    dataTransfer.items.add(file);
+                    input.files = dataTransfer.files;
+                    const event = new Event("change", {bubbles: true});
+                    input.dispatchEvent(event);
+
+                    // 封装上传检测与重试逻辑
+                    const tryUploadImage = async (retryCount = 0) => {
+                        const maxRetries = 3;
+
+                        // 🔴 自定义等待逻辑：同时检查图片元素和错误信息
+                        const waitForImageOrError = async (timeout = 30000) => { // 🔑 增加到 30 秒
+                            const startTime = Date.now();
+                            const checkInterval = 500; // 🔑 增加到 500ms
+
+                            while (Date.now() - startTime < timeout) {
+                                // 1. 先检查是否有错误信息（优先级更高）
+                                const errorMsg = getLatestError();
+                                if (errorMsg) {
+                                    return {type: "error", message: errorMsg};
+                                }
+
+                                // 2. 再检查图片元素是否出现（知乎的封面区域是 .UploadPicture-wrapper 的父元素）
+                                const coverWrapper = document.querySelector(".UploadPicture-wrapper");
+                                const coverParent = coverWrapper?.parentElement;
+                                console.log("🚀 ~ waitForImageOrError ~ coverParent: ", coverParent);
+                                if (coverParent) {
+                                    const imgEle = coverParent.querySelector("img");
+                                    if (imgEle && imgEle.getAttribute("src")) {
+                                        // 🔑 检测到图片元素后，再等待 500ms 确认是否有错误
+                                        // 因为 MutationObserver 是异步的，错误信息可能还在路上
+                                        console.log("[知乎发布] 🔍 检测到图片元素，等待 500ms 确认是否有错误...");
+                                        await delay(500);
+                                        const confirmError = getLatestError();
+                                        if (confirmError) {
+                                            console.log("[知乎发布] ⚠️ 确认期间检测到错误:", confirmError);
+                                            return {type: "error", message: confirmError};
+                                        }
+                                        return {type: "success", element: coverParent};
+                                    }
+
+                                    // 等待下一次检查
+                                    await delay(checkInterval);
+                                }
+
+                                // 等待下一次检查
+                                await delay(checkInterval);
+                            }
+
+                            // 超时，再检查一次错误信息
+                            const finalError = getLatestError();
+                            if (finalError) {
+                                return {type: "error", message: finalError};
+                            }
+
+                            return {type: "timeout"};
+                        };
+
+                        const result = await waitForImageOrError(10000);
+                        const myWindowId = await window.browserAPI.getWindowId();
+
+                        // 🔴 检测到错误信息，直接上报失败
+                        if (result.type === "error") {
+                            console.log(`[知乎发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败: ${result.message}`);
+                            stopErrorListener();
+                            const publishId = dataObj.video?.dyPlatform?.id;
+                            if (publishId) {
+                                await sendStatisticsError(publishId, result.message, "知乎发布");
+                            }
+                            await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                            return; // 不再继续
+                        }
+
+                        if (result.type === "success") {
+                            console.log("[知乎发布] ✅ 图片上传成功");
+
+                            await delay(2000); // 等待渲染完成
+
+                            const publishTime = dataObj.video.formData.send_set;
+                            console.log("🚀 ~ tryUploadImage ~ publishTime: ", publishTime);
+
+                            // 找发布按钮
+                            const publishBtns = document.querySelectorAll(".Button--primary");
+                            console.log("🚀 ~ tryUploadImage ~ publishBtns: ", publishBtns);
+                            let publishBtn = null;
+                            if (publishBtns.length > 0) {
+                                publishBtns.forEach(btn => {
+                                    if (btn.textContent.trim() === "发布") {
+                                        publishBtn = btn;
+                                    }
+                                });
+                            }
+                            if (publishBtn) {
+                                console.log("🚀 ~ tryUploadImage ~ publishBtn: ", publishBtn);
+                                console.log(publishBtn.disabled, 'publishBtn.disabled');
+                                console.log(publishBtn.classList.contains("is--disabled"), 'publishBtn.classList.contains("is--disabled")');
+                                console.log(publishBtn.getAttribute("disabled") !== null, 'publishBtn.getAttribute("disabled") !== null');
+                                // 🔑 检查发布按钮是否 disabled
+                                if (publishBtn.disabled || publishBtn.getAttribute("disabled") !== null) {
+                                    console.error("[知乎发布] ❌ 发布按钮不可用(disabled)");
+                                    stopErrorListener();
+                                    const publishIdForError = dataObj.video?.dyPlatform?.id;
+                                    if (publishIdForError) {
+                                        await sendStatisticsError(publishIdForError, "发布按钮不可用，可能不符合发布要求，或者发文次数已用尽", "知乎发布");
+                                    }
+                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                    return;
+                                }
+
+                                // 🔑 在点击发布前保存 publishId，让首页可以调用统计接口
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                    try {
+                                        // 同时设置全局变量和 localStorage，确保标志能被检测到
+                                        window.__sohuPublishSuccessFlag = true;
+                                        localStorage.setItem(getPublishSuccessKey(), JSON.stringify({
+                                            publishId: publishId,
+                                            taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                        }));
+                                        console.log("[知乎发布] 💾 已保存 publishId（全局变量 + localStorage）:", publishId);
+
+                                        // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+                                        if (window.browserAPI && window.browserAPI.setGlobalData) {
+                                            await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${currentWindowId}`, {
+                                                publishId: publishId,
+                                                taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                            });
+                                            console.log('[知乎发布] 💾 已保存 publishId 到 globalData');
+                                        }
+                                    } catch (e) {
+                                        console.error("[知乎发布] ❌ 保存 publishId 失败:", e);
+                                    }
+                                } else {
+                                    // 即使没有 publishId，也要设置全局变量允许跳转
+                                    window.__sohuPublishSuccessFlag = true;
+                                    console.log("[知乎发布] ℹ️ 没有 publishId，但已设置跳转标志");
+                                }
+
+                                const clickEvent = new MouseEvent("click", {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true,
+                                });
+                                publishBtn.dispatchEvent(clickEvent);
+                                //return;
+                                console.log("[知乎发布] ✅ 已点击发布（模拟鼠标事件）");
+                                // 成功统计仅由成功页发送，避免点击成功抢占真实结果的去重锁。
+
+                                // 🔴 等待 2 秒后检查是否有错误消息
+                                await delay(2000);
+                                const publishErrorMsg = getLatestError();
+                                if (publishErrorMsg) {
+                                    console.log("[知乎发布] ❌ 点击发布后检测到错误:", publishErrorMsg);
+                                    stopErrorListener();
+                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                    if (publishId) {
+                                        await sendStatisticsError(publishId, publishErrorMsg, "知乎发布");
+                                    }
+                                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                    return;
+                                } else {
+                                    console.log("[知乎发布] ✅ 未检测到错误，等待页面跳转（由 publish-success.js 处理）");
+                                    stopErrorListener();
+                                }
+                            } else {
+                                console.error("[知乎发布] ❌ 找不到发布按钮，上报失败");
+                                stopErrorListener();
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                    await sendStatisticsError(publishId, "发布按钮不可用", "知乎发布");
+                                }
+                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                            }
+                        } else {
+                            // 图片上传失败（timeout），检查是否有错误信息
+                            const myWindowId = await window.browserAPI.getWindowId();
+                            console.log(`[知乎发布] [窗口${myWindowId}] ❌ 图片上传失败，重试次数: ${retryCount}/${maxRetries}`);
+
+                            // 优先使用全局错误监听器捕获的错误
+                            const errorMessage = getLatestError();
+                            console.log(`[知乎发布] [窗口${myWindowId}] 📨 最新错误信息:`, errorMessage);
+
+                            // 🔴 有错误信息就直接走失败接口，不再重试
+                            if (errorMessage) {
+                                console.log(`[知乎发布] [窗口${myWindowId}] ❌ 检测到错误信息，直接上报失败，不再重试`);
+                                stopErrorListener(); // 停止监听
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                console.log(`[知乎发布] [窗口${myWindowId}] 📋 publishId:`, publishId);
+                                console.log(`[知乎发布] [窗口${myWindowId}] 📋 dataObj:`, dataObj);
+                                if (publishId) {
+                                    console.log(`[知乎发布] [窗口${myWindowId}] 📤 调用 sendStatisticsError...`);
+                                    await sendStatisticsError(publishId, errorMessage, "知乎发布");
+                                    console.log(`[知乎发布] [窗口${myWindowId}] ✅ sendStatisticsError 完成`);
+                                } else {
+                                    console.error(`[知乎发布] [窗口${myWindowId}] ❌ publishId 为空，无法调用失败接口！`);
+                                }
+                                await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                                return; // 不再继续
+                            }
+
+                            // 没有错误信息才重试
+                            if (retryCount < maxRetries) {
+                                console.log(`[知乎发布] 🔄 ${2}秒后重新上传图片...`);
+                                await delay(2000);
+
+                                // 重新触发文件上传
+                                const input = document.querySelector(".UploadPicture-wrapper input[type='file']");
+                                if (input) {
+                                    input.files = dataTransfer.files;
+                                    const event = new Event("change", {bubbles: true});
+                                    input.dispatchEvent(event);
+                                    console.log("[知乎发布] 🔄 已重新触发上传");
+
+                                    // 递归重试
+                                    await delay(2000);
+                                    await tryUploadImage(retryCount + 1);
+                                } else {
+                                    console.error("[知乎发布] ❌ 无法找到上传输入框，无法重试");
+                                    stopErrorListener();
+                                    const publishId = dataObj.video?.dyPlatform?.id;
+                                    if (publishId) {
+                                        await sendStatisticsError(publishId, "图片上传失败，无法找到上传输入框", "知乎发布");
+                                    }
+                                    await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
+                                }
+                            } else {
+                                // 超过最大重试次数
+                                console.error("[知乎发布] ❌ 图片上传重试次数已用尽");
+                                stopErrorListener();
+                                const publishId = dataObj.video?.dyPlatform?.id;
+                                if (publishId) {
+                                    await sendStatisticsError(publishId, "图片上传失败，重试次数已用尽", "知乎发布");
+                                }
+                                await closeWindowWithMessage("图片上传失败，刷新数据", 1000);
+                            }
+                        }
+                    };
+
+                    // 启动上传检测（延迟2秒等待上传开始）
+                    await delay(window.getRandomDelayMs(2000));
+                    await tryUploadImage(0);
+                } catch (error) {
+                    console.log("[知乎发布] ❌ 封面下载失败:", error);
+                    stopErrorListener();
+                    const publishId = dataObj?.video?.dyPlatform?.id;
+                    if (publishId) {
+                        await sendStatisticsError(publishId, error.message || "封面下载失败", "知乎发布");
+                    }
+                    await closeWindowWithMessage("封面下载失败，刷新数据", 1000);
+                }
+            })();
+
+            fillFormRunning = false;
+            // alert('Automation process completed');
         } catch (error) {
             // 捕获填写表单过程中的任何错误
             console.error("[知乎发布] fillFormData 错误:", error);
@@ -1427,7 +1543,7 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
         }
 
         console.log("[知乎发布] ✅ 找到触发器，点击打开下拉列表");
-        selectTrigger.dispatchEvent(new Event("mousedown", { bubbles: true }));
+        selectTrigger.dispatchEvent(new Event("mousedown", {bubbles: true}));
 
         // 等待下拉出现 - 增加等待时间到 1000ms
         await window.delay(1000);
@@ -1527,12 +1643,12 @@ async function selectFromVirtualList(selectElement, targetValue, targetIndex = 0
         }
 
         // 4. 滚动到视图并点击
-        foundOption.scrollIntoView({ behavior: "auto", block: "nearest" });
+        foundOption.scrollIntoView({behavior: "auto", block: "nearest"});
         await window.delay(300);
 
         console.log("[知乎发布] 🖱️ 点击选项:", foundOption.textContent.trim());
         console.log("🚀 ~ selectFromVirtualList ~ foundOption: ", foundOption);
-        foundOption.querySelector(".ne-select-item-option-content").dispatchEvent(new Event("click", { bubbles: true }));
+        foundOption.querySelector(".ne-select-item-option-content").dispatchEvent(new Event("click", {bubbles: true}));
 
         // 等待下拉关闭
         await window.delay(500);
