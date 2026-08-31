@@ -116,10 +116,9 @@ function appendStartupSwitch(name, value) {
 }
 
 function getLegacyWindowsGpuWorkaroundInfo() {
-  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-  // Windows 10 1607/LTSB(10.0.14393)：老核显(如 HD2500)保留 GPU 时 GPU 子进程会崩弹"已停止工作"，
-  // 故 1607 走软件渲染(禁 GPU)+renderer 启动兼容参数。注：历史注释曾称"1607 禁 GPU 也 launch-failed"，
-  // 实为真凶 360 拦截期的污染误判(2026-06-10 真机证实)，加白名单后禁 GPU 无此问题。
+  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）。
+  // Win10（包括 1607/LTSB）保留普通 GPU 启动路径，避免额外兼容开关引入 renderer 启动风险。
+  // 旧版记录中关于 1607 需要禁 GPU/兼容参数的结论属于特定环境下的排查结果，不再作为默认分支。
   // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
   if (process.platform !== 'win32') {
     return {
@@ -9209,11 +9208,21 @@ function createWindow() {
         });
         if (result.response === 0) {
           try {
+            if (!browserView || !browserView.webContents
+                || browserView.webContents.isDestroyed()) {
+              console.warn('[BrowserView] ⚠️ 渲染进程已销毁，跳过 reload 恢复');
+              return;
+            }
             browserView.webContents.reload();
           } catch (err) {
             console.error('[BrowserView] ❌ 重新加载失败:', err);
           }
         } else if (result.response === 1) {
+          if (!browserView || !browserView.webContents
+              || browserView.webContents.isDestroyed()) {
+            console.warn('[BrowserView] ⚠️ 渲染进程已销毁，跳过回登录页');
+            return;
+          }
           await navigateToLoginInternal('render_process_gone');
         }
       })().catch(err => {
@@ -15293,7 +15302,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
     if (!isBareToutiao) {
       windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
       // 🩹 把"软件渲染回退"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
-      // 仅真正禁用 GPU 的 Win7/8 注入；Win10 1607 只做 renderer 启动兼容，不启用页面自动巡检。
+      // 仅真正禁用 GPU 的 Win7/8 注入；普通 Win10（包括 1607）不启用页面自动巡检。
       if (shouldDisableHardwareAcceleration) {
         windowWebPreferences.additionalArguments = ['--yyzs-legacy-windows=1'];
       }
