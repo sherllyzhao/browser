@@ -93,6 +93,102 @@ const FIX_STRICT_LOGIN_CREDENTIAL_GUARD = true;
 //   ③自愈失败回退系统默认 userData 目录，宁可数据换地方也不能让应用起不来，并在启动后提示用户
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：仅在不存在时创建，失败只打日志）
 const FIX_PORTABLE_DATA_DIR_GUARD = true;
+// 【特性开关】2026-08-31 新浪号「授权是对的，点重新发布/内容管理就掉登录」：
+// 新浪的 cookie 名单做不出判死——SUB/SUBP 过期后仍留在本地，SCF@.weibo.com 在
+// 「失效 → 手动重登」前后值完全相同（实测 session-diagnostic.log 09:55~10:36）。
+// 于是形式判定把死 session 判成已登录，同时毒化两条链路：
+//   ①开窗仲裁 localHasLogin=true → skipRestore → 沿用死 session → 服务端打回 passport 登录页
+//   ②关窗回存预检放行 → 死快照 POST xlinfo → 后台 HTTP 200 + 业务「授权失败」拒收
+//     → 后台/本地缓存都停在死快照 → 下次开窗还是它，只有人工重登能打破
+// 修法：新浪判活改由服务端接口 getbaseinfo（有 data.userInfo.uid 才算活）裁决，
+//   判死则静默停窗——不回存、清 latest_session 缓存，后台保留上一份好快照。
+// 另配套：①platformDomains 补 weibo.cn（否则 .weibo.cn 整组 SSO cookie 从不入库）
+//   ②严格凭证名单收到 ['ALF','SSOLoginState']（ALF 是登录才下发的一年期自动登录 token）
+//   ③禁止拿平台 uid 当 backendAccountId（内容管理窗口无 publishData 时会把好 cookie 存到错记录）
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：纯 cookie 形式判定，不做服务端探活）
+const FIX_XINLANG_LOGIN_ALIVE_PROBE = true;
+
+// 【特性开关】2026-08-31 内容管理入口拿不到后台快照：
+// 父页面 ContentManageButton.vue 传的是 options.cookies，而主进程全程只认 options.sessionData
+// （发布路径能用是因为 content-preload.js 的 sendToOtherPage 里做了
+//  openOptions.sessionData = element.cookies 这一步转换，内容管理没走那条路）。
+// 结果内容管理窗只能靠账号分区 persist:<platform>_<id> 里的旧 cookie：
+// GEO 授权入口 geo/components/AddAccount.vue 开授权窗只传 {useTemporarySession:true}，
+// 没有 platform/accountId，授权脚本回写账号 session 的分支拿不到上下文 → 只写进 persist:browserview，
+// 账号分区里还是那份死 cookie → 「重新授权是对的，点内容管理照样跳登录页」。
+// 修法：开窗时把 options.cookies 归一成 options.sessionData，让内容管理与发布共用同一条会话仲裁链路
+// （仲裁本身不变：本地活 + 传入无凭证仍然跳过恢复，不会拿坏快照擦掉好登录态）。
+// 生产出问题改 false 重打包即可降级（回退旧行为：内容管理忽略 options.cookies）
+const FIX_MANAGED_WINDOW_COOKIES_AS_SESSION = true;
+
+// 🔐 FIX_XINLANG_PUBLISH_HOST_PROBE（2026-08-31）：新浪探活补发布域那一段。
+// mp.sina.com.cn（创作平台）与 weibo.com 主站是两套登录态，发布/内容管理都跑在
+// card.weibo.com，要的是主站那套。mp 活着而主站死了时，card 页返回 HTTP 200 +
+// `<meta http-equiv="refresh" content="0; url=https://weibo.com/">`（主进程层面看不到 302），
+// 再由 weibo.com 前端跳 /newlogin?...&url= —— 只探 mp 的旧实现会把这种会话判成"活着"，
+// 于是跳过后台快照恢复、直接拿死 session 开窗，用户看到的就是"重定向不过去"。
+// 禁用后回退为只探创作平台（判死更保守，但抱不住掉登录）。
+const FIX_XINLANG_PUBLISH_HOST_PROBE = true;
+
+// 🔐 FIX_XINLANG_NEWLOGIN_LANDING_GUARD（2026-08-31）：窗口真被弹到 weibo.com/newlogin 时判死。
+// 这是平台亲口给的判据，零推测：落地即把该 session 写进探活 memo 判死并清 latest_session 缓存，
+// 于是关窗不会把死快照回存、下次开窗直接落到后台好快照上。授权窗（临时 session）排除——
+// 它本来就该停在登录页等扫码。禁用后回退旧行为（只靠 HTTP 探活）。
+const FIX_XINLANG_NEWLOGIN_LANDING_GUARD = true;
+
+// 🔐 FIX_WEIBO_NEWLOGIN_URL_PATTERN（2026-08-31）：把 '/newlogin' 补进通用登录页判据。
+// 三份同名清单里都只有 '/login'，而微博的登录页是 weibo.com/newlogin ——
+// "login" 前面是 w 不是 /，'/login' 根本匹配不到它。连带三处失效：
+//   ① publish-window-bounced-to-login 诊断日志对新浪从来没打过（历次排查都看不到掉登录现场）
+//   ② purgeDeadLatestSessionCacheOnLoginBounce（全平台通用死缓存清理）对新浪从不触发
+//   ③ 人工在发布窗口里重登成功后，「登录页→业务页」的即时回存不触发（只剩关窗回存兜底）
+// 禁用后回退旧行为（新浪的登录页弹跳继续只由 FIX_XINLANG_NEWLOGIN_LANDING_GUARD 兜）。
+const FIX_WEIBO_NEWLOGIN_URL_PATTERN = true;
+
+// 🔐 FIX_APP_LOG_OPEN_GUARD（2026-08-31）：app.log 打不开时不许把程序打死。
+// 现场：客户双击便携版弹「运行错误 / EPERM: operation not permitted, open '...\app.log'」。
+// 两个原因叠加：
+//   ① createWriteStream 的打开是异步的，EPERM/EBUSY 以流的 'error' 事件抛出；原代码既没 try/catch
+//      也没挂 'error' 监听 → Node 升级成 uncaughtException → 走到 dialog.showErrorBox('运行错误')。
+//      代码自己写着"日志写入永远不能影响主流程"，唯独漏了流的创建这一步。
+//   ② 升级清理跑在 app.requestSingleInstanceLock() 之前，第二实例会先把第一实例正在写的
+//      app.log 删掉，才在 whenReady 守卫里发现自己该退出；Windows 下文件被别的进程持着句柄时
+//      unlink 只是"标记删除"，文件名还在，之后任何 open 一律 EPERM。
+// 修法：日志流创建加兜底（打不开就只走控制台），且升级清理不再碰 app.log
+//      （日志本来就有 10MB 轮转 / 50MB 丢弃，不需要清理插手，留着还能看出上一版跑的是哪个构建）。
+// 禁用后回退旧行为（清理删日志 + 流创建裸奔）。
+const FIX_APP_LOG_OPEN_GUARD = true;
+
+// 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD（2026-08-31）：冻结的旧任务快照不得覆盖更新的本地登录。
+// 现场：小红书授权正常，打开发布窗口掉登录 → 用户在窗口里手动登录成功并发布 →
+//      同一个发布任务点「重新发布」又掉登录；而重新新建一个发布任务就正常（且没重新授权）。
+// 发布任务把 element.cookies 快照冻在任务记录里，每次「重新发布」都拿这份不变的旧快照
+// 走「先清空账号 session 再恢复」，于是窗口里刚建立的新登录态每次都被旧快照擦掉；
+// 新建任务取的是后台被回存刷新过的快照，所以反而正常——这解释了三个现象为什么同时成立。
+// 两个具体缺陷：
+//   ① platformIdentityCookies.xiaohongshu = ['web_session']，而 web_session 同时是该平台唯一的
+//      会话凭证（登录即变）。身份名单的契约是"不随 token 刷新而改变"，用凭证当身份，
+//      同账号重新登录必然被 matchAccountIdentity 判成 identityMatch=false「换账号」→ 强制清空恢复。
+//      同款重叠还有百家号 BDUSS、知乎 z_c0、搜狐 ppinf。
+//   ② 通往"清空恢复"的三条路（shouldForceIncomingSessionRestore / identityMatch===false /
+//      incomingLoginSignatureDiffers）都只问"两边是否不同"，不问"哪边更新"——方向盲。
+//      本地无 latest_session_ 缓存时（后台账号 id 缺失就永远写不出缓存）快照恒胜。
+// 修法：身份名单剔除同时是会话凭证的名字（剔空则返回"无法验证"而不是"换账号"）；
+//      给账号 session 记一枚登录新鲜度戳（值签名 + 该登录态的来源时间），
+//      本地凭证与戳对得上且戳比传入快照新时，一律跳过清空恢复。
+//      无戳时保持旧行为，不动"重新授权后必须用后台新快照"这条既有修复。
+const FIX_SESSION_RESTORE_BACKFLOW_GUARD = true;
+
+// 🗂 FIX_UPGRADE_CLEANUP_KEEP_LOGS（2026-08-31）：升级清理不再整目录删 logs。
+// 现场：排查小红书掉登录时想看 session-diagnostic.log，结果 logs/ 一条不剩——
+// 升级清理把整个目录 rmSync 掉了，于是"每次版本变更 = 排查线索清零"，
+// 而掉登录这类问题恰恰是升级后才被发现的，等于永远看不到现场，只能靠读代码反推。
+// 但也不能完全不清：诊断日志会无界增长。改为按保留期 + 总量上限修剪：
+// 14 天内的一律留着（够覆盖"用户过几天才来报问题"），超期的删；
+// 删完仍超过 50MB 就从最旧的继续删，直到降到上限内。
+const FIX_UPGRADE_CLEANUP_KEEP_LOGS = true;
+const DIAGNOSTIC_LOG_RETENTION_DAYS = 14;
+const DIAGNOSTIC_LOG_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const RENDERER_SAFE_MODE_ARG = '--yyzs-renderer-safe-mode';
 const isRendererSafeMode = process.argv.includes(RENDERER_SAFE_MODE_ARG) || process.env.YYZS_RENDERER_SAFE_MODE === '1';
 const startupCommandLineSwitches = [];
@@ -2070,6 +2166,16 @@ async function hasValidLoginCookies(windowSession, platform) {
     // （uid_tt / P_INFO / wxuin / d_c0 等）把登出态误判为已登录 → 跳过后台快照恢复 → 打开即跳登录页
     const credential = hasSessionCredentialCookies(cookies, normalizedPlatform);
     if (credential.valid) {
+      // 🔐 FIX_XINLANG_LOGIN_ALIVE_PROBE：新浪 cookie 判活不可信（SUB/SUBP/SCF 失效后仍在，
+      // SCF 在失效→重登前后值都不变），必须由服务端接口裁决，否则死 session 会同时骗过
+      // 「跳过后台恢复」和「关窗回存预检」两道闸门，把死快照写回后台。
+      if (FIX_XINLANG_LOGIN_ALIVE_PROBE && normalizedPlatform === 'xinlang') {
+        const xlProbe = await isXinlangSessionDeadByServerProbe(windowSession, 'has-valid-login-cookies');
+        if (xlProbe.dead) {
+          console.warn(`[hasValidLoginCookies] ❌ 新浪号 cookie 形式完整但服务端已判死（命中: ${credential.foundNames.join(', ')}），按未登录处理`);
+          return false;
+        }
+      }
       console.log(`[hasValidLoginCookies] ✅ 本地 session 已登录（命中${credential.strict ? '严格' : ''}凭证: ${credential.foundNames.join(', ')}）, platform=${normalizedPlatform}`);
       return true;
     }
@@ -3405,9 +3511,32 @@ async function persistWindowSessionBeforeClose(targetWindow, label) {
 async function matchAccountIdentity(windowSession, sessionData, platform) {
   if (!windowSession || !platform) return null;
   const normalizedPlatform = normalizePlatformName(platform);
-  const identityNames = config.platformIdentityCookies && config.platformIdentityCookies[normalizedPlatform];
-  if (!Array.isArray(identityNames) || identityNames.length === 0) {
+  const configuredIdentityNames = config.platformIdentityCookies && config.platformIdentityCookies[normalizedPlatform];
+  if (!Array.isArray(configuredIdentityNames) || configuredIdentityNames.length === 0) {
     return null;
+  }
+  let identityNames = configuredIdentityNames;
+  // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：身份 cookie 绝不能同时是会话凭证。
+  // 身份名单的契约写在 domain-config.js：「只用于账号匹配比对，不会随 token 刷新而改变」。
+  // 一旦名单里混进登录即变的会话凭证，同一个账号重新登录也会被判成 identityMatch=false「换账号」
+  // → 强制清空恢复 → 窗口内刚登上的新登录态被旧快照擦掉（小红书 web_session 就是这么爆的）。
+  // 同款重叠：小红书 web_session、百家号 BDUSS、知乎 z_c0、搜狐 ppinf。
+  // 剔空后返回 null（无法验证，保守保留本地），而不是 false（换账号，强制清空）——
+  // 「证明不了是同一个账号」和「证明了是另一个账号」是两回事，后者才有资格擦掉本地登录态。
+  if (FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    const credentialNames = new Set(
+      (config.platformSessionCredentialCookies && config.platformSessionCredentialCookies[normalizedPlatform]) || []
+    );
+    const identityOnlyNames = configuredIdentityNames.filter(name => !credentialNames.has(name));
+    if (identityOnlyNames.length !== configuredIdentityNames.length) {
+      const dropped = configuredIdentityNames.filter(name => credentialNames.has(name));
+      console.log(`[matchAccountIdentity] 🔐 ${normalizedPlatform} 身份名单剔除会话凭证: ${dropped.join(',')}（剩余 ${identityOnlyNames.length} 个）`);
+    }
+    if (identityOnlyNames.length === 0) {
+      console.log(`[matchAccountIdentity] ℹ️ ${normalizedPlatform} 身份 cookie 全部是会话凭证，无法据此判断是否换账号`);
+      return null;
+    }
+    identityNames = identityOnlyNames;
   }
   try {
     const localCookies = await windowSession.cookies.get({});
@@ -3453,6 +3582,172 @@ async function matchAccountIdentity(windowSession, sessionData, platform) {
   } catch (err) {
     console.warn('[matchAccountIdentity] 比对账号失败:', err.message);
     return null;
+  }
+}
+
+// ===== 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：账号 session 登录新鲜度戳 =====
+// 目的：挡住「冻结在发布任务里的旧快照，每次重新发布都把窗口内刚建立的新登录擦掉」。
+// 为什么必须持久化到 globalStorage：内存里的 sessionRestoreCache 只有 5 分钟 TTL，
+// 隔一会儿再点重新发布、或应用重启后就失效，旧快照照样倒灌（这正是用户看到的"登录上重新发布又没了"）。
+// 为什么 key 用浏览器侧 accountId 而不是后台 accountId：latest_session_ 缓存要求后台 accountId，
+// 缺了就永远写不出来——小红书实测一条 latest_session_ 都没有，本地端完全没有"更新的登录"这个概念。
+// 而 persist:<platform>_<accountId> 分区是一定存在的，戳与分区一一对应才不会串账号。
+const SESSION_LOGIN_STAMP_KEY_PREFIX = 'session_login_stamp_';
+
+function buildSessionLoginStampKey(platform, accountId) {
+  const normalizedPlatform = normalizePlatformName(platform) || String(platform || '').trim();
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!normalizedPlatform || !normalizedAccountId) {
+    return '';
+  }
+  return `${SESSION_LOGIN_STAMP_KEY_PREFIX}${normalizedPlatform}_${normalizedAccountId}`;
+}
+
+function getSessionLoginStamp(platform, accountId) {
+  if (!FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    return null;
+  }
+  const key = buildSessionLoginStampKey(platform, accountId);
+  if (!key) {
+    return null;
+  }
+  const raw = globalStorage[key];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const ts = normalizeSessionTimestamp(raw.ts);
+  if (!ts) {
+    return null;
+  }
+  return {
+    ts,
+    signature: typeof raw.signature === 'string' ? raw.signature : '',
+    source: raw.source || '',
+    updatedAt: normalizeSessionTimestamp(raw.updatedAt) || ts
+  };
+}
+
+// ts 语义 =「当前分区里这份登录态的来源时间」：
+//   恢复快照后写入 → 用快照自己的 timestamp（同一份快照再放一次不会显得更新）
+//   窗口内手动登录并回存成功后写入 → 用 Date.now()（登录确实是此刻建立的）
+// ⚠️ 刚授权的 migrate-cookies-to-account-session 故意不打戳：那一刻后台快照与本地登录同龄，
+//    打了戳会以毫秒之差把「刚授权完必须用后台完整快照」的既有修复顶掉。
+function saveSessionLoginStamp(platform, accountId, { signature = '', ts = 0, source = '' } = {}) {
+  if (!FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    return { saved: false, skipReason: 'feature-disabled' };
+  }
+  const key = buildSessionLoginStampKey(platform, accountId);
+  if (!key) {
+    return { saved: false, skipReason: 'missing-account' };
+  }
+  const normalizedTs = normalizeSessionTimestamp(ts);
+  if (!normalizedTs) {
+    return { saved: false, skipReason: 'missing-timestamp' };
+  }
+  globalStorage[key] = { platform: normalizePlatformName(platform) || platform, accountId, signature, ts: normalizedTs, source, updatedAt: Date.now() };
+  saveGlobalStorage();
+  console.log(`[LoginStamp] 🕒 记录登录新鲜度戳: ${key}, ts=${new Date(normalizedTs).toISOString()}, source=${source}`);
+  return { saved: true, key, ts: normalizedTs };
+}
+
+function clearSessionLoginStamp(platform, accountId, reason = 'manual') {
+  if (!FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    return { removed: false, skipReason: 'feature-disabled' };
+  }
+  const key = buildSessionLoginStampKey(platform, accountId);
+  if (!key || !globalStorage[key]) {
+    return { removed: false, skipReason: 'stamp-not-found' };
+  }
+  delete globalStorage[key];
+  saveGlobalStorage();
+  console.log(`[LoginStamp] 🧹 已清除登录新鲜度戳: ${key} (${reason})`);
+  return { removed: true, key };
+}
+
+// 给「本地 session 当前这份登录态」算一枚值签名，只用于诊断与判断戳是否还描述着同一份登录。
+// 不用它做放行门槛：本地是否真的活着由调用方的 hasValidLoginCookies 判定
+// （新浪等平台在那里还带服务端探活，比 cookie 名单准）。
+async function buildLocalLoginCredentialSignature(windowSession, platform) {
+  try {
+    const { names } = getSessionCredentialCookieNames(platform);
+    if (!Array.isArray(names) || names.length === 0) {
+      return { signature: '', names: [] };
+    }
+    const localCookies = await windowSession.cookies.get({});
+    return { signature: buildCookieValueSignature(localCookies, names), names };
+  } catch (err) {
+    console.warn('[LoginStamp] ⚠️ 计算本地登录签名失败:', err.message);
+    return { signature: '', names: [], error: err.message };
+  }
+}
+
+// 🛡️ 核心判定：本地已被判为"有登录态"的前提下，传入快照是否老到没资格清空本地。
+// 只回答方向问题（谁更新），不回答"是否登录"——那已由调用方判完。
+// 无戳 / 快照无时间戳 / 快照不比本地旧 → 一律返回 skip=false，完整保持既有行为，
+// 尤其不动「重新授权后必须用后台新快照」那条链路。
+async function evaluateSessionRestoreBackflow({ windowSession, platform, accountId, incomingSessionData }) {
+  const result = { skip: false, reason: 'not-evaluated', stampTs: 0, incomingTs: 0, signatureMatchesStamp: null };
+  if (!FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    result.reason = 'feature-disabled';
+    return result;
+  }
+  if (!windowSession || !platform || !accountId) {
+    result.reason = 'missing-account';
+    return result;
+  }
+  const stamp = getSessionLoginStamp(platform, accountId);
+  if (!stamp) {
+    result.reason = 'no-stamp';
+    return result;
+  }
+  result.stampTs = stamp.ts;
+  result.stampSource = stamp.source;
+  const incomingTs = extractSessionTimestamp(incomingSessionData) || 0;
+  result.incomingTs = incomingTs;
+  if (!incomingTs) {
+    // 快照没有时间戳就无从比较新旧，宁可按旧逻辑走，也不凭空认定本地更新
+    result.reason = 'incoming-timestamp-missing';
+    return result;
+  }
+  if (stamp.ts <= incomingTs) {
+    result.reason = 'incoming-not-older';
+    return result;
+  }
+  const local = await buildLocalLoginCredentialSignature(windowSession, platform);
+  result.signatureMatchesStamp = stamp.signature ? local.signature === stamp.signature : null;
+  // 签名不一致说明本地登录在打戳之后又变过（平台续期 / 用户再次登录）→ 本地只会比戳更新，
+  // 而戳已经比快照新，所以照样放行；这里只作为日志线索，不作为门槛。
+  result.skip = true;
+  result.reason = result.signatureMatchesStamp === false
+    ? 'local-login-newer-than-incoming(signature-drifted)'
+    : 'local-login-newer-than-incoming';
+  return result;
+}
+
+// 窗口内建立/刷新过登录后调用：给该账号分区打上「此刻的登录」戳。
+// 前提是 collectWindowSessionSaveContext 已过严格凭证守卫，也就是这份 cookies 确实带着活凭证。
+// ⚠️ 必须独立于 saveLatestSessionCache 调用：后者缺后台 accountId 时直接返回 null（小红书正是如此，
+//    一条 latest_session_ 都没有），如果把打戳挂在它的成功分支上，最需要保护的平台恰好一个戳都拿不到。
+async function stampWindowLoginFreshness(targetWindow, context, source = 'window-save') {
+  if (!FIX_SESSION_RESTORE_BACKFLOW_GUARD) {
+    return { saved: false, skipReason: 'feature-disabled' };
+  }
+  if (!context || !context.accountInfo || !context.accountInfo.platform || !context.accountInfo.accountId) {
+    return { saved: false, skipReason: 'no-account-context' };
+  }
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow.webContents.isDestroyed()) {
+    return { saved: false, skipReason: 'window-destroyed' };
+  }
+  try {
+    const local = await buildLocalLoginCredentialSignature(targetWindow.webContents.session, context.accountInfo.platform);
+    return saveSessionLoginStamp(context.accountInfo.platform, context.accountInfo.accountId, {
+      signature: local.signature,
+      ts: Date.now(),
+      source: `window-save:${source}`
+    });
+  } catch (err) {
+    console.warn('[LoginStamp] ⚠️ 窗口登录新鲜度戳写入失败:', err.message);
+    return { saved: false, skipReason: err.message };
   }
 }
 
@@ -3927,6 +4222,8 @@ function appendPublishSessionDiagLog(eventName, payload) {
 // account.qq.com - 腾讯账号中心
 const GLOBAL_LOGIN_URL_PATTERNS = [
   '/login',
+  // '/newlogin' 必须单列：'/login' 匹配不到 weibo.com/newlogin（login 前是 w 不是 /）
+  ...(FIX_WEIBO_NEWLOGIN_URL_PATTERN ? ['/newlogin'] : []),
   '/userauth',
   '/userlogin',
   '/loginpage',
@@ -4534,6 +4831,248 @@ async function probeSohuhaoServerLoginState(targetWindow) {
     return { verdict: 'unknown', reason: `code=${parsed ? parsed.code : 'n/a'}` };
   } catch (err) {
     return { verdict: 'unknown', reason: err.message };
+  }
+}
+
+// 🔎 新浪号服务端登录态探测：新浪的 cookie 名单做不了判死——SUB/SUBP 过期后仍在本地，
+// SCF@.weibo.com 在「失效 → 手动重登」前后值完全相同（2026-08-31 实测），
+// 所以形式判定必然把死 session 判成已登录，进而①跳过后台快照恢复 ②把死快照回存后台
+// （后台返回 HTTP 200 + 业务「授权失败」拒收）→ 陷入死循环，只有人工重登才能打破。
+//
+// 两段判活，缺一不可（2026-08-31 无 cookie 实测报文）：
+//   ① mp.sina.com.cn/aj/media/info/getbaseinfo —— 创作平台侧。登录有效才返回 data.userInfo.uid；
+//      未登录返回的是 {status:0, code:201, msg:"您的登录已过期，请重新登录"}，
+//      ⚠️ 不是 code 200 无 uid，旧逻辑因此把最典型的过期形态漏成 unknown 按活放行。
+//   ② card.weibo.com/article/v5/editor —— 发布域侧（FIX_XINLANG_PUBLISH_HOST_PROBE）。
+//      发布/内容管理全在 card.weibo.com，它要的是 weibo.com 主站登录态，
+//      跟 mp.sina.com.cn 是两套：mp 活着而主站死了时，页面会拿到
+//      `<meta http-equiv="refresh" content="0; url=https://weibo.com/">`（HTTP 200，主进程层面看不到 302），
+//      再由 weibo.com 前端跳 /newlogin?...&url= —— 就是用户看到的"重定向不过去"。
+async function buildXinlangCookieHeader(windowSession) {
+  const cookies = await windowSession.cookies.get({});
+  return cookies
+    .filter(c => {
+      if (!c || !c.value) return false;
+      const d = String(c.domain || '').replace(/^\./, '').toLowerCase();
+      return d === 'sina.com.cn' || d.endsWith('.sina.com.cn')
+        || d === 'weibo.com' || d.endsWith('.weibo.com')
+        || d === 'weibo.cn' || d.endsWith('.weibo.cn');
+    })
+    .map(c => `${c.name}=${c.value}`)
+    .join('; ');
+}
+
+function httpsGetWithCookies(url, cookieHeader, extraHeaders = {}, timeoutMs = 5000, maxBytes = 0) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, {
+      method: 'GET',
+      headers: {
+        'Cookie': cookieHeader,
+        'User-Agent': TAGGED_USER_AGENT,
+        ...extraHeaders
+      },
+      timeout: timeoutMs
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => {
+        data += chunk;
+        if (maxBytes > 0 && data.length >= maxBytes) {
+          res.destroy();
+        }
+      });
+      res.on('end', () => resolve({ status: res.statusCode, location: res.headers.location || '', body: data }));
+      res.on('close', () => resolve({ status: res.statusCode, location: res.headers.location || '', body: data }));
+    });
+    req.on('timeout', () => { req.destroy(new Error('探测请求超时')); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+// 发布域（card.weibo.com）判活：只负责"判死"，判不出来一律 unknown，正向"活着"由创作平台那段给
+async function probeXinlangPublishHostLoginState(cookieHeader) {
+  try {
+    const res = await httpsGetWithCookies(
+      'https://card.weibo.com/article/v5/editor',
+      cookieHeader,
+      { 'Referer': 'https://weibo.com/', 'Accept': 'text/html' },
+      5000,
+      8192
+    );
+    const target = `${res.location || ''} ${res.body || ''}`;
+    const refreshToWeiboRoot = /http-equiv=["']?refresh["']?[^>]*url=https?:\/\/(?:www\.)?weibo\.com\/?["'\s>]/i.test(target);
+    const bouncedToLogin = /weibo\.com\/newlogin|passport\.weibo\.com\/(?:sso|visitor)|weibo\.com\/login/i.test(target);
+    if (refreshToWeiboRoot || bouncedToLogin) {
+      return { verdict: 'not-login', reason: refreshToWeiboRoot ? 'meta-refresh-to-weibo-root' : 'bounced-to-login', status: res.status };
+    }
+    return { verdict: 'unknown', reason: `status=${res.status}`, status: res.status };
+  } catch (err) {
+    return { verdict: 'unknown', reason: err.message };
+  }
+}
+
+async function probeXinlangServerLoginState(windowSession) {
+  let cookieHeader = '';
+  try {
+    cookieHeader = await buildXinlangCookieHeader(windowSession);
+  } catch (err) {
+    return { verdict: 'unknown', reason: `cookie 读取失败: ${err.message}` };
+  }
+  if (!cookieHeader) {
+    return { verdict: 'not-login', reason: 'no-cookie' };
+  }
+
+  const creator = await probeXinlangCreatorLoginState(cookieHeader);
+  if (creator.verdict === 'not-login') {
+    return creator;
+  }
+  if (!FIX_XINLANG_PUBLISH_HOST_PROBE) {
+    return creator;
+  }
+
+  const publishHost = await probeXinlangPublishHostLoginState(cookieHeader);
+  if (publishHost.verdict === 'not-login') {
+    // 创作平台还活着，但发布域已经被弹登录 —— 发布/内容管理必然打不开，按死处理
+    return {
+      verdict: 'not-login',
+      reason: `publish-host:${publishHost.reason}`,
+      code: creator.code,
+      creatorVerdict: creator.verdict,
+      uid: creator.uid
+    };
+  }
+  return { ...creator, publishHost: publishHost.verdict, publishHostReason: publishHost.reason };
+}
+
+async function probeXinlangCreatorLoginState(cookieHeader) {
+  try {
+    const res = await httpsGetWithCookies(
+      `https://mp.sina.com.cn/aj/media/info/getbaseinfo?_=${Date.now()}`,
+      cookieHeader,
+      { 'Referer': 'https://mp.sina.com.cn/', 'Accept': 'application/json' },
+      5000
+    );
+    const parsed = JSON.parse(res.body);
+    const uid = String(parsed?.data?.userInfo?.uid || '').trim();
+    if (/^\d+$/.test(uid)) {
+      return { verdict: 'logged-in', code: parsed ? parsed.code : undefined, uid };
+    }
+    const code = Number(parsed?.code);
+    const msg = String(parsed?.msg || parsed?.message || '');
+    if (code === 200) {
+      // 接口正常应答但拿不到 uid，等于服务端不认这份会话
+      return { verdict: 'not-login', code, reason: 'no-uid' };
+    }
+    // 实测未登录走的就是这里：code=201 + "您的登录已过期，请重新登录"
+    if (code === 201 || /登录已过期|请重新登录|请先登录|未登录/.test(msg)) {
+      return { verdict: 'not-login', code, reason: `expired:${msg || code}` };
+    }
+    // 其他业务错误码（限流/参数/权限）不能证明登录失效，保守放行
+    return { verdict: 'unknown', reason: `code=${Number.isFinite(code) ? code : 'n/a'}` };
+  } catch (err) {
+    return { verdict: 'unknown', reason: err.message };
+  }
+}
+
+// 🔐 FIX_XINLANG_LOGIN_ALIVE_PROBE：新浪「是否已判死」的统一入口。
+// 只有服务端明确不认（verdict=not-login）才判死；探测异常/限流一律按活处理，
+// 宁可漏杀也不误杀好账号（参见腾讯 code!==1 判定过宽误杀的历史教训）。
+// 同一 session 在 XINLANG_PROBE_MEMO_TTL_MS 内复用结论：开窗仲裁、关窗预检、导航回存
+// 会在几秒内连着问好几次，逐次发请求既慢又容易被微博限流。
+const XINLANG_PROBE_MEMO_TTL_MS = 20 * 1000;
+const xinlangLoginProbeMemo = new WeakMap();
+
+async function buildXinlangProbeSignature(windowSession) {
+  // cookie 值签名参与缓存校验：用户在窗口里重新登录后 cookies 立刻变，
+  // 不带签名的纯 TTL 缓存会让刚登录成功的会话在 20 秒内继续被当成"死的"，把好 cookies 挡在回存之外
+  try {
+    const cookies = await windowSession.cookies.get({});
+    return buildCookieValueSignature(cookies, [
+      ...((config.platformSessionCredentialCookies && config.platformSessionCredentialCookies.xinlang) || []),
+      ...((config.platformLoginCookies && config.platformLoginCookies.xinlang) || [])
+    ]);
+  } catch (_) {
+    return '';
+  }
+}
+
+async function isXinlangSessionDeadByServerProbe(windowSession, reason = '') {
+  if (!FIX_XINLANG_LOGIN_ALIVE_PROBE || !windowSession) {
+    return { dead: false, skipped: true };
+  }
+  const signature = await buildXinlangProbeSignature(windowSession);
+
+  const memo = xinlangLoginProbeMemo.get(windowSession);
+  if (memo && memo.signature === signature && (Date.now() - memo.ts) <= XINLANG_PROBE_MEMO_TTL_MS) {
+    return { dead: memo.dead, probe: memo.probe, memoized: true };
+  }
+  const probe = await probeXinlangServerLoginState(windowSession);
+  const dead = probe.verdict === 'not-login';
+  xinlangLoginProbeMemo.set(windowSession, { ts: Date.now(), dead, probe, signature });
+  console.log(`[新浪探活] ${dead ? '❌ 服务端不认这份会话' : probe.verdict === 'logged-in' ? '✅ 登录有效' : '⚠️ 探测不确定，按有效处理'}`, {
+    reason,
+    verdict: probe.verdict,
+    code: probe.code,
+    detail: probe.reason || probe.uid || '',
+    publishHost: probe.publishHost || probe.publishHostReason || ''
+  });
+  return { dead, probe };
+}
+
+// 🔐 FIX_XINLANG_NEWLOGIN_LANDING_GUARD：微博把窗口弹到登录页 = 平台亲口宣布这份会话不能用
+function isXinlangWeiboLoginLandingUrl(rawUrl = '') {
+  if (!rawUrl) return false;
+  try {
+    const parsed = new URL(String(rawUrl));
+    const host = parsed.hostname.toLowerCase();
+    const isWeiboHost = /(^|\.)weibo\.com$/.test(host) || /(^|\.)weibo\.cn$/.test(host);
+    if (!isWeiboHost) return false;
+    const pathname = parsed.pathname.toLowerCase();
+    return pathname === '/newlogin'
+      || pathname.startsWith('/newlogin')
+      || pathname.startsWith('/login')
+      || pathname.startsWith('/sso/');
+  } catch (_) {
+    return false;
+  }
+}
+
+async function maybeMarkXinlangDeadOnLoginLanding(targetWindow, navUrl, source = '') {
+  if (!FIX_XINLANG_NEWLOGIN_LANDING_GUARD) return { handled: false };
+  if (!targetWindow || targetWindow.isDestroyed()) return { handled: false };
+  if (!isXinlangWeiboLoginLandingUrl(navUrl)) return { handled: false };
+
+  const windowId = targetWindow.id;
+  // 授权窗（临时 session）本来就该停在登录页等扫码，不能判死
+  if (globalStorage?.[`auth_mode_window_${windowId}`]) {
+    return { handled: false, skipped: 'auth-window' };
+  }
+
+  try {
+    const windowSession = targetWindow.webContents.session;
+    const signature = await buildXinlangProbeSignature(windowSession);
+    xinlangLoginProbeMemo.set(windowSession, {
+      ts: Date.now(),
+      dead: true,
+      probe: { verdict: 'not-login', reason: `login-landing:${source}` },
+      signature
+    });
+
+    const accountInfo = windowAccountMap.get(windowId) || null;
+    const publishData = getWindowPublishData(windowId);
+    const platform = normalizePlatformName(accountInfo?.platform || publishData?.platform || 'xinlang') || 'xinlang';
+    const accountId = normalizeAccountIdValue(accountInfo?.accountId) || getPublishBackendAccountId(publishData);
+    let purged = null;
+    if (accountId) {
+      purged = purgeLatestSessionCacheForAccount(platform, accountId, `xinlang-login-landing:${source}`);
+    }
+    console.warn('[新浪探活] 🚪 窗口被微博弹到登录页，直接判死这份会话（不回存 + 清本地缓存）', {
+      windowId, source, navUrl, platform, accountId: accountId || '(未知)', purged
+    });
+    return { handled: true, platform, accountId, purged };
+  } catch (err) {
+    console.warn('[新浪探活] ⚠️ 登录落地判死异常，忽略:', err.message);
+    return { handled: false, error: err.message };
   }
 }
 
@@ -5715,6 +6254,68 @@ async function checkStartupDiskSpace() {
 //       Partitions\<分区>\Network(Cookies)、Local Storage、Session Storage、IndexedDB、
 //       databases、WebStorage、File System 等承载登录态的数据一律不碰。
 const VERSION_CLEANUP_MARKER_FILE = '.last-run-version';
+// 🗂 FIX_UPGRADE_CLEANUP_KEEP_LOGS：修剪诊断日志目录，替代"升级就整个删掉"。
+// 规则：① 超过保留期的删；② 删完仍超总量上限，就从最旧的继续删到降下来。
+// 任何一步失败都只跳过该文件，绝不影响启动——这个函数跑在单实例锁之前。
+// 返回实际删除的文件数（并入清理计数）。
+function pruneDiagnosticLogs(logsDir) {
+  let removed = 0;
+  try {
+    if (!fs.existsSync(logsDir)) {
+      return 0;
+    }
+    const cutoff = Date.now() - DIAGNOSTIC_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const entries = [];
+    for (const name of fs.readdirSync(logsDir)) {
+      const filePath = path.join(logsDir, name);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+        entries.push({ filePath, name, mtime: stat.mtimeMs, size: stat.size });
+      } catch (_) {
+        // 单个文件 stat 失败（被占用/权限）就跳过，不影响其余修剪
+      }
+    }
+
+    const dropFile = (entry, reason) => {
+      try {
+        fs.rmSync(entry.filePath, { force: true });
+        removed++;
+        console.log(`[Upgrade Cleanup] 🧹 日志修剪(${reason}): logs/${entry.name}`);
+        return true;
+      } catch (err) {
+        console.warn('[Upgrade Cleanup] ⚠️ 日志修剪失败(跳过):', entry.name, err && err.message ? err.message : err);
+        return false;
+      }
+    };
+
+    // ① 超期
+    const survivors = [];
+    for (const entry of entries) {
+      if (entry.mtime < cutoff) {
+        if (!dropFile(entry, `超过${DIAGNOSTIC_LOG_RETENTION_DAYS}天`)) survivors.push(entry);
+      } else {
+        survivors.push(entry);
+      }
+    }
+
+    // ② 总量上限：从最旧的开始删
+    let totalBytes = survivors.reduce((sum, entry) => sum + entry.size, 0);
+    if (totalBytes > DIAGNOSTIC_LOG_MAX_TOTAL_BYTES) {
+      survivors.sort((a, b) => a.mtime - b.mtime);
+      for (const entry of survivors) {
+        if (totalBytes <= DIAGNOSTIC_LOG_MAX_TOTAL_BYTES) break;
+        if (dropFile(entry, '总量超限')) totalBytes -= entry.size;
+      }
+    }
+
+    console.log(`[Upgrade Cleanup] 🗂 诊断日志已保留 ${Math.max(entries.length - removed, 0)} 个文件（约 ${(totalBytes / 1024 / 1024).toFixed(1)}MB），删除 ${removed} 个`);
+  } catch (err) {
+    console.warn('[Upgrade Cleanup] ⚠️ 日志修剪流程异常(跳过):', err && err.message ? err.message : err);
+  }
+  return removed;
+}
+
 function cleanupOldVersionDataOnUpgrade() {
   try {
     const userDataDir = app.getPath('userData');
@@ -5745,14 +6346,22 @@ function cleanupOldVersionDataOnUpgrade() {
 
     // ① userData 根目录：旧日志 + 全局缓存/崩溃转储
     const rootTargets = [
-      'app.log', 'app.log.1',          // console 重定向日志（新流尚未打开，此刻可安全删除）
-      'logs',                           // session-diagnostic.log 等诊断日志目录
+      // 🔐 FIX_APP_LOG_OPEN_GUARD：app.log 交给日志模块自己轮转，清理不再删——
+      // 这里跑在单实例锁之前，第二实例会删掉第一实例正在写的日志，且删除挂起会让随后 open 报 EPERM
+      ...(FIX_APP_LOG_OPEN_GUARD ? [] : ['app.log', 'app.log.1']),
+      // 🗂 FIX_UPGRADE_CLEANUP_KEEP_LOGS：诊断日志目录改为按保留期修剪，不再整个删掉
+      ...(FIX_UPGRADE_CLEANUP_KEEP_LOGS ? [] : ['logs']),
       'Cache', 'Code Cache', 'GPUCache', 'DawnCache',
       'ShaderCache', 'GrShaderCache',
       'blob_storage', 'VideoDecodeStats',
       'Crashpad', 'Crash Reports'
     ];
     rootTargets.forEach(removeTarget);
+
+    // 🗂 FIX_UPGRADE_CLEANUP_KEEP_LOGS：诊断日志按保留期 + 总量上限修剪，保住排查现场
+    if (FIX_UPGRADE_CLEANUP_KEEP_LOGS) {
+      cleanedCount += pruneDiagnosticLogs(path.join(userDataDir, 'logs'));
+    }
 
     // ② 每个 session 分区内：只清缓存类子目录，登录数据（Network/Local Storage/IndexedDB 等）不动
     const partitionCacheDirs = [
@@ -10345,6 +10954,8 @@ function createWindow() {
     // account.qq.com - 腾讯账号中心
     const LOGIN_URL_PATTERNS = [
       '/login',
+      // '/newlogin' 必须单列：'/login' 匹配不到 weibo.com/newlogin（login 前是 w 不是 /）
+      ...(FIX_WEIBO_NEWLOGIN_URL_PATTERN ? ['/newlogin'] : []),
       '/userauth',
       '/userlogin',
       '/loginpage',
@@ -10473,7 +11084,7 @@ function createWindow() {
             result = {
               success: true,
               accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(navPublishData) || '') },
-              backendAccountId: resolveScriptSaveBackendAccountId(navPlatform, navPublishData, cacheSyncResult, scriptResult),
+              backendAccountId: resolveScriptSaveBackendAccountId(navPlatform, navPublishData, cacheSyncResult, scriptResult, accountInfo?.accountId),
               platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               statusCode: scriptResult.status,
@@ -11050,8 +11661,9 @@ app.whenReady().then(async () => {
     console.log('[App] 已设置 AppUserModelId: com.zhcloud.browser');
   }
 
-  // 设置日志文件（便携版和生产环境）
-  if (isProduction) {
+  // 设置日志文件（便携版、生产环境，以及开发环境）
+  // 开发环境也落盘：Windows 终端代码页常把中文日志显示成乱码，排查登录/会话问题只能看文件
+  {
     const logPath = path.join(app.getPath('userData'), 'app.log');
     const logBackupPath = logPath + '.1';
     const LOG_MAX_SIZE = 10 * 1024 * 1024;        // 单文件上限 10MB，超过则轮转为 app.log.1
@@ -11070,10 +11682,35 @@ app.whenReady().then(async () => {
       // 文件不存在或被占用（如另一实例）时忽略，继续追加写入
     }
 
-    let logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    let logStream = null;
     let logWrittenBytes = 0;
-    try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) {}
     let logRotating = false;
+
+    // 🔐 FIX_APP_LOG_OPEN_GUARD：打开失败/写入失败都只能降级为"不落文件"，绝不能冒泡成 uncaughtException。
+    // 用 process.stderr 而不是 console.error 报错：此刻 console 可能已被重定向到这条正在坏掉的流上。
+    function openAppLogStream() {
+      if (!FIX_APP_LOG_OPEN_GUARD) {
+        return fs.createWriteStream(logPath, { flags: 'a' });
+      }
+      try {
+        const stream = fs.createWriteStream(logPath, { flags: 'a' });
+        stream.on('error', (streamError) => {
+          if (logStream === stream) logStream = null;
+          try {
+            process.stderr.write(`[Log] ⚠️ 文件日志已停用(${streamError && streamError.code ? streamError.code : 'ERROR'}): ${streamError && streamError.message ? streamError.message : streamError}\n`);
+          } catch (_) {}
+        });
+        return stream;
+      } catch (openError) {
+        try {
+          process.stderr.write(`[Log] ⚠️ 文件日志打开失败(${openError && openError.code ? openError.code : 'ERROR'})，本次会话仅输出控制台\n`);
+        } catch (_) {}
+        return null;
+      }
+    }
+
+    logStream = openAppLogStream();
+    try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) {}
 
     // Windows 无法重命名持有打开句柄的文件，必须先 end() 刷盘关闭 fd，再在回调里改名并重开新流。
     // 轮转窗口（毫秒级）内的日志安全丢弃，不阻塞不抛错。
@@ -11090,7 +11727,7 @@ app.whenReady().then(async () => {
           // 改名失败（文件被占用等）则放弃本次轮转，继续追加到原文件
         }
         try {
-          logStream = fs.createWriteStream(logPath, { flags: 'a' });
+          logStream = openAppLogStream();
           try { logWrittenBytes = fs.statSync(logPath).size; } catch (_) { logWrittenBytes = 0; }
         } catch (reopenError) {
           logStream = null; // 重开失败则本次会话不再写文件日志，控制台输出不受影响
@@ -11146,7 +11783,7 @@ app.whenReady().then(async () => {
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
   console.log(`[Build] 版本: v${APP_VERSION}`);
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1+portable-data-dir-guard-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试+便携版数据目录断链自愈与回退，登录信息保留）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1+portable-data-dir-guard-fix1+xinlang-login-alive-probe-fix1+managed-window-cookies-as-session-fix1+xinlang-auth-snapshot-selfcheck-fix1+xinlang-publish-host-probe-fix1+xinlang-newlogin-landing-guard-fix1+weibo-newlogin-url-pattern-fix1+app-log-open-guard-fix1+session-restore-backflow-guard-fix1+upgrade-cleanup-keep-logs-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试+便携版数据目录断链自愈与回退+新浪授权后掉登录（真实导航预热主站/服务端探活判死/补weibo.cn域）+内容管理窗消费options.cookies当会话快照+新浪探活补201过期码与card.weibo.com发布域判活+被弹到weibo.com/newlogin当场判死，登录信息保留+补 /newlogin 进通用登录页判据（修掉登录页弹跳诊断与死缓存清理对新浪整体失效）+app.log 打不开不再弹「运行错误」且升级清理不再删日志+发布任务冻结的旧 cookies 快照不再倒灌擦掉窗口内新登录（身份cookie剔除会话凭证+登录新鲜度戳）+升级清理不再整个删诊断日志目录，改为保留14天/50MB内）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);
@@ -14550,6 +15187,16 @@ async function openManagedChildWindowInternal(url, options = {}) {
     console.log('[Window Manager] options.platform:', options.platform);
     console.log('[Window Manager] options.accountId:', options.accountId);
     console.log('[Window Manager] options.sessionData:', options.sessionData ? '有数据' : '无数据');
+    // 🔐 FIX_MANAGED_WINDOW_COOKIES_AS_SESSION：内容管理入口只带 options.cookies，主进程原本无人消费
+    if (FIX_MANAGED_WINDOW_COOKIES_AS_SESSION && !options.sessionData && options.cookies) {
+      const cookiesAsSession = extractSessionCookiesArray(options.cookies);
+      if (cookiesAsSession.length > 0) {
+        options.sessionData = options.cookies;
+        console.log(`[Window Manager] 🔁 只带了 options.cookies（内容管理入口），已归一为 sessionData，共 ${cookiesAsSession.length} 个 cookie`);
+      } else {
+        console.warn('[Window Manager] ⚠️ options.cookies 里解析不出 cookie 数组，按无快照处理:', typeof options.cookies);
+      }
+    }
     const isBareToutiao = shouldSkipScriptInjection(url);
     if (isBareToutiao) {
       console.log('[Window Manager] 🧼 Toutiao 裸窗口，跳过 preload 和脚本注入');
@@ -14617,6 +15264,27 @@ async function openManagedChildWindowInternal(url, options = {}) {
       }
 
       const backendAccountId = normalizeAccountIdValue(options.accountId) || getPublishBackendAccountId(options.publishData);
+      // 🔐 FIX_XINLANG_LOGIN_ALIVE_PROBE：新浪要在读本地缓存之前先探活。
+      // latest_session 缓存就是从账号 session 抄下来的，账号 session 被服务端判死时缓存必然同死，
+      // 而它每次关窗都被盖上最新时间戳，会永远赢过后台刚授权的好快照（死缓存自锁）。
+      // 所以判死就先清缓存，让本次仲裁直接落到后台快照上。
+      let xinlangOpenProbe = null;
+      if (FIX_XINLANG_LOGIN_ALIVE_PROBE
+        && normalizePlatformName(options.platform) === 'xinlang'
+        && backendAccountId
+        && windowSession
+        && getLatestSessionCache(options.platform, backendAccountId)) {
+        try {
+          const xlCacheProbe = await isXinlangSessionDeadByServerProbe(windowSession, 'before-cache-arbitration');
+          xinlangOpenProbe = xlCacheProbe;
+          if (xlCacheProbe.dead) {
+            const purged = purgeLatestSessionCacheForAccount(options.platform, backendAccountId, 'xinlang-server-probe-dead');
+            console.warn('[Window Manager] 🧹 新浪号账号 session 已被服务端判死，先清掉同源的本地会话缓存再仲裁:', purged);
+          }
+        } catch (xlProbeErr) {
+          console.warn('[Window Manager] ⚠️ 新浪号缓存前探活异常，按原流程继续:', xlProbeErr.message);
+        }
+      }
       const cachedSessionData = getLatestSessionCache(options.platform, backendAccountId);
       const sessionRestore = buildEffectiveSessionRestoreData(cachedSessionData, options.sessionData, options.platform);
       let effectiveSessionData = sanitizeSessionDataForPlatform(
@@ -14762,6 +15430,11 @@ async function openManagedChildWindowInternal(url, options = {}) {
         const restoreDiag = { localHasLogin: null, identityMatch: undefined };
         try {
           const localHasLogin = await hasValidLoginCookies(windowSession, options.platform);
+          // hasValidLoginCookies 内部已对新浪做服务端探活（判死即返回 false），这里只记录结论便于排查
+          if (FIX_XINLANG_LOGIN_ALIVE_PROBE && normalizePlatformName(options.platform) === 'xinlang') {
+            const memoProbe = xinlangOpenProbe || await isXinlangSessionDeadByServerProbe(windowSession, 'publish-window-open');
+            restoreDiag.xinlangProbe = memoProbe.probe ? memoProbe.probe.verdict : 'skipped';
+          }
           restoreDiag.localHasLogin = localHasLogin;
           if (localHasLogin) {
             if (!incomingHasLogin) {
@@ -14779,6 +15452,24 @@ async function openManagedChildWindowInternal(url, options = {}) {
               // 所以无需再比对 element.cookies 里可能过期的身份 cookie 字面值
               const isMultiAccountMode = !!(options.platform && options.accountId);
               if (isMultiAccountMode) {
+                // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：先问"哪边更新"，再问"两边是否不同"。
+                // 下面三条通往清空恢复的路（identityMatch===false / shouldForceIncomingSessionRestore /
+                // incomingLoginSignatureDiffers）全都只比较"是否不同"，方向盲：
+                // 发布任务把 element.cookies 冻在任务记录里，每次重新发布都拿同一份旧快照来清空，
+                // 于是用户在窗口里刚登上的新登录态每次都被擦掉，而新建任务因为取的是回存刷新过的快照反而正常。
+                // 一次性授权补齐流程（migrate-cookies-to-account-session / 搜狐授权弹窗补齐）不受守卫影响：
+                // 那一刻后台快照与本地登录同龄，挡住它会顶掉「刚授权完必须用后台完整快照」的既有修复。
+                const isFreshAuthHydrateFlow = effectiveSessionPayloadSource === 'migrate-cookies-to-account-session'
+                  || !!(sohuhaoRecentAuthHydrateResult && sohuhaoRecentAuthHydrateResult.migrated);
+                const backflowGuard = isFreshAuthHydrateFlow
+                  ? { skip: false, reason: 'fresh-auth-hydrate-flow', stampTs: 0, incomingTs: 0 }
+                  : await evaluateSessionRestoreBackflow({
+                    windowSession,
+                    platform: options.platform,
+                    accountId: options.accountId,
+                    incomingSessionData: effectiveSessionData
+                  });
+                restoreDiag.backflowGuard = backflowGuard;
                 const identityMatch = await matchAccountIdentity(windowSession, effectiveSessionData, options.platform);
                 restoreDiag.identityMatch = identityMatch;
                 // 🔑 登录凭证值签名比对：身份 cookie（P_INFO/SUB/d_c0 等）跨登录不变，
@@ -14798,7 +15489,10 @@ async function openManagedChildWindowInternal(url, options = {}) {
                 } catch (signatureErr) {
                   console.warn('[Window Manager] ⚠️ 登录凭证签名比对失败，按原逻辑处理:', signatureErr.message);
                 }
-                if (identityMatch === false) {
+                if (backflowGuard.skip) {
+                  shouldSkipSessionRestore = true;
+                  console.warn(`[Window Manager] 🛡️ 传入快照比本地登录旧，拒绝倒灌：不清空本地登录态 (platform=${options.platform}, accountId=${options.accountId}, 本地登录=${new Date(backflowGuard.stampTs).toLocaleString()}, 快照=${new Date(backflowGuard.incomingTs).toLocaleString()}, reason=${backflowGuard.reason}, source=${effectiveSessionSource})`);
+                } else if (identityMatch === false) {
                   console.log(`[Window Manager] 🔄 多账号模式检测到本地 session 与后台 sessionData 身份不一致，走清空恢复 (platform=${options.platform}, accountId=${options.accountId})`);
                 } else if (
                   normalizePlatformName(options.platform) === 'sohuhao'
@@ -14861,6 +15555,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
             sohuhaoRecentAuthHydrateResult,
             localHasLogin: restoreDiag.localHasLogin,
             identityMatch: restoreDiag.identityMatch === undefined ? 'not-compared' : restoreDiag.identityMatch,
+            backflowGuard: restoreDiag.backflowGuard || 'not-evaluated',
             skipRestore: shouldSkipSessionRestore,
             localFingerprints: await buildSessionCookieFingerprints(windowSession, options.platform),
             incomingFingerprints: buildCookieFingerprints(extractSessionCookiesArray(effectiveSessionData), options.platform)
@@ -15240,6 +15935,28 @@ async function openManagedChildWindowInternal(url, options = {}) {
             console.log(`[Session Cache][${partitionName}] ⚠️ 本次恢复未形成有效登录态，跳过恢复缓存记录`);
           }
 
+          // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：本分区的登录态现在来自这份快照，
+          // 打戳时用快照自己的时间戳（而不是 now），这样同一份快照下次再来不会显得"更新"，
+          // 而窗口内建立的新登录（打戳用 now）才会真正比它新。
+          if (FIX_SESSION_RESTORE_BACKFLOW_GUARD && shouldMarkSessionRestoreCache && options.platform && options.accountId) {
+            try {
+              const restoredSignature = await buildLocalLoginCredentialSignature(windowSession, options.platform);
+              const incomingStampTs = extractSessionTimestamp(effectiveSessionData) || 0;
+              if (incomingStampTs) {
+                saveSessionLoginStamp(options.platform, options.accountId, {
+                  signature: restoredSignature.signature,
+                  ts: incomingStampTs,
+                  source: `restore:${effectiveSessionSource}`
+                });
+              } else {
+                // 快照没有时间戳就无从定位新旧，留着旧戳只会误判，直接清掉回到旧行为
+                clearSessionLoginStamp(options.platform, options.accountId, 'restored-snapshot-without-timestamp');
+              }
+            } catch (stampErr) {
+              console.warn('[LoginStamp] ⚠️ 恢复后写入登录新鲜度戳失败:', stampErr.message);
+            }
+          }
+
           console.log(`[Window Manager][${__wmTs()}] ========== 会话数据处理完成 ==========`);
           } catch (err) {
             console.error(`[Window Manager][${__wmTs()}] ❌ 会话数据处理失败:`, err);
@@ -15462,6 +16179,8 @@ async function openManagedChildWindowInternal(url, options = {}) {
     // account.qq.com - 腾讯账号中心
     const LOGIN_URL_PATTERNS = [
       '/login',
+      // '/newlogin' 必须单列：'/login' 匹配不到 weibo.com/newlogin（login 前是 w 不是 /）
+      ...(FIX_WEIBO_NEWLOGIN_URL_PATTERN ? ['/newlogin'] : []),
       '/userauth',
       '/userlogin',
       '/loginpage',
@@ -15590,7 +16309,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
             result = {
               success: true,
               accountInfo: { platform: navPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(navPublishData) || '') },
-              backendAccountId: resolveScriptSaveBackendAccountId(navPlatform, navPublishData, cacheSyncResult, scriptResult),
+              backendAccountId: resolveScriptSaveBackendAccountId(navPlatform, navPublishData, cacheSyncResult, scriptResult, accountInfo?.accountId),
               platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               statusCode: scriptResult.status,
@@ -15829,7 +16548,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
             result = {
               success: true,
               accountInfo: { platform: targetPlatform, accountId: accountInfo?.accountId || String(getPublishBackendAccountId(publishDataForSave) || '') },
-              backendAccountId: resolveScriptSaveBackendAccountId(targetPlatform, publishDataForSave, cacheSyncResult, scriptResult),
+              backendAccountId: resolveScriptSaveBackendAccountId(targetPlatform, publishDataForSave, cacheSyncResult, scriptResult, accountInfo?.accountId),
               platformUid: scriptResult.uid,
               cookieCount: scriptResult.cookieCount,
               cookies: [],
@@ -16158,6 +16877,8 @@ async function openManagedChildWindowInternal(url, options = {}) {
 
     newWindow.webContents.on('did-navigate', safeAsyncHandler('managed-window did-navigate recover', async (event, navUrl) => {
       console.log('[New Window API] Navigation:', navUrl);
+      // 🔐 FIX_XINLANG_NEWLOGIN_LANDING_GUARD：被微博弹到登录页就当场判死，别等关窗把死快照回存
+      await maybeMarkXinlangDeadOnLoginLanding(newWindow, navUrl, 'did-navigate');
       const currentContext = inferSohuhaoAuthWindowContext(newWindow.id, navUrl, windowContextMap.get(newWindow.id));
       if (currentContext?.bootstrapInProgress) {
         console.log('[New Window API] bootstrap 导航完成，跳过导航守卫:', navUrl);
@@ -16186,6 +16907,9 @@ async function openManagedChildWindowInternal(url, options = {}) {
     newWindow.webContents.on('did-navigate-in-page', safeAsyncHandler('managed-window did-navigate-in-page inject', async (event, navUrl) => {
       console.log('[New Window API] SPA Navigation:', navUrl);
       if (ensureShipinhaoLoginForceReset(navUrl, 'did-navigate-in-page-reset')) return;
+      // 🔐 FIX_XINLANG_NEWLOGIN_LANDING_GUARD：必须排在 tryPersistAfterLoginNavigate 之前——
+      // 先把会话判死，下面那次回存的预检才会看到"死"并跳过，否则死快照已经发出去了
+      await maybeMarkXinlangDeadOnLoginLanding(newWindow, navUrl, 'did-navigate-in-page');
       // 🔐 SPA 路由也触发登录回跳保存（覆盖腾讯号 userAuth、搜狐 mpfe/v4/login 等单页应用登录路径）
       // 加存活守卫，避免窗口销毁后访问已释放对象导致 crash (0xC0000005)
       try {
@@ -17532,9 +18256,15 @@ function getPublishBackendAccountId(publishData) {
     || null;
 }
 
-function resolveScriptSaveBackendAccountId(platform, publishData, cacheSyncResult, scriptResult) {
+function resolveScriptSaveBackendAccountId(platform, publishData, cacheSyncResult, scriptResult, mappedAccountId = '') {
   const normalizedPlatform = normalizePlatformName(platform || publishData?.platform || '');
-  const trustedBackendAccountId = cacheSyncResult?.backendAccountId || getPublishBackendAccountId(publishData);
+  // 🔐 FIX_XINLANG_LOGIN_ALIVE_PROBE：windowAccountMap 里的 accountId 就是父页面传进来的后台账号 id，
+  // 内容管理入口没有 publishData，原来只能回退到平台 uid，于是 latest_session 缓存被写成
+  // latest_session_<platform>_<平台uid>——开窗时按后台 id 查缓存必然查不到，判死清缓存也清不掉它，
+  // 只能等 TTL 过期，实测(2026-08-31)新浪/腾讯的内容管理关窗都在生成这种孤儿缓存。
+  const trustedBackendAccountId = normalizeAccountIdValue(mappedAccountId)
+    || cacheSyncResult?.backendAccountId
+    || getPublishBackendAccountId(publishData);
   if (trustedBackendAccountId) {
     return trustedBackendAccountId;
   }
@@ -18533,6 +19263,10 @@ async function syncLatestSessionCacheFromWindow(targetWindow, windowId, source =
     return context;
   }
 
+  // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：窗口里刚建立/刷新的登录，先把新鲜度戳落下，
+  // 之后同一个发布任务再拿冻结的旧快照回来，就会被守卫按"更旧"挡住。
+  await stampWindowLoginFreshness(targetWindow, context, source);
+
   const localCacheSnapshot = saveLatestSessionCache({
     platform: context.accountInfo.platform,
     backendAccountId: context.backendAccountId,
@@ -18575,6 +19309,9 @@ async function persistWindowSessionToBackend(targetWindow, windowId, source = 'w
   if (!context.success) {
     return context;
   }
+
+  // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：关窗时这个分区里的登录态就是最新的一份，同样打戳。
+  await stampWindowLoginFreshness(targetWindow, context, source);
 
   const localCacheSnapshot = saveLatestSessionCache({
     platform: context.accountInfo.platform,
@@ -19733,6 +20470,101 @@ ipcMain.handle('check-account-login-status', async (event, platform, accountId) 
   }
 });
 
+// ========== SSO 预热：隐藏窗口真实导航，把重定向链里的 cookie 种进当前 session ==========
+// 🔐 FIX_XINLANG_LOGIN_ALIVE_PROBE 配套：新浪授权只走 mp.sina.com.cn + passport.weibo.com，
+// weibo.com 主站登录态从未真正建立（实测 2026-08-31：授权后 SCF@.weibo.com 与失效前值完全一致，
+// 快照里从来没有 .weibo.cn 那组 SSO cookie，而人工登录一次立刻就有）。
+// 纯 no-cors fetch 建不起来——SSO 要靠浏览器自己跑完跳转链，所以用隐藏窗口真实导航一遍。
+ipcMain.handle('warmup-session-navigation', async (event, urls, options = {}) => {
+  const targetUrls = (Array.isArray(urls) ? urls : [urls]).filter(u => typeof u === 'string' && /^https?:\/\//i.test(u));
+  if (targetUrls.length === 0) {
+    return { success: false, error: 'urls 为空或格式不合法' };
+  }
+
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  const sourceWebContents = senderWindow
+    ? senderWindow.webContents
+    : (browserView && !browserView.webContents.isDestroyed() ? browserView.webContents : null);
+  if (!sourceWebContents) {
+    return { success: false, error: 'session 不可用' };
+  }
+
+  const waitMs = Math.min(Math.max(Number(options.waitMs) || 1500, 0), 8000);
+  const timeoutMs = Math.min(Math.max(Number(options.timeoutMs) || 15000, 3000), 30000);
+  const warmupSession = sourceWebContents.session;
+  const userAgent = sourceWebContents.getUserAgent();
+  const visited = [];
+  let hiddenWindow = null;
+
+  try {
+    hiddenWindow = new BrowserWindow({
+      show: false,
+      width: 1200,
+      height: 800,
+      webPreferences: {
+        session: warmupSession,
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    });
+    hiddenWindow.webContents.setUserAgent(userAgent);
+
+    for (const url of targetUrls) {
+      if (!hiddenWindow || hiddenWindow.isDestroyed()) break;
+      try {
+        await Promise.race([
+          hiddenWindow.loadURL(url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('导航超时')), timeoutMs))
+        ]);
+        // 重定向链结束后页面里还可能有 JS 触发的二次跳转/Set-Cookie，留一点时间落盘
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        const finalUrl = (!hiddenWindow || hiddenWindow.isDestroyed()) ? '' : hiddenWindow.webContents.getURL();
+        visited.push({ url, ok: true, finalUrl });
+        console.log(`[SSO Warmup] ✅ ${url} → ${finalUrl}`);
+      } catch (navErr) {
+        // ERR_ABORTED 常见于目标站主动中断导航（XFO/重定向到外域），此时 cookie 往往已经种下，不算失败
+        visited.push({ url, ok: false, error: navErr.message });
+        console.warn(`[SSO Warmup] ⚠️ ${url} 导航未完成: ${navErr.message}`);
+      }
+    }
+
+    try { await warmupSession.flushStorageData(); } catch (_) {}
+    return { success: true, visited };
+  } catch (err) {
+    console.error('[SSO Warmup] ❌ 预热失败:', err.message);
+    return { success: false, error: err.message, visited };
+  } finally {
+    if (hiddenWindow && !hiddenWindow.isDestroyed()) {
+      hiddenWindow.destroy();
+    }
+  }
+});
+
+// ========== 新浪发布域登录探测：给授权脚本用（判断"这份快照到底能不能进编辑器"） ==========
+// 授权脚本自己 fetch 不了：mp.sina.com.cn 跨域读不到 card.weibo.com 的响应体，
+// no-cors 拿到的是 opaque；而 proxy-fetch 走的是 browserView session，不是授权窗那份临时 session。
+// 所以开一个专用 IPC，用 sender 窗口自己的 session 跑主进程那段判活。
+ipcMain.handle('probe-xinlang-publish-host', async (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  const ses = senderWindow
+    ? senderWindow.webContents.session
+    : (browserView && !browserView.webContents.isDestroyed() ? browserView.webContents.session : null);
+  if (!ses) {
+    return { success: false, error: 'session 不可用' };
+  }
+  try {
+    const cookieHeader = await buildXinlangCookieHeader(ses);
+    if (!cookieHeader) {
+      return { success: true, verdict: 'not-login', reason: 'no-cookie' };
+    }
+    const result = await probeXinlangPublishHostLoginState(cookieHeader);
+    console.log('[新浪探活] 🧪 发布域探测（授权脚本请求）:', result);
+    return { success: true, ...result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // ========== 获取完整会话数据（Cookies + Storage + IndexedDB） ==========
 // 用于授权后将完整登录状态存储到后台
 ipcMain.handle('get-full-session-data', async (event, domain) => {
@@ -20088,6 +20920,10 @@ ipcMain.handle('clear-account-cookies', async (event, platform, accountId) => {
     console.log('[Clear Account Cookies] ========== 清空完成 ==========');
     console.log(`[Clear Account Cookies] 成功删除 ${deletedCount} 个 cookies`);
     await flushSessionStorageData(targetSession, 'Clear Account Cookies', { throwOnError: true });
+
+    // 🔐 FIX_SESSION_RESTORE_BACKFLOW_GUARD：分区里的登录态已经被清掉，
+    // 留着戳会让下次开窗误判"本地有更新的登录"而拒绝恢复后台快照
+    clearSessionLoginStamp(platform, accountId, 'clear-account-cookies');
 
     return { success: true, deletedCount: deletedCount };
   } catch (err) {

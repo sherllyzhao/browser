@@ -874,6 +874,985 @@ async function publishApi(dataObj) {
             return true;
         }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
 
+
+        // 设置封面
+        try {
+            console.log('[封面设置] 开始设置封面...');
+            const customCoverList = dataObj.element.cover2
+            /* const customCoverList = [
+                "https://images.china9.cn/attachment/2026-06-16/CR3XUbGEhafOuXFr7x1H08hyao6bKQMYZGzwo6o0.png",
+                "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
+            ]; */
+            console.log("🚀 ~ executeAllFormSteps ~ customCoverList: ", customCoverList);
+            // 🔑 进门先看锁：SPA 重复注入会产生两个脚本实例，两个都会跑到这里。
+            //    如果对方已经在传封面，本实例必须整块跳过 —— 两个实例同时点坑位、
+            //    同时往 input 塞文件，只会把彼此的弹窗和文件互相冲掉，两边都失败。
+            //    （上一版的锁只防住了"检测循环 vs 上传"，没防"上传 vs 上传"。）
+            if (Date.now() < (window.__douyinCoverUploadingUntil || 0)) {
+                console.log('[封面上传] ⏭️ 另一个脚本实例正在上传封面，本实例整块跳过封面设置');
+            } else if (customCoverList && customCoverList.length > 0) {
+                // 🔑 互斥锁：抖音是 SPA，视频传完 URL 变化会触发 did-navigate-in-page，
+                //    脚本被重新注入 → 页面上同时有两个实例。另一个实例的「封面检测」轮询
+                //    （本文件 801-889 行）每 2 秒就点一次推荐封面 + 点一次「完成」，
+                //    会把我这边刚塞进去的文件、刚打开的弹窗全部冲掉。
+                //    用"过期时间戳"而不是布尔值：中途抛错也会自动解锁，绝不把对方永久锁死。
+                window.__douyinCoverUploadingUntil = Date.now() + 40000;
+                console.log('[封面上传] 🔒 已上锁，封面检测轮询暂时让路');
+
+                // 坑位选择器抽成函数：坑位之间 React 会重渲染封面区，
+                // 循环开始前存下的静态 NodeList 里的节点会脱离文档，点了等于点空气
+                const SLOT_SELECTOR = '[class*="coverControl-"] > [class^="cover-"]';
+                const querySlots = () => Array.from(document.querySelectorAll(SLOT_SELECTOR));
+                const coverListWrapEle = querySlots();
+                console.log(`[封面设置] 页面上共 ${coverListWrapEle.length} 个封面坑位，待传 ${customCoverList.length} 张封面`);
+
+                // 并行预加载所有封面图片，获取真实宽高。
+                // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
+                // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
+                const coverPromises = customCoverList.map((coverUrl, i) => {
+                    return new Promise((resolve) => {
+                        const img = new Image();
+                        let settled = false;
+                        const done = (v, why) => {
+                            if (settled) return;
+                            settled = true;
+                            if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
+                            resolve(v);
+                        };
+                        const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
+                        img.onload = () => {
+                            clearTimeout(timer);
+                            done({
+                                url: coverUrl,
+                                width: img.naturalWidth,
+                                height: img.naturalHeight,
+                                ratio: img.naturalWidth / img.naturalHeight
+                            });
+                        };
+                        img.onerror = () => {
+                            clearTimeout(timer);
+                            done(null, '失败(404/跨域?)');
+                        };
+                        img.src = coverUrl;
+                    });
+                });
+
+                const loadedCovers = await Promise.all(coverPromises);
+                // 对照表：坑位匹配一旦出错，照这行就能分清是"图没加载出来"还是"比值没匹配上"
+                console.log(
+                    `[封面设置] 封面预加载结果 ${loadedCovers.filter(Boolean).length}/${loadedCovers.length} 可用:`,
+                    loadedCovers
+                        .map((c, i) => (c ? `#${i + 1} ${c.width}×${c.height} 比值${c.ratio.toFixed(2)}` : `#${i + 1} ✗作废`))
+                        .join(' | ')
+                );
+
+                // ── helper：把 File 塞进隐藏 input，并真正让 React/Semi 的 onChange 跑起来 ──
+                const fireFileInput = (input, file) => {
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    input.files = dt.files;
+
+                    // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
+                    //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
+                    //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
+                    //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
+                    if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
+                        input._valueTracker.setValue('');
+                    }
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+                };
+
+                // ── helper：兜底，直接从 React fiber 上把 onChange 抠出来手动调 ──
+                const callReactOnChange = (input) => {
+                    const key = Object.keys(input).find(
+                        (k) => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$')
+                    );
+                    const onChange = key && input[key] && input[key].onChange;
+                    if (typeof onChange !== 'function') {
+                        console.log('[封面上传] ⚠️ fiber 上没挂 onChange，兜底失败');
+                        return false;
+                    }
+                    onChange({
+                        target: input,
+                        currentTarget: input,
+                        type: 'change',
+                        nativeEvent: new Event('change'),
+                        preventDefault() {
+                        },
+                        stopPropagation() {
+                        },
+                        persist() {
+                        }
+                    });
+                    console.log('[封面上传] 🔁 已通过 React fiber 直调 onChange');
+                    return true;
+                };
+
+                // ── helper：给弹窗内容拍指纹，用来判断上传到底有没有被平台接住 ──
+                //    上传成功后必定出现本地预览（blob: URL）/ 文件列表项 / 裁剪框 / loading，
+                //    指纹变了才算真的生效。光看代码跑完就打 ✅ 是自欺欺人。
+                const fingerprint = (root) => {
+                    const scope = root || document;
+                    const imgs = Array.from(scope.querySelectorAll('img')).map((i) => i.src).join('|');
+                    const extra = scope.querySelectorAll(
+                        '.semi-upload-file-list-item, .semi-upload-file-card, [class*="cropper"], [class*="Cropper"], .semi-spin-animate'
+                    ).length;
+                    return imgs + '#' + extra;
+                };
+                const waitFingerprintChange = async (root, before, timeout = 6000) => {
+                    const start = Date.now();
+                    while (Date.now() - start < timeout) {
+                        if (fingerprint(root) !== before) return true;
+                        await window.delay(300);
+                    }
+                    return false;
+                };
+
+                // ── helper：网络层上传监控 —— 判"图传完了"唯一扛得住的证据 ──
+                //    ⚠️ 别再拿 DOM 启发式当门闸了，这个坑踩过两次：
+                //       第一次拿"指纹变化"当成功（fingerprint 把 .semi-spin-animate 也计了数，
+                //       菊花一挂指纹就变，图才刚开始传）；
+                //       第二次拿"没有忙碌元素 + 快照静止"当成功 —— 抖音封面弹窗里压根没有
+                //       .semi-spin-animate，文本也不跳百分比，本地预览 blob: 图一秒就渲染完，
+                //       于是地板时间一过就"静止"，照样早点（用户第二次实测到的正是这个）。
+                //    确凿的信号只有一个：图片的 POST 请求收到了响应。
+                //    Semi Upload 内部走 XMLHttpRequest（要 progress 事件，fetch 给不了），
+                //    hook XHR 一定抓得到；fetch 也一并 hook 防万一。
+                //    幂等安装：SPA 重复注入会跑两遍这段，套娃 hook 会让计数翻倍。
+                const installUploadMonitor = () => {
+                    if (window.__douyinUploadMonitorInstalled) return;
+                    window.__douyinUploadMonitorInstalled = true;
+                    const stats = (window.__douyinUploadStats = {inflight: 0, done: 0, lastUrl: ''});
+
+                    // 窄口径判"这是不是一次文件上传"：
+                    // body 是 FormData/Blob/ArrayBuffer 是最强特征（普通接口发的是 JSON 字符串），
+                    // URL 特征兜住 base64-in-JSON 的传法。判宽了会把页面心跳请求算进来，
+                    // inflight 永远 >0 就变成每个坑位白等满超时。
+                    const isUploadReq = (method, url, body) => {
+                        if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
+                        const u = String(url || '');
+                        if (/upload|imagex|\/tos|byteimg|\/file\//i.test(u)) return true;
+                        return (
+                            (typeof FormData !== 'undefined' && body instanceof FormData)
+                            || (typeof Blob !== 'undefined' && body instanceof Blob)
+                            || (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer)
+                            || ArrayBuffer.isView(body)
+                        );
+                    };
+                    const begin = (url) => {
+                        stats.inflight++;
+                        stats.lastUrl = String(url || '').slice(0, 120);
+                    };
+                    const end = () => {
+                        stats.inflight = Math.max(0, stats.inflight - 1);
+                        stats.done++;
+                    };
+
+                    try {
+                        const OrigOpen = XMLHttpRequest.prototype.open;
+                        const OrigSend = XMLHttpRequest.prototype.send;
+                        XMLHttpRequest.prototype.open = function (method, url) {
+                            try {
+                                this.__dyMethod = method;
+                                this.__dyUrl = url;
+                            } catch (e) {
+                            }
+                            return OrigOpen.apply(this, arguments);
+                        };
+                        XMLHttpRequest.prototype.send = function (body) {
+                            try {
+                                if (isUploadReq(this.__dyMethod, this.__dyUrl, body)) {
+                                    begin(this.__dyUrl);
+                                    // loadend 覆盖 load/error/abort/timeout 四种收尾，
+                                    // 只挂这一个既不会漏也不会重复减
+                                    this.addEventListener('loadend', end, {once: true});
+                                }
+                            } catch (e) {
+                            }
+                            return OrigSend.apply(this, arguments);
+                        };
+                    } catch (e) {
+                        console.log('[封面上传] ⚠️ XHR 监控安装失败:', e && e.message);
+                    }
+
+                    try {
+                        const origFetch = window.fetch;
+                        if (typeof origFetch === 'function') {
+                            window.fetch = function (input, init) {
+                                let counted = false;
+                                try {
+                                    const url = typeof input === 'string' ? input : (input && input.url) || '';
+                                    const method = (init && init.method) || (input && input.method) || 'GET';
+                                    if (isUploadReq(method, url, init && init.body)) {
+                                        begin(url);
+                                        counted = true;
+                                    }
+                                } catch (e) {
+                                }
+                                const p = origFetch.apply(this, arguments);
+                                if (!counted || !p || typeof p.then !== 'function') return p;
+                                return p.then(
+                                    (r) => {
+                                        end();
+                                        return r;
+                                    },
+                                    (e) => {
+                                        end();
+                                        throw e;
+                                    }
+                                );
+                            };
+                        }
+                    } catch (e) {
+                        console.log('[封面上传] ⚠️ fetch 监控安装失败:', e && e.message);
+                    }
+                    console.log('[封面上传] 🛰️ 上传网络监控已安装');
+                };
+
+                // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
+                // "新增的 http 图"是第二条硬证据 —— 服务端回填 CDN url 了才会出现，
+                // 本地预览是 blob:，两者能干净地区分开。
+                const uploadBaseline = (root) => {
+                    const scope = root || document;
+                    const s = window.__douyinUploadStats || {done: 0};
+                    return {
+                        done: s.done,
+                        httpImgs: new Set(
+                            Array.from(scope.querySelectorAll('img'))
+                                .map((i) => i.src)
+                                .filter((u) => /^https?:/i.test(u))
+                        )
+                    };
+                };
+
+                // ── helper：等"图真的传完"，而不是"文件刚被组件接住" ──
+                //    判据按可信度排序，命中靠前的直接放行：
+                //      A. 上传请求数增加且 inflight 归零 —— 服务端已应答，最硬
+                //      B. 弹窗里冒出基线里没有的 http 图 —— 服务端回填了 CDN url，次硬
+                //      C. 都没抓到 → 退回"无忙碌元素 + 快照静止"，打醒目日志标明是降级
+                const waitUploadSettled = async (root, baseline, {min = 1500, timeout = 30000, stableFor = 4} = {}) => {
+                    const scope = root || document;
+                    const clsOf = (el) => el.getAttribute('class') || '(无class)';
+                    const stats = () => window.__douyinUploadStats || {inflight: 0, done: 0, lastUrl: ''};
+                    const base = baseline || {done: stats().done, httpImgs: new Set()};
+
+                    const newHttpImg = () =>
+                        Array.from(scope.querySelectorAll('img'))
+                            .map((i) => i.src)
+                            .find((u) => /^https?:/i.test(u) && !base.httpImgs.has(u));
+
+                    // 窄口径：只认明确表示"正在进行"的信号（抖音这边常年为空，仅作补充）
+                    const busyNow = () =>
+                        Array.from(scope.querySelectorAll('.semi-spin-animate, [class*="uploading"], [class*="Uploading"]'))
+                            .filter((el) => {
+                                const cs = window.getComputedStyle(el);
+                                if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+                                const r = el.getBoundingClientRect();
+                                return r.width > 0 && r.height > 0;
+                            });
+                    const snap = () => {
+                        const imgs = Array.from(scope.querySelectorAll('img')).map((i) => i.src).join('|');
+                        const txt = (scope.textContent || '').replace(/\s+/g, '').slice(0, 300);
+                        return imgs + '#' + txt;
+                    };
+
+                    // 放行前的复查：分片上传（申请 token → 传分片 → commit）在两段之间
+                    // 会短暂 inflight=0，直接放行就卡在中间那一刻了。等 900ms 看有没有新请求接上。
+                    const confirmIdle = async () => {
+                        for (let i = 0; i < 3; i++) {
+                            await window.delay(300);
+                            if (stats().inflight > 0) return false;
+                        }
+                        return true;
+                    };
+
+                    const start = Date.now();
+                    // 地板时间：刚派完 change 时请求还没发出去，
+                    // 立刻采样会读到"没请求 + 页面静止"直接假放行
+                    await window.delay(min);
+
+                    let last = snap();
+                    let stable = 0;
+                    let busyLogged = false;
+                    let inflightLogged = false;
+                    while (Date.now() - start < timeout) {
+                        const s = stats();
+                        const cost = () => Date.now() - start;
+
+                        if (s.inflight > 0) {
+                            if (!inflightLogged) {
+                                inflightLogged = true;
+                                console.log('[封面上传] ⏳ 上传请求进行中:', s.lastUrl || '(无 url)');
+                            }
+                            stable = 0;
+                        } else if (s.done > base.done) {
+                            if (await confirmIdle()) {
+                                console.log(
+                                    `[封面上传] ✅ 上传请求已完成（${s.done - base.done} 个，耗时 ${cost()}ms，末个: ${s.lastUrl}）`
+                                );
+                                await window.delay(600); // 给 React 回填 url / 刷新按钮态的时间
+                                return true;
+                            }
+                            stable = 0;
+                        } else {
+                            const cdn = newHttpImg();
+                            if (cdn && (await confirmIdle())) {
+                                console.log(`[封面上传] ✅ 已出现服务端回填的图片（耗时 ${cost()}ms）:`, String(cdn).slice(0, 100));
+                                await window.delay(600);
+                                return true;
+                            }
+                            const busy = busyNow();
+                            const now = snap();
+                            if (busy.length) {
+                                if (!busyLogged) {
+                                    busyLogged = true;
+                                    console.log('[封面上传] ⏳ 页面显示上传进行中:', busy.slice(0, 4).map(clsOf).join(' | '));
+                                }
+                                stable = 0;
+                            } else if (now === last) {
+                                stable++;
+                                if (stable >= stableFor) {
+                                    console.log(
+                                        `[封面上传] ⚠️ 没抓到任何上传请求，退回"页面静止"判据放行（耗时 ${cost()}ms）。`
+                                        + '若又出现"没传完就点按钮"，说明上传走了监控没覆盖的通道，看这行就知道要扩 isUploadReq'
+                                    );
+                                    return true;
+                                }
+                            } else {
+                                stable = 0;
+                            }
+                            last = now;
+                        }
+
+                        // 这一等最长 30 秒，不续锁的话 40 秒的锁会过期，封面检测轮询会插进来抢点
+                        window.__douyinCoverUploadingUntil = Date.now() + 40000;
+                        await window.delay(500);
+                    }
+                    const s = stats();
+                    console.log(
+                        `[封面上传] ⚠️ 等了 ${timeout}ms 上传仍未收尾，强行继续。inflight=${s.inflight} 完成=${s.done - base.done} 忙碌元素:`,
+                        busyNow().slice(0, 4).map(clsOf).join(' | ') || '(无)'
+                    );
+                    return false;
+                };
+
+                installUploadMonitor();
+
+                const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
+                let slotIndex = 0;
+                // 整块加固的总开关，关掉即回退旧行为（只点一级 + modal 为空时退化到整页找 input）
+                const slotGuardOn = typeof window.isFeatureEnabled === 'function'
+                    ? window.isFeatureEnabled('FIX_DOUYIN_COVER_SLOT_GUARD')
+                    : true;
+
+                for (let slotPos = 0; slotPos < coverListWrapEle.length; slotPos++) {
+                    slotIndex++;
+
+                    // 🔑 每个坑位现查节点，别用循环开始前那份静态列表：
+                    //    上一个坑位传完封面，React 会重渲染整个封面区，旧引用 isConnected 变 false，
+                    //    click() 打在脱离文档的孤儿节点上 —— 不报错、不弹窗、什么都不发生，
+                    //    症状完美伪装成"选择器写错了"
+                    const freshSlots = slotGuardOn ? querySlots() : coverListWrapEle;
+                    const item = freshSlots[slotPos] || coverListWrapEle[slotPos];
+                    if (!item || (slotGuardOn && !item.isConnected)) {
+                        console.log(`[封面设置] ⚠️ 坑位#${slotIndex} 节点已脱离文档且重查不到，跳过`);
+                        continue;
+                    }
+
+                    const rect = item.getBoundingClientRect();
+                    const ratio = rect.width / rect.height;
+
+                    // 每个坑位开工前给锁续期：单个坑位最长 40 秒（下载+等指纹+兜底+确认），
+                    // 续期比"一次性上一把大锁"安全 —— 卡住了最多锁 40 秒就自动放行
+                    window.__douyinCoverUploadingUntil = Date.now() + 40000;
+
+                    // 坑位之间隔开：上一个弹窗的关闭动画、上一张的上传请求都需要时间，
+                    // 连着点会点在还没消失的遮罩上
+                    if (slotIndex > 1) {
+                        console.log('[封面设置] ⏳ 处理下一个坑位前等待 3 秒...');
+                        await window.delay(3000);
+                    }
+
+                    // 选"比值最接近且还没用过"的那张。
+                    // 不能遍历到第一个符合的就用：容差 ±1.5 很宽（16:9=1.78 与 3:4=0.75 只差 1.03），
+                    // 那样第一张封面会被所有坑位重复占用
+                    let best = null;
+                    for (const cover of loadedCovers) {
+                        if (!cover || usedCovers.has(cover.url)) continue;
+                        const diff = Math.abs(cover.ratio - ratio);
+                        if (diff > 1.5) continue;
+                        if (!best || diff < best.diff) best = {cover, diff};
+                    }
+                    if (!best) {
+                        // 逐张说明为什么没选上，省得再靠猜（作废 / 已被前面坑位占用 / 比值差太多）
+                        const why = loadedCovers
+                            .map((c, i) =>
+                                !c ? `#${i + 1} 预加载作废`
+                                    : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
+                                        : `#${i + 1} 比值差 ${Math.abs(c.ratio - ratio).toFixed(2)} > 1.5`
+                            )
+                            .join(' | ');
+                        console.log(
+                            `[封面设置] 坑位#${slotIndex} (比值 ${ratio.toFixed(2)}) 没有可用的匹配封面，跳过。逐张原因: ${why}`
+                        );
+                        continue;
+                    }
+                    const customCover = best.cover;
+                    usedCovers.add(customCover.url);
+                    console.log(
+                        `[封面匹配] 坑位#${slotIndex} 比值 ${ratio.toFixed(2)} ← 封面比值 ${customCover.ratio.toFixed(2)} (差 ${best.diff.toFixed(2)}) ${customCover.url}`
+                    );
+
+                    // 🔑 坑位的"视觉签名"：坑位里那张缩略图的 src / background-image。
+                    //    点完「完成」拿它跟事后对比 —— 这是唯一能证明"封面真换上了"的东西。
+                    //    弹窗关了 ≠ 换成功：文件被组件拒收时，点「完成」照样把弹窗关掉。
+                    const slotSignature = (el) => {
+                        if (!el || !el.isConnected) return '(节点已失效)';
+                        const parts = [];
+                        const nodes = [el, ...Array.from(el.querySelectorAll('*'))].slice(0, 40);
+                        for (const n of nodes) {
+                            if (n.tagName === 'IMG' && n.src) parts.push(n.src);
+                            const bg = window.getComputedStyle(n).backgroundImage;
+                            if (bg && bg !== 'none') parts.push(bg);
+                        }
+                        return parts.join('|') || '(无图)';
+                    };
+                    const sigBefore = slotSignature(item);
+
+                    // 🔑 开弹窗要分级重试，不能点一次就认命。
+                    //    实测症状：两个坑位只有第二个成功，第一个从头到尾没弹窗 ——
+                    //    click() 打在容器 div 上，React 的 onClick 未必挂在这一层；
+                    //    元素在可视区外时原生 click 也可能不生效。
+                    const openModal = async () => {
+                        try {
+                            item.scrollIntoView({block: 'center', behavior: 'instant'});
+                        } catch (e) {
+                            try {
+                                item.scrollIntoView();
+                            } catch (e2) {
+                            }
+                        }
+                        await window.delay(300);
+
+                        const tries = [
+                            ['原生 click', async () => item.click()],
+                            ['MouseEvent 序列', async () => {
+                                const r = item.getBoundingClientRect();
+                                const x = r.left + r.width / 2;
+                                const y = r.top + r.height / 2;
+                                for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+                                    item.dispatchEvent(new MouseEvent(type, {
+                                        bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
+                                    }));
+                                }
+                            }],
+                            ['子元素 click', async () => {
+                                // onClick 常挂在里层的图片/悬浮蒙层上，父容器点不动就往里点一层
+                                const inner = item.querySelector('img, [class*="mask"], [class*="hover"], div');
+                                (inner || item).click();
+                            }],
+                            ['原生鼠标', async () => {
+                                if (typeof window.nativeClickElement === 'function') {
+                                    await window.nativeClickElement(item, {logPrefix: '[封面上传]'});
+                                } else {
+                                    console.log('[封面上传] ⚠️ nativeClickElement 不可用，跳过这级');
+                                }
+                            }]
+                        ];
+
+                        for (const [name, act] of tries) {
+                            try {
+                                await act();
+                            } catch (e) {
+                                console.log(`[封面上传] ⚠️ ${name} 抛错:`, e.message);
+                                continue;
+                            }
+                            // 第一级给足 8 秒（弹窗内容要现拉），后面几级只需确认有没有反应
+                            const m = await window.__douyinWaitVisibleModal(name === '原生 click' ? 8000 : 4000);
+                            if (m) {
+                                console.log(`[封面上传] ✅ 弹窗已打开（${name} 生效）:`, m.className);
+                                return m;
+                            }
+                            console.log(`[封面上传] ⚠️ ${name} 后没等到弹窗，换下一级`);
+                            if (!slotGuardOn) break; // 开关关掉时只点第一级，回退旧行为
+                        }
+                        return null;
+                    };
+
+                    const modal = await openModal();
+
+                    // 🔑 没拿到弹窗引用，绝不等于"这个坑位没救了"。
+                    //    上一版在这里直接 continue，结果实测**两个坑位全军覆没** ——
+                    //    因为旧代码的 `searchRoot = modal || document` 退化路径，正是
+                    //    竖封面唯一成功的那条路：弹窗其实开着，只是探测判据没认出来，
+                    //    退到整页去找反而找对了「上传封面」的 input。
+                    //    所以这里保留降级，但降级必须**靠文案锚定**而不是碰运气取"最后一个"，
+                    //    见下方 findUploadRootByText 的 strictMode。
+                    const degraded = !modal;
+                    if (degraded) {
+                        window.__douyinDumpModalState(`坑位#${slotIndex} 四级点击后仍没拿到弹窗`);
+                        console.log(
+                            `[封面上传] ⚠️ 坑位#${slotIndex} 降级为整页查找模式（只认文案含「封面」的上传容器，找不到就放弃）`
+                        );
+                    }
+
+                    // 🔑 弹窗里有两个上传入口：左侧「生成参考图」的 + 和右侧「上传封面」的 +。
+                    //    两个都是 .semi-upload-hidden-input，取"弹窗内第一个"在 DOM 顺序上会命中
+                    //    左边的参考图 input —— 塞对了文件也进不了封面。必须先按按钮文案锁定
+                    //    「上传封面」那颗按钮，再回溯它自己的 .semi-upload 容器，只在容器里找 input。
+                    const searchRoot = modal || document;
+
+                    // 先等弹窗把上传区渲染出来（任意一个 hidden input 出现即可，证明 Upload 组件已挂载）
+                    try {
+                        await waitForElement('.semi-upload-hidden-input', 8000, 200, searchRoot);
+                    } catch (e) {
+                        console.log('[封面上传] ⚠️ 弹窗内没等到任何上传 input:', e.message);
+                    }
+
+                    // 一次性诊断：把弹窗内所有 file input 连它所属容器的文案一起打出来。
+                    // 万一这次还没成，照这行就能直接判断该塞哪个，不用再靠猜。
+                    const allInputs = Array.from(searchRoot.querySelectorAll('input[type="file"]'));
+                    console.log(
+                        `[封面上传] 🔍 弹窗内共 ${allInputs.length} 个 file input:`,
+                        allInputs
+                            .map((el, i) => {
+                                const box = el.closest('.semi-upload');
+                                const boxText = box ? (box.textContent || '').trim().slice(0, 15) : '无容器';
+                                return `#${i}[${el.className}] accept=${el.accept || '未设'} 容器="${boxText}"`;
+                            })
+                            .join(' || ')
+                    );
+
+                    // 按文案找「上传封面」按钮，回溯到它所属的 .semi-upload 容器
+                    // strict = 降级模式（searchRoot 是整个 document）：
+                    //   此时"取最后一个 .semi-upload"纯属碰运气，页面主体的视频上传区
+                    //   也是 .semi-upload，碰错了就把封面塞进视频上传口。
+                    //   所以降级时只认文案里明确出现「封面」的容器，宁可放弃也不乱塞。
+                    const findUploadRootByText = (strict) => {
+                        const candidates = Array.from(
+                            searchRoot.querySelectorAll('.semi-upload')
+                        ).filter((el) => {
+                            if (!strict) return true;
+                            // 降级模式额外要求容器本身可见，排掉隐藏的历史节点
+                            const r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        });
+                        if (strict) {
+                            const hit = candidates.find((el) => {
+                                const t = el.textContent || '';
+                                return t.includes('封面') && !t.includes('参考图');
+                            });
+                            if (!hit) {
+                                console.log(
+                                    `[封面上传] 🔍 降级模式下整页 ${candidates.length} 个可见 .semi-upload，无一文案含「封面」:`,
+                                    candidates.map((el, i) => `#${i}"${(el.textContent || '').trim().slice(0, 12)}"`).join(' || ') || '(空)'
+                                );
+                            }
+                            return hit || null;
+                        }
+                        // 优先：容器内文字含「上传封面」/「上传」，且不含「参考图」
+                        let hit = candidates.find((el) => {
+                            const t = el.textContent || '';
+                            return t.includes('上传封面') || (t.includes('上传') && !t.includes('参考图'));
+                        });
+                        // 兜底：排除掉明显是参考图的容器后，取最后一个（右侧封面上传一般排在后面）
+                        // 只在弹窗内才敢这么兜底 —— 范围已经被弹窗限死，最多是选错弹窗内的入口
+                        if (!hit) {
+                            const notRef = candidates.filter(
+                                (el) => !((el.textContent || '').includes('参考图'))
+                            );
+                            hit = notRef[notRef.length - 1] || candidates[candidates.length - 1];
+                        }
+                        return hit || null;
+                    };
+
+                    const uploadRoot = findUploadRootByText(degraded && slotGuardOn);
+                    let uploadInput = null;
+                    if (uploadRoot) {
+                        // 🔑 优先 .semi-upload-hidden-input：-replace 那个依赖 Semi 内部的 replaceIdx
+                        //    （只有用户点文件项的"替换"按钮时才会被赋值），脚本直接塞行为不可控
+                        uploadInput = uploadRoot.querySelector('.semi-upload-hidden-input')
+                            || uploadRoot.querySelector('.semi-upload-hidden-input-replace');
+                    }
+                    // 实在没定位到容器就退回"范围内第一个"。
+                    // 但降级模式下这个范围是整个 document，随便挑一个等于乱塞，必须禁掉。
+                    if (!uploadInput && !(degraded && slotGuardOn)) {
+                        uploadInput = searchRoot.querySelector('.semi-upload-hidden-input')
+                            || searchRoot.querySelector('.semi-upload-hidden-input-replace');
+                    }
+                    if (!uploadInput) {
+                        usedCovers.delete(customCover.url); // 这张没用掉，退回去给后面的坑位
+                        console.log(`[封面上传] ⚠️ 坑位#${slotIndex} 没找到可信的封面上传 input，跳过该坑位`);
+                        continue;
+                    }
+                    console.log(
+                        '[封面上传] 命中 input:', uploadInput.className,
+                        '| accept:', uploadInput.accept,
+                        '| 定位到上传容器:', !!uploadRoot,
+                        '| 容器文案:', uploadRoot ? (uploadRoot.textContent || '').slice(0, 20) : '(无)'
+                    );
+
+                    const {blob, contentType} = await downloadFile(customCover.url, 'image/png');
+                    const fileType = contentType || 'image/png';
+                    // 文件名跟真实 MIME 对齐：input 的 accept 按扩展名校验，
+                    // 用标题拼 ".png" 可能拼出 "undefined.png"、超长文件名或类型对不上
+                    const ext = (fileType.split('/')[1] || 'png').replace('jpeg', 'jpg');
+                    const file = new File([blob], `cover_${slotIndex}_${Date.now()}.${ext}`, {type: fileType});
+
+                    const effectRoot = modal || uploadInput.closest('.semi-upload') || document;
+
+                    // 🔑 弹窗开了但封面没换掉时，第一嫌疑是「Semi 的 beforeUpload 把文件拒了」——
+                    //    抖音对封面有尺寸/比例/体积要求，不合格就弹个 toast 然后什么都不做。
+                    //    脚本这边看起来"派发成功"，实际文件根本没进上传队列。
+                    //    所以注入前先记下已有的提示，注入后把新增的提示原文打出来。
+                    const toastTexts = () =>
+                        Array.from(
+                            document.querySelectorAll(
+                                '.semi-toast, .semi-toast-content, .semi-notification, .semi-notification-content, [class*="toast"], [class*="Toast"], [class*="message-"]'
+                            )
+                        )
+                            .map((el) => (el.textContent || '').trim())
+                            .filter((t) => t && t.length < 120);
+                    const toastBase = new Set(toastTexts());
+                    const newToasts = () => toastTexts().filter((t) => !toastBase.has(t));
+
+                    // 本地预览是 blob: 图，出现即证明文件被组件接住了（比指纹更直接）
+                    const blobImgCount = () =>
+                        Array.from(effectRoot.querySelectorAll('img'))
+                            .filter((i) => /^blob:/i.test(i.src || '')).length;
+                    const blobBase = blobImgCount();
+
+                    const before = fingerprint(effectRoot);
+                    // 基线必须在派发 change 之前取：晚一步，上传请求已经发出去甚至已完成，
+                    // done 计数和 http 图集合就都被污染了，判据直接失效
+                    const upBase = uploadBaseline(effectRoot);
+
+                    // 🔑 注入要允许重试：第一次派发被 React 丢掉（_valueTracker 比对）、
+                    //    或者组件刚挂载还没绑好 onChange，都会让文件悄无声息地消失。
+                    //    "派发完就往下走"是上一版最大的一厢情愿。
+                    let fileAccepted = false;
+                    for (let attempt = 1; attempt <= 2 && !fileAccepted; attempt++) {
+                        // 每次重新定位 input：上一次尝试可能已让 React 重渲染上传区
+                        const freshInput =
+                            (uploadRoot && uploadRoot.isConnected
+                                ? uploadRoot.querySelector('.semi-upload-hidden-input')
+                                : null) || (uploadInput.isConnected ? uploadInput : null);
+                        if (!freshInput) {
+                            console.log(`[封面上传] ⚠️ 第 ${attempt} 次注入前 input 已脱离文档，重新定位失败`);
+                            break;
+                        }
+
+                        fireFileInput(freshInput, file);
+                        console.log(`[封面上传] 已注入并派发 change（第 ${attempt} 次）:`, file.name, blob.size, 'bytes');
+
+                        if (await waitFingerprintChange(effectRoot, before, 6000) || blobImgCount() > blobBase) {
+                            fileAccepted = true;
+                            console.log('[封面上传] 📥 组件已接住文件（注意：这只代表进了组件，不代表传完）');
+                            break;
+                        }
+
+                        console.log('[封面上传] ⚠️ 派发 change 后页面无反应，启用 fiber 兜底');
+                        if (callReactOnChange(freshInput)) {
+                            if (await waitFingerprintChange(effectRoot, before, 6000) || blobImgCount() > blobBase) {
+                                fileAccepted = true;
+                                console.log('[封面上传] 📥 fiber 兜底生效');
+                                break;
+                            }
+                            console.log('[封面上传] ❌ fiber 兜底后仍无反应');
+                        }
+
+                        // 组件把文件拒了的话，提示语通常已经弹出来了，原文比任何猜测都有用
+                        const tips = newToasts();
+                        if (tips.length) {
+                            console.log(`[封面上传] 💬 页面新增提示（很可能就是拒收原因）: ${tips.join(' / ')}`);
+                        }
+                        if (attempt < 2) {
+                            console.log('[封面上传] 🔁 换一次重新注入…');
+                            await window.delay(1200);
+                        }
+                    }
+
+                    if (!fileAccepted) {
+                        const tips = newToasts();
+                        console.log(
+                            `[封面上传] ❌ 坑位#${slotIndex} 文件始终没被组件接住`
+                            + (tips.length ? `，页面提示: ${tips.join(' / ')}` : '，且页面没弹任何提示')
+                        );
+                        console.log(
+                            '[封面上传] 🔬 当前 input 状态:',
+                            `files=${uploadInput.files ? uploadInput.files.length : 'null'}`,
+                            `| accept=${uploadInput.accept || '未设'}`,
+                            `| isConnected=${uploadInput.isConnected}`,
+                            `| 文件类型=${fileType} 尺寸=${customCover.width}×${customCover.height}`
+                        );
+                    }
+
+                    // 🔑 等图真的传完再点「完成」。少了这一步就是"图没上传完就点了按钮"，
+                    //    提交上去的是半成品封面。指纹变化只证明文件进了组件，页面静止也只
+                    //    证明本地预览渲染完了 —— 传没传完得看网络，见 waitUploadSettled 的注释。
+                    //    文件压根没被接住时不必等：等 30 秒也等不出上传请求。
+                    if (fileAccepted) {
+                        await waitUploadSettled(effectRoot, upBase, {min: 1500, timeout: 30000});
+                    }
+                    // 收尾之后再给 React 一点时间（裁剪框定型、按钮态刷新）
+                    await window.delay(800);
+
+                    // 🔑 按文案锁定「完成」（底部并排着「重新检测」「完成」「设置横封面」，
+                    //    左侧还有「AI生成封面」，取错一个就前功尽弃）。
+                    //    注：「完成」看着是灰的但并非 disabled（实测确认），所以下面那圈
+                    //    "等它变可用"的轮询正常情况下第一轮就直接放行，只当极端情况的保险；
+                    //    真正防早点的是上面的 waitUploadSettled。
+                    //
+                    //    「完成」必须在弹窗范围里找。modal 为 null（降级模式）时往上回溯
+                    //    到上传 input 最近的重叠层容器，只在该层找 —— 整页范围找「完成」
+                    //    可能点到页面别处的按钮（比如发布页顶部的「发布」）。
+                    const confirmScope = modal
+                        || (() => {
+                            const start = uploadInput || uploadRoot;
+                            if (!start) return null;
+                            let node = start;
+                            while (node && node !== document.body && node !== document) {
+                                const cls = node.className || '';
+                                if (typeof cls === 'string' && /semi-modal|semi-sidesheet|modal|overlay|drawer|popup/i.test(cls)) {
+                                    return node;
+                                }
+                                node = node.parentElement;
+                            }
+                            return null;
+                        })();
+                    if (confirmScope) {
+                        const isDisabled = (b) =>
+                            b.disabled === true
+                            || b.hasAttribute('disabled')
+                            || b.getAttribute('aria-disabled') === 'true'
+                            || /semi-button-disabled/.test(b.className || '');
+                        const allBtns = () => Array.from(confirmScope.querySelectorAll('.semi-button, button'));
+                        const dumpBtns = () =>
+                            allBtns()
+                                .map((b) => {
+                                    const t = (b.textContent || '').trim();
+                                    return t ? `「${t}」${isDisabled(b) ? '[禁用]' : '[可点]'}` : '';
+                                })
+                                .filter(Boolean)
+                                .join(' / ');
+                        const findConfirm = () => {
+                            const btns = allBtns();
+                            const pick = (re) => btns.find((b) => re.test((b.textContent || '').trim()));
+                            return pick(/^完成$/) || pick(/^(确定|确认|保存)$/) || pick(/^完成/);
+                        };
+
+                        console.log('[封面上传] 🔍 弹窗按钮一览:', dumpBtns() || '(一个都没有)');
+
+                        // 等「完成」从禁用变可用，最长 20 秒
+                        let confirmBtn = null;
+                        const waitUntil = Date.now() + 20000;
+                        while (Date.now() < waitUntil) {
+                            const b = findConfirm();
+                            if (b && !isDisabled(b)) {
+                                confirmBtn = b;
+                                break;
+                            }
+                            // 这一等最多吃掉 20 秒，不续锁的话 40 秒的锁会过期，封面检测轮询会插进来抢点
+                            window.__douyinCoverUploadingUntil = Date.now() + 40000;
+                            await window.delay(500);
+                        }
+
+                        if (!confirmBtn) {
+                            const stillThere = findConfirm();
+                            console.log(
+                                stillThere
+                                    ? `[封面上传] ⚠️ 等了 20 秒「完成」仍是禁用态，强行点一次试试。按钮: ${dumpBtns()}`
+                                    : `[封面上传] ⚠️ 弹窗里压根没有「完成」按钮。现有: ${dumpBtns()}`
+                            );
+                            confirmBtn = stillThere;
+                        }
+
+                        if (confirmBtn) {
+                            // ⚠️ 两个坑都别踩：
+                            //    1) offsetParent === null 判不了 —— Semi modal 是 position:fixed，
+                            //       fixed 元素的 offsetParent 天生就是 null，会把"还开着"误判成"已关闭"
+                            //    2) animate-show 更判不了 —— 那 class 是入场动画期间才挂的，早没了，
+                            //       拿它判等于每次都返回"已关闭"，第一次 click 就假报成功，兜底全废
+                            //    只认两件事：还在文档里，且真的可见。
+                            //    注意用 confirmScope 而不是 modal —— 降级模式下 modal 是 null，
+                            //    写 modal.isConnected 会直接抛 TypeError，被外层 catch 吞掉，
+                            //    表现成"封面设置失败"却完全看不出是空指针。
+                            const modalClosed = () => {
+                                if (!confirmScope.isConnected) return true;
+                                const cs = window.getComputedStyle(confirmScope);
+                                if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return true;
+                                const r = confirmScope.getBoundingClientRect();
+                                return r.width < 100 || r.height < 100;
+                            };
+
+                            // 三级点击：合成 click → 鼠标事件序列 → 主进程真实点击。
+                            // 每级点完都验证弹窗是否关闭，关了立刻收工，避免多点一次误触后续弹窗
+                            const attempts = [
+                                ['element.click', async (el) => {
+                                    el.click();
+                                }],
+                                ['mouse 序列', async (el) => {
+                                    const r = el.getBoundingClientRect();
+                                    const o = {
+                                        bubbles: true, cancelable: true, view: window,
+                                        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+                                    };
+                                    el.dispatchEvent(new MouseEvent('mouseover', o));
+                                    el.dispatchEvent(new MouseEvent('mousedown', o));
+                                    el.dispatchEvent(new MouseEvent('mouseup', o));
+                                    el.dispatchEvent(new MouseEvent('click', o));
+                                }],
+                                ['nativeClick', async (el) => {
+                                    if (typeof window.nativeClickElement === 'function') {
+                                        await window.nativeClickElement(el, {logPrefix: '[封面上传]'});
+                                    } else {
+                                        console.log('[封面上传] ⚠️ nativeClickElement 不可用，跳过这级兜底');
+                                    }
+                                }],
+                            ];
+
+                            let closed = false;
+                            for (const [name, doClick] of attempts) {
+                                // 每次重新找按钮：上一次点击可能已让 React 重渲染，旧引用会脱离文档
+                                const el = findConfirm() || confirmBtn;
+                                try {
+                                    await doClick(el);
+                                    console.log(`[封面上传] 已用 ${name} 点击「${(el.textContent || '').trim()}」`);
+                                } catch (e) {
+                                    console.log(`[封面上传] ⚠️ ${name} 点击抛错:`, e.message);
+                                }
+                                await window.delay(1500);
+                                if (modalClosed()) {
+                                    closed = true;
+                                    console.log(`[封面上传] ✅ 弹窗已关闭（${name} 生效）`);
+                                    break;
+                                }
+                                window.__douyinCoverUploadingUntil = Date.now() + 40000;
+                            }
+                            if (!closed) {
+                                console.log('[封面上传] ❌ 三种点击都没能关掉弹窗，当前按钮状态:', dumpBtns());
+                            }
+                        }
+                    } else {
+                        console.log('[封面上传] ⚠️ 没拿到弹窗引用，跳过确认按钮（避免误点页面其他按钮）');
+                    }
+
+                    // 🔑 收尾必须回头验坑位。"弹窗关了"只证明按钮点动了，不证明封面换上了 ——
+                    //    实测就出现过「已用 mouse 序列 点击「完成」」照打、图片纹丝不动的情况。
+                    //    坑位缩略图的 src/background-image 变了才算真成功。
+                    await window.delay(1500);
+                    const freshItem = querySlots()[slotPos] || item;
+                    const sigAfter = slotSignature(freshItem);
+                    if (sigAfter !== sigBefore && sigAfter !== '(节点已失效)' && sigAfter !== '(无图)') {
+                        console.log(`[封面上传] 🎉 坑位#${slotIndex} 封面确认已更换`);
+                    } else {
+                        // 这张没真正用上，退回给后面的坑位，别让它白占一个名额
+                        usedCovers.delete(customCover.url);
+                        console.log(
+                            `[封面上传] ❌ 坑位#${slotIndex} 点完「完成」后缩略图没变化，封面【没有】换上（该封面已退回）。`
+                            + `\n    文件是否被组件接住: ${fileAccepted ? '是' : '否'}`
+                            + `\n    换前签名: ${String(sigBefore).slice(0, 120)}`
+                            + `\n    换后签名: ${String(sigAfter).slice(0, 120)}`
+                            + (newToasts().length ? `\n    页面提示: ${newToasts().join(' / ')}` : '\n    页面无提示')
+                        );
+                    }
+                }
+
+                // 所有坑位处理完，立刻解锁，别让封面检测白等到 40 秒过期
+                window.__douyinCoverUploadingUntil = 0;
+                console.log('[封面上传] 🔓 已解锁，封面检测轮询恢复');
+            } else {
+                await retryOperation(async () => {
+                    // 尝试多种选择器策略
+                    let coverInput = null;
+                    const selectors = [
+                        '.recommendCover-vWWsHB:nth-child(1)',
+                        '.recommendCover-vWWsHB:first-child',
+                        '.recommendCover-vWWsHB'
+                    ];
+
+                    for (const selector of selectors) {
+                        try {
+                            coverInput = await waitForElement(selector, 10000); // 🔑 增加到 10 秒
+                            if (coverInput) {
+                                console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
+                                break;
+                            }
+                        } catch (e) {
+                            console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
+                        }
+                    }
+
+                    if (!coverInput) {
+                        throw new Error('未找到任何封面元素');
+                    }
+
+                    console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
+
+                    // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
+                    const rect = coverInput.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+
+                    const mouseEventOptions = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        screenX: x,
+                        screenY: y,
+                        button: 0
+                    };
+
+                    // 完整的鼠标事件序列
+                    coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
+                    await window.delay(50);
+
+                    coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
+                    await window.delay(50);
+
+                    coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
+                    await window.delay(50);
+
+                    coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
+
+                    console.log('[封面设置] ✅ 已触发完整点击事件序列');
+
+                    await window.delay(1000);
+
+                    // 尝试查找并确认弹窗（如果没有弹窗也没关系）
+                    try {
+                        // 用公共 helper 找可见弹窗（别等 animate-show 动画 class，见文件顶部注释）
+                        const confirmDialog = await window.__douyinWaitVisibleModal(3000);
+                        if (confirmDialog) {
+                            const btns = Array.from(confirmDialog.querySelectorAll('.semi-button, button'));
+                            const pick = (re) => btns.find((b) => re.test((b.textContent || '').trim()));
+                            const confirmBtn = pick(/^完成$/)
+                                || pick(/^(确定|确认|保存)$/)
+                                || btns.find((b) => /semi-button-primary/.test(b.className || ''));
+                            if (confirmBtn) {
+                                confirmBtn.click();
+                                console.log('[封面设置] ✅ 已确认弹窗:', (confirmBtn.textContent || '').trim());
+                            } else {
+                                console.log(
+                                    '[封面设置] ⚠️ 弹窗里没找到确认按钮:',
+                                    btns.map((b) => (b.textContent || '').trim()).filter(Boolean).join(' / ')
+                                );
+                            }
+                        } else {
+                            console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置');
+                        }
+                    } catch (dialogError) {
+                        console.log('[封面设置] ⚠️ 确认弹窗处理异常:', dialogError.message);
+                    }
+                }, 5, 1000);
+            }
+        } catch (error) {
+            console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
+        }
+
         // 检测封面是否通过检测
         console.log('[抖音发布] ⏳ 等待封面检测通过...');
         const coverCheckStartTime = Date.now();
@@ -1617,873 +2596,6 @@ async function fillFormData(dataObj) {
             }
         } catch (error) {
             // alert('⚠️ Intro handling failed: ' + error.message);
-        }
-
-        // 设置封面
-        try {
-            console.log('[封面设置] 开始设置封面...');
-            const customCoverList = dataObj.element.cover2
-            /* const customCoverList = [
-                "https://images.china9.cn/attachment/2026-06-16/CR3XUbGEhafOuXFr7x1H08hyao6bKQMYZGzwo6o0.png",
-                "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
-            ]; */
-            console.log("🚀 ~ executeAllFormSteps ~ customCoverList: ", customCoverList);
-            // 🔑 进门先看锁：SPA 重复注入会产生两个脚本实例，两个都会跑到这里。
-            //    如果对方已经在传封面，本实例必须整块跳过 —— 两个实例同时点坑位、
-            //    同时往 input 塞文件，只会把彼此的弹窗和文件互相冲掉，两边都失败。
-            //    （上一版的锁只防住了"检测循环 vs 上传"，没防"上传 vs 上传"。）
-            if (Date.now() < (window.__douyinCoverUploadingUntil || 0)) {
-                console.log('[封面上传] ⏭️ 另一个脚本实例正在上传封面，本实例整块跳过封面设置');
-            } else if (customCoverList && customCoverList.length > 0) {
-                // 🔑 互斥锁：抖音是 SPA，视频传完 URL 变化会触发 did-navigate-in-page，
-                //    脚本被重新注入 → 页面上同时有两个实例。另一个实例的「封面检测」轮询
-                //    （本文件 801-889 行）每 2 秒就点一次推荐封面 + 点一次「完成」，
-                //    会把我这边刚塞进去的文件、刚打开的弹窗全部冲掉。
-                //    用"过期时间戳"而不是布尔值：中途抛错也会自动解锁，绝不把对方永久锁死。
-                window.__douyinCoverUploadingUntil = Date.now() + 40000;
-                console.log('[封面上传] 🔒 已上锁，封面检测轮询暂时让路');
-
-                // 坑位选择器抽成函数：坑位之间 React 会重渲染封面区，
-                // 循环开始前存下的静态 NodeList 里的节点会脱离文档，点了等于点空气
-                const SLOT_SELECTOR = '[class*="coverControl-"] > [class^="cover-"]';
-                const querySlots = () => Array.from(document.querySelectorAll(SLOT_SELECTOR));
-                const coverListWrapEle = querySlots();
-                console.log(`[封面设置] 页面上共 ${coverListWrapEle.length} 个封面坑位，待传 ${customCoverList.length} 张封面`);
-
-                // 并行预加载所有封面图片，获取真实宽高。
-                // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
-                // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
-                const coverPromises = customCoverList.map((coverUrl, i) => {
-                    return new Promise((resolve) => {
-                        const img = new Image();
-                        let settled = false;
-                        const done = (v, why) => {
-                            if (settled) return;
-                            settled = true;
-                            if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
-                            resolve(v);
-                        };
-                        const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
-                        img.onload = () => {
-                            clearTimeout(timer);
-                            done({
-                                url: coverUrl,
-                                width: img.naturalWidth,
-                                height: img.naturalHeight,
-                                ratio: img.naturalWidth / img.naturalHeight
-                            });
-                        };
-                        img.onerror = () => {
-                            clearTimeout(timer);
-                            done(null, '失败(404/跨域?)');
-                        };
-                        img.src = coverUrl;
-                    });
-                });
-
-                const loadedCovers = await Promise.all(coverPromises);
-                // 对照表：坑位匹配一旦出错，照这行就能分清是"图没加载出来"还是"比值没匹配上"
-                console.log(
-                    `[封面设置] 封面预加载结果 ${loadedCovers.filter(Boolean).length}/${loadedCovers.length} 可用:`,
-                    loadedCovers
-                        .map((c, i) => (c ? `#${i + 1} ${c.width}×${c.height} 比值${c.ratio.toFixed(2)}` : `#${i + 1} ✗作废`))
-                        .join(' | ')
-                );
-
-                // ── helper：把 File 塞进隐藏 input，并真正让 React/Semi 的 onChange 跑起来 ──
-                const fireFileInput = (input, file) => {
-                    const dt = new DataTransfer();
-                    dt.items.add(file);
-                    input.files = dt.files;
-
-                    // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
-                    //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
-                    //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
-                    //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
-                    if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
-                        input._valueTracker.setValue('');
-                    }
-                    input.dispatchEvent(new Event('input', {bubbles: true}));
-                    input.dispatchEvent(new Event('change', {bubbles: true}));
-                };
-
-                // ── helper：兜底，直接从 React fiber 上把 onChange 抠出来手动调 ──
-                const callReactOnChange = (input) => {
-                    const key = Object.keys(input).find(
-                        (k) => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$')
-                    );
-                    const onChange = key && input[key] && input[key].onChange;
-                    if (typeof onChange !== 'function') {
-                        console.log('[封面上传] ⚠️ fiber 上没挂 onChange，兜底失败');
-                        return false;
-                    }
-                    onChange({
-                        target: input,
-                        currentTarget: input,
-                        type: 'change',
-                        nativeEvent: new Event('change'),
-                        preventDefault() {
-                        },
-                        stopPropagation() {
-                        },
-                        persist() {
-                        }
-                    });
-                    console.log('[封面上传] 🔁 已通过 React fiber 直调 onChange');
-                    return true;
-                };
-
-                // ── helper：给弹窗内容拍指纹，用来判断上传到底有没有被平台接住 ──
-                //    上传成功后必定出现本地预览（blob: URL）/ 文件列表项 / 裁剪框 / loading，
-                //    指纹变了才算真的生效。光看代码跑完就打 ✅ 是自欺欺人。
-                const fingerprint = (root) => {
-                    const scope = root || document;
-                    const imgs = Array.from(scope.querySelectorAll('img')).map((i) => i.src).join('|');
-                    const extra = scope.querySelectorAll(
-                        '.semi-upload-file-list-item, .semi-upload-file-card, [class*="cropper"], [class*="Cropper"], .semi-spin-animate'
-                    ).length;
-                    return imgs + '#' + extra;
-                };
-                const waitFingerprintChange = async (root, before, timeout = 6000) => {
-                    const start = Date.now();
-                    while (Date.now() - start < timeout) {
-                        if (fingerprint(root) !== before) return true;
-                        await window.delay(300);
-                    }
-                    return false;
-                };
-
-                // ── helper：网络层上传监控 —— 判"图传完了"唯一扛得住的证据 ──
-                //    ⚠️ 别再拿 DOM 启发式当门闸了，这个坑踩过两次：
-                //       第一次拿"指纹变化"当成功（fingerprint 把 .semi-spin-animate 也计了数，
-                //       菊花一挂指纹就变，图才刚开始传）；
-                //       第二次拿"没有忙碌元素 + 快照静止"当成功 —— 抖音封面弹窗里压根没有
-                //       .semi-spin-animate，文本也不跳百分比，本地预览 blob: 图一秒就渲染完，
-                //       于是地板时间一过就"静止"，照样早点（用户第二次实测到的正是这个）。
-                //    确凿的信号只有一个：图片的 POST 请求收到了响应。
-                //    Semi Upload 内部走 XMLHttpRequest（要 progress 事件，fetch 给不了），
-                //    hook XHR 一定抓得到；fetch 也一并 hook 防万一。
-                //    幂等安装：SPA 重复注入会跑两遍这段，套娃 hook 会让计数翻倍。
-                const installUploadMonitor = () => {
-                    if (window.__douyinUploadMonitorInstalled) return;
-                    window.__douyinUploadMonitorInstalled = true;
-                    const stats = (window.__douyinUploadStats = {inflight: 0, done: 0, lastUrl: ''});
-
-                    // 窄口径判"这是不是一次文件上传"：
-                    // body 是 FormData/Blob/ArrayBuffer 是最强特征（普通接口发的是 JSON 字符串），
-                    // URL 特征兜住 base64-in-JSON 的传法。判宽了会把页面心跳请求算进来，
-                    // inflight 永远 >0 就变成每个坑位白等满超时。
-                    const isUploadReq = (method, url, body) => {
-                        if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
-                        const u = String(url || '');
-                        if (/upload|imagex|\/tos|byteimg|\/file\//i.test(u)) return true;
-                        return (
-                            (typeof FormData !== 'undefined' && body instanceof FormData)
-                            || (typeof Blob !== 'undefined' && body instanceof Blob)
-                            || (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer)
-                            || ArrayBuffer.isView(body)
-                        );
-                    };
-                    const begin = (url) => {
-                        stats.inflight++;
-                        stats.lastUrl = String(url || '').slice(0, 120);
-                    };
-                    const end = () => {
-                        stats.inflight = Math.max(0, stats.inflight - 1);
-                        stats.done++;
-                    };
-
-                    try {
-                        const OrigOpen = XMLHttpRequest.prototype.open;
-                        const OrigSend = XMLHttpRequest.prototype.send;
-                        XMLHttpRequest.prototype.open = function (method, url) {
-                            try {
-                                this.__dyMethod = method;
-                                this.__dyUrl = url;
-                            } catch (e) {
-                            }
-                            return OrigOpen.apply(this, arguments);
-                        };
-                        XMLHttpRequest.prototype.send = function (body) {
-                            try {
-                                if (isUploadReq(this.__dyMethod, this.__dyUrl, body)) {
-                                    begin(this.__dyUrl);
-                                    // loadend 覆盖 load/error/abort/timeout 四种收尾，
-                                    // 只挂这一个既不会漏也不会重复减
-                                    this.addEventListener('loadend', end, {once: true});
-                                }
-                            } catch (e) {
-                            }
-                            return OrigSend.apply(this, arguments);
-                        };
-                    } catch (e) {
-                        console.log('[封面上传] ⚠️ XHR 监控安装失败:', e && e.message);
-                    }
-
-                    try {
-                        const origFetch = window.fetch;
-                        if (typeof origFetch === 'function') {
-                            window.fetch = function (input, init) {
-                                let counted = false;
-                                try {
-                                    const url = typeof input === 'string' ? input : (input && input.url) || '';
-                                    const method = (init && init.method) || (input && input.method) || 'GET';
-                                    if (isUploadReq(method, url, init && init.body)) {
-                                        begin(url);
-                                        counted = true;
-                                    }
-                                } catch (e) {
-                                }
-                                const p = origFetch.apply(this, arguments);
-                                if (!counted || !p || typeof p.then !== 'function') return p;
-                                return p.then(
-                                    (r) => {
-                                        end();
-                                        return r;
-                                    },
-                                    (e) => {
-                                        end();
-                                        throw e;
-                                    }
-                                );
-                            };
-                        }
-                    } catch (e) {
-                        console.log('[封面上传] ⚠️ fetch 监控安装失败:', e && e.message);
-                    }
-                    console.log('[封面上传] 🛰️ 上传网络监控已安装');
-                };
-
-                // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
-                // "新增的 http 图"是第二条硬证据 —— 服务端回填 CDN url 了才会出现，
-                // 本地预览是 blob:，两者能干净地区分开。
-                const uploadBaseline = (root) => {
-                    const scope = root || document;
-                    const s = window.__douyinUploadStats || {done: 0};
-                    return {
-                        done: s.done,
-                        httpImgs: new Set(
-                            Array.from(scope.querySelectorAll('img'))
-                                .map((i) => i.src)
-                                .filter((u) => /^https?:/i.test(u))
-                        )
-                    };
-                };
-
-                // ── helper：等"图真的传完"，而不是"文件刚被组件接住" ──
-                //    判据按可信度排序，命中靠前的直接放行：
-                //      A. 上传请求数增加且 inflight 归零 —— 服务端已应答，最硬
-                //      B. 弹窗里冒出基线里没有的 http 图 —— 服务端回填了 CDN url，次硬
-                //      C. 都没抓到 → 退回"无忙碌元素 + 快照静止"，打醒目日志标明是降级
-                const waitUploadSettled = async (root, baseline, {min = 1500, timeout = 30000, stableFor = 4} = {}) => {
-                    const scope = root || document;
-                    const clsOf = (el) => el.getAttribute('class') || '(无class)';
-                    const stats = () => window.__douyinUploadStats || {inflight: 0, done: 0, lastUrl: ''};
-                    const base = baseline || {done: stats().done, httpImgs: new Set()};
-
-                    const newHttpImg = () =>
-                        Array.from(scope.querySelectorAll('img'))
-                            .map((i) => i.src)
-                            .find((u) => /^https?:/i.test(u) && !base.httpImgs.has(u));
-
-                    // 窄口径：只认明确表示"正在进行"的信号（抖音这边常年为空，仅作补充）
-                    const busyNow = () =>
-                        Array.from(scope.querySelectorAll('.semi-spin-animate, [class*="uploading"], [class*="Uploading"]'))
-                            .filter((el) => {
-                                const cs = window.getComputedStyle(el);
-                                if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
-                                const r = el.getBoundingClientRect();
-                                return r.width > 0 && r.height > 0;
-                            });
-                    const snap = () => {
-                        const imgs = Array.from(scope.querySelectorAll('img')).map((i) => i.src).join('|');
-                        const txt = (scope.textContent || '').replace(/\s+/g, '').slice(0, 300);
-                        return imgs + '#' + txt;
-                    };
-
-                    // 放行前的复查：分片上传（申请 token → 传分片 → commit）在两段之间
-                    // 会短暂 inflight=0，直接放行就卡在中间那一刻了。等 900ms 看有没有新请求接上。
-                    const confirmIdle = async () => {
-                        for (let i = 0; i < 3; i++) {
-                            await window.delay(300);
-                            if (stats().inflight > 0) return false;
-                        }
-                        return true;
-                    };
-
-                    const start = Date.now();
-                    // 地板时间：刚派完 change 时请求还没发出去，
-                    // 立刻采样会读到"没请求 + 页面静止"直接假放行
-                    await window.delay(min);
-
-                    let last = snap();
-                    let stable = 0;
-                    let busyLogged = false;
-                    let inflightLogged = false;
-                    while (Date.now() - start < timeout) {
-                        const s = stats();
-                        const cost = () => Date.now() - start;
-
-                        if (s.inflight > 0) {
-                            if (!inflightLogged) {
-                                inflightLogged = true;
-                                console.log('[封面上传] ⏳ 上传请求进行中:', s.lastUrl || '(无 url)');
-                            }
-                            stable = 0;
-                        } else if (s.done > base.done) {
-                            if (await confirmIdle()) {
-                                console.log(
-                                    `[封面上传] ✅ 上传请求已完成（${s.done - base.done} 个，耗时 ${cost()}ms，末个: ${s.lastUrl}）`
-                                );
-                                await window.delay(600); // 给 React 回填 url / 刷新按钮态的时间
-                                return true;
-                            }
-                            stable = 0;
-                        } else {
-                            const cdn = newHttpImg();
-                            if (cdn && (await confirmIdle())) {
-                                console.log(`[封面上传] ✅ 已出现服务端回填的图片（耗时 ${cost()}ms）:`, String(cdn).slice(0, 100));
-                                await window.delay(600);
-                                return true;
-                            }
-                            const busy = busyNow();
-                            const now = snap();
-                            if (busy.length) {
-                                if (!busyLogged) {
-                                    busyLogged = true;
-                                    console.log('[封面上传] ⏳ 页面显示上传进行中:', busy.slice(0, 4).map(clsOf).join(' | '));
-                                }
-                                stable = 0;
-                            } else if (now === last) {
-                                stable++;
-                                if (stable >= stableFor) {
-                                    console.log(
-                                        `[封面上传] ⚠️ 没抓到任何上传请求，退回"页面静止"判据放行（耗时 ${cost()}ms）。`
-                                        + '若又出现"没传完就点按钮"，说明上传走了监控没覆盖的通道，看这行就知道要扩 isUploadReq'
-                                    );
-                                    return true;
-                                }
-                            } else {
-                                stable = 0;
-                            }
-                            last = now;
-                        }
-
-                        // 这一等最长 30 秒，不续锁的话 40 秒的锁会过期，封面检测轮询会插进来抢点
-                        window.__douyinCoverUploadingUntil = Date.now() + 40000;
-                        await window.delay(500);
-                    }
-                    const s = stats();
-                    console.log(
-                        `[封面上传] ⚠️ 等了 ${timeout}ms 上传仍未收尾，强行继续。inflight=${s.inflight} 完成=${s.done - base.done} 忙碌元素:`,
-                        busyNow().slice(0, 4).map(clsOf).join(' | ') || '(无)'
-                    );
-                    return false;
-                };
-
-                installUploadMonitor();
-
-                const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
-                let slotIndex = 0;
-                // 整块加固的总开关，关掉即回退旧行为（只点一级 + modal 为空时退化到整页找 input）
-                const slotGuardOn = typeof window.isFeatureEnabled === 'function'
-                    ? window.isFeatureEnabled('FIX_DOUYIN_COVER_SLOT_GUARD')
-                    : true;
-
-                for (let slotPos = 0; slotPos < coverListWrapEle.length; slotPos++) {
-                    slotIndex++;
-
-                    // 🔑 每个坑位现查节点，别用循环开始前那份静态列表：
-                    //    上一个坑位传完封面，React 会重渲染整个封面区，旧引用 isConnected 变 false，
-                    //    click() 打在脱离文档的孤儿节点上 —— 不报错、不弹窗、什么都不发生，
-                    //    症状完美伪装成"选择器写错了"
-                    const freshSlots = slotGuardOn ? querySlots() : coverListWrapEle;
-                    const item = freshSlots[slotPos] || coverListWrapEle[slotPos];
-                    if (!item || (slotGuardOn && !item.isConnected)) {
-                        console.log(`[封面设置] ⚠️ 坑位#${slotIndex} 节点已脱离文档且重查不到，跳过`);
-                        continue;
-                    }
-
-                    const rect = item.getBoundingClientRect();
-                    const ratio = rect.width / rect.height;
-
-                    // 每个坑位开工前给锁续期：单个坑位最长 40 秒（下载+等指纹+兜底+确认），
-                    // 续期比"一次性上一把大锁"安全 —— 卡住了最多锁 40 秒就自动放行
-                    window.__douyinCoverUploadingUntil = Date.now() + 40000;
-
-                    // 坑位之间隔开：上一个弹窗的关闭动画、上一张的上传请求都需要时间，
-                    // 连着点会点在还没消失的遮罩上
-                    if (slotIndex > 1) {
-                        console.log('[封面设置] ⏳ 处理下一个坑位前等待 3 秒...');
-                        await window.delay(3000);
-                    }
-
-                    // 选"比值最接近且还没用过"的那张。
-                    // 不能遍历到第一个符合的就用：容差 ±1.5 很宽（16:9=1.78 与 3:4=0.75 只差 1.03），
-                    // 那样第一张封面会被所有坑位重复占用
-                    let best = null;
-                    for (const cover of loadedCovers) {
-                        if (!cover || usedCovers.has(cover.url)) continue;
-                        const diff = Math.abs(cover.ratio - ratio);
-                        if (diff > 1.5) continue;
-                        if (!best || diff < best.diff) best = {cover, diff};
-                    }
-                    if (!best) {
-                        // 逐张说明为什么没选上，省得再靠猜（作废 / 已被前面坑位占用 / 比值差太多）
-                        const why = loadedCovers
-                            .map((c, i) =>
-                                !c ? `#${i + 1} 预加载作废`
-                                    : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
-                                        : `#${i + 1} 比值差 ${Math.abs(c.ratio - ratio).toFixed(2)} > 1.5`
-                            )
-                            .join(' | ');
-                        console.log(
-                            `[封面设置] 坑位#${slotIndex} (比值 ${ratio.toFixed(2)}) 没有可用的匹配封面，跳过。逐张原因: ${why}`
-                        );
-                        continue;
-                    }
-                    const customCover = best.cover;
-                    usedCovers.add(customCover.url);
-                    console.log(
-                        `[封面匹配] 坑位#${slotIndex} 比值 ${ratio.toFixed(2)} ← 封面比值 ${customCover.ratio.toFixed(2)} (差 ${best.diff.toFixed(2)}) ${customCover.url}`
-                    );
-
-                    // 🔑 开弹窗要分级重试，不能点一次就认命。
-                    //    实测症状：两个坑位只有第二个成功，第一个从头到尾没弹窗 ——
-                    //    click() 打在容器 div 上，React 的 onClick 未必挂在这一层；
-                    //    元素在可视区外时原生 click 也可能不生效。
-                    const openModal = async () => {
-                        try {
-                            item.scrollIntoView({block: 'center', behavior: 'instant'});
-                        } catch (e) {
-                            try {
-                                item.scrollIntoView();
-                            } catch (e2) {
-                            }
-                        }
-                        await window.delay(300);
-
-                        const tries = [
-                            ['原生 click', async () => item.click()],
-                            ['MouseEvent 序列', async () => {
-                                const r = item.getBoundingClientRect();
-                                const x = r.left + r.width / 2;
-                                const y = r.top + r.height / 2;
-                                for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
-                                    item.dispatchEvent(new MouseEvent(type, {
-                                        bubbles: true, cancelable: true, view: window, clientX: x, clientY: y
-                                    }));
-                                }
-                            }],
-                            ['子元素 click', async () => {
-                                // onClick 常挂在里层的图片/悬浮蒙层上，父容器点不动就往里点一层
-                                const inner = item.querySelector('img, [class*="mask"], [class*="hover"], div');
-                                (inner || item).click();
-                            }],
-                            ['原生鼠标', async () => {
-                                if (typeof window.nativeClickElement === 'function') {
-                                    await window.nativeClickElement(item, {logPrefix: '[封面上传]'});
-                                } else {
-                                    console.log('[封面上传] ⚠️ nativeClickElement 不可用，跳过这级');
-                                }
-                            }]
-                        ];
-
-                        for (const [name, act] of tries) {
-                            try {
-                                await act();
-                            } catch (e) {
-                                console.log(`[封面上传] ⚠️ ${name} 抛错:`, e.message);
-                                continue;
-                            }
-                            // 第一级给足 8 秒（弹窗内容要现拉），后面几级只需确认有没有反应
-                            const m = await window.__douyinWaitVisibleModal(name === '原生 click' ? 8000 : 4000);
-                            if (m) {
-                                console.log(`[封面上传] ✅ 弹窗已打开（${name} 生效）:`, m.className);
-                                return m;
-                            }
-                            console.log(`[封面上传] ⚠️ ${name} 后没等到弹窗，换下一级`);
-                            if (!slotGuardOn) break; // 开关关掉时只点第一级，回退旧行为
-                        }
-                        return null;
-                    };
-
-                    const modal = await openModal();
-
-                    // 🔑 没拿到弹窗引用，绝不等于"这个坑位没救了"。
-                    //    上一版在这里直接 continue，结果实测**两个坑位全军覆没** ——
-                    //    因为旧代码的 `searchRoot = modal || document` 退化路径，正是
-                    //    竖封面唯一成功的那条路：弹窗其实开着，只是探测判据没认出来，
-                    //    退到整页去找反而找对了「上传封面」的 input。
-                    //    所以这里保留降级，但降级必须**靠文案锚定**而不是碰运气取"最后一个"，
-                    //    见下方 findUploadRootByText 的 strictMode。
-                    const degraded = !modal;
-                    if (degraded) {
-                        window.__douyinDumpModalState(`坑位#${slotIndex} 四级点击后仍没拿到弹窗`);
-                        console.log(
-                            `[封面上传] ⚠️ 坑位#${slotIndex} 降级为整页查找模式（只认文案含「封面」的上传容器，找不到就放弃）`
-                        );
-                    }
-
-                    // 🔑 弹窗里有两个上传入口：左侧「生成参考图」的 + 和右侧「上传封面」的 +。
-                    //    两个都是 .semi-upload-hidden-input，取"弹窗内第一个"在 DOM 顺序上会命中
-                    //    左边的参考图 input —— 塞对了文件也进不了封面。必须先按按钮文案锁定
-                    //    「上传封面」那颗按钮，再回溯它自己的 .semi-upload 容器，只在容器里找 input。
-                    const searchRoot = modal || document;
-
-                    // 先等弹窗把上传区渲染出来（任意一个 hidden input 出现即可，证明 Upload 组件已挂载）
-                    try {
-                        await waitForElement('.semi-upload-hidden-input', 8000, 200, searchRoot);
-                    } catch (e) {
-                        console.log('[封面上传] ⚠️ 弹窗内没等到任何上传 input:', e.message);
-                    }
-
-                    // 一次性诊断：把弹窗内所有 file input 连它所属容器的文案一起打出来。
-                    // 万一这次还没成，照这行就能直接判断该塞哪个，不用再靠猜。
-                    const allInputs = Array.from(searchRoot.querySelectorAll('input[type="file"]'));
-                    console.log(
-                        `[封面上传] 🔍 弹窗内共 ${allInputs.length} 个 file input:`,
-                        allInputs
-                            .map((el, i) => {
-                                const box = el.closest('.semi-upload');
-                                const boxText = box ? (box.textContent || '').trim().slice(0, 15) : '无容器';
-                                return `#${i}[${el.className}] accept=${el.accept || '未设'} 容器="${boxText}"`;
-                            })
-                            .join(' || ')
-                    );
-
-                    // 按文案找「上传封面」按钮，回溯到它所属的 .semi-upload 容器
-                    // strict = 降级模式（searchRoot 是整个 document）：
-                    //   此时"取最后一个 .semi-upload"纯属碰运气，页面主体的视频上传区
-                    //   也是 .semi-upload，碰错了就把封面塞进视频上传口。
-                    //   所以降级时只认文案里明确出现「封面」的容器，宁可放弃也不乱塞。
-                    const findUploadRootByText = (strict) => {
-                        const candidates = Array.from(
-                            searchRoot.querySelectorAll('.semi-upload')
-                        ).filter((el) => {
-                            if (!strict) return true;
-                            // 降级模式额外要求容器本身可见，排掉隐藏的历史节点
-                            const r = el.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                        });
-                        if (strict) {
-                            const hit = candidates.find((el) => {
-                                const t = el.textContent || '';
-                                return t.includes('封面') && !t.includes('参考图');
-                            });
-                            if (!hit) {
-                                console.log(
-                                    `[封面上传] 🔍 降级模式下整页 ${candidates.length} 个可见 .semi-upload，无一文案含「封面」:`,
-                                    candidates.map((el, i) => `#${i}"${(el.textContent || '').trim().slice(0, 12)}"`).join(' || ') || '(空)'
-                                );
-                            }
-                            return hit || null;
-                        }
-                        // 优先：容器内文字含「上传封面」/「上传」，且不含「参考图」
-                        let hit = candidates.find((el) => {
-                            const t = el.textContent || '';
-                            return t.includes('上传封面') || (t.includes('上传') && !t.includes('参考图'));
-                        });
-                        // 兜底：排除掉明显是参考图的容器后，取最后一个（右侧封面上传一般排在后面）
-                        // 只在弹窗内才敢这么兜底 —— 范围已经被弹窗限死，最多是选错弹窗内的入口
-                        if (!hit) {
-                            const notRef = candidates.filter(
-                                (el) => !((el.textContent || '').includes('参考图'))
-                            );
-                            hit = notRef[notRef.length - 1] || candidates[candidates.length - 1];
-                        }
-                        return hit || null;
-                    };
-
-                    const uploadRoot = findUploadRootByText(degraded && slotGuardOn);
-                    let uploadInput = null;
-                    if (uploadRoot) {
-                        // 🔑 优先 .semi-upload-hidden-input：-replace 那个依赖 Semi 内部的 replaceIdx
-                        //    （只有用户点文件项的"替换"按钮时才会被赋值），脚本直接塞行为不可控
-                        uploadInput = uploadRoot.querySelector('.semi-upload-hidden-input')
-                            || uploadRoot.querySelector('.semi-upload-hidden-input-replace');
-                    }
-                    // 实在没定位到容器就退回"范围内第一个"。
-                    // 但降级模式下这个范围是整个 document，随便挑一个等于乱塞，必须禁掉。
-                    if (!uploadInput && !(degraded && slotGuardOn)) {
-                        uploadInput = searchRoot.querySelector('.semi-upload-hidden-input')
-                            || searchRoot.querySelector('.semi-upload-hidden-input-replace');
-                    }
-                    if (!uploadInput) {
-                        usedCovers.delete(customCover.url); // 这张没用掉，退回去给后面的坑位
-                        console.log(`[封面上传] ⚠️ 坑位#${slotIndex} 没找到可信的封面上传 input，跳过该坑位`);
-                        continue;
-                    }
-                    console.log(
-                        '[封面上传] 命中 input:', uploadInput.className,
-                        '| accept:', uploadInput.accept,
-                        '| 定位到上传容器:', !!uploadRoot,
-                        '| 容器文案:', uploadRoot ? (uploadRoot.textContent || '').slice(0, 20) : '(无)'
-                    );
-
-                    const {blob, contentType} = await downloadFile(customCover.url, 'image/png');
-                    const fileType = contentType || 'image/png';
-                    // 文件名跟真实 MIME 对齐：input 的 accept 按扩展名校验，
-                    // 用标题拼 ".png" 可能拼出 "undefined.png"、超长文件名或类型对不上
-                    const ext = (fileType.split('/')[1] || 'png').replace('jpeg', 'jpg');
-                    const file = new File([blob], `cover_${slotIndex}_${Date.now()}.${ext}`, {type: fileType});
-
-                    const effectRoot = modal || uploadInput.closest('.semi-upload') || document;
-                    const before = fingerprint(effectRoot);
-                    // 基线必须在派发 change 之前取：晚一步，上传请求已经发出去甚至已完成，
-                    // done 计数和 http 图集合就都被污染了，判据直接失效
-                    const upBase = uploadBaseline(effectRoot);
-
-                    fireFileInput(uploadInput, file);
-                    console.log('[封面上传] 已注入并派发 change:', file.name, blob.size, 'bytes');
-
-                    if (await waitFingerprintChange(effectRoot, before, 6000)) {
-                        console.log('[封面上传] 📥 组件已接住文件（注意：这只代表进了组件，不代表传完）');
-                    } else {
-                        console.log('[封面上传] ⚠️ 派发 change 后页面无反应，启用 fiber 兜底');
-                        if (callReactOnChange(uploadInput)) {
-                            const ok = await waitFingerprintChange(effectRoot, before, 6000);
-                            console.log(ok ? '[封面上传] 📥 fiber 兜底生效' : '[封面上传] ❌ fiber 兜底后仍无反应，该坑位上传失败');
-                        }
-                    }
-
-                    // 🔑 等图真的传完再点「完成」。少了这一步就是"图没上传完就点了按钮"，
-                    //    提交上去的是半成品封面。指纹变化只证明文件进了组件，页面静止也只
-                    //    证明本地预览渲染完了 —— 传没传完得看网络，见 waitUploadSettled 的注释。
-                    await waitUploadSettled(effectRoot, upBase, {min: 1500, timeout: 30000});
-                    // 收尾之后再给 React 一点时间（裁剪框定型、按钮态刷新）
-                    await window.delay(800);
-
-                    // 🔑 按文案锁定「完成」（底部并排着「重新检测」「完成」「设置横封面」，
-                    //    左侧还有「AI生成封面」，取错一个就前功尽弃）。
-                    //    注：「完成」看着是灰的但并非 disabled（实测确认），所以下面那圈
-                    //    "等它变可用"的轮询正常情况下第一轮就直接放行，只当极端情况的保险；
-                    //    真正防早点的是上面的 waitUploadSettled。
-                    //
-                    //    「完成」必须在弹窗范围里找。modal 为 null（降级模式）时往上回溯
-                    //    到上传 input 最近的重叠层容器，只在该层找 —— 整页范围找「完成」
-                    //    可能点到页面别处的按钮（比如发布页顶部的「发布」）。
-                    const confirmScope = modal
-                        || (() => {
-                            const start = uploadInput || uploadRoot;
-                            if (!start) return null;
-                            let node = start;
-                            while (node && node !== document.body && node !== document) {
-                                const cls = node.className || '';
-                                if (typeof cls === 'string' && /semi-modal|semi-sidesheet|modal|overlay|drawer|popup/i.test(cls)) {
-                                    return node;
-                                }
-                                node = node.parentElement;
-                            }
-                            return null;
-                        })();
-                    if (confirmScope) {
-                        const isDisabled = (b) =>
-                            b.disabled === true
-                            || b.hasAttribute('disabled')
-                            || b.getAttribute('aria-disabled') === 'true'
-                            || /semi-button-disabled/.test(b.className || '');
-                        const allBtns = () => Array.from(modal.querySelectorAll('.semi-button, button'));
-                        const dumpBtns = () =>
-                            allBtns()
-                                .map((b) => {
-                                    const t = (b.textContent || '').trim();
-                                    return t ? `「${t}」${isDisabled(b) ? '[禁用]' : '[可点]'}` : '';
-                                })
-                                .filter(Boolean)
-                                .join(' / ');
-                        const findConfirm = () => {
-                            const btns = allBtns();
-                            const pick = (re) => btns.find((b) => re.test((b.textContent || '').trim()));
-                            return pick(/^完成$/) || pick(/^(确定|确认|保存)$/) || pick(/^完成/);
-                        };
-
-                        console.log('[封面上传] 🔍 弹窗按钮一览:', dumpBtns() || '(一个都没有)');
-
-                        // 等「完成」从禁用变可用，最长 20 秒
-                        let confirmBtn = null;
-                        const waitUntil = Date.now() + 20000;
-                        while (Date.now() < waitUntil) {
-                            const b = findConfirm();
-                            if (b && !isDisabled(b)) {
-                                confirmBtn = b;
-                                break;
-                            }
-                            // 这一等最多吃掉 20 秒，不续锁的话 40 秒的锁会过期，封面检测轮询会插进来抢点
-                            window.__douyinCoverUploadingUntil = Date.now() + 40000;
-                            await window.delay(500);
-                        }
-
-                        if (!confirmBtn) {
-                            const stillThere = findConfirm();
-                            console.log(
-                                stillThere
-                                    ? `[封面上传] ⚠️ 等了 20 秒「完成」仍是禁用态，强行点一次试试。按钮: ${dumpBtns()}`
-                                    : `[封面上传] ⚠️ 弹窗里压根没有「完成」按钮。现有: ${dumpBtns()}`
-                            );
-                            confirmBtn = stillThere;
-                        }
-
-                        if (confirmBtn) {
-                            // ⚠️ 两个坑都别踩：
-                            //    1) offsetParent === null 判不了 —— Semi modal 是 position:fixed，
-                            //       fixed 元素的 offsetParent 天生就是 null，会把"还开着"误判成"已关闭"
-                            //    2) animate-show 更判不了 —— 那 class 是入场动画期间才挂的，早没了，
-                            //       拿它判等于每次都返回"已关闭"，第一次 click 就假报成功，兜底全废
-                            //    只认两件事：还在文档里，且真的可见。
-                            const modalClosed = () => {
-                                if (!modal.isConnected) return true;
-                                const cs = window.getComputedStyle(modal);
-                                if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return true;
-                                const r = modal.getBoundingClientRect();
-                                return r.width < 100 || r.height < 100;
-                            };
-
-                            // 三级点击：合成 click → 鼠标事件序列 → 主进程真实点击。
-                            // 每级点完都验证弹窗是否关闭，关了立刻收工，避免多点一次误触后续弹窗
-                            const attempts = [
-                                ['element.click', async (el) => {
-                                    el.click();
-                                }],
-                                ['mouse 序列', async (el) => {
-                                    const r = el.getBoundingClientRect();
-                                    const o = {
-                                        bubbles: true, cancelable: true, view: window,
-                                        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
-                                    };
-                                    el.dispatchEvent(new MouseEvent('mouseover', o));
-                                    el.dispatchEvent(new MouseEvent('mousedown', o));
-                                    el.dispatchEvent(new MouseEvent('mouseup', o));
-                                    el.dispatchEvent(new MouseEvent('click', o));
-                                }],
-                                ['nativeClick', async (el) => {
-                                    if (typeof window.nativeClickElement === 'function') {
-                                        await window.nativeClickElement(el, {logPrefix: '[封面上传]'});
-                                    } else {
-                                        console.log('[封面上传] ⚠️ nativeClickElement 不可用，跳过这级兜底');
-                                    }
-                                }],
-                            ];
-
-                            let closed = false;
-                            for (const [name, doClick] of attempts) {
-                                // 每次重新找按钮：上一次点击可能已让 React 重渲染，旧引用会脱离文档
-                                const el = findConfirm() || confirmBtn;
-                                try {
-                                    await doClick(el);
-                                    console.log(`[封面上传] 已用 ${name} 点击「${(el.textContent || '').trim()}」`);
-                                } catch (e) {
-                                    console.log(`[封面上传] ⚠️ ${name} 点击抛错:`, e.message);
-                                }
-                                await window.delay(1500);
-                                if (modalClosed()) {
-                                    closed = true;
-                                    console.log(`[封面上传] ✅ 弹窗已关闭（${name} 生效）`);
-                                    break;
-                                }
-                                window.__douyinCoverUploadingUntil = Date.now() + 40000;
-                            }
-                            if (!closed) {
-                                console.log('[封面上传] ❌ 三种点击都没能关掉弹窗，当前按钮状态:', dumpBtns());
-                            }
-                        }
-                    } else {
-                        console.log('[封面上传] ⚠️ 没拿到弹窗引用，跳过确认按钮（避免误点页面其他按钮）');
-                    }
-                }
-
-                // 所有坑位处理完，立刻解锁，别让封面检测白等到 40 秒过期
-                window.__douyinCoverUploadingUntil = 0;
-                console.log('[封面上传] 🔓 已解锁，封面检测轮询恢复');
-            } else {
-                await retryOperation(async () => {
-                    // 尝试多种选择器策略
-                    let coverInput = null;
-                    const selectors = [
-                        '.recommendCover-vWWsHB:nth-child(1)',
-                        '.recommendCover-vWWsHB:first-child',
-                        '.recommendCover-vWWsHB'
-                    ];
-
-                    for (const selector of selectors) {
-                        try {
-                            coverInput = await waitForElement(selector, 10000); // 🔑 增加到 10 秒
-                            if (coverInput) {
-                                console.log(`[封面设置] ✅ 找到封面元素: ${selector}`);
-                                break;
-                            }
-                        } catch (e) {
-                            console.log(`[封面设置] ⚠️ 未找到: ${selector}`);
-                        }
-                    }
-
-                    if (!coverInput) {
-                        throw new Error('未找到任何封面元素');
-                    }
-
-                    console.log("🚀 ~ fillFormData ~ coverInput: ", coverInput);
-
-                    // 模拟完整的鼠标点击事件序列（更接近真实用户行为）
-                    const rect = coverInput.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-
-                    const mouseEventOptions = {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window,
-                        clientX: x,
-                        clientY: y,
-                        screenX: x,
-                        screenY: y,
-                        button: 0
-                    };
-
-                    // 完整的鼠标事件序列
-                    coverInput.dispatchEvent(new MouseEvent('mouseover', mouseEventOptions));
-                    await window.delay(50);
-
-                    coverInput.dispatchEvent(new MouseEvent('mousedown', mouseEventOptions));
-                    await window.delay(50);
-
-                    coverInput.dispatchEvent(new MouseEvent('mouseup', mouseEventOptions));
-                    await window.delay(50);
-
-                    coverInput.dispatchEvent(new MouseEvent('click', mouseEventOptions));
-
-                    console.log('[封面设置] ✅ 已触发完整点击事件序列');
-
-                    await window.delay(1000);
-
-                    // 尝试查找并确认弹窗（如果没有弹窗也没关系）
-                    try {
-                        // 用公共 helper 找可见弹窗（别等 animate-show 动画 class，见文件顶部注释）
-                        const confirmDialog = await window.__douyinWaitVisibleModal(3000);
-                        if (confirmDialog) {
-                            const btns = Array.from(confirmDialog.querySelectorAll('.semi-button, button'));
-                            const pick = (re) => btns.find((b) => re.test((b.textContent || '').trim()));
-                            const confirmBtn = pick(/^完成$/)
-                                || pick(/^(确定|确认|保存)$/)
-                                || btns.find((b) => /semi-button-primary/.test(b.className || ''));
-                            if (confirmBtn) {
-                                confirmBtn.click();
-                                console.log('[封面设置] ✅ 已确认弹窗:', (confirmBtn.textContent || '').trim());
-                            } else {
-                                console.log(
-                                    '[封面设置] ⚠️ 弹窗里没找到确认按钮:',
-                                    btns.map((b) => (b.textContent || '').trim()).filter(Boolean).join(' / ')
-                                );
-                            }
-                        } else {
-                            console.log('[封面设置] ⚠️ 未找到确认弹窗，可能封面已自动设置');
-                        }
-                    } catch (dialogError) {
-                        console.log('[封面设置] ⚠️ 确认弹窗处理异常:', dialogError.message);
-                    }
-                }, 5, 1000);
-            }
-        } catch (error) {
-            console.log('[封面设置] ⚠️ 封面设置失败:', error.message);
         }
 
         // 等待表单填写完成

@@ -272,6 +272,98 @@
     }
 
     // ===========================
+    // 🔐 3.5 快照凭证自检 + 主站预热（授权成败唯一读码判不出来的一环）
+    // 采集完直接 POST 时，快照缺 ALF/SSOLoginState 后台会以「授权失败」拒收
+    // （HTTP 200 + 业务码非 200），兜底轮询接着拿同一份死快照重试到 5 分钟超时，
+    // 现象是「授权半天不成功」但看不出原因。这里把采到了什么打成一手证据。
+    // ===========================
+    const XINLANG_SNAPSHOT_DOMAINS = ['sina.com.cn', 'weibo.com', 'weibo.cn', 'sina.cn'];
+    // ALF = 登录才下发的一年期自动登录 token（值形如 02_<到期秒>）；SSOLoginState = SSO 登录状态标志。
+    // SUB/SUBP/SCF 一律不算凭证：实测会话失效后仍在，SCF 甚至跨重登值都不变。
+    const XINLANG_CREDENTIAL_COOKIE_NAMES = ['ALF', 'SSOLoginState'];
+
+    function summarizeXinlangCredential(cookies) {
+        const list = Array.isArray(cookies) ? cookies : [];
+        const foundNames = [];
+        const countByDomain = {};
+        list.forEach(cookie => {
+            const name = cookie?.name || '';
+            const domain = cookie?.domain || '';
+            countByDomain[domain] = (countByDomain[domain] || 0) + 1;
+            if (XINLANG_CREDENTIAL_COOKIE_NAMES.includes(name) && cookie?.value) {
+                foundNames.push(`${name}@${domain}`);
+            }
+        });
+        return {
+            ok: foundNames.length > 0,
+            foundNames,
+            summary: {
+                total: list.length,
+                credential: foundNames.length > 0 ? foundNames : '（无）',
+                domains: Object.keys(countByDomain).map(d => `${d}(${countByDomain[d]})`),
+            },
+        };
+    }
+
+    async function warmupXinlangMainSite(urls) {
+        try {
+            if (window.browserAPI?.warmupSessionNavigation) {
+                const warmupResult = await window.browserAPI.warmupSessionNavigation(urls, { waitMs: 2000, timeoutMs: 15000 });
+                console.log('[新浪授权] ✅ 主站预热结果:', warmupResult);
+                return warmupResult;
+            }
+            // 老版本浏览器没有该 API，退回旧的 fetch 预热（效果有限，但不影响授权上报）
+            console.warn('[新浪授权] ⚠️ warmupSessionNavigation 不可用，退回 fetch 预热');
+            for (const url of urls) {
+                await fetch(url, { mode: 'no-cors', credentials: 'include' }).catch(() => { });
+                await new Promise(resolve => setTimeout(resolve, 1200));
+            }
+            return { success: false, fallback: 'fetch' };
+        } catch (warmupError) {
+            console.warn('[新浪授权] ⚠️ 预热 weibo.com 主站失败（不阻断授权流程）:', warmupError?.message || warmupError);
+            return { success: false, error: warmupError?.message || String(warmupError) };
+        }
+    }
+
+    async function collectXinlangSessionSnapshot() {
+        const allCookies = [];
+        try {
+            // 新浪涉及多个域名：weibo.cn 必须在列，SSO 会把 SSOLoginState 那一组种在 .weibo.cn
+            for (const domain of XINLANG_SNAPSHOT_DOMAINS) {
+                const sessionResult = await window.browserAPI.getFullSessionData(domain);
+                if (sessionResult.success && sessionResult.data?.cookies?.length > 0) {
+                    allCookies.push(...sessionResult.data.cookies);
+                    console.log(`[新浪授权] ✅ ${domain} 会话数据获取成功，${sessionResult.data.cookies.length} 个 cookies`);
+                }
+            }
+        } catch (sessionError) {
+            console.error('[新浪授权] ⚠️ 获取会话数据异常:', sessionError);
+        }
+
+        if (allCookies.length > 0) {
+            console.log(`[新浪授权] ✅ 所有域名会话数据获取完成，共 ${allCookies.length} 个 cookies`);
+            return { cookiesData: JSON.stringify({ cookies: allCookies }), allCookies };
+        }
+        console.warn('[新浪授权] ⚠️ 未获取到任何会话数据，退回 document.cookie');
+        return { cookiesData: document.cookie, allCookies: [] };
+    }
+
+    // 「真的能进编辑器」实证：cookie 名单只能粗筛，发布/内容管理跑在 card.weibo.com，
+    // 要的是 weibo.com 主站登录态。主站没登录时该页返回 meta refresh 到 weibo.com，
+    // 再被前端跳去 /newlogin —— 这才是"授权了但发不了文"的真实形态。
+    async function probeXinlangEditorReachable() {
+        try {
+            if (!window.browserAPI?.probeXinlangPublishHostLogin) {
+                return { supported: false, verdict: 'unknown', reason: 'api-unavailable' };
+            }
+            const result = await window.browserAPI.probeXinlangPublishHostLogin();
+            return { supported: true, ...(result || {}) };
+        } catch (e) {
+            return { supported: true, verdict: 'unknown', reason: e?.message || String(e) };
+        }
+    }
+
+    // ===========================
     // 4. 核心授权处理函数（两种模式共用）
     // ===========================
     async function processAuthorization(messageData, storedCompanyId) {
@@ -306,61 +398,78 @@
             const user = result.data?.userInfo;
             console.log("🚀 ~ processAuthorization ~ user: ", user);
             if(!user || !user.uid) {
-                alert('用户信息中缺少 uid 字段，无法继续授权，请检查账号是否正常');
+                // ⚠️ 不能用 alert：alert 会阻塞渲染线程，下面 closeCurrentWindow 的 setTimeout
+                // 永远排不上，窗口悬死等人点确认（历史反模式，见 login-probe 自伤四连）。
+                console.error('[新浪授权] ❌ 用户信息缺少 uid，无法继续授权:', user);
+                try {
+                    sendMessageToParent({
+                        type: 'auth-failed',
+                        reason: 'missing-uid',
+                        message: '未获取到新浪账号 uid，请确认该账号已在新浪完成认证后重试',
+                    });
+                } catch (notifyError) {
+                    console.error('[新浪授权] ❌ 通知父页面失败:', notifyError);
+                }
 
-                // 统计接口成功后关闭弹窗
                 setTimeout(() => {
                     window.browserAPI.closeCurrentWindow();
-                }, window.getRandomDelayMs(100));
+                }, window.getRandomDelayMs(1500));
                 return;
             }
 
             // ===========================
             // 🔥 预热 weibo.com 主站，补种主站凭证后再采集快照
             // 授权流程只在 mp.sina.com.cn + passport.weibo.com 完成 SSO，从未触达 weibo.com 主站，
-            // SCF（长效「保持登录」续签凭证）、WBPSESS 等主站 cookie 不会种下，
-            // 快照先天残缺 → 发布页 card.weibo.com 无法续签 → 授权成功后掉登录。
-            // 带凭证请求一次 weibo.com / card.weibo.com，让服务端基于 SUB 补种主站 cookie。
-            // no-cors 模式拿不到响应内容，但 Set-Cookie 仍会写入本窗口 session。
+            // 主站登录态（SCF / SSOLoginState / .weibo.cn 那一组 SSO cookie）不会种下，
+            // 快照先天残缺 → 发布页 card.weibo.com / me.weibo.com 打开就跳 passport 登录页。
+            //
+            // ⚠️ 旧实现用 no-cors fetch 预热，实测无效（2026-08-31 session-diagnostic.log）：
+            //   授权后 SCF@.weibo.com 与失效前的值一模一样，快照里从来没有 .weibo.cn 那一组，
+            //   而人工在窗口里登录一次立刻就有 —— 说明 SSO 跳转链必须由浏览器真实导航才会跑完。
+            // 现改为让主进程用同一个 session 开隐藏窗口真实导航一遍，跑完重定向链再采集。
             // ===========================
-            try {
-                console.log('[新浪授权] 🔥 预热 weibo.com 主站，补种 SCF 等主站凭证...');
-                await fetch('https://weibo.com/', { mode: 'no-cors', credentials: 'include' });
-                await new Promise(resolve => setTimeout(resolve, 1500)); // 等 Set-Cookie 落地
-                await fetch('https://card.weibo.com/', { mode: 'no-cors', credentials: 'include' });
-                await new Promise(resolve => setTimeout(resolve, 800));
-                console.log('[新浪授权] ✅ weibo.com 主站预热完成');
-            } catch (warmupError) {
-                console.warn('[新浪授权] ⚠️ 预热 weibo.com 主站失败（不阻断授权流程）:', warmupError?.message || warmupError);
-            }
+            console.log('[新浪授权] 🔥 真实导航预热 weibo.com 主站，补种 SSO 凭证...');
+            await warmupXinlangMainSite(['https://weibo.com/', 'https://card.weibo.com/article/v5/editor#/draft']);
 
-            // 🔑 获取完整会话数据（Cookies + Storage + IndexedDB）
+            // 🔑 获取完整会话数据（只取 cookies，不带 storage）
             console.log('[新浪授权] 📦 正在获取完整会话数据...');
-            let cookiesData = '';
-            try {
-                // 新浪涉及多个域名，需要获取 sina.com.cn 和 weibo.com 的 cookies
-                const domains = ['sina.com.cn', 'weibo.com', 'sina.cn'];
-                const allCookies = [];
+            let snapshot = await collectXinlangSessionSnapshot();
+            let cookiesData = snapshot.cookiesData;
 
-                for (const domain of domains) {
-                    const sessionResult = await window.browserAPI.getFullSessionData(domain);
-                    if (sessionResult.success && sessionResult.data?.cookies?.length > 0) {
-                        allCookies.push(...sessionResult.data.cookies);
-                        console.log(`[新浪授权] ✅ ${domain} 会话数据获取成功，${sessionResult.data.cookies.length} 个 cookies`);
-                    }
+            // 🔐 FIX_XINLANG_AUTH_SNAPSHOT_SELFCHECK：POST 之前双判据自证
+            //   ① cookie 名单：快照里有没有 ALF / SSOLoginState
+            //   ② 实证：拿当前 session 真请一次 card.weibo.com 编辑器，会不会被弹去登录
+            if (window.isFeatureEnabled?.('FIX_XINLANG_AUTH_SNAPSHOT_SELFCHECK') !== false) {
+                let credential = summarizeXinlangCredential(snapshot.allCookies);
+                let editor = await probeXinlangEditorReachable();
+                console.log('[新浪授权] 🔐 快照自检:', { cookie: credential.summary, 编辑器: editor });
+
+                if (!credential.ok || editor.verdict === 'not-login') {
+                    console.warn('[新浪授权] ⚠️ 自检未过，补跑一次预热后重采集', {
+                        缺凭证: !credential.ok,
+                        编辑器被弹登录: editor.verdict === 'not-login',
+                        原因: editor.reason || ''
+                    });
+                    await warmupXinlangMainSite([
+                        'https://weibo.com/',
+                        'https://weibo.cn/',
+                        'https://card.weibo.com/article/v5/editor#/draft'
+                    ]);
+                    snapshot = await collectXinlangSessionSnapshot();
+                    cookiesData = snapshot.cookiesData;
+                    credential = summarizeXinlangCredential(snapshot.allCookies);
+                    editor = await probeXinlangEditorReachable();
+                    console.log('[新浪授权] 🔐 补跑预热后自检:', { cookie: credential.summary, 编辑器: editor });
                 }
 
-                if (allCookies.length > 0) {
-                    // 合并所有域名的 cookies
-                    cookiesData = JSON.stringify({ cookies: allCookies });
-                    console.log(`[新浪授权] ✅ 所有域名会话数据获取完成，共 ${allCookies.length} 个 cookies`);
+                if (credential.ok && editor.verdict !== 'not-login') {
+                    console.log('[新浪授权] ✅ 自检通过｜凭证:', credential.foundNames.join(', '), '｜编辑器:', editor.verdict);
                 } else {
-                    console.warn('[新浪授权] ⚠️ 未获取到任何会话数据');
-                    cookiesData = document.cookie;
+                    // 照旧 POST（不改变现状），但把结论写死在日志里
+                    console.error('[新浪授权] ❌ 自检未通过：这份快照大概率发不了文'
+                        + '（打开发布/内容管理会被弹到 weibo.com/newlogin）。请在本窗口人工登录一次微博主站后重试',
+                        { cookie: credential.summary, 编辑器: editor });
                 }
-            } catch (sessionError) {
-                console.error('[新浪授权] ⚠️ 获取会话数据异常:', sessionError);
-                cookiesData = document.cookie;
             }
 
             const scanData = {
@@ -408,25 +517,52 @@
                 hasProcessed = true;
                 try { sessionStorage.setItem('xinlang_auth_reported', '1'); } catch (e) { }
 
-                // 🔑 迁移登录 Cookies 到持久化 session（新浪涉及多个域名）
+                // 🔑 迁移登录 Cookies（新浪涉及多个域名）
+                // 优先写回「当前发布/内容管理上下文对应的账号 session」（persist:xinlang_<后台id>），
+                // 否则内容管理/重新发布窗口用的还是该账号 session 里的旧 cookies，打开就跳 passport 登录页。
+                // 拿不到发布上下文（纯「添加账号」入口）时退回持久化 session，行为与旧版一致。
                 try {
-                    console.log('[新浪授权] 🔄 开始迁移 Cookies 到持久化 session...');
-
-                    // 新浪/微博涉及多个域名，都需要迁移
-                    const domains = ['sina.com.cn', 'weibo.com', 'sina.cn'];
-                    let totalMigrated = 0;
-
-                    for (const domain of domains) {
-                        const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
-                        if (migrateResult.success && migrateResult.migratedCount > 0) {
-                            console.log(`[新浪授权] ✅ ${domain} Cookies 迁移成功，共迁移 ${migrateResult.migratedCount} 个`);
-                            totalMigrated += migrateResult.migratedCount;
-                        } else if (!migrateResult.success) {
-                            console.warn(`[新浪授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
-                        }
+                    const domains = ['sina.com.cn', 'weibo.com', 'weibo.cn', 'sina.cn'];
+                    let publishAccountId = '';
+                    // 新浪脚本可能从旧版 publishData 读到短名 "xl"；账号窗口统一使用
+                    // persist:xinlang_<accountId>，这里必须传规范平台名，避免迁移到 persist:xl_*。
+                    const publishPlatform = 'xinlang';
+                    try {
+                        const myWindowId = await window.browserAPI?.getWindowId?.();
+                        const ctxPublishData = myWindowId
+                            ? await window.browserAPI?.getGlobalData?.(`publish_data_window_${myWindowId}`)
+                            : null;
+                        publishAccountId = ctxPublishData?.element?.account_info?.id
+                            || ctxPublishData?.element?.accountInfo?.id
+                            || '';
+                    } catch (ctxErr) {
+                        console.warn('[新浪授权] ⚠️ 读取发布上下文失败，按持久化 session 迁移:', ctxErr?.message || ctxErr);
                     }
 
-                    console.log(`[新浪授权] ✅ 所有域名 Cookies 迁移完成，共迁移 ${totalMigrated} 个`);
+                    let totalMigrated = 0;
+                    if (publishAccountId && window.browserAPI?.migrateCookiesToAccountSession) {
+                        console.log('[新浪授权] 🔄 迁移 Cookies 到当前发布账号 session...', { publishPlatform, publishAccountId });
+                        for (const domain of domains) {
+                            const migrateResult = await window.browserAPI.migrateCookiesToAccountSession(domain, publishPlatform, String(publishAccountId));
+                            if (migrateResult.success) {
+                                totalMigrated += migrateResult.migratedCount || 0;
+                            } else {
+                                console.error(`[新浪授权] ⚠️ ${domain} 写回账号 session 失败:`, migrateResult.error);
+                            }
+                        }
+                        console.log(`[新浪授权] ✅ 账号 session 回写完成，共迁移 ${totalMigrated} 个 cookies`);
+                    } else {
+                        console.log('[新浪授权] ℹ️ 未获取到发布账号上下文，迁移到持久化 session');
+                        for (const domain of domains) {
+                            const migrateResult = await window.browserAPI.migrateCookiesToPersistent(domain);
+                            if (migrateResult.success && migrateResult.migratedCount > 0) {
+                                totalMigrated += migrateResult.migratedCount;
+                            } else if (!migrateResult.success) {
+                                console.warn(`[新浪授权] ⚠️ ${domain} Cookies 迁移失败:`, migrateResult.error);
+                            }
+                        }
+                        console.log(`[新浪授权] ✅ 持久化 session 迁移完成，共迁移 ${totalMigrated} 个`);
+                    }
                 } catch (migrateError) {
                     console.error('[新浪授权] ⚠️ Cookies 迁移异常:', migrateError);
                 }

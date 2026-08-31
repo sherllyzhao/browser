@@ -270,7 +270,9 @@ const platformDomains = {
   wangyihao: ['.163.com', '163.com', 'mp.163.com'],
   sohuhao: ['sohu.com', 'mp.sohu.com'],
   tengxunhao: ['qq.com', 'om.qq.com', 'image.om.qq.com', 'aqq.qq.com', 'account.qq.com', 'ptlogin2.qq.com'],
-  xinlang: ['sina.com.cn', 'weibo.com', 'sina.cn'],
+  // weibo.cn 必须在列：微博 SSO 会把 SSOLoginState / SCF / SUB / SUBP 同时种在 .weibo.cn，
+  // 缺它会让快照丢掉整组 SSO 状态 cookie（保存时按域过滤，匹配不到 .weibo.cn）
+  xinlang: ['sina.com.cn', 'weibo.com', 'weibo.cn', 'sina.cn'],
   zhihu: ['zhihu.com', 'www.zhihu.com']
 };
 
@@ -280,22 +282,35 @@ const platformDomains = {
 //   - 任一字段在双方都存在且值相同 → 同账号 → 本地优先（保留本地最新 cookies）
 //   - 字段都存在但值不同 → 换账号 → 走 sessionData 覆盖
 //   - 双方至少一方完全缺失 → 视为「无法验证」，保守按本地优先（避免误清）
+// 🔐 铁律（FIX_SESSION_RESTORE_BACKFLOW_GUARD）：此表的名字**绝不能**出现在
+//    platformSessionCredentialCookies 里。会话凭证每次登录都会变，拿它当身份，
+//    同一个账号在窗口里重新登录一次就会被判成「换账号」→ 强制清空恢复 →
+//    刚登上的新登录态被发布任务里冻结的旧快照擦掉（小红书 web_session 就是这么爆的）。
+//    main.js 的 matchAccountIdentity 另有一层运行时过滤兜底，但表本身必须先是干净的。
+//    留空数组＝该平台没有可用的身份判据，比对结果为「无法验证」（保守保留本地），
+//    换账号仍能被登录凭证签名比对 + 时间戳新旧判断兜住，不会漏。
 const platformIdentityCookies = {
   douyin: ['uid_tt', 'uid_tt_ss'],
-  xiaohongshu: ['web_session'],
+  // ⚠️ 原为 ['web_session']，但 web_session 是小红书唯一的会话凭证（登录即变），
+  // 拿它当身份 → 窗口内手动登录后重新发布必被判「换账号」→ 清空 → 掉登录。已清空。
+  xiaohongshu: [],
   toutiao: ['uid_tt', 'uid_tt_ss'],
   weixin: ['wxuin'],
-  baijiahao: ['BDUSS'],
+  // ⚠️ 原为 ['BDUSS']，BDUSS 同时是百家号会话凭证（登出即清），同上原因清空
+  baijiahao: [],
   shipinhao: ['wxuin'],
   wangyihao: ['P_INFO'],
-  sohuhao: ['passport', 'ppinf'],
+  // ⚠️ 原为 ['passport', 'ppinf']，ppinf 是搜狐会话凭证之一，已剔除，只留 passport
+  sohuhao: ['passport'],
   tengxunhao: ['userid', 'omgid', 'uin', 'p_uin'],
   xinlang: ['SUB'],
   // ⚠️ 必须用账号级凭证 z_c0，不能用 d_c0。
   // d_c0 是知乎「设备指纹」（device client），同一台机器上所有账号共享同一个 d_c0，
   // 用它做账号比对会把不同账号误判成「同账号」，导致换账号时不恢复后台登录态，
-  // 且会让多账号共享设备指纹。z_c0 才是随账号变化的登录凭证。
-  zhihu: ['z_c0']
+  // 且会让多账号共享设备指纹。
+  // ——但 z_c0 同时又是知乎的会话凭证（登录即变），做身份判据同样会误判「换账号」。
+  // 知乎两个候选都不合格：d_c0 太宽（跨账号相同）、z_c0 太窄（跨登录变化），故留空。
+  zhihu: []
 };
 
 // 平台登录凭证 Cookie 名称（用于判断登录状态）
@@ -310,7 +325,7 @@ const platformLoginCookies = {
   wangyihao: ['P_INFO', 'S_INFO', 'NTES_YD_SESS', 'NTESwebSI'],
   sohuhao: ['sct', 'passport', 'ppinf', 'pprdig', 'ppmdig'],
   tengxunhao: ['userid', 'omaccesstoken', 'omtoken', 'sraccesstoken', 'uin', 'p_uin', 'skey', 'p_skey'],
-  xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState'],
+  xinlang: ['SCF', 'SUB', 'SUBP', 'SSOLoginState', 'ALF'],
   zhihu: ['z_c0', 'd_c0', '_xsrf']
 };
 
@@ -341,8 +356,12 @@ const platformSessionCredentialCookies = {
   sohuhao: ['sct', 'ppinf', 'pprdig'],
   // 腾讯号：om* token 才是会话；userid/uin/p_uin 是 QQ 记住的账号号码，登出后残留，排除
   tengxunhao: ['omaccesstoken', 'omtoken', 'sraccesstoken', 'skey', 'p_skey'],
-  // 新浪号：SUB/SUBP/SCF/SSOLoginState 登出即清
-  xinlang: ['SUB', 'SUBP', 'SCF', 'SSOLoginState'],
+  // 新浪号：ALF 是登录时下发的一年期自动登录 token（值形如 02_<到期秒>），SSOLoginState 是 SSO 登录状态标志。
+  // ⚠️ SUB/SUBP/SCF 都不能算凭证：实测(2026-08-31 session-diagnostic.log)会话失效后这三个仍在，
+  //    且 SCF@.weibo.com 在"失效→手动重登"前后值完全相同，说明它是长效 cookie 而非会话凭证；
+  //    旧名单靠它们把死 session 判成"已登录"，于是既跳过后台快照恢复、又把死快照回存到后台
+  //    （后台以"授权失败"拒收），形成死循环。cookie 名单只能做粗筛，真正判死靠服务端探活。
+  xinlang: ['ALF', 'SSOLoginState'],
   // 知乎：z_c0 是账号凭证；d_c0（设备指纹）/_xsrf（CSRF）未登录也有，排除
   zhihu: ['z_c0']
 };

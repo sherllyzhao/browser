@@ -1244,6 +1244,8 @@ async function publishApi(dataObj) {
 
     console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
 
+    // 自定义封面
+
     // 检测表单是否有错误提示
     await delay(1000);
     const blockingErrors = collectShipinhaoBlockingErrorTexts();

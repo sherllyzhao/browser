@@ -1835,6 +1835,19 @@ contextBridge.exposeInMainWorld('browserAPI', {
   // 返回: { success: true, data: { cookies, localStorage, sessionStorage, indexedDB }, size: 数据大小 }
   getFullSessionData: (domain) => ipcRenderer.invoke('get-full-session-data', domain),
 
+  // 🔥 SSO 预热：用当前窗口的 session 在隐藏窗口里真实导航一遍给定 URL，跑完重定向链把 cookie 种下
+  // 场景：新浪授权只在 mp.sina.com.cn + passport.weibo.com 完成，weibo.com 主站登录态没建立，
+  //       发布页 card.weibo.com / me.weibo.com 打开即跳登录。no-cors fetch 起不到这个作用，
+  //       必须真实导航（重定向链要浏览器自己跑）。
+  // 参数: urls - URL 数组，按顺序导航；options - { waitMs, timeoutMs }
+  // 返回: { success, visited: [{ url, ok, error }] }
+  warmupSessionNavigation: (urls, options) => ipcRenderer.invoke('warmup-session-navigation', urls, options || {}),
+
+  // 🧪 新浪发布域登录探测：用当前窗口 session 请一次 card.weibo.com 编辑器，看会不会被弹去登录
+  // 授权脚本用它做「这次授权的快照到底能不能发文」的实证判据（cookie 名单只能粗筛）
+  // 返回: { success, verdict: 'not-login' | 'unknown', reason, status }
+  probeXinlangPublishHostLogin: () => ipcRenderer.invoke('probe-xinlang-publish-host'),
+
   // 🔁 跨域代理 fetch（用当前窗口 session 在主进程发请求，绕过浏览器 CORS）
   // 用于发布窗口跨域调平台 API（如 card.weibo.com 跨域调 mp.sina.com.cn/aj/...）
   // 参数:

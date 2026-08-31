@@ -36,7 +36,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.11',
+        version: '1.2.18',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
@@ -51,7 +51,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
       FIX_SOHU_AUTH_IDENTITY_BINDING: {
         enabled: true,
-        version: '1.2.11',
+        version: '1.2.18',
         risk: 'medium',
         files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
         description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
@@ -65,7 +65,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
       FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
         enabled: true,
-        version: '1.2.11',
+        version: '1.2.18',
         risk: 'low',
         files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
         description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'
@@ -91,7 +91,7 @@ if (typeof window.uploadVideo === "function"
       //       但窗口内刷新的 token 不落库）；未登记平台自动退回宽名单，行为不变
       FIX_STRICT_LOGIN_CREDENTIAL_GUARD: {
         enabled: true,
-        version: '1.2.11',
+        version: '1.2.18',
         risk: 'high',
         files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:cookiesHaveLiveLoginCredential', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount', 'main.js:ipc check-session-status', 'main.js:ipc check-account-login-status'],
         description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存 + 前端查登录态 IPC 同步收严并扩到全平台'
@@ -112,32 +112,183 @@ if (typeof window.uploadVideo === "function"
       //       清空只作用于知乎发布页编辑器，且清空失败会抛错交给重试，不会带着脏内容往下走。
       FIX_ZHIHU_CONTENT_DUPLICATE: {
         enabled: true,
-        version: '1.2.11',
+        version: '1.2.18',
         risk: 'medium',
         files: ['zhihu-publish.js:clearZhihuEditor', 'zhihu-publish.js:pasteHtmlIntoEditor验证失败抛错', 'zhihu-publish.js:内容填写retryOperation回调开头清空', 'zhihu-publish.js:insertContentWithZhihuEditorFallback接返回值', 'zhihu-publish.js:fillFormData终态标志'],
         description: '知乎正文重复修复：重试前清空编辑器实现写入幂等 + 缺段不再静默吞掉 + 堵外层整篇重填隐患'
       },
 
-      // 【修复】2026-08-28 抖音两个封面坑位只成功一个（用户实测：横封面没换上，只有竖封面生效）
-      // 根因：坑位#1 的 item.click() 没能打开弹窗时，旧代码不但不停，还把 searchRoot 退化成
-      //       整个 document，然后照样往"整页第一个 .semi-upload-hidden-input"里塞文件。
-      //       页面主体封面区自己就有隐藏 input —— 图被塞到不知道哪去，横封面纹丝不动，
-      //       还白等 30 秒 waitUploadSettled，最后因为 modal 为空而"跳过确认按钮"静默失败。
-      //       次生原因：coverListWrapEle 是循环开始前存下的静态 NodeList，上一个坑位传完
-      //       React 重渲染封面区后旧节点脱离文档，click() 打在孤儿节点上不报错也没反应。
-      // 修复：①开弹窗四级重试（滚动到可视区+原生click → MouseEvent序列 → 子元素click → 原生鼠标）；
-      //       ②没打开弹窗就整个坑位放弃并把封面退回 usedCovers，绝不在整页乱塞文件；
-      //       ③每个坑位现查坑位节点，不用静态 NodeList；
-      //       ④封面预加载加 10 秒超时（new Image 不响应时既不 onload 也不 onerror，Promise.all 永挂）；
-      //       ⑤补全诊断日志：预加载结果对照表 + 匹配失败时逐张说明原因
-      // 风险：禁用后回退旧行为（只点一级、modal 为空时退化到整页找 input）。
-      //       加固全是"更早放弃"而非"更激进操作"，不会影响已经能成功的坑位。
+      // 【修复】2026-08-28 → 2026-08-31 三轮实测迭代，抖音自定义封面上传
+      //
+      // 【第一轮症状】两个坑位只成功一个（横封面没换上，只有竖封面生效）
+      //   当时判断：坑位#1 的 item.click() 没打开弹窗，而旧代码把 searchRoot 退化成整个
+      //   document，照样往"整页第一个 .semi-upload-hidden-input"里塞文件（页面主体封面区
+      //   自己就有隐藏 input），于是白等 30 秒、最后因 modal 为空静默跳过确认。
+      //   ⚠️ 但接下来的实测证明这个判断只对了一半，见第二轮。
+      //
+      // 【第二轮症状】按"没弹窗就 continue"改完后，**两个坑位全军覆没**。
+      //   真相：那条"退化到整页找 input"的路径，正是竖封面唯一成功的那条路 ——
+      //   弹窗其实是开着的，只是 __douyinFindVisibleModal 的判据认不出来
+      //   （只认 .semi-modal-content / [role=dialog]，抖音的封面浮层未必是这两个）。
+      //   一刀切 continue 等于把唯一能走的路也堵死了。
+      //   → 教训：**探测判据失灵时，"更严格地放弃"会连带杀掉本来能成的路径**。
+      //   改法：弹窗选择器放宽（加 .semi-sidesheet-content / .semi-modal）+ 多候选按文案打分；
+      //         保留降级路径但要求它靠文案锚定（strict 模式只认文案含「封面」的容器，
+      //         宁可返回 null 也不"取最后一个"碰运气把封面塞进视频上传口）。
+      //
+      // 【第三轮症状】弹窗打开了、「已用 mouse 序列 点击「完成」」也打了，但图片没换掉。
+      //   根因有二：
+      //     ①「弹窗关了」被当成了「封面换上了」。文件被 Semi 的 beforeUpload 拒收时
+      //       （抖音对封面有尺寸/比例/体积要求），点「完成」照样把弹窗关掉，
+      //       整条链路一路打 ✅ 到底，全是假信号。
+      //     ② confirmScope 引入后遗留 modal.isConnected / modal.querySelectorAll，
+      //       降级模式下 modal 为 null 会抛 TypeError 被外层 catch 吞掉，
+      //       表现成"封面设置失败"却完全看不出是空指针。
+      //   改法：①收尾用坑位缩略图签名（img.src + background-image）前后对比做终态判定，
+      //         签名没变就明确报"封面【没有】换上"并把封面退回 usedCovers；
+      //         ②注入允许 2 次重试 + 记录新增 toast 原文（拒收原因的第一手证据）；
+      //         ③文件没被接住就跳过 30 秒 waitUploadSettled，不白等；
+      //         ④残余 modal.xxx 全部改 confirmScope，并加静态断言防回归。
+      //
+      // 风险：禁用后回退旧行为（只点一级开弹窗、无文案锚定的降级、无终态校验）。
+      //       所有加固都是"看清真相"而非"更激进操作"，不会影响已经能成功的坑位。
       FIX_DOUYIN_COVER_SLOT_GUARD: {
         enabled: true,
-        version: '1.2.12',
+        version: '1.2.18',
         risk: 'low',
-        files: ['douyin-publish.js:openModal四级重试', 'douyin-publish.js:无弹窗放弃坑位', 'douyin-publish.js:querySlots现查坑位', 'douyin-publish.js:封面预加载超时'],
-        description: '抖音封面坑位加固：开弹窗四级重试 + 没弹窗就放弃该坑位（不再整页乱塞文件）+ 坑位节点现查'
+        files: [
+          'douyin-publish.js:__DOUYIN_MODAL_SELECTOR放宽+多候选打分',
+          'douyin-publish.js:__douyinDumpModalState候选诊断',
+          'douyin-publish.js:openModal四级重试',
+          'douyin-publish.js:findUploadRootByText(strict)文案锚定降级',
+          'douyin-publish.js:querySlots现查坑位',
+          'douyin-publish.js:封面预加载超时',
+          'douyin-publish.js:注入2次重试+toast原文',
+          'douyin-publish.js:confirmScope替换modal空指针',
+          'douyin-publish.js:slotSignature终态校验'
+        ],
+        description: '抖音封面上传加固：弹窗定位放宽+候选诊断、降级靠文案锚定、注入可重试、收尾用缩略图签名校验"真的换上了"'
+      },
+
+      // 【2026-08-31】新浪号「授权是对的，点重新发布/内容管理就掉登录」：
+      //   ①授权侧 weibo.com 主站登录态从未真正建立——旧代码用 no-cors fetch 预热，实测无效
+      //     （授权后 SCF@.weibo.com 与失效前值一模一样，快照里从来没有 .weibo.cn 那组 SSO cookie，
+      //      人工在窗口里登录一次立刻就有）→ 改为让主进程用同一 session 开隐藏窗口真实导航一遍
+      //   ②cookie 采集域名漏 weibo.cn，SSO 状态 cookie 整组进不了快照
+      //   ③迁移只写 persist:browserview，内容管理/重新发布用的账号 session 仍是旧 cookies
+      //   ④判活口径把 SUB/SUBP/SCF 当凭证 → 死 session 被判"已登录"，既跳过后台快照恢复，
+      //     又把死快照回存后台（后台以「授权失败」拒收）→ 死循环，只有人工重登能打破
+      // 风险：禁用后回退旧行为（fetch 预热 + 纯 cookie 形式判活）。主进程侧另有同名开关。
+      FIX_XINLANG_LOGIN_ALIVE_PROBE: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'medium',
+        files: ['main.js:probeXinlangServerLoginState', 'main.js:warmup-session-navigation', 'main.js:hasValidLoginCookies', 'domain-config.js:xinlang名单', 'xinlang-creator.js:真实导航预热+账号session迁移', 'common.js:xinlang域名'],
+        description: '新浪授权后掉登录：真实导航预热主站 + 服务端探活判死 + 补 weibo.cn 域 + 收严凭证名单'
+      },
+
+      FIX_MANAGED_WINDOW_COOKIES_AS_SESSION: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'medium',
+        files: ['main.js:openManagedChildWindowInternal'],
+        description: '内容管理入口只传 options.cookies 而主进程只认 sessionData，导致内容管理窗拿不到后台快照、只能用账号分区里的旧 cookie（重新授权也照样跳登录页）；开窗时归一为 sessionData，与发布共用同一条会话仲裁链路'
+      },
+
+      // 【2026-08-31】授权侧最后一个"读码判不出来"的环节：采集完直接 POST，
+      //   没有任何"这份快照到底有没有活凭证"的自检。warmup 失败是静默吞掉的
+      //   （导航超时/ERR_ABORTED 只记 ok:false），于是缺 ALF/SSOLoginState 的死快照照样上报，
+      //   后台以「授权失败」拒收（HTTP 200 + 业务码非 200）→ 兜底轮询拿同一份快照重试到 5 分钟超时。
+      //   现象是"授权半天不成功"，而日志里只有后台那一句拒收，看不出是快照残缺。
+      // 改法：POST 前打印采到的 cookie 域分布 + ALF/SSOLoginState 命中情况；没命中就补跑一次
+      //   预热（加 weibo.cn 直接导航）并重采集；两次都没命中则 console.error 留证，但照旧 POST。
+      // 风险：只增日志与一次重试，不改变上报内容与判定口径；禁用后回退为"采完就发"。
+      FIX_XINLANG_AUTH_SNAPSHOT_SELFCHECK: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: [
+          'xinlang-creator.js:summarizeXinlangCredential',
+          'xinlang-creator.js:warmupXinlangMainSite',
+          'xinlang-creator.js:collectXinlangSessionSnapshot',
+          'xinlang-creator.js:无uid分支去掉阻塞alert'
+        ],
+        description: '新浪授权 POST 前自检快照活凭证（ALF/SSOLoginState）+ 实证「真的能进 card.weibo.com 编辑器」，任一不过则补跑一次主站预热重采集并留证；顺带去掉无 uid 分支的阻塞 alert（会让窗口悬死）'
+      },
+
+      // 【2026-08-31 实测报文纠错】新浪探活两个致命口径问题：
+      //   ① 未登录时 getbaseinfo 返回的是 {status:0, code:201, msg:"您的登录已过期，请重新登录"}，
+      //      不是 code 200 无 uid —— 旧逻辑把 201 归进 unknown「按活放行」，
+      //      于是最典型的过期形态完全探不出来，判死等于没做。
+      //   ② 只探 mp.sina.com.cn（创作平台），而发布/内容管理跑在 card.weibo.com，
+      //      要的是 weibo.com 主站那套登录态。主站死了时 card 页返回 HTTP 200 +
+      //      `<meta http-equiv="refresh" content="0; url=https://weibo.com/">`（主进程看不到 302），
+      //      再由 weibo.com 前端跳 /newlogin?...&url= —— 就是用户报的「重定向不过去」。
+      //      xinlang-redirect.js 检测到没有 SUB/ALF/SSOLoginState 会刻意停在当前页（防死循环），
+      //      所以表现为卡在登录页不动。
+      // 风险：判死变严格 → 授权列表被清/要求重新授权会更频繁；发布域那段单独挂
+      //   FIX_XINLANG_PUBLISH_HOST_PROBE，误杀就先关它保留 201 判死。
+      FIX_XINLANG_PUBLISH_HOST_PROBE: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'medium',
+        files: [
+          'main.js:probeXinlangCreatorLoginState(201/过期文案判死)',
+          'main.js:probeXinlangPublishHostLoginState',
+          'main.js:probe-xinlang-publish-host(IPC)',
+          'content-preload.js:probeXinlangPublishHostLogin'
+        ],
+        description: '新浪探活补两段：getbaseinfo code 201/「登录已过期」判死；再用同一份 cookies 请 card.weibo.com 编辑器，出现 meta refresh→weibo.com 或 newlogin 即判死（mp 活着≠主站活着）'
+      },
+
+      FIX_XINLANG_NEWLOGIN_LANDING_GUARD: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: ['main.js:maybeMarkXinlangDeadOnLoginLanding', 'main.js:managed-window did-navigate/did-navigate-in-page'],
+        description: '窗口被微博弹到 weibo.com/newlogin、/login*、/sso/* 时当场把该 session 判死并清 latest_session 缓存（授权窗排除），关窗不再回存死快照，下次开窗直接用后台好快照'
+      },
+
+      FIX_WEIBO_NEWLOGIN_URL_PATTERN: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: ['main.js:GLOBAL_LOGIN_URL_PATTERNS', 'main.js:LOGIN_URL_PATTERNS ×2'],
+        description: "把 '/newlogin' 补进三份通用登录页判据——'/login' 匹配不到 weibo.com/newlogin（login 前是 w 不是 /），导致新浪的登录页弹跳诊断日志、全平台死缓存清理、人工重登后即时回存三处全部失效"
+      },
+
+      FIX_APP_LOG_OPEN_GUARD: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: ['main.js:openAppLogStream', 'main.js:cleanupOldVersionDataOnUpgrade'],
+        description: 'app.log 打不开不再打死程序：日志流创建加 try/catch + on(error) 降级为只走控制台（原先 EPERM 以流 error 事件冒泡成 uncaughtException，弹「运行错误」）；升级清理不再删 app.log，避免第二实例删掉第一实例正在写的日志、以及 Windows 删除挂起导致后续 open 一律 EPERM'
+      },
+
+      FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: ['xiaohongshu-publish.js:selectScheduledTime', 'xiaohongshu-publish-image.js:selectScheduledTime'],
+        description: '小红书定时发布时间不对，两个根因：①开日历那一击是全脚本唯一手搓坐标点击（不走 nativeClickElement，没有命中校验+强制居中重试），打在 global-wrapper 上却返回 success，面板从不弹出；②日期单元格拿 --color-text-placeholder 当「邻月」判据，但它其实是「淡色文本态」，当月可选日同样带它 → 目标日被跳过，漏选只打一行 error 就继续点发布，于是按面板默认的当前时间发了出去。修复：多候选目标走 nativeClickElement、.date-picker-container 取可见那个、弹层检测结构锚定、当月单元格按 DOM 位置判定（第一个 1 号起单调递增到回落）、日期没选上直接中断、时间栏按项数认小时/分钟、发布前用输入框值做终态校验、失败补 sendStatisticsError'
+      },
+
+      FIX_SESSION_RESTORE_BACKFLOW_GUARD: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'medium',
+        files: ['main.js:matchAccountIdentity', 'main.js:evaluateSessionRestoreBackflow', 'main.js:stampWindowLoginFreshness', 'domain-config.js:platformIdentityCookies'],
+        description: '发布任务把 cookies 快照冻在任务记录里，每次「重新发布」都拿同一份旧快照走清空恢复，把窗口内刚登上的新登录擦掉（新建任务取的是回存刷新过的快照所以正常）。两处根因：①身份 cookie 与会话凭证重叠（小红书 web_session/百家号 BDUSS/知乎 z_c0/搜狐 ppinf），同账号重新登录被判成「换账号」强制清空；②三条通往清空的路只比「是否不同」不比「谁更新」。修法：身份名单剔除会话凭证（剔空返回「无法验证」而非「换账号」）+ 给账号分区记持久化登录新鲜度戳，戳比传入快照新时拒绝清空。无戳/快照无时间戳/刚授权补齐流程一律保持旧行为',
+        tests: 'test-session-backflow-guard.js（25 项全过）'
+      },
+
+      FIX_UPGRADE_CLEANUP_KEEP_LOGS: {
+        enabled: true,
+        version: '1.2.18',
+        risk: 'low',
+        files: ['main.js:cleanupOldVersionDataOnUpgrade', 'main.js:pruneDiagnosticLogs'],
+        description: '升级清理不再整目录 rmSync 掉 logs——session-diagnostic.log 是掉登录问题唯一的现场证据，而这类问题恰恰升级后才被发现，等于每次版本变更把排查线索清零（排查小红书掉登录时 logs/ 已空，只能读代码反推）。改为按保留期修剪：14 天内一律留着，超期的删，删完仍超 50MB 就从最旧的继续删',
+        tests: 'test-upgrade-cleanup-logs.js（14 项全过）'
       },
 
       // 【预留】未来的修复/功能添加在下方
@@ -2404,7 +2555,7 @@ if (typeof window.uploadVideo === "function"
             },
             xinlang: {
                 apiPath: '/api/mediaauth/xlinfo',
-                domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com', 'sina.cn'],
+                domains: ['sina.com.cn', 'mp.sina.com.cn', 'weibo.com', 'card.weibo.com', 'weibo.cn', 'sina.cn'],
                 getUserInfo: async (publishData) => {
                     const API = 'https://mp.sina.com.cn/aj/media/info/getbaseinfo';
                     // 1) 先尝试浏览器 fetch（mp.sina.com.cn 同源时有效）

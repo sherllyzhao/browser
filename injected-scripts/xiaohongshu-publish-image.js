@@ -1648,6 +1648,10 @@ if (location.search.includes("published=true")) {
                     const timeSelectSuccess = await selectScheduledTime(sendTime, publishId);
                     if (!timeSelectSuccess) {
                         console.error("[小红书发布] ❌ 时间选择失败");
+                        // 【特性开关】FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK：原来只关窗不上报，后台看不到这次失败
+                        if (window.isFeatureEnabled?.("FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK") && publishId) {
+                            await sendStatisticsError(publishId, "定时时间选择失败", "小红书发布");
+                        }
                         await closeWindowWithMessage("定时时间选择失败", 1000);
                     }
                     // 🔑 定时发布流程已在 selectScheduledTime 内完成（上报+关闭窗口），直接 return
@@ -1701,6 +1705,103 @@ if (location.search.includes("published=true")) {
         }
     }
 
+    // 【特性开关】FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK 起 —— 定时日期选择器的可见性判断与结构锚定
+    function isXhsPickerElementVisible(el) {
+        if (!el || typeof el.getBoundingClientRect !== "function") return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(el);
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    }
+
+    // 隐藏副本的 rect 依然有效但不可命中，坐标点击会打到页面底层元素上，所以要挑可见的那个
+    function pickVisibleDatePickerContainer() {
+        const containers = Array.from(document.querySelectorAll(".date-picker-container"));
+        if (containers.length > 1) {
+            console.log(`[小红书发布] 🔍 找到 ${containers.length} 个 .date-picker-container，逐个检查可见性`);
+            containers.forEach((el, i) => {
+                const rect = el.getBoundingClientRect();
+                console.log(`[小红书发布] 🔍   #${i} 可见=${isXhsPickerElementVisible(el)} rect=${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+            });
+        }
+        return containers.find(isXhsPickerElementVisible) || containers[0] || null;
+    }
+
+    // 原 class 优先，找不到就从任意日期单元格向上找同时含年月头的容器，扛小红书改 class
+    function resolveDatePickerPanel() {
+        const byClass = document.querySelector(".post-time-date-picker-popover-class");
+        if (byClass && isXhsPickerElementVisible(byClass)) {
+            return { panel: byClass, from: "class" };
+        }
+
+        const cell = document.querySelector(".d-datepicker-cell");
+        let node = cell?.parentElement || null;
+        for (let depth = 0; node && depth < 10; depth++) {
+            if (node.querySelector(".d-datepicker-header-main")) {
+                // 时间栏是日历的兄弟节点，能上溯到 popover 就上溯，拿到日期+时间的共同祖先
+                const panel = (typeof node.closest === "function" && node.closest(".d-popover")) || node;
+                if (isXhsPickerElementVisible(panel)) {
+                    const nodeClass = String(panel.className || "").trim().substring(0, 60);
+                    return { panel, from: `structure(depth=${depth}, class=${nodeClass})` };
+                }
+                break;
+            }
+            node = node.parentElement;
+        }
+        return null;
+    }
+
+    // 弹层是 portal 到 body 的，只 dump 日期容器看不到现场
+    function dumpDatePickerDiagnostics(modal) {
+        try {
+            const floats = Array.from(document.body.children)
+                .filter(el => {
+                    const cs = window.getComputedStyle(el);
+                    return cs.position === "fixed" || cs.position === "absolute";
+                })
+                .map(el => `${el.tagName}.${String(el.className || "").trim().replace(/\s+/g, ".")}`);
+            console.log("[小红书发布] 🔍 body 顶层浮层候选:", floats.join(" | ").substring(0, 800) || "（无）");
+            console.log(
+                "[小红书发布] 🔍 全文档 .d-datepicker-cell:", document.querySelectorAll(".d-datepicker-cell").length,
+                "/ .d-datepicker-header-main:", document.querySelectorAll(".d-datepicker-header-main").length,
+                "/ .post-time-date-picker-popover-class:", document.querySelectorAll(".post-time-date-picker-popover-class").length
+            );
+            console.log("[小红书发布] 🔍 日期容器 outerHTML:", modal?.outerHTML?.substring(0, 1200));
+        } catch (e) {
+            console.log("[小红书发布] ⚠️ 采集日期选择器诊断信息失败:", e);
+        }
+    }
+
+    // 当月单元格按位置判定，不靠 class：--color-text-placeholder 在「过去的日期」和「邻月日期」上都会出现，
+    // 拿它当邻月判据会连当月可选日一起跳过。DOM 顺序里第一个 1 号即当月 1 号（上月尾巴不可能出现 1），
+    // 之后数字单调递增，一旦回落就是下月了
+    function collectInMonthDateCells(picker) {
+        const cells = Array.from(picker.querySelectorAll(".d-datepicker-cell")).map(td => {
+            const main = td.querySelector(".d-datepicker-cell-main");
+            const text = (main?.textContent || td.textContent || "").trim();
+            return { td, num: parseInt(text, 10), text };
+        });
+
+        const startIdx = cells.findIndex(c => c.num === 1);
+        if (startIdx < 0) return [];
+
+        const inMonth = [cells[startIdx]];
+        for (let i = startIdx + 1; i < cells.length; i++) {
+            const curr = cells[i];
+            if (!Number.isFinite(curr.num) || curr.num <= inMonth[inMonth.length - 1].num) break;
+            inMonth.push(curr);
+        }
+        return inMonth;
+    }
+
+    function readDatePickerInputValue(modal) {
+        const input = modal?.querySelector(".d-datepicker-input-filter input")
+            || modal?.querySelector("input");
+        if (!input) return null;
+        return String(input.value || "").trim();
+    }
+    // 【特性开关】FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK 止
+
     /**
      * 选择定时发布的日期和时间
      * @param sendTime
@@ -1710,7 +1811,11 @@ if (location.search.includes("published=true")) {
         console.log("🚀 ~ selectScheduledTime ~ sendTime: ", sendTime);
         console.log("🚀 ~ selectScheduledTime ~ publishId: ", publishId);
         try {
-            const modal = document.querySelector(".date-picker-container");
+            // 【特性开关】FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK
+            const pickerFixEnabled = window.isFeatureEnabled?.("FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK") === true;
+            const modal = pickerFixEnabled
+                ? pickVisibleDatePickerContainer()
+                : document.querySelector(".date-picker-container");
             if (!modal) {
                 console.error("[小红书发布] ❌ 找不到定时发布弹窗");
                 return false;
@@ -1724,48 +1829,102 @@ if (location.search.includes("published=true")) {
             await delay(1000);
 
             // 1. 点击日期输入框打开日历（轮询等待渲染）
-            let dateInput = modal.querySelector(".d-datepicker-content");
-            if (!dateInput) {
-                console.error("[小红书发布] ❌ 找不到日期输入框");
-                return false;
-            }
-            console.log("[小红书发布] 🔧 开始选择定时发布时间...");
-
-            // 仅在中心点不在视口内时做最小必要滚动，避免无意义位移
-            const dateInputDidScroll = typeof window.scrollElementIntoViewIfNeeded === "function"
-                ? window.scrollElementIntoViewIfNeeded(dateInput, {
-                    margin: 12,
-                    behavior: "instant",
-                    block: "nearest",
-                    inline: "nearest",
-                })
-                : false;
-            await delay(dateInputDidScroll ? 500 : 120);
-
-            // 使用原生可信点击（isTrusted=true），绕过 Vue 组件的事件检查
-            const rect = dateInput.getBoundingClientRect();
-            const cx = rect.left + rect.width / 2;
-            const cy = rect.top + rect.height / 2;
-            // 诊断：检查该坐标实际命中的元素
-            const hitEl = document.elementFromPoint(cx, cy);
-            console.log("[小红书发布] 🔍 nativeClick 坐标:", cx, cy, "命中元素:", hitEl?.tagName, hitEl?.className?.substring?.(0, 80));
-            const clickResult = await window.browserAPI.nativeClick(cx, cy);
-            console.log("[小红书发布] 🔍 nativeClick 返回:", JSON.stringify(clickResult));
-
-            // 轮询等待日历弹出（最多 4s）
             let picker = null;
-            for (let i = 0; i < 20; i++) {
-                picker = document.querySelector(".post-time-date-picker-popover-class");
-                if (picker) {
-                    console.log("[小红书发布] ✅ 日历已弹出");
-                    break;
+
+            if (pickerFixEnabled) {
+                console.log("[小红书发布] 🔧 开始选择定时发布时间...");
+                const clickCandidates = [
+                    ["输入框", modal.querySelector(".d-datepicker-input-filter input")],
+                    ["输入框容器", modal.querySelector(".d-datepicker-input-filter")],
+                    ["后缀图标", modal.querySelector(".d-datepicker-suffix-indicator")],
+                    ["内容区", modal.querySelector(".d-datepicker-content")],
+                    ["选择器根节点", modal.querySelector(".d-datepicker")],
+                ].filter(([, el]) => el);
+
+                if (!clickCandidates.length) {
+                    console.error("[小红书发布] ❌ 找不到日期输入框");
+                    dumpDatePickerDiagnostics(modal);
+                    return false;
                 }
-                await delay(200);
+
+                for (const [name, el] of clickCandidates) {
+                    // 日历已经开着时再点一下会把它关掉，所以每轮点击前先确认状态
+                    const opened = resolveDatePickerPanel();
+                    if (opened) {
+                        picker = opened.panel;
+                        console.log(`[小红书发布] ✅ 日历已弹出（来源: ${opened.from}）`);
+                        break;
+                    }
+
+                    console.log(`[小红书发布] 🖱️ 尝试点击日期${name}打开日历`);
+                    const candidateClickResult = await nativeClickElement(el, {
+                        logPrefix: `[小红书发布][日期输入框:${name}]`,
+                        allowJsFallback: false,
+                    });
+                    if (!candidateClickResult.success) {
+                        console.warn(`[小红书发布] ⚠️ 点击日期${name}失败: ${candidateClickResult.message}`);
+                        continue;
+                    }
+
+                    for (let i = 0; i < 10; i++) {
+                        await delay(200);
+                        const found = resolveDatePickerPanel();
+                        if (found) {
+                            picker = found.panel;
+                            console.log(`[小红书发布] ✅ 日历已弹出（点击${name}生效，来源: ${found.from}）`);
+                            break;
+                        }
+                    }
+                    if (picker) break;
+                    console.warn(`[小红书发布] ⚠️ 点击日期${name}后日历未弹出，换下一个候选`);
+                }
+            } else {
+                let dateInput = modal.querySelector(".d-datepicker-content");
+                if (!dateInput) {
+                    console.error("[小红书发布] ❌ 找不到日期输入框");
+                    return false;
+                }
+                console.log("[小红书发布] 🔧 开始选择定时发布时间...");
+
+                // 仅在中心点不在视口内时做最小必要滚动，避免无意义位移
+                const dateInputDidScroll = typeof window.scrollElementIntoViewIfNeeded === "function"
+                    ? window.scrollElementIntoViewIfNeeded(dateInput, {
+                        margin: 12,
+                        behavior: "instant",
+                        block: "nearest",
+                        inline: "nearest",
+                    })
+                    : false;
+                await delay(dateInputDidScroll ? 500 : 120);
+
+                // 使用原生可信点击（isTrusted=true），绕过 Vue 组件的事件检查
+                const rect = dateInput.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                // 诊断：检查该坐标实际命中的元素
+                const hitEl = document.elementFromPoint(cx, cy);
+                console.log("[小红书发布] 🔍 nativeClick 坐标:", cx, cy, "命中元素:", hitEl?.tagName, hitEl?.className?.substring?.(0, 80));
+                const clickResult = await window.browserAPI.nativeClick(cx, cy);
+                console.log("[小红书发布] 🔍 nativeClick 返回:", JSON.stringify(clickResult));
+
+                // 轮询等待日历弹出（最多 4s）
+                for (let i = 0; i < 20; i++) {
+                    picker = document.querySelector(".post-time-date-picker-popover-class");
+                    if (picker) {
+                        console.log("[小红书发布] ✅ 日历已弹出");
+                        break;
+                    }
+                    await delay(200);
+                }
             }
 
             if (!picker) {
                 console.error("[小红书发布] ❌ 找不到日期选择器");
-                console.log("[小红书发布] 🔍 modal outerHTML:", modal.outerHTML.substring(0, 2000));
+                if (pickerFixEnabled) {
+                    dumpDatePickerDiagnostics(modal);
+                } else {
+                    console.log("[小红书发布] 🔍 modal outerHTML:", modal.outerHTML.substring(0, 2000));
+                }
                 return false;
             }
 
@@ -1834,33 +1993,23 @@ if (location.search.includes("published=true")) {
 
             // 3. 选择日期 - 找到目标日期的 td 并点击
             let dateSelected = false;
-            const allDayCells = picker.querySelectorAll(".d-datepicker-cell");
-            console.log(`[小红书发布] 📅 找到 ${allDayCells.length} 个日期单元格`);
+            const targetDay = parseInt(day, 10);
 
-            for (const td of allDayCells) {
-                // 跳过不可选的日期（有 disabled 类，表示过去的日期）
-                if (td.classList.contains("disabled")) continue;
+            if (pickerFixEnabled) {
+                // --color-text-placeholder 是「淡色文本态」不是「邻月」：当月过去的日期带它、下月日期带它、
+                // 当月可选日同样带它（只有被选中的那天换成 --color-primary）。拿它当邻月判据会把目标日一起跳过，
+                // 而漏选只打一行 error 就继续点发布 → 按默认时间（现在）发出去，正是「定时发布不对」的现场
+                const inMonthCells = collectInMonthDateCells(picker);
+                const allCellCount = picker.querySelectorAll(".d-datepicker-cell").length;
+                console.log(`[小红书发布] 📅 当月单元格 ${inMonthCells.length} 个（面板共 ${allCellCount} 个）`);
 
-                // 跳过非当前月份的日期（上月/下月的灰色日期）
-                if (td.classList.contains("--color-text-placeholder")) continue;
-
-                // 从 .d-datepicker-cell-main 获取日期数字
-                let dayText = "";
-                const cellMain = td.querySelector(".d-datepicker-cell-main");
-                if (cellMain) {
-                    dayText = cellMain.textContent.trim();
-                }
-                // 兜底：直接从 td 获取
-                if (!dayText || isNaN(parseInt(dayText, 10))) {
-                    dayText = td.textContent.trim();
-                }
-
-                const dayNum = parseInt(dayText, 10);
-                const targetDay = parseInt(day, 10);
-                console.log(`[小红书发布] 📅 检查日期: text="${dayText}", dayNum=${dayNum}, targetDay=${targetDay}, match=${dayNum === targetDay}`);
-
-                if (!isNaN(dayNum) && dayNum === targetDay) {
-                    const dayClickResult = await nativeClickElement(td, {
+                const hit = inMonthCells.find(c => c.num === targetDay);
+                if (!hit) {
+                    console.error(`[小红书发布] ❌ 当月找不到 ${targetDay} 号单元格，当月可选: ${inMonthCells.map(c => c.num).join(",")}`);
+                } else if (hit.td.classList.contains("disabled")) {
+                    console.error(`[小红书发布] ❌ ${targetDay} 号不可选（disabled，通常是已过去的日期）`);
+                } else {
+                    const dayClickResult = await nativeClickElement(hit.td, {
                         logPrefix: "[小红书发布][日期选择]",
                         allowJsFallback: false,
                     });
@@ -1869,12 +2018,53 @@ if (location.search.includes("published=true")) {
                     }
                     dateSelected = true;
                     console.log(`[小红书发布] ✅ 选择日期: ${year}-${month}-${day}`);
-                    break;
+                }
+            } else {
+                const allDayCells = picker.querySelectorAll(".d-datepicker-cell");
+                console.log(`[小红书发布] 📅 找到 ${allDayCells.length} 个日期单元格`);
+
+                for (const td of allDayCells) {
+                    // 跳过不可选的日期（有 disabled 类，表示过去的日期）
+                    if (td.classList.contains("disabled")) continue;
+
+                    // 跳过非当前月份的日期（上月/下月的灰色日期）
+                    if (td.classList.contains("--color-text-placeholder")) continue;
+
+                    // 从 .d-datepicker-cell-main 获取日期数字
+                    let dayText = "";
+                    const cellMain = td.querySelector(".d-datepicker-cell-main");
+                    if (cellMain) {
+                        dayText = cellMain.textContent.trim();
+                    }
+                    // 兜底：直接从 td 获取
+                    if (!dayText || isNaN(parseInt(dayText, 10))) {
+                        dayText = td.textContent.trim();
+                    }
+
+                    const dayNum = parseInt(dayText, 10);
+                    console.log(`[小红书发布] 📅 检查日期: text="${dayText}", dayNum=${dayNum}, targetDay=${targetDay}, match=${dayNum === targetDay}`);
+
+                    if (!isNaN(dayNum) && dayNum === targetDay) {
+                        const dayClickResult = await nativeClickElement(td, {
+                            logPrefix: "[小红书发布][日期选择]",
+                            allowJsFallback: false,
+                        });
+                        if (!dayClickResult.success) {
+                            throw new Error(dayClickResult.message || "点击日期失败");
+                        }
+                        dateSelected = true;
+                        console.log(`[小红书发布] ✅ 选择日期: ${year}-${month}-${day}`);
+                        break;
+                    }
                 }
             }
 
             if (!dateSelected) {
                 console.error(`[小红书发布] ❌ 未能选择日期 ${day} 号`);
+                // 日期没选上还往下点发布，就是按面板默认时间（当前时间）发出去，必须中断
+                if (pickerFixEnabled) {
+                    return false;
+                }
             }
             await delay(300);
 
@@ -1882,14 +2072,45 @@ if (location.search.includes("published=true")) {
             const [hour, minute] = timePart.split(":");
             console.log(`[小红书发布] ⏰ 目标时间: ${hour}:${minute}`);
 
-            const timebars = document.querySelectorAll(".d-timepicker-body .d-timepicker-timebar");
+            let timebars = document.querySelectorAll(".d-timepicker-body .d-timepicker-timebar");
+            if (pickerFixEnabled) {
+                // 时间栏与日历同属一个 popover，从 picker 里找可避免命中页面上别处的时间选择器
+                const scoped = picker.querySelectorAll(".d-timepicker-timebar");
+                if (scoped.length) {
+                    timebars = scoped;
+                } else if (!timebars.length) {
+                    timebars = document.querySelectorAll(".d-timepicker-timebar");
+                }
+            }
             console.log(`[小红书发布] ⏰ 找到 ${timebars.length} 个时间滚动列表`);
 
-            for (let i = 0; i < timebars.length; i++) {
-                const targetValue = i === 0 ? hour : minute;
-                const targetNum = parseInt(targetValue, 10);
-                const timeItems = timebars[i].querySelectorAll(".d-timepicker-time.d-clickable");
-                console.log(`[小红书发布] ⏰ 时间栏${i} 共 ${timeItems.length} 个选项，目标值: ${targetValue}`);
+            // 小时栏 24 项、分钟栏 60 项：按项数认栏位比按下标稳（下标假设反了会把分钟填进小时）
+            const timeTasks = [];
+            if (pickerFixEnabled && timebars.length === 2) {
+                const counts = Array.from(timebars).map(bar => bar.querySelectorAll(".d-timepicker-time.d-clickable").length);
+                const hourIdx = counts[0] <= counts[1] ? 0 : 1;
+                if (hourIdx !== 0) {
+                    console.warn(`[小红书发布] ⚠️ 时间栏顺序与预期相反（项数 ${counts.join("/")}），按项数纠正`);
+                }
+                timeTasks.push({ label: "小时", bar: timebars[hourIdx], target: hour });
+                timeTasks.push({ label: "分钟", bar: timebars[hourIdx === 0 ? 1 : 0], target: minute });
+            } else {
+                for (let i = 0; i < timebars.length; i++) {
+                    timeTasks.push({
+                        label: i === 0 ? "小时" : "分钟",
+                        bar: timebars[i],
+                        target: i === 0 ? hour : minute,
+                    });
+                }
+            }
+
+            for (const task of timeTasks) {
+                const targetNum = parseInt(task.target, 10);
+                let timeItems = task.bar.querySelectorAll(".d-timepicker-time.d-clickable");
+                if (pickerFixEnabled && !timeItems.length) {
+                    timeItems = task.bar.querySelectorAll(".d-timepicker-time");
+                }
+                console.log(`[小红书发布] ⏰ ${task.label}栏共 ${timeItems.length} 个选项，目标值: ${task.target}`);
 
                 let matched = false;
                 for (const item of timeItems) {
@@ -1904,16 +2125,36 @@ if (location.search.includes("published=true")) {
                             throw new Error(timeClickResult.message || "点击时间项失败");
                         }
                         matched = true;
-                        console.log(`[小红书发布] ✅ 选择${i === 0 ? "小时" : "分钟"}: ${itemText}`);
+                        console.log(`[小红书发布] ✅ 选择${task.label}: ${itemText}`);
                         break;
                     }
                 }
                 if (!matched) {
-                    console.warn(`[小红书发布] ⚠️ 未匹配到${i === 0 ? "小时" : "分钟"}: ${targetValue}`);
+                    console.warn(`[小红书发布] ⚠️ 未匹配到${task.label}: ${task.target}`);
                 }
                 await delay(300);
             }
             await delay(200);
+
+            // 终态校验：输入框的值必须真的变成目标时间。点击「成功」不等于值写进去了，
+            // 少了这一步就会带着面板默认的当前时间去点发布，表面全绿实际发成了立即发布
+            if (pickerFixEnabled) {
+                const expectedDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                const expectedTime = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+                let inputValue = "";
+                let valueMatched = false;
+                for (let i = 0; i < 10; i++) {
+                    inputValue = readDatePickerInputValue(modal) || "";
+                    valueMatched = inputValue.includes(expectedDate) && inputValue.includes(expectedTime);
+                    if (valueMatched) break;
+                    await delay(200);
+                }
+                if (!valueMatched) {
+                    console.error(`[小红书发布] ❌ 定时时间未生效：输入框显示「${inputValue}」，期望「${expectedDate} ${expectedTime}」`);
+                    return false;
+                }
+                console.log(`[小红书发布] ✅ 定时时间已生效: ${inputValue}`);
+            }
 
             // 点击定时发布按钮（新版小红书没有单独的确认按钮，直接点击主发布按钮）
             const publishBtn = findXhsPublishButton();
