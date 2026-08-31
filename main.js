@@ -116,10 +116,9 @@ function appendStartupSwitch(name, value) {
 }
 
 function getLegacyWindowsGpuWorkaroundInfo() {
-  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）
-  // Windows 10 1607/LTSB(10.0.14393)：老核显(如 HD2500)保留 GPU 时 GPU 子进程会崩弹"已停止工作"，
-  // 故 1607 走软件渲染(禁 GPU)+renderer 启动兼容参数。注：历史注释曾称"1607 禁 GPU 也 launch-failed"，
-  // 实为真凶 360 拦截期的污染误判(2026-06-10 真机证实)，加白名单后禁 GPU 无此问题。
+  // Win7/Win8 GPU 合成层在新 Chromium 下常导致页面白屏（典型如搜狐号 .ne-editor）。
+  // Win10（包括 1607/LTSB）保留普通 GPU 启动路径，避免额外兼容开关引入 renderer 启动风险。
+  // 旧版记录中关于 1607 需要禁 GPU/兼容参数的结论属于特定环境下的排查结果，不再作为默认分支。
   // Windows NT 版本号：Win7=6.1, Win8=6.2, Win8.1=6.3, Win10/11=10.0
   if (process.platform !== 'win32') {
     return {
@@ -136,7 +135,12 @@ function getLegacyWindowsGpuWorkaroundInfo() {
     const major = parts[0];
     const build = parts[2];
 
-    if (isRendererSafeMode) {
+    // Win10 1607 的 safe-mode 不能切换到禁 GPU 路径：该系统上的
+    // --disable-gpu 曾触发同样的 renderer launch-failed，重启只会放大故障。
+    // safe-mode 仍保留给 Win7/8 等真正的旧系统。
+    const isWin10LegacyBuild = major === 10 && Number.isInteger(build) && build <= 14393;
+
+    if (isRendererSafeMode && !isWin10LegacyBuild) {
       return {
         shouldDisableHardwareAcceleration: true,
         shouldUseRendererLaunchCompatibility: true,
@@ -151,15 +155,6 @@ function getLegacyWindowsGpuWorkaroundInfo() {
         shouldUseRendererLaunchCompatibility: true,
         release,
         reason: 'win7-win8-legacy-gpu'
-      };
-    }
-
-    if (major === 10 && Number.isInteger(build) && build <= 14393) {
-      return {
-        shouldDisableHardwareAcceleration: false,
-        shouldUseRendererLaunchCompatibility: true,
-        release,
-        reason: 'win10-1607-renderer-launch-compat'
       };
     }
 
@@ -196,10 +191,10 @@ if (shouldDisableHardwareAcceleration) {
   appendStartupSwitch('disable-gpu-sandbox');
   appendStartupSwitch('in-process-gpu');
 } else if (shouldUseRendererLaunchCompatibility) {
-  // 🩹 2026-06-10：老核显(如 Intel HD2500/Ivy Bridge)保留 GPU 时，Chromium 独立 GPU 子进程会崩，
-  //    弹"已停止工作"（主程序仍能 fallback 软件渲染继续运行，但提示扰民）。此处软禁用硬件加速 +
-  //    disable-gpu/disable-gpu-compositing 强制纯软件渲染，让 GPU 进程根本不启动，从源头消除崩溃。
-  // ⚠️ 绝不加 disable-gpu-sandbox / in-process-gpu：这俩沙箱族开关在 1607 上风险未明，保持最小变更；
+  // 🩹 老核显(如 Intel HD2500/Ivy Bridge)在 Win7/8 上可能导致 Chromium 独立 GPU 子进程崩溃，
+  //    弹"已停止工作"。此处软禁用硬件加速 + disable-gpu/disable-gpu-compositing
+  //    强制纯软件渲染，让 GPU 进程根本不启动，从源头消除崩溃。
+  // ⚠️ 绝不加 disable-gpu-sandbox / in-process-gpu：这俩沙箱族开关风险较高，保持最小变更；
   //    no-sandbox 等兼容参数仍由下方 if(shouldUseRendererLaunchCompatibility) 块统一提供。
   // 📌 前提：真凶 360 已加白名单(干净环境)。本次禁 GPU 与历史"360 污染期禁 GPU 也崩"无关，
   //    详见《排查记录-Win10-1607-启动崩溃.md》最终结论。
@@ -212,12 +207,11 @@ if (shouldDisableHardwareAcceleration) {
 }
 
 if (shouldUseRendererLaunchCompatibility) {
-  // 仅旧系统(Win7/8 / Win10 1607 / safe-mode)命中。以下为 1.1.2 全局验证过、1607 唯一能用的
-  // renderer 启动兼容参数；正常 Win10/11 不追加，避免扩大行为变化面。
+  // 仅旧系统(Win7/8 / 非 1607 的 safe-mode)命中。正常 Win10/11 不追加，避免扩大行为变化面。
   appendStartupSwitch('disable-dev-shm-usage');
   appendStartupSwitch('no-sandbox');
   // ⚠️ 不在此处加 disable-gpu-sandbox / in-process-gpu：保持最小变更，沙箱族开关在 1607 上风险未明。
-  //    (1607 软件渲染所需的 disable-gpu/disable-gpu-compositing 已由上方 else-if 块提供；
+  //    (Win7/8 软件渲染所需的 disable-gpu/disable-gpu-compositing 已由上方 if 块提供；
   //     Win7/8 / safe-mode 的禁 GPU 开关由最上方 if 块单独追加。)
   // ⚠️ disable-features 仅禁 RendererCodeIntegrity；不加 CalculateNativeWinOcclusion(与 1.1.2 一致)。
   appendStartupSwitch('disable-features', 'RendererCodeIntegrity');
@@ -1040,12 +1034,8 @@ function markSessionDiagnosticFatalError(error, origin = 'unknown') {
 let rendererSafeModeRelaunchRequested = false;
 
 function maybeRelaunchInRendererSafeMode(details) {
-  // Win10 1607：safe-mode 会强制禁 GPU 重启，但现场已证实 1607 禁 GPU 同样 launch-failed，
-  // 重启只会形成"崩→禁GPU重启→再崩→弹框退出"的死循环(用户感知为"重启后打不开")。
-  // 故 1607 不进入禁 GPU safe-mode，首次 launch-failed 后直接走下方弹框告知，避免假死循环。
-  if (legacyWindowsGpuWorkaround.reason === 'win10-1607-renderer-launch-compat') {
-    return false;
-  }
+  // Win10 1607 已回到普通 Win10 启动路径，不能再通过 safe-mode
+  // 强制追加禁 GPU 开关；其余旧系统仍允许尝试一次软件渲染恢复。
   if (rendererSafeModeRelaunchRequested || isRendererSafeMode || shouldDisableHardwareAcceleration || !shouldUseRendererLaunchCompatibility) {
     return false;
   }
@@ -9218,11 +9208,21 @@ function createWindow() {
         });
         if (result.response === 0) {
           try {
+            if (!browserView || !browserView.webContents
+                || browserView.webContents.isDestroyed()) {
+              console.warn('[BrowserView] ⚠️ 渲染进程已销毁，跳过 reload 恢复');
+              return;
+            }
             browserView.webContents.reload();
           } catch (err) {
             console.error('[BrowserView] ❌ 重新加载失败:', err);
           }
         } else if (result.response === 1) {
+          if (!browserView || !browserView.webContents
+              || browserView.webContents.isDestroyed()) {
+            console.warn('[BrowserView] ⚠️ 渲染进程已销毁，跳过回登录页');
+            return;
+          }
           await navigateToLoginInternal('render_process_gone');
         }
       })().catch(err => {
@@ -15302,7 +15302,7 @@ async function openManagedChildWindowInternal(url, options = {}) {
     if (!isBareToutiao) {
       windowWebPreferences.preload = path.join(__dirname, 'content-preload.js');
       // 🩹 把"软件渲染回退"标志透传给 content-preload（渲染进程读不到主进程的 shouldDisableHardwareAcceleration）。
-      // 仅真正禁用 GPU 的 Win7/8 注入；Win10 1607 只做 renderer 启动兼容，不启用页面自动巡检。
+      // 仅真正禁用 GPU 的 Win7/8 注入；普通 Win10（包括 1607）不启用页面自动巡检。
       if (shouldDisableHardwareAcceleration) {
         windowWebPreferences.additionalArguments = ['--yyzs-legacy-windows=1'];
       }
