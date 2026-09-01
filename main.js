@@ -57,17 +57,6 @@ const FIX_MANAGED_WINDOW_LOADING_HINT = true;
 // 5 次全失败才上报失败
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：单次下载失败即上报）
 const FIX_TOUTIAO_COVER_RETRY = true;
-// 【特性开关】2026-09-01 头条正文图片全部丢失：头条发布走 main.js bare 脚本（FORCE_BARE_TOUTIAO），
-// bare 脚本 normalizeContent 用 innerText 把正文 HTML 拍成纯文本 —— <img> 没有文本内容，
-// 在这一步整个蒸发；写入端又是 p.textContent = line（纯文本节点），物理上也承载不了图片。
-// 即父页面富文本里的图片，到头条永远只剩文字。与 2026-07 的「超链接丢失」是同一处代码同一根因，
-// 当时 v4 只补了链接 mark，图片没管
-// 修法：正文改走「整段 HTML 粘贴 → 头条编辑器自行转存外链图」，校验图片 src 落在头条域名
-//（只数 img 数量会被未转存的外链 img 骗成假成功）；不达标回退逐图原生上传
-//（browserAPI.downloadImage 绕过跨域 → 编辑器 file input），全失败才降级回旧的纯文本写入。
-// 对齐腾讯号 tengxvnhao-publish.js:2249 / 知乎 zhihu-publish.js:747 已验证的模式
-// 生产出问题改 false 重打包即可整体降级（回退旧行为：正文纯文本，无图片）
-const FIX_TOUTIAO_CONTENT_IMAGES = true;
 // 【特性开关】2026-08-18 腾讯内容管理窗口掉登录：判死清理（fix4/fix5）只保护发布窗口
 //（isPublishWindow 门槛），内容管理窗口（purpose='child'）恢复死 token 快照后：
 // ①服务端打回登录页但死 cookie 不清 → 扫码时新旧凭证混杂"登录后瞬间掉出" ②扫码成功后
@@ -5874,21 +5863,7 @@ let lastPageErrorDialogAt = 0;
 let blankScreenConsecutive = 0;
 const BLANK_SCREEN_CHECK_INTERVAL = 90 * 1000;
 const BLANK_SCREEN_CONSECUTIVE_THRESHOLD = 2;
-// 【特性开关】2026-09-01 头条发布回归注入脚本：头条是全部 11 个平台里唯一走 main.js bare 模板字符串
-// （buildToutiaoBarePublishScript，1100 行）发布的，源头是 2026-03-16 提交 8d75c0c「chore: 更新代码结构」
-// 一刀切 shouldSkipScriptInjection(所有 toutiao URL)，没有留下任何技术理由。代价有三：
-// ①injected-scripts/toutiao-publish.js 2392 行成了死代码，却仍被 scripts-config.json 映射着
-//   —— 超链接修复 v1/v2/v3 三轮全改在不执行的文件里；
-// ②bare 脚本拿不到 common.js，waitForElement/retryOperation/nativeClick/礼让门闸/downloadFile 重试
-//   全部得重造（FIX_TOUTIAO_COVER_RETRY 就是在重造 common.js 早有的下载重试）；
-// ③bare 窗口不挂 content-preload（openNewWindow 里 if (!isBareToutiao) 才设 preload），
-//   于是 window.browserAPI 是 undefined，FIX_TOUTIAO_CONTENT_IMAGES 的逐图上传回退路径必抛
-//   「browserAPI.downloadImage 不可用」—— 那条回退等于从没生效过。
-// 修法：把 bare 独有的能力（正文图片整套、定时下拉三段选择、封面失败探测、封面下载重试）移植进
-// toutiao-publish.js，然后让头条走与其余平台完全一致的注入路径。bare 代码整块保留不删。
-// 生产出问题改 false 重打包即可整体降级（回退旧行为：头条继续走 bare 脚本）
-const FIX_TOUTIAO_UNIFY_INJECTION = true;
-const FORCE_BARE_TOUTIAO = !FIX_TOUTIAO_UNIFY_INJECTION;
+const FORCE_BARE_TOUTIAO = true;
 const STARTUP_LOAD_READY_CHECK_DELAY = 900;
 const STARTUP_LOAD_MAX_RECOVERIES = 2;
 const STARTUP_LOAD_MAX_WAIT_MS = 20000;
@@ -7939,9 +7914,7 @@ function extractToutiaoPublishPayload(publishData = {}) {
     sendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || '',
     publishId: publishData?.video?.dyPlatform?.id || publishData?.element?.id || '',
     rawSendSet: publishData?.video?.formData?.send_set ?? publishData?.element?.formData?.send_set,
-    rawSendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || '',
-    // 【FIX_TOUTIAO_CONTENT_IMAGES】开关值随 payload 下发给 bare 脚本，关掉即回退纯文本正文
-    enableContentImages: FIX_TOUTIAO_CONTENT_IMAGES
+    rawSendTime: publishData?.video?.formData?.send_time || publishData?.video?.dyPlatform?.send_time || publishData?.element?.formData?.send_time || ''
   };
 }
 
@@ -8677,378 +8650,6 @@ function buildToutiaoBarePublishScript(payload) {
         return diag;
       };
 
-      // 🖼️ 【FIX_TOUTIAO_CONTENT_IMAGES】正文图片
-      // normalizeContent 走 innerText 会把 <img> 整个丢掉，纯文本 p 节点也承载不了图片，
-      // 所以正文改走「整段 HTML 粘贴 → 头条编辑器自行转存」，不达标回退逐图原生上传。
-      // ⚠️ 判成功绝不能只数 img 数量：头条若没转存，外链 <img> 照样留在 DOM 里，
-      //    数量达标但发布后图片挂掉（假 ✅）。必须校验 src 已落在头条自家图床域名。
-      const TOUTIAO_IMAGE_HOST_RE = /(toutiaoimg|byteimg|pstatp|bytedance|ttcdn|toutiaostatic|toutiaocdn)/i;
-      const isHostedImage = (src) => {
-        const value = String(src || '').trim();
-        if (!value) return false;
-        if (/^(blob:|data:)/i.test(value)) return false;
-        return TOUTIAO_IMAGE_HOST_RE.test(value);
-      };
-      const getEditorImages = (editorEl) => {
-        if (!editorEl) return [];
-        return Array.from(editorEl.querySelectorAll('img')).filter((img) => {
-          // 编辑器容器内理论上不含封面，这里再兜一层，防止封面缩略图被计入正文图片数
-          return !img.closest('.article-cover, .article-cover-images');
-        });
-      };
-      const countHostedImages = (editorEl) => getEditorImages(editorEl)
-        .filter((img) => isHostedImage(img.getAttribute('src') || img.src || '')).length;
-      const extractImageSourcesFromHtml = (html) => {
-        const list = [];
-        if (!html || typeof html !== 'string' || !/[<>]/.test(html)) return list;
-        try {
-          const temp = document.createElement('div');
-          temp.innerHTML = html;
-          temp.querySelectorAll('img').forEach((img) => {
-            const src = (img.getAttribute('src') || '').trim();
-            if (src && !/^data:/i.test(src)) list.push(src);
-          });
-        } catch (_) {}
-        return list;
-      };
-      // 清空编辑器：优先走编辑器命令层（selectAll+delete）。直接 innerHTML='' 会让 ProseMirror 的
-      // 内部 model 与 DOM 脱节，之后 paste 链路必炸 RangeError（腾讯号踩过，见 tengxvnhao-publish.js:2292）
-      const clearEditorContent = async (editorEl) => {
-        try {
-          editorEl.focus();
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(editorEl);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          document.execCommand('delete', false, null);
-          await delay(300);
-        } catch (_) {}
-        const remainText = (editorEl.innerText || editorEl.textContent || '').trim();
-        if (!remainText && getEditorImages(editorEl).length === 0) return true;
-        editorEl.innerHTML = '';
-        editorEl.dispatchEvent(new InputEvent('input', {
-          bubbles: true, cancelable: true, inputType: 'deleteContentBackward'
-        }));
-        await delay(400);
-        return false;
-      };
-      const pasteHtmlIntoEditor = (editorEl, html, plainText) => {
-        try {
-          const clipboardData = new DataTransfer();
-          clipboardData.setData('text/html', html);
-          clipboardData.setData('text/plain', plainText || '');
-          editorEl.focus();
-          editorEl.dispatchEvent(new ClipboardEvent('paste', {
-            clipboardData, bubbles: true, cancelable: true
-          }));
-          return true;
-        } catch (_) {
-          return false;
-        }
-      };
-      // 图片下载走主进程（content-preload.js 暴露的 browserAPI.downloadImage），
-      // 页面内直接 fetch 第三方 CDN 会被 CORS/防盗链挡住
-      const downloadImageAsFile = async (url, index) => {
-        const downloader = window.browserAPI && window.browserAPI.downloadImage;
-        if (typeof downloader !== 'function') throw new Error('browserAPI.downloadImage 不可用');
-        let lastError = '';
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            const res = await downloader(url);
-            if (res && res.success && res.data) {
-              const binary = atob(res.data);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              const type = res.contentType || 'image/jpeg';
-              let ext = '.jpg';
-              if (type.includes('png')) ext = '.png';
-              else if (type.includes('webp')) ext = '.webp';
-              else if (type.includes('gif')) ext = '.gif';
-              else if (type.includes('bmp')) ext = '.bmp';
-              return new File([bytes], 'toutiao-content-' + index + ext, { type });
-            }
-            lastError = (res && res.error) || 'download-failed';
-          } catch (e) {
-            lastError = e.message;
-          }
-          if (attempt < 3) await delay(1500);
-        }
-        throw new Error(lastError || 'download-failed');
-      };
-      // 头条正文图片抽屉（点击工具栏图片按钮后弹出，与封面上传共用 byte-drawer 组件）：
-      //   .byte-drawer-inner > tabs[上传图片|免费正版图片|热点图库|我的素材]
-      //   「上传图片」默认就是激活态，file input 已经在 DOM 里：
-      //     button.upload-btn > .btn-upload-handle.upload-handler > input[type=file][accept=image/*][multiple]
-      //     另有 #upload-drag-input（拖拽口，0x0）
-      // ⚠️ 绝对不能点「本地上传」/「扫码上传」按钮：这类按钮内部通常是 inputRef.click()，
-      //    会弹出系统原生文件对话框，Electron 窗口当场悬死（本项目有卡窗前科）。
-      //    input 本来就在 DOM 里，直接塞 files 即可。
-      const findOpenImageDrawer = () => {
-        const drawers = Array.from(document.querySelectorAll('.byte-drawer-inner, .byte-drawer'));
-        return drawers.filter((el) => {
-          if (!visible(el)) return false;
-          if (el.closest('.article-cover, .article-cover-images')) return false;
-          return !!el.querySelector('input[type="file"]');
-        }).pop() || null;
-      };
-      // ⚠️ 正文图片 input 必须排除封面的，否则正文图会被塞进封面上传口。
-      // 抽屉里的 input 优先（那才是我们刚点开的那个）；input 自身是 0x0，不能用 visible 判
-      const findBodyImageInput = () => {
-        const acceptOk = (input) => {
-          if (!input || input.disabled) return false;
-          const accept = (input.getAttribute('accept') || '').toLowerCase();
-          if (!accept) return true;
-          return accept.includes('image') || accept.includes('png') || accept.includes('jpg');
-        };
-        const drawer = findOpenImageDrawer();
-        if (drawer) {
-          const inDrawer = Array.from(drawer.querySelectorAll('input[type="file"]')).filter(acceptOk);
-          // 优先真正的上传按钮口，拖拽口（#upload-drag-input）作次选
-          const primary = inDrawer.find((el) => el.closest('.btn-upload-handle, .upload-handler'));
-          if (primary) return primary;
-          if (inDrawer[0]) return inDrawer[0];
-        }
-        const list = Array.from(document.querySelectorAll('input[type="file"]')).filter((input) => {
-          if (!acceptOk(input)) return false;
-          return !input.closest('.article-cover, .article-cover-images, [class*="cover"]');
-        });
-        return list[0] || null;
-      };
-      const IMAGE_TOOL_SELECTORS = [
-        '.syl-toolbar-tool.image.static button',
-        '.syl-toolbar-tool.image button',
-        '.syl-toolbar-tool.image.static',
-        '.syl-toolbar-tool.image'
-      ];
-      // 头条正文图片按钮是纯 SVG 图标按钮，没有任何文字/title/aria-label：
-      //   <div class="syl-toolbar-tool image static"><div><button class="syl-toolbar-button">
-      // 按文案匹配（/图片|插图/）永远匹配不到 —— 旧实现是死代码，上传口一次都没打开过。
-      const findImageToolbarTrigger = () => {
-        for (const selector of IMAGE_TOOL_SELECTORS) {
-          const hit = Array.from(document.querySelectorAll(selector))
-            .find((el) => el && !el.closest('.article-cover, .article-cover-images'));
-          if (hit) return { el: hit, selector };
-        }
-        const byText = Array.from(document.querySelectorAll('button, [role="button"], [class*="menu-item"]'))
-          .find((el) => {
-            if (!visible(el)) return false;
-            if (el.closest('.article-cover, .article-cover-images')) return false;
-            const label = [el.textContent, el.getAttribute('title'), el.getAttribute('aria-label')]
-              .filter(Boolean).join(' ').trim();
-            if (!label || label.length > 12) return false;
-            return /图片|插图|image/i.test(label);
-          });
-        return byText ? { el: byText, selector: 'text-fallback' } : null;
-      };
-      // 只切「上传图片」标签页（且仅在它不是激活态时）。绝不碰「本地上传」「扫码上传」按钮
-      const ensureUploadTabActive = async (drawer) => {
-        const scope = drawer || document;
-        const titles = Array.from(scope.querySelectorAll('.byte-tabs-header-title'));
-        const target = titles.find((el) => (el.textContent || '').trim() === '上传图片');
-        if (!target) return false;
-        if ((target.className || '').includes('active')) return true;
-        try { target.click(); } catch (_) {}
-        await delay(600);
-        return true;
-      };
-      const ensureBodyImageInput = async (editorEl, diag) => {
-        const note = (key, value) => { if (diag) diag[key] = value; };
-        let input = findBodyImageInput();
-        if (input) {
-          note('inputRoute', 'already-present');
-          return input;
-        }
-        // 工具栏通常要编辑器获得焦点后才可用
-        try { if (editorEl) editorEl.focus(); } catch (_) {}
-        await delay(200);
-
-        const trigger = findImageToolbarTrigger();
-        note('imageToolSelector', trigger ? trigger.selector : 'not-found');
-        if (!trigger) {
-          note('inputRoute', 'trigger-not-found');
-          return null;
-        }
-        try { trigger.el.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
-        await delay(150);
-        try { trigger.el.click(); } catch (_) {}
-        await delay(900);
-
-        for (let i = 0; i < 10; i++) {
-          const drawer = findOpenImageDrawer();
-          if (drawer && i === 1) await ensureUploadTabActive(drawer);
-          input = findBodyImageInput();
-          if (input) {
-            note('inputRoute', drawer ? 'drawer-input' : 'toolbar-click');
-            note('drawerOpened', !!drawer);
-            return input;
-          }
-          await delay(500);
-        }
-        note('drawerOpened', !!findOpenImageDrawer());
-        note('inputRoute', 'input-not-found-after-click');
-        return null;
-      };
-      // 抽屉里传完图后要点确认才会插进正文（未上传前 byte-drawer-content-nofooter，footer 是后出现的）
-      const confirmImageDrawer = async (drawer) => {
-        if (!drawer) return false;
-        const start = Date.now();
-        while (Date.now() - start < 25000) {
-          const thumbs = drawer.querySelectorAll('.upload-image-wrapper img, .upload-image-wrapper [class*="item"]');
-          const btn = Array.from(drawer.querySelectorAll('button')).find((el) => {
-            if (!visible(el) || el.disabled) return false;
-            const text = textOf(el);
-            if (!text || text.length > 6) return false;
-            if (/取消|关闭|返回|删除|重新/.test(text)) return false;
-            return /确定|确认|插入|完成|下一步/.test(text);
-          });
-          if (btn && thumbs.length > 0) {
-            clickButton(btn);
-            await delay(900);
-            return true;
-          }
-          await delay(600);
-        }
-        return false;
-      };
-      const uploadImageIntoEditor = async (editorEl, url, index, diag) => {
-        const before = countHostedImages(editorEl);
-        const file = await downloadImageAsFile(url, index);
-        const input = await ensureBodyImageInput(editorEl, diag);
-        if (!input) throw new Error('body-image-input-not-found');
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        input.files = dt.files;
-        if (input._valueTracker) input._valueTracker.setValue('');
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        await delay(1200);
-
-        // 抽屉模式：等缩略图出现 → 点确认插入；无抽屉说明是直插模式，跳过
-        const drawer = findOpenImageDrawer();
-        if (drawer) {
-          const confirmed = await confirmImageDrawer(drawer);
-          if (diag) diag.drawerConfirmed = (diag.drawerConfirmed || 0) + (confirmed ? 1 : 0);
-        }
-
-        const start = Date.now();
-        while (Date.now() - start < 30000) {
-          if (countHostedImages(editorEl) > before) {
-            await delay(500);
-            return true;
-          }
-          await delay(600);
-        }
-        throw new Error('body-image-upload-timeout');
-      };
-      // 把正文按 <img> 切成「HTML 段 / 图片段」，回退模式下逐段插入
-      const buildContentSegments = (html) => {
-        const segments = [];
-        const temp = document.createElement('div');
-        temp.innerHTML = html;
-        let buffer = document.createElement('div');
-        const flush = () => {
-          const inner = buffer.innerHTML.trim();
-          if (inner) {
-            segments.push({
-              type: 'html',
-              html: inner,
-              text: (buffer.innerText || buffer.textContent || '').trim()
-            });
-          }
-          buffer = document.createElement('div');
-        };
-        const walk = (node) => {
-          Array.from(node.childNodes).forEach((child) => {
-            if (child.nodeType === 1 && child.tagName === 'IMG') {
-              flush();
-              const src = (child.getAttribute('src') || '').trim();
-              if (src && !/^data:/i.test(src)) segments.push({ type: 'image', src });
-              return;
-            }
-            if (child.nodeType === 1 && child.querySelector && child.querySelector('img')) {
-              walk(child);
-              return;
-            }
-            buffer.appendChild(child.cloneNode(true));
-          });
-        };
-        walk(temp);
-        flush();
-        return segments;
-      };
-      const fillContentWithImages = async (editorEl, rawHtml, plainText) => {
-        const diag = {
-          mode: 'skip', expectedImages: 0, hostedAfterPaste: 0,
-          uploadedImages: 0, hostedFinal: 0, textLength: 0, errors: []
-        };
-        const html = (typeof rawHtml === 'string' && /[<>]/.test(rawHtml)) ? rawHtml.trim() : '';
-        const imageSources = extractImageSourcesFromHtml(html);
-        diag.expectedImages = imageSources.length;
-        if (!html || imageSources.length === 0) return { ok: false, diag };
-
-        const expectedLength = String(plainText || '').trim().length;
-        const measureText = () => {
-          const len = (editorEl.innerText || editorEl.textContent || '').trim().length;
-          diag.textLength = len;
-          return len;
-        };
-        const textPassed = () => expectedLength === 0 || measureText() >= expectedLength * 0.8;
-
-        // 路线 1：整段粘贴，让头条编辑器自己转存外链图（顺带保住加粗/列表/段落格式）
-        diag.mode = 'paste';
-        await clearEditorContent(editorEl);
-        pasteHtmlIntoEditor(editorEl, html, plainText);
-        // 转存是异步的，图越多越慢：基础 4 轮之外，每张图再多给 2 轮，避免"其实在传"被判死后
-        // 白白清空重来（轮次上限 12，约 45 秒）
-        const rounds = Math.min(4 + imageSources.length * 2, 12);
-        for (let round = 0; round < rounds; round++) {
-          await delay(round < 3 ? [1500, 2000, 2500][round] : 3000);
-          diag.hostedAfterPaste = countHostedImages(editorEl);
-          diag.rounds = round + 1;
-          measureText();
-          if (diag.hostedAfterPaste >= imageSources.length && textPassed()) {
-            diag.hostedFinal = diag.hostedAfterPaste;
-            return { ok: true, diag };
-          }
-          // 提前跳车：正文已经落地（文本达标）但一张都没转存，且编辑器里已经有未转存的外链 img，
-          // 说明头条这条粘贴链路根本不接管外链图 —— 再等也是等，直接转原生上传省 20+ 秒
-          if (round >= 2 && diag.hostedAfterPaste === 0) {
-            const externalCount = getEditorImages(editorEl)
-              .filter((img) => !isHostedImage(img.getAttribute('src') || img.src || '')).length;
-            diag.externalAfterPaste = externalCount;
-            if (textPassed() || externalCount > 0) {
-              diag.pasteVerdict = 'no-transcode';
-              break;
-            }
-          }
-        }
-
-        // 路线 2：回退逐图原生上传（清空重来，避免残留未转存的外链 img）
-        diag.mode = 'native-upload';
-        await clearEditorContent(editorEl);
-        const segments = buildContentSegments(html);
-        let imageIndex = 0;
-        for (const segment of segments) {
-          if (segment.type === 'html') {
-            pasteHtmlIntoEditor(editorEl, segment.html, segment.text);
-            await delay(900);
-            continue;
-          }
-          imageIndex++;
-          try {
-            await uploadImageIntoEditor(editorEl, segment.src, imageIndex, diag);
-            diag.uploadedImages++;
-          } catch (e) {
-            diag.errors.push({ src: String(segment.src || '').slice(0, 160), message: e.message });
-          }
-        }
-        diag.hostedFinal = countHostedImages(editorEl);
-        const finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
-        diag.textLength = finalTextLength;
-        // 部分成功也保留：有图 + 有字就好过整篇降级成纯文本
-        return { ok: diag.hostedFinal > 0 && finalTextLength > 0, diag };
-      };
-
       const title = normalizeTitle(payload.rawTitle);
       const content = normalizeContent(payload.rawContent, payload.intro, title);
       const logs = [];
@@ -9092,45 +8693,19 @@ function buildToutiaoBarePublishScript(payload) {
       push('title-filled', { value: titleInput.value || '' });
 
       editor.focus();
-      // 【FIX_TOUTIAO_CONTENT_IMAGES】先试带图的 HTML 路径；正文无图或整条链路失败时，
-      // 原样回到下面旧的纯文本写入（fillContentWithImages 在「无图」时不碰编辑器，行为与旧版一致）
-      let contentImageDiag = null;
-      let contentFilledWithHtml = false;
-      if (payload.enableContentImages) {
-        try {
-          const htmlFillResult = await fillContentWithImages(editor, payload.rawContent, content);
-          contentImageDiag = htmlFillResult.diag;
-          contentFilledWithHtml = htmlFillResult.ok;
-        } catch (e) {
-          contentImageDiag = { mode: 'error', message: e.message };
-        }
+      editor.innerHTML = '';
+      for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
+        const p = document.createElement('p');
+        p.textContent = line;
+        editor.appendChild(p);
       }
-      if (!contentFilledWithHtml) {
-        editor.focus();
-        // ⚠️ 若上面的 HTML 路径已经往编辑器写过东西，必须先走编辑器命令层清空：
-        // 此时 ProseMirror 的 model 里有内容，直接 innerHTML='' 会让 model 与 DOM 脱节，
-        // 后续 nodeAt/patchNodeAttr 抛 RangeError（腾讯号 tengxvnhao-publish.js:2292 踩过）
-        if (contentImageDiag && contentImageDiag.mode && contentImageDiag.mode !== 'skip') {
-          await clearEditorContent(editor);
-        }
-        editor.innerHTML = '';
-        for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
-          const p = document.createElement('p');
-          p.textContent = line;
-          editor.appendChild(p);
-        }
-        editor.dispatchEvent(new InputEvent('input', {
-          bubbles: true, cancelable: true, inputType: 'insertText', data: content
-        }));
-      }
+      editor.dispatchEvent(new InputEvent('input', {
+        bubbles: true, cancelable: true, inputType: 'insertText', data: content
+      }));
       editor.dispatchEvent(new Event('change', { bubbles: true }));
       editor.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
       await delay(900);
-      push('content-filled', {
-        length: (editor.innerText || '').trim().length,
-        mode: contentFilledWithHtml ? 'html-with-images' : 'plain-text',
-        images: contentImageDiag
-      });
+      push('content-filled', { length: (editor.innerText || '').trim().length });
 
       // 🔗 补回链接（失败不阻断发布，诊断信息随 logs 落入 bare-result 转储）
       try {
@@ -12208,7 +11783,7 @@ app.whenReady().then(async () => {
   console.log('应用启动 - Cookie 持久化已启用');
   // 构建标记：核对"正在运行的到底是哪个构建"用（便携版解压目录按版本号复用，旧实例未退时新包可能跑到旧代码）
   console.log(`[Build] 版本: v${APP_VERSION}`);
-  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1+portable-data-dir-guard-fix1+xinlang-login-alive-probe-fix1+managed-window-cookies-as-session-fix1+xinlang-auth-snapshot-selfcheck-fix1+xinlang-publish-host-probe-fix1+xinlang-newlogin-landing-guard-fix1+weibo-newlogin-url-pattern-fix1+app-log-open-guard-fix1+session-restore-backflow-guard-fix1+upgrade-cleanup-keep-logs-fix1+toutiao-content-images-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试+便携版数据目录断链自愈与回退+新浪授权后掉登录（真实导航预热主站/服务端探活判死/补weibo.cn域）+内容管理窗消费options.cookies当会话快照+新浪探活补201过期码与card.weibo.com发布域判活+被弹到weibo.com/newlogin当场判死，登录信息保留+补 /newlogin 进通用登录页判据（修掉登录页弹跳诊断与死缓存清理对新浪整体失效）+app.log 打不开不再弹「运行错误」且升级清理不再删日志+发布任务冻结的旧 cookies 快照不再倒灌擦掉窗口内新登录（身份cookie剔除会话凭证+登录新鲜度戳）+升级清理不再整个删诊断日志目录，改为保留14天/50MB内+头条正文图片不再丢失：整段HTML粘贴让头条自转存，不转存则按 .syl-toolbar-tool.image.static 打开上传口逐图原生上传，全失败才降级纯文本）');
+  console.log('[Build] 修复标记: txh-login-fix5+shh-login-probe-fix1+shh-auth-identity-fix1+disk-space-guard-fix1+upgrade-cleanup-fix1+custom-data-path-fix1+user-menu-tools-fix1+startup-guard-stale-retry-fix1+second-instance-init-guard-fix1+managed-window-dedup-fix1+managed-window-loading-hint-fix1+toutiao-cover-retry-fix1+portable-data-dir-guard-fix1+xinlang-login-alive-probe-fix1+managed-window-cookies-as-session-fix1+xinlang-auth-snapshot-selfcheck-fix1+xinlang-publish-host-probe-fix1+xinlang-newlogin-landing-guard-fix1+weibo-newlogin-url-pattern-fix1+app-log-open-guard-fix1+session-restore-backflow-guard-fix1+upgrade-cleanup-keep-logs-fix1（磁盘满防护+升级自动清理+自定义数据目录+用户菜单加设臽数据/清缓存入口+首屏守卫僵尸恢复定时器修复+第二实例半启动守卫+内容管理连点去重聚焦+内容管理loading提示窗+头条封面下载5次重试+便携版数据目录断链自愈与回退+新浪授权后掉登录（真实导航预热主站/服务端探活判死/补weibo.cn域）+内容管理窗消费options.cookies当会话快照+新浪探活补201过期码与card.weibo.com发布域判活+被弹到weibo.com/newlogin当场判死，登录信息保留+补 /newlogin 进通用登录页判据（修掉登录页弹跳诊断与死缓存清理对新浪整体失效）+app.log 打不开不再弹「运行错误」且升级清理不再删日志+发布任务冻结的旧 cookies 快照不再倒灌擦掉窗口内新登录（身份cookie剔除会话凭证+登录新鲜度戳）+升级清理不再整个删诊断日志目录，改为保留14天/50MB内）');
   console.log(`app.isPackaged: ${app.isPackaged}`);
   console.log(`isProduction: ${isProduction}`);
   console.log(`isPortable: ${isPortable}`);

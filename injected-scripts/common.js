@@ -291,19 +291,6 @@ if (typeof window.uploadVideo === "function"
         tests: 'test-upgrade-cleanup-logs.js（14 项全过）'
       },
 
-      FIX_TOUTIAO_UNIFY_INJECTION: {
-        enabled: true,
-        version: '1.2.19',
-        risk: 'high',
-        files: [
-          'main.js:FORCE_BARE_TOUTIAO',
-          'injected-scripts/toutiao-publish.js:fillContentWithImages',
-          'injected-scripts/toutiao-publish.js:trySetSchedule',
-          'injected-scripts/toutiao-publish.js:ensureFileFromUrl'
-        ],
-        description: '头条发布从 main.js 的 bare 模板字符串（buildToutiaoBarePublishScript，1100 行）搬回注入脚本，与其余 10 个平台统一。bare 路线是 2026-03-16 提交 8d75c0c「chore: 更新代码结构」一刀切跳过 toutiao 注入留下的，无任何技术理由记录，代价是：①toutiao-publish.js 2392 行成死代码却仍被 scripts-config.json 映射（链接修复 v1-v3 全改在不执行的文件里）②bare 拿不到 common.js（waitForElement/retryOperation/nativeClick/礼让门闸/downloadFile 重试全部重造）③bare 窗口不挂 preload（main.js:16373）导致 FIX_TOUTIAO_CONTENT_IMAGES 的逐图上传回退路径必抛 browserAPI.downloadImage 不可用。移植内容：正文图片整套 16 个函数（main.js:8666-9036）、定时下拉选择（8301-8380/8451-8511，替换老文件只硬写 input 且失败静默 return 的版本）、封面失败探测 findCoverUploadError、定时二次确认、封面下载 5 次/3 秒重试（老文件 ensureFileFromUrl 单次无重试）。保留老文件更强的接口级判定（code=0）/publishId 去重锁/列表格式/链接双路。bare 代码暂不删除，改 enabled:false 即整体回退',
-        tests: 'test-toutiao-unify-injection.js'
-      },
 
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
