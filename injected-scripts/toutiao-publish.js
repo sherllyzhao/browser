@@ -1394,6 +1394,17 @@
     } catch (_) {}
     const remainText = (editorEl.innerText || editorEl.textContent || '').trim();
     if (!remainText && getEditorImages(editorEl).length === 0) return true;
+    // execCommand 清不掉（典型：正文里有图片这种 atom 节点）→ 走 PM 模型层删除。
+    // 直接 innerHTML='' 会让 PM model 与 DOM 脱节，后续 paste 必炸 RangeError，只能当最后一招
+    try {
+      const view = getEditorPmView(editorEl);
+      if (view && view.state && view.state.doc.content.size > 0) {
+        view.dispatch(view.state.tr.delete(0, view.state.doc.content.size));
+        await delay(300);
+        const afterPm = (editorEl.innerText || editorEl.textContent || '').trim();
+        if (!afterPm && getEditorImages(editorEl).length === 0) return true;
+      }
+    } catch (_) {}
     editorEl.innerHTML = '';
     editorEl.dispatchEvent(new InputEvent('input', {
       bubbles: true, cancelable: true, inputType: 'deleteContentBackward'
@@ -1401,8 +1412,70 @@
     await delay(400);
     return false;
   };
+  // 🔎 图片链路专用的 ProseMirror EditorView 取用（fillContent 里那份 getPmView 在闭包内取不到）
+  const getEditorPmView = (editorEl) => {
+    try {
+      const pmNode = (editorEl && editorEl.closest && editorEl.closest('.ProseMirror')) || editorEl;
+      if (pmNode && pmNode.pmViewDesc && pmNode.pmViewDesc.view) return pmNode.pmViewDesc.view;
+    } catch (_) {}
+    try {
+      let node = editorEl;
+      while (node && node !== document.body) {
+        if (node.pmViewDesc && node.pmViewDesc.view) return node.pmViewDesc.view;
+        node = node.parentElement;
+      }
+    } catch (_) {}
+    try {
+      for (const pm of document.querySelectorAll('.ProseMirror')) {
+        if (pm.pmViewDesc && pm.pmViewDesc.view) return pm.pmViewDesc.view;
+      }
+    } catch (_) {}
+    return null;
+  };
+  // 🚨 把选区塌陷到文档末尾 —— 追加内容（正文段 / 插图）前必须做
+  // 2026-09-01 实测现场（debug-dumps/toutiao-publish-*.json 草稿接口连拍）：
+  //   35:24 content=<ol><li>77 字代码</li></ol>  → 正文写入成功
+  //   35:28 content=<ol><li><br></li></ol> + <div class="pgc-img"><img 头条图床>  word_cnt=0
+  // 头条插图走 PM 的 replaceSelection，选区此时还覆盖着正文（clearEditorContent 的
+  // selectNodeContents 残留 / 抽屉抢焦点后 PM 回落到全选），于是"插图"变成"用图替换正文"，
+  // 只留下被掏空的那个 <li>。多段追加同理：不塌陷，后一段会吃掉前一段。
+  const collapseSelectionToDocEnd = (editorEl, opts = {}) => {
+    const result = { pm: false, dom: false, kind: '' };
+    try {
+      const view = getEditorPmView(editorEl);
+      if (view && view.state && view.state.selection) {
+        const state = view.state;
+        const Ctor = state.selection.constructor;
+        result.kind = (Ctor && Ctor.name) || '';
+        // Selection.atEnd / Selection.near 是 prosemirror-state 的静态方法，子类继承可用
+        let sel = null;
+        if (typeof Ctor.atEnd === 'function') sel = Ctor.atEnd(state.doc);
+        else if (typeof Ctor.near === 'function') sel = Ctor.near(state.doc.resolve(state.doc.content.size));
+        if (sel) {
+          view.dispatch(state.tr.setSelection(sel));
+          result.pm = true;
+        }
+      }
+    } catch (_) {}
+    // 抽屉开着时不要抢 DOM 焦点（可能把抽屉关掉），只动 PM 选区
+    if (opts.domFocus !== false) {
+      try {
+        editorEl.focus();
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editorEl);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        result.dom = true;
+      } catch (_) {}
+    }
+    return result;
+  };
   const pasteHtmlIntoEditor = (editorEl, html, plainText) => {
     try {
+      // 追加语义：粘贴前塌陷到末尾（清空后是空文档，塌陷无副作用）
+      collapseSelectionToDocEnd(editorEl);
       const clipboardData = new DataTransfer();
       clipboardData.setData('text/html', html);
       clipboardData.setData('text/plain', plainText || '');
@@ -1587,9 +1660,13 @@
 
   const uploadImageIntoEditor = async (editorEl, url, index, diag) => {
     const before = countHostedImages(editorEl);
+    const textBefore = (editorEl.innerText || editorEl.textContent || '').trim().length;
     const file = await downloadImageAsFile(url, index);
     const input = await ensureBodyImageInput(editorEl, diag);
     if (!input) throw new Error('body-image-input-not-found');
+    // 🚨 插图前必须塌陷选区，否则这张图会把已写入的正文整段替换掉
+    const selBefore = collapseSelectionToDocEnd(editorEl);
+    if (diag) diag.selectionBeforeUpload = `${selBefore.kind || 'no-pm'}${selBefore.pm ? '→collapsed' : '→pm-unavailable'}`;
     const dt = new DataTransfer();
     dt.items.add(file);
     input.files = dt.files;
@@ -1600,6 +1677,8 @@
     // 抽屉模式：等缩略图出现 → 点确认插入；无抽屉说明是直插模式，跳过
     const drawer = findOpenImageDrawer();
     if (drawer) {
+      // 抽屉交互可能又把选区带回全选，点确认前再塌陷一次（不抢 DOM 焦点，免得关掉抽屉）
+      collapseSelectionToDocEnd(editorEl, { domFocus: false });
       const confirmed = await confirmImageDrawer(drawer);
       if (diag) diag.drawerConfirmed = (diag.drawerConfirmed || 0) + (confirmed ? 1 : 0);
     }
@@ -1608,6 +1687,12 @@
     while (Date.now() - start < 30000) {
       if (countHostedImages(editorEl) > before) {
         await delay(500);
+        const textAfter = (editorEl.innerText || editorEl.textContent || '').trim().length;
+        // 判据：图进来了但字少了 → 选区塌陷没生效，交给外层补写兜底
+        if (diag && textBefore > 0 && textAfter < textBefore * 0.8) {
+          diag.textEaten = (diag.textEaten || 0) + 1;
+          diag.textEatenDetail = `${textBefore}→${textAfter}`;
+        }
         return true;
       }
       await delay(600);
@@ -1655,6 +1740,11 @@
       mode: 'skip', expectedImages: 0, hostedAfterPaste: 0,
       uploadedImages: 0, hostedFinal: 0, textLength: 0, errors: []
     };
+    // 诊断落盘：以后再出"图对了字没了"这类问题，直接看 debug-dumps 里的 content-images 条目，
+    // 不用再靠发布窗口的 console（关窗即失）
+    const dumpImageDiag = async () => {
+      try { await dumpDebugToFile('content-images', { imgDiag: diag }); } catch (_) {}
+    };
     const html = (typeof rawHtml === 'string' && /[<>]/.test(rawHtml)) ? rawHtml.trim() : '';
     const imageSources = extractImageSourcesFromHtml(html);
     diag.expectedImages = imageSources.length;
@@ -1682,6 +1772,8 @@
       measureText();
       if (diag.hostedAfterPaste >= imageSources.length && textPassed()) {
         diag.hostedFinal = diag.hostedAfterPaste;
+        diag.ok = true;
+        await dumpImageDiag();
         return { ok: true, diag };
       }
       // 提前跳车：正文已经落地（文本达标）但一张都没转存，且编辑器里已经有未转存的外链 img，
@@ -1695,16 +1787,28 @@
           break;
         }
       }
+      // 更快的跳车：文字进来了、但外链 img 连 DOM 都没留下 —— 头条 syl 的 paste handler 直接
+      // 把外链图剥掉了（2026-09-01 实测：粘贴后 content 里一个 <img> 都没有，只剩空 <li>），
+      // 这种情况等 12 轮也不会变，1 轮后就转原生上传
+      if (round >= 1 && diag.hostedAfterPaste === 0 && textPassed()
+        && getEditorImages(editorEl).length === 0) {
+        diag.externalAfterPaste = 0;
+        diag.pasteVerdict = 'images-stripped';
+        break;
+      }
     }
 
     // 路线 2：回退逐图原生上传（清空重来，避免残留未转存的外链 img）
     diag.mode = 'native-upload';
     await clearEditorContent(editorEl);
     const segments = buildContentSegments(html);
+    diag.segments = segments.map((s) => s.type).join('|');
     let imageIndex = 0;
+    const textHtmlWritten = [];
     for (const segment of segments) {
       if (segment.type === 'html') {
         pasteHtmlIntoEditor(editorEl, segment.html, segment.text);
+        textHtmlWritten.push(segment.html);
         await delay(900);
         continue;
       }
@@ -1717,10 +1821,24 @@
       }
     }
     diag.hostedFinal = countHostedImages(editorEl);
-    const finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+    let finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+    // 兜底：插图仍然把正文吃掉了（选区塌陷没生效）→ 把文字补回末尾。
+    // 顺序会退化成「图在前、文字在后」，但远好过发出去只有图没有字
+    if (textHtmlWritten.length > 0 && expectedLength > 0 && finalTextLength < expectedLength * 0.5) {
+      diag.textRepairAttempted = true;
+      diag.textBeforeRepair = finalTextLength;
+      pasteHtmlIntoEditor(editorEl, textHtmlWritten.join(''), plainText);
+      await delay(1200);
+      finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+      diag.hostedFinal = countHostedImages(editorEl);
+      diag.textRepaired = finalTextLength >= expectedLength * 0.5;
+    }
     diag.textLength = finalTextLength;
     // 部分成功也保留：有图 + 有字就好过整篇降级成纯文本
-    return { ok: diag.hostedFinal > 0 && finalTextLength > 0, diag };
+    const routeOk = diag.hostedFinal > 0 && finalTextLength > 0;
+    diag.ok = routeOk;
+    await dumpImageDiag();
+    return { ok: routeOk, diag };
   };
 
   const fillContent = async (htmlContent, introText) => {
@@ -1933,16 +2051,23 @@
       // === 方法 1: ProseMirror EditorView 直接操作（最可靠）===
       // 直接 dispatch transaction 设置文档内容，确保 ProseMirror 内部 state 被正确更新
       // 这是唯一能保证草稿自动保存时发送正确 content 的方式
-      try {
-        const dispatched = pmDispatchContent(plain, htmlForPaste);
-        if (dispatched) {
-          contentSet = true;
-          console.log(`${LOG_PREFIX} ✅ 方法1(ProseMirror dispatch) 正文设置成功`);
-        } else {
-          console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 未能写入 state，尝试其他方法`);
+      // 🚨 必须跳过图片链路已经写好的情况：pmDispatchContent 第一步就是
+      //    tr.delete(0, doc.content.size)，之后 pasteHTML 灌的是**原始 HTML**（外链图），
+      //    而头条的 paste handler 会把外链图整个剥掉 —— 那等于把刚传上去的图全删了。
+      if (!contentSet) {
+        try {
+          const dispatched = pmDispatchContent(plain, htmlForPaste);
+          if (dispatched) {
+            contentSet = true;
+            console.log(`${LOG_PREFIX} ✅ 方法1(ProseMirror dispatch) 正文设置成功`);
+          } else {
+            console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 未能写入 state，尝试其他方法`);
+          }
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 失败:`, e.message);
         }
-      } catch (e) {
-        console.warn(`${LOG_PREFIX} ⚠️ 方法1(ProseMirror dispatch) 失败:`, e.message);
+      } else {
+        console.log(`${LOG_PREFIX} ⏭️ 正文已由图片链路写入，跳过方法1~5（避免删图重写）`);
       }
 
       // === 方法 2: execCommand('insertHTML') ===
