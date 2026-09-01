@@ -1274,34 +1274,64 @@ async function publishApi(dataObj) {
                         await window.delay(3000);
                     }
 
-                    // 选"比值最接近且还没用过"的那张。
-                    // 不能遍历到第一个符合的就用：容差 ±1.5 很宽（16:9=1.78 与 3:4=0.75 只差 1.03），
-                    // 那样第一张封面会被所有坑位重复占用
+                    // 🔑 只看朝向，不看比值差。
+                    //    原来用 |图比值 - 坑位比值| > 1.5 过滤，两头都不对：
+                    //      · 太严：3:4 坑位(0.75) 配 9:16 图(0.56) 明明该配，某些尺寸却被差值挡掉
+                    //      · 也太松：3:4 坑位(0.75) 配 16:9 图(1.78) 差值才 1.03，横图照样塞进竖坑位
+                    //    ratio 是个双曲的量（竖图挤在 0~1，横图铺开到 1~∞），拿它做线性距离本来就不成立。
+                    //    正解是先按朝向分桶，桶内再用比值近似度排序当 tie-break —— 这也保证了
+                    //    同一张图不会被所有坑位重复占用（usedCovers 仍然逐张扣除）
+                    const orientationOf = (r) => (r > 1.05 ? '横' : r < 0.95 ? '纵' : '方');
+                    const slotOrientation = orientationOf(ratio);
+                    const orientationFits = (coverOrientation) =>
+                        coverOrientation === slotOrientation           // 朝向一致
+                        || coverOrientation === '方'                    // 近正方图哪个坑位都能用
+                        || slotOrientation === '方';
+
                     let best = null;
                     for (const cover of loadedCovers) {
                         if (!cover || usedCovers.has(cover.url)) continue;
+                        if (!orientationFits(orientationOf(cover.ratio))) continue;
                         const diff = Math.abs(cover.ratio - ratio);
-                        if (diff > 1.5) continue;
                         if (!best || diff < best.diff) best = {cover, diff};
                     }
+
+                    // 朝向一张都不匹配时，不空手而归 —— 有图能用就用，总比让平台拿视频帧凑强。
+                    // 宽松兜底是刻意设计：判据宁可放过，也别把本来能成的坑位直接毙掉
                     if (!best) {
-                        // 逐张说明为什么没选上，省得再靠猜（作废 / 已被前面坑位占用 / 比值差太多）
+                        for (const cover of loadedCovers) {
+                            if (!cover || usedCovers.has(cover.url)) continue;
+                            const diff = Math.abs(cover.ratio - ratio);
+                            if (!best || diff < best.diff) best = {cover, diff, orientationMismatch: true};
+                        }
+                        if (best) {
+                            console.warn(
+                                `[封面设置] ⚠️ 坑位#${slotIndex} 没有${slotOrientation}向封面，退而用${orientationOf(best.cover.ratio)}向的凑`
+                                + `（坑位比值 ${ratio.toFixed(2)} / 图片比值 ${best.cover.ratio.toFixed(2)}），平台可能会自动裁剪`
+                            );
+                        }
+                    }
+
+                    if (!best) {
+                        // 逐张说明为什么没选上，省得再靠猜（现在只剩"作废"和"被前面坑位用掉"两种）
                         const why = loadedCovers
                             .map((c, i) =>
                                 !c ? `#${i + 1} 预加载作废`
                                     : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
-                                        : `#${i + 1} 比值差 ${Math.abs(c.ratio - ratio).toFixed(2)} > 1.5`
+                                        : `#${i + 1} ${orientationOf(c.ratio)}向(${c.ratio.toFixed(2)})`
                             )
                             .join(' | ');
                         console.log(
-                            `[封面设置] 坑位#${slotIndex} (比值 ${ratio.toFixed(2)}) 没有可用的匹配封面，跳过。逐张原因: ${why}`
+                            `[封面设置] 坑位#${slotIndex} ${slotOrientation}向(比值 ${ratio.toFixed(2)}) 没有任何可用封面，跳过。逐张原因: ${why}`
                         );
                         continue;
                     }
                     const customCover = best.cover;
                     usedCovers.add(customCover.url);
                     console.log(
-                        `[封面匹配] 坑位#${slotIndex} 比值 ${ratio.toFixed(2)} ← 封面比值 ${customCover.ratio.toFixed(2)} (差 ${best.diff.toFixed(2)}) ${customCover.url}`
+                        `[封面匹配] 坑位#${slotIndex} ${slotOrientation}向 ${ratio.toFixed(2)}`
+                        + ` ← 封面${orientationOf(customCover.ratio)}向 ${customCover.ratio.toFixed(2)}`
+                        + ` ${customCover.width}×${customCover.height} ${customCover.url}`
                     );
 
                     // 🔑 坑位的"视觉签名"：坑位里那张缩略图的 src / background-image。
