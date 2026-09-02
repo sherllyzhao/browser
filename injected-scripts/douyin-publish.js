@@ -876,9 +876,15 @@ async function publishApi(dataObj) {
 
 
         // 设置封面
+        // 🔑 customCoverList 是下面 try 块内的 const，而封面检测循环在 try/catch 之外，
+        //    看不到它。这里提一个外层标志出来，让「这次到底有没有自定义封面」这件事
+        //    能贯穿「封面设置」和「封面检测」两段 —— 否则 else 分支跳过了、检测循环
+        //    照样去点推荐封面，等于没跳。
+        let hasCustomCoverIntent = false;
         try {
             console.log('[封面设置] 开始设置封面...');
             const customCoverList = dataObj.element.cover2
+            hasCustomCoverIntent = !!(customCoverList && customCoverList.length > 0);
             /* const customCoverList = [
                 "https://images.china9.cn/attachment/2026-06-16/CR3XUbGEhafOuXFr7x1H08hyao6bKQMYZGzwo6o0.png",
                 "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
@@ -1792,7 +1798,22 @@ async function publishApi(dataObj) {
                 // 所有坑位处理完，立刻解锁，别让封面检测白等到 40 秒过期
                 window.__douyinCoverUploadingUntil = 0;
                 console.log('[封面上传] 🔓 已解锁，封面检测轮询恢复');
+            } else if (window.isFeatureEnabled?.('FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH')) {
+                // 【特性开关】FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH
+                // 没传自定义封面（element.cover2 为空）时，旧代码在这里点「第一个推荐封面」，
+                // 选择器却是硬编码的 CSS Module 哈希类名 `.recommendCover-vWWsHB` ——
+                // 抖音发一次版哈希就变，它早已恒不命中。（同一个文件的封面检测循环里
+                // 已经改成通配 `[class*="recommendCover-"]` 了，唯独这一处没跟上。）
+                // 后果是纯白烧：3 个选择器 × waitForElement 10 秒 = 30 秒/轮，
+                // retryOperation(…, 5, 1000) 再重试 5 轮 ≈ 154 秒，最后抛
+                // 「未找到任何封面元素」，被外层 catch 吞成一行「封面设置失败」。
+                // 而抖音上传完视频本来就会自动截帧填好横/竖封面（实测两个坑位都有图），
+                // 无自定义封面时脚本压根不需要插手 —— 点推荐封面反而可能把平台选好的换掉。
+                console.log('[封面设置] ⏭️ 未传自定义封面(element.cover2 为空)，整块跳过封面设置');
+                console.log('[封面设置] ℹ️ 抖音会自动截取视频帧填充横/竖封面，无需脚本干预');
             } else {
+                // 旧行为（特性开关关闭时回退）：硬编码 CSS Module 哈希类名，实测恒不命中，
+                // 会白等约 154 秒后抛错。保留仅为可回退，不建议启用。
                 await retryOperation(async () => {
                     // 尝试多种选择器策略
                     let coverInput = null;
@@ -1886,10 +1907,18 @@ async function publishApi(dataObj) {
         // 检测封面是否通过检测
         console.log('[抖音发布] ⏳ 等待封面检测通过...');
         const coverCheckStartTime = Date.now();
-        const coverCheckTimeout = 180000; // 3分钟超时（增加到3分钟，给封面检测更多时间）
+        // 【特性开关】FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH
+        // 180 秒是给「自定义封面正在上传、抖音正在重新诊断」留的余量。没有自定义封面时
+        // 压根没有上传要等，只是在轮询抖音的诊断文案，收敛到 30 秒足够（实测每轮约 10 秒）。
+        const coverFastPath = !!window.isFeatureEnabled?.('FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH')
+            && !hasCustomCoverIntent;
+        const coverCheckTimeout = coverFastPath ? 30000 : 180000; // 3分钟超时（给自定义封面上传+重新诊断留余量）
         const coverCheckInterval = 2000;
-        const maxCoverRetries = 90; // 🔑 最大重试次数（90次 * 2秒 = 180秒，与超时时间一致）
+        const maxCoverRetries = coverFastPath ? 15 : 90; // 🔑 最大重试次数（90次 * 2秒 = 180秒，与超时时间一致）
         let coverRetryCount = 0;
+        if (coverFastPath) {
+            console.log('[封面检测] ℹ️ 无自定义封面，本轮只观察平台诊断结果、不再点推荐封面（超时收敛到 30 秒）');
+        }
 
         while (Date.now() - coverCheckStartTime < coverCheckTimeout && coverRetryCount < maxCoverRetries) {
             coverRetryCount++;
@@ -1924,6 +1953,31 @@ async function publishApi(dataObj) {
                 console.log(`[封面检测] ⏸️ 自定义封面上传中，本轮只检测不操作（锁还剩 ${leftSec} 秒）`);
                 // 让路不该吃掉重试预算；while 条件里的 180 秒时间闸仍然兜底，不会死循环
                 coverRetryCount--;
+                await delay(coverCheckInterval);
+                continue;
+            }
+
+            // 【特性开关】FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH
+            // 「封面诊断失败」是抖音自己的 AI 诊断服务给出的结论，不等于「页面上没有封面」。
+            // 实测：推荐位显示「暂无更多推荐」，点它既不弹窗（__douyinWaitVisibleModal 恒返回
+            // null，日志「⚠️ 未找到确认弹窗」刷屏）也不会让这行文案变化，于是旧代码每轮约
+            // 10 秒、一路磨满 180 秒时间闸才放行 —— 这就是用户看到的「死循环」。
+            // 而循环超时之后本来也是照样点发布按钮（见下方「封面检测完成，准备点击发布按钮」），
+            // 所以提前退出不改变发布结果，只是把那 180 秒空转砍掉。
+            // ⚠️ 必须排在上面「让路」之后：另一个实例正在传封面时，这行文案还是旧的，
+            //    那时候判终态会把「状态即将变化」误当成「状态不会再变」，提前掀桌。
+            if (window.isFeatureEnabled?.('FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH')
+                && /(诊断|检测)[^，。,.]{0,6}失败/.test(currentText)) {
+                console.log(`[封面检测] 🛑 平台返回终态「${currentText.trim()}」，点推荐封面改不了它，直接放行继续发布`);
+                console.log('[封面检测] ℹ️ 该状态是抖音对封面质量的建议，不阻塞发布');
+                break;
+            }
+
+            // 【特性开关】FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH
+            // 无自定义封面时上面的 else 分支已经整块跳过了封面设置，这里再去点推荐封面
+            // 等于没跳；而抖音已经自动截帧填好了横/竖封面，点推荐位只可能把它换掉。
+            if (coverFastPath) {
+                console.log('[封面检测] ⏭️ 无自定义封面，跳过「点推荐封面」，仅继续观察平台状态');
                 await delay(coverCheckInterval);
                 continue;
             }

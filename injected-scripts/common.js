@@ -309,6 +309,39 @@ if (typeof window.uploadVideo === "function"
         tests: 'test-multiplatform-failure-report-p0.js'
       },
 
+      // 【2026-09-02】抖音「没上传封面 + 之后死循环」：本次实测的两段白烧，合计约 5.5 分钟。
+      //   前提：dataObj.element.cover2 没传（父页面本来就没有自定义封面），于是走 else 兜底分支。
+      //   ①else 分支用硬编码 CSS Module 哈希类名 `.recommendCover-vWWsHB` 找推荐封面。
+      //     抖音发一次版哈希就变，这个选择器早已恒不命中（同一文件的检测循环里已经改成了
+      //     通配 `[class*="recommendCover-"]`，唯独这一处没跟上）。3 个选择器各 waitForElement
+      //     10 秒 = 30 秒/轮，retryOperation(…, 5, 1000) 再重试 5 轮 ≈ 154 秒，
+      //     最后抛「未找到任何封面元素」被外层 catch 吞成一行「封面设置失败」。
+      //     而抖音上传完视频本来就会自动截帧填好横/竖封面，无自定义封面时脚本压根不需要插手。
+      //   ②封面检测循环只认「封面检测通过」一个出口，实测状态停在「封面诊断失败」——
+      //     那是抖音自己的 AI 诊断结论，点推荐封面改不了它；且推荐位显示「暂无更多推荐」，
+      //     点击后 `__douyinWaitVisibleModal` 恒返回 null（日志「⚠️ 未找到确认弹窗」刷屏），
+      //     于是每轮约 10 秒、磨满 180 秒时间闸才放行。用户看到的「死循环」就是这一段。
+      //     注意：循环超时后本来也是照样点发布（2021 行往下），所以「诊断失败即放行」
+      //     不会改变发布结果，只是把 180 秒的空转砍掉。
+      // 改法：无 cover2 时 else 分支整块跳过（不再点推荐封面）；检测循环把「诊断失败/检测失败」
+      //   识别为终态立即放行；无自定义封面时循环内不再点推荐封面（否则 else 跳过了等于没跳），
+      //   且超时收敛到 30 秒（没有自定义封面上传要等）。
+      // 风险：只删「无自定义封面时去点推荐封面」这一个动作 + 提前退出等待，不新增任何页面操作。
+      //   禁用后回退旧行为（硬编码哈希选择器 + 磨满 180 秒）。有 cover2 的上传主路径完全没动。
+      FIX_DOUYIN_NO_CUSTOM_COVER_FASTPATH: {
+        enabled: true,
+        version: '1.2.21',
+        risk: 'low',
+        files: [
+          'douyin-publish.js:publishApi封面else分支整块跳过',
+          'douyin-publish.js:hasCustomCoverIntent外层标志',
+          'douyin-publish.js:封面检测循环诊断失败终态放行',
+          'douyin-publish.js:封面检测循环无自定义封面不点推荐封面'
+        ],
+        description: '抖音无自定义封面(cover2 未传)时白烧 5.5 分钟：else 兜底分支的硬编码哈希类名 .recommendCover-vWWsHB 恒不命中(154 秒) + 封面检测循环只认「封面检测通过」、状态停在「封面诊断失败」时磨满 180 秒。改为：无 cover2 整块跳过封面设置(抖音会自动截帧)、「诊断失败」视为终态立即放行、循环内不再点推荐封面',
+        tests: 'test-douyin-no-custom-cover-fastpath.js'
+      },
+
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
       //   enabled: false,
