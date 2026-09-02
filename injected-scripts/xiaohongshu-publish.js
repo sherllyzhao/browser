@@ -36,6 +36,92 @@ if (location.search.includes("published=true")) {
     // 防重复标志：记录已处理的视频 ID
     let isProcessing = false;
     let processedVideoIds = new Set(); // 改为 Set 存储已处理的视频 ID
+    let xhsLatestPublishFailure = "";
+
+    function isXhsFailureText(text) {
+        const value = String(text || "").trim();
+        if (!value) return false;
+        const successKeywords = ["发布成功", "提交成功", "已发布", "已提交", "审核中", "成功"];
+        if (successKeywords.some(keyword => value.includes(keyword))) return false;
+        return /失败|错误|异常|校验失败|未绑定手机号|不能为空|不支持|违规|禁止|风控|风险|审核未通过|不符合|BizError|HTTPBizError/.test(value);
+    }
+
+    function setXhsPublishFailure(message, source = "unknown") {
+        const text = String(message || "").trim();
+        if (!isXhsFailureText(text)) return "";
+        xhsLatestPublishFailure = text;
+        window.__XHS_LATEST_PUBLISH_FAILURE__ = text;
+        console.error(`[小红书发布] ❌ 捕获发布失败信号(${source}):`, text);
+        return text;
+    }
+
+    function extractXhsPublishFailure(payload, depth = 0, seen = new WeakSet()) {
+        if (payload === null || typeof payload === "undefined" || depth > 4) return "";
+        if (typeof payload === "string") {
+            return isXhsFailureText(payload) ? payload : "";
+        }
+        if (typeof payload !== "object") return "";
+        if (seen.has(payload)) return "";
+        seen.add(payload);
+
+        const directMessage = payload.msg || payload.message || payload.statusText || payload.status_text || payload.reason || payload.error;
+        if (isXhsFailureText(directMessage)) return String(directMessage).trim();
+
+        const name = String(payload.name || payload.type || "");
+        const code = String(payload.code || payload.errCode || payload.err_code || payload.status || "");
+        if (/HTTPBizError|BizError/i.test(name) && directMessage) return String(directMessage).trim();
+        if (/^-?\d+$/.test(code) && code !== "0" && directMessage) return String(directMessage).trim();
+
+        for (const key of ["data", "result", "response", "body", "payload"]) {
+            const nested = extractXhsPublishFailure(payload[key], depth + 1, seen);
+            if (nested) return nested;
+        }
+        return "";
+    }
+
+    function installXhsPublishFailureCapture() {
+        if (window.__XHS_PUBLISH_FAILURE_CAPTURE_INSTALLED__) return;
+        window.__XHS_PUBLISH_FAILURE_CAPTURE_INSTALLED__ = true;
+
+        const isPublishNotesUrl = url => String(url || "").includes("/api/creator/publish/notes");
+        const originalFetch = window.fetch;
+        if (typeof originalFetch === "function") {
+            window.fetch = async function (...args) {
+                const requestUrl = args[0]?.url || args[0];
+                try {
+                    const response = await originalFetch.apply(this, args);
+                    if (isPublishNotesUrl(requestUrl)) {
+                        response.clone().json().then(json => {
+                            const failure = extractXhsPublishFailure(json);
+                            if (failure) setXhsPublishFailure(failure, "fetch-response");
+                        }).catch(() => {});
+                    }
+                    return response;
+                } catch (error) {
+                    if (isPublishNotesUrl(requestUrl)) {
+                        const failure = extractXhsPublishFailure(error) || error?.message;
+                        setXhsPublishFailure(failure, "fetch-error");
+                    }
+                    throw error;
+                }
+            };
+        }
+
+        window.addEventListener("unhandledrejection", event => {
+            const failure = extractXhsPublishFailure(event.reason);
+            if (failure) setXhsPublishFailure(failure, "unhandledrejection");
+        });
+        window.addEventListener("error", event => {
+            const failure = extractXhsPublishFailure(event.error) || extractXhsPublishFailure(event.message);
+            if (failure) setXhsPublishFailure(failure, "window-error");
+        });
+
+        if (typeof window.registerPublishErrorProbe === "function") {
+            window.registerPublishErrorProbe(() => xhsLatestPublishFailure || window.__XHS_LATEST_PUBLISH_FAILURE__ || "");
+        }
+    }
+
+    installXhsPublishFailureCapture();
 
     /**
      * 小红书创作者平台发布脚本
@@ -732,7 +818,7 @@ if (location.search.includes("published=true")) {
                     "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
                 ]; */
                 const coverImageWrap = await waitForElement(".cover-plugin-preview", 3000);
-                if(coverImageWrap && customCoverList.length > 0){
+                if(coverImageWrap && customCoverList && customCoverList.length > 0){
                     const coverImage = coverImageWrap.querySelector(".cover--row .default");
                     if(coverImage){
                         // CSS :hover 只能由真实鼠标命中触发，单纯 dispatchEvent 不会显示编辑入口。

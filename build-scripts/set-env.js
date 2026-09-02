@@ -20,7 +20,7 @@ if (!['dev', 'prod'].includes(env)) {
 const envConfig = {
   dev: {
     aigcPage: 'https://dev.china9.cn',
-    geoPage: 'https://jzt_dev_1.china9.cn',
+    geoPage: 'https://zhjzt.china9.cn',
     apiDomain: 'https://dev.china9.cn',
   },
   prod: {
@@ -70,7 +70,7 @@ const fallbackConfig = env === 'prod'
         cookieDomain: '.china9.cn',
         domains: {
           aigcPage: 'https://dev.china9.cn',
-          geoPage: 'https://jzt_dev_1.china9.cn',
+          geoPage: 'https://zhjzt.china9.cn',
           apiDomain: 'https://dev.china9.cn'
         }
       };`;
@@ -121,10 +121,10 @@ fs.writeFileSync(rendererPath, rendererContent, 'utf-8');
 const commonPath = path.join(__dirname, '..', 'injected-scripts', 'common.js');
 let commonContent = fs.readFileSync(commonPath, 'utf-8');
 
-// 修改 getStatisticsUrl 中的硬编码（支持匹配两种格式）
+// 修改 getStatisticsUrl 中的 GEO 生产域名硬编码
 const geoApiUrl = config.geoPage;
 commonContent = commonContent.replace(
-  /return `https:\/\/(?:jzt_dev_1|zhjzt)\.china9\.cn\/api\/geo\/\$\{endpoint\}`;/g,
+  /return `https:\/\/zhjzt\.china9\.cn\/api\/geo\/\$\{endpoint\}`;/g,
   `return \`${geoApiUrl}/api/geo/\${endpoint}\`;`
 );
 

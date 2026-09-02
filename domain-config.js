@@ -51,9 +51,9 @@ const DOMAINS = {
 
     // 统计接口特殊域名映射
     statisticsHosts: {
-      'jzt_dev_1.china9.cn': 'https://jzt_dev_1.china9.cn',
-      '172.16.6.17:8080':    'https://jzt_dev_1.china9.cn',
-      'localhost:8080':      'https://jzt_dev_1.china9.cn',
+      'zhjzt.china9.cn':     'https://zhjzt.china9.cn',
+      '172.16.6.17:8080':    'https://zhjzt.china9.cn',
+      'localhost:8080':      'https://zhjzt.china9.cn',
     },
   },
   prod: {
@@ -141,7 +141,7 @@ const DEV_HOSTS = [
   'dev.china9.cn',
   'www.dev.china9.cn',
   '172.16.6.17:8080',
-  'jzt_dev_1.china9.cn',
+  'zhjzt.china9.cn',
 ];
 
 // ===========================

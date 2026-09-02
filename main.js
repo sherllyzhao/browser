@@ -57,6 +57,39 @@ const FIX_MANAGED_WINDOW_LOADING_HINT = true;
 // 5 次全失败才上报失败
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：单次下载失败即上报）
 const FIX_TOUTIAO_COVER_RETRY = true;
+// 【特性开关】2026-09-01 头条正文 <ol>/<li> 列表格式丢失（加粗/链接同根因）：
+// bare 脚本 normalizeContent → parsePlainTextFromHtml → temp.innerText 把正文 HTML 拍成纯文本，
+// 列表结构在这一步就没了；写入端又是 p.textContent = line（纯文本节点），物理上也承载不了结构。
+// 所以列表、加粗、链接、图片是「同一处代码、同一根因」一起丢的，不是四个独立问题
+//（2026-07 的链接修复 v4 只是事后用 PM addMark 单点补了链接，没治本）。
+// 修法：正文含结构标签时改走 ClipboardEvent 粘贴原始 HTML，让头条编辑器自己解析。
+// 依据是实测硬证据：注入版粘贴时草稿接口收到的正文是 <ol start="1"><li data-track="1">…，
+// 头条不仅支持有序列表，还会把裸 <li> 自动包回 <ol> —— 平台侧完全没问题，是我们拍平的。
+// 零回归设计：①只有原始 HTML 确实含结构标签才走粘贴，纯文本内容保持原有写入路径不变；
+//   ②粘贴后校验文本量，不足预期一半即自动回退旧路径；
+//   ③清空必须用 execCommand('delete')，绝不能 innerHTML=''（PM model 与 DOM 脱节后 paste 必炸 RangeError）。
+// 注：applyContentLinks 自带幂等（只补 DOM 里缺失的 href），粘贴带来链接后它会自动空转，无需额外守卫。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：正文纯文本，列表/加粗丢失）
+const FIX_TOUTIAO_RICH_CONTENT = true;
+// 【特性开关】2026-09-02 头条正文图片丢失：
+// FIX_TOUTIAO_RICH_CONTENT 上线后列表/加粗/链接都能粘进去了，唯独图片还是没有。
+// 根因不是我们没粘过去，而是【头条的 paste 处理器把外链 <img> 整个剥掉】——它只认自家
+// CDN（toutiaoimg/byteimg/pstatp）上的图，外站图一律不转存、直接丢弃。
+// 2026-09-02 09:00 实测铁证（debug-dumps/toutiao-bare-result-2026-09-02T01-00-48Z.json）：
+//   正文 <ol><li>代码</li><li><img 外链></li></ol>
+//   content-paste → used:true, lists:1, listItems:2, writtenLength:177/187
+//   → 列表和两个 li 全都进去了，装图的那个 li 也在，唯独里面的 <img> 没了。
+// 所以把 img 加进 RICH_TAG_RE 是无效修法（这次它本来就跟着 <ol> 一起粘过去了，照样丢）。
+// 唯一出路：走头条自己的上传口，让它转存到自家 CDN。
+// 修法：正文含 <img> 时按图切成「文字段 / 图片段」，按原顺序逐段写入 ——
+//   文字段走 ClipboardEvent 粘贴（保住列表/加粗），图片段走原生 input 上传。
+//   图片二进制由主进程预先下好（bare 窗口不挂 preload，页面里拿不到 browserAPI.downloadImage）。
+// 实现移植自 2026-09-01 被整体回退的注入版（commit 00966f4），那次回退的原因是注入版
+// 草稿保存等错了接口端点导致整篇发不出去，与图片逻辑本身无关，故其踩坑成果全部可用。
+// 零回归设计：①正文不含 <img> 时走原路径，逐字节不变；②单张图失败只跳过该图并记诊断，
+//   绝不阻断整篇发布；③主进程下载失败的图直接不下发，脚本侧无感。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：正文有图但图丢失）
+const FIX_TOUTIAO_BARE_CONTENT_IMAGES = true;
 // 【特性开关】2026-08-18 腾讯内容管理窗口掉登录：判死清理（fix4/fix5）只保护发布窗口
 //（isPublishWindow 门槛），内容管理窗口（purpose='child'）恢复死 token 快照后：
 // ①服务端打回登录页但死 cookie 不清 → 扫码时新旧凭证混杂"登录后瞬间掉出" ②扫码成功后
@@ -7693,10 +7726,9 @@ function getMainStatisticsUrl(isError = false) {
   const endpoint = isError ? 'tjlogerror' : 'tjlog';
   const { url: currentUrl, host } = getStatisticsContextFromMain();
   const specialUrlMap = {
-    'jzt_dev_1.china9.cn': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
     'zhjzt.china9.cn': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
-    '172.16.6.17:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`,
-    'localhost:8080': `https://jzt_dev_1.china9.cn/api/geo/${endpoint}`
+    '172.16.6.17:8080': `https://zhjzt.china9.cn/api/geo/${endpoint}`,
+    'localhost:8080': `https://zhjzt.china9.cn/api/geo/${endpoint}`
   };
 
   if (host && specialUrlMap[host]) {
@@ -7704,9 +7736,7 @@ function getMainStatisticsUrl(isError = false) {
   }
 
   if (currentUrl && (currentUrl.includes('/geo/') || currentUrl.includes('#/geo'))) {
-    const devHosts = ['localhost:5173', '127.0.0.1:5173', 'dev.china9.cn', 'www.dev.china9.cn'];
-    const isDev = devHosts.some(h => host.toLowerCase() === h);
-    const geoDomain = isDev ? 'https://jzt_dev_1.china9.cn' : 'https://zhjzt.china9.cn';
+    const geoDomain = 'https://zhjzt.china9.cn';
     return `${geoDomain}/api/geo/${endpoint}`;
   }
 
@@ -7902,6 +7932,33 @@ function extractToutiaoCoverUrl(publishData = {}) {
     sendlog.image,
     sendlog.images
   );
+}
+
+// 【FIX_TOUTIAO_BARE_CONTENT_IMAGES】从正文 HTML 里提取图片地址。
+// 主进程没有 DOM，只能正则解析；脚本侧 buildContentSegments 用的是真 DOM。两边解析器不同，
+// 所以下发的数据以 src 为 key（而非位置索引）供脚本查表，避免畸形 HTML 下两边错位配对。
+// 同一张图重复出现只下载一次。
+function extractToutiaoContentImageUrls(html) {
+  const list = [];
+  const skipped = [];
+  if (!html || typeof html !== 'string' || html.indexOf('<') === -1) return { list, skipped };
+  const re = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s">]+))/gi;
+  let match;
+  while ((match = re.exec(html)) !== null) {
+    const src = String(match[1] || match[2] || match[3] || '').trim();
+    if (!src) continue;
+    // data: 内联图没有可下载的地址，脚本侧 buildContentSegments 同样会跳过（两边保持一致）
+    if (/^data:/i.test(src)) {
+      skipped.push('data-uri');
+      continue;
+    }
+    if (!/^https?:\/\//i.test(src)) {
+      skipped.push(src.slice(0, 80));
+      continue;
+    }
+    if (list.indexOf(src) === -1) list.push(src);
+  }
+  return { list, skipped };
 }
 
 function extractToutiaoPublishPayload(publishData = {}) {
@@ -8140,6 +8197,48 @@ function buildToutiaoBarePublishScript(payload) {
         if (introText) return introText;
         return String(title || '测试文章').trim() || '测试文章';
       };
+      // 🧱 【FIX_TOUTIAO_RICH_CONTENT】正文结构保留（列表/加粗/链接）
+      const RICH_CONTENT_ENABLED = ${FIX_TOUTIAO_RICH_CONTENT};
+      // 注意 <b> 与 <blockquote>、<i> 与 <img>、<u> 与 <ul>：靠 \\b 词边界 + 正则回溯区分，
+      // 不会把 <br>/<img> 误判成加粗/斜体。img 故意不列入触发条件——头条 paste 会把外链图整个剥掉，
+      // 图片是另一条链路（需主进程下 base64 再原生上传），不在本次范围内。
+      const RICH_TAG_RE = /<(ol|ul|li|strong|b|em|i|u|h[1-6]|blockquote|a|table)\\b/i;
+      const htmlHasRichStructure = (html) => {
+        if (!RICH_CONTENT_ENABLED) return false;
+        if (!html || typeof html !== 'string') return false;
+        return RICH_TAG_RE.test(html);
+      };
+      // 🚨 清空编辑器只能走 execCommand —— innerHTML='' 会让 ProseMirror 的 model 与 DOM 脱节，
+      //    之后任何 paste 都会抛 RangeError（本项目多平台踩过同款）
+      const clearEditorSafely = async (editorEl) => {
+        try {
+          editorEl.focus();
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(editorEl);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.execCommand('delete', false, null);
+          await delay(200);
+        } catch (_) {}
+        return (editorEl.innerText || editorEl.textContent || '').trim().length === 0;
+      };
+      const pasteHtmlIntoEditor = (editorEl, html, plainText) => {
+        try {
+          editorEl.focus();
+          const dt = new DataTransfer();
+          dt.setData('text/html', html);
+          dt.setData('text/plain', plainText || '');
+          editorEl.dispatchEvent(new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt
+          }));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      };
       const setNativeValue = (el, value) => {
         const proto = el.tagName.toLowerCase() === 'textarea'
           ? window.HTMLTextAreaElement.prototype
@@ -8196,6 +8295,10 @@ function buildToutiaoBarePublishScript(payload) {
         }
         return '';
       };
+      const NOTICE_FAILURE_RE = /失败|错误|异常|不能为空|请先|违规|超限|驳回|无效|过期|不可用|不符合|未通过|已用尽|账号.*异常|账号.*限制/;
+      const NOTICE_SUCCESS_RE = /发布成功|提交成功|成功|已设置|已预约|定时/;
+      const isFailureNotice = (text) => NOTICE_FAILURE_RE.test(String(text || ''));
+      const isSuccessNotice = (text) => NOTICE_SUCCESS_RE.test(String(text || '')) && !isFailureNotice(text);
       const findVisibleHint = () => {
         const selectors = [
           '.byte-form-item-help',
@@ -8215,7 +8318,7 @@ function buildToutiaoBarePublishScript(payload) {
             if (!visible(el)) continue;
             const text = textOf(el);
             if (!text || text.length > 180) continue;
-            if (/标题不能为空|还需输入|封面|失败|错误|请先|违规|超限|驳回/.test(text)) return text;
+            if (/标题不能为空|还需输入|封面/.test(text) || isFailureNotice(text)) return text;
           }
         }
         return '';
@@ -8399,25 +8502,194 @@ function buildToutiaoBarePublishScript(payload) {
         return { ready: false, error: findCoverUploadError() };
       };
       const tryUploadCover = async (coverUrl, title) => {
+        // 兜底：图片抽屉若还开着会遮挡封面触发器 —— 2026-09-02 事故链就是
+        // cover-trigger-not-found → 封面失败直接 return → 发布按钮压根没被点。
+        // fillContentWithImages 收尾已经关过一次，这里是第二道保险
+        try { await closeImageDrawer(); } catch (_) {}
         const coverRoot = document.querySelector('.article-cover, .pgc-edit-cell .edit-label');
         if (coverRoot && coverRoot.scrollIntoView) {
           coverRoot.scrollIntoView({ behavior: 'auto', block: 'center' });
           await delay(250);
         }
-        const coverTrigger = Array.from(document.querySelectorAll('.article-cover-add, [class*="cover-add"]')).find(visible);
-        if (!coverTrigger) return { ok: false, reason: 'cover-trigger-not-found' };
+        // 【真实 DOM 结构，2026-09-02 用户实测提供】
+        //   无封面：<div class="article-cover-add" style="border:1px dashed"><svg 加号图标></div>
+        //   有封面：<div class="article-cover-img-wrap">
+        //             <img alt="cover" src="https://image-tt-private.toutiao.com/…~tplv-tt-cover-v2.image">
+        //             <div class="article-cover-img-menu">
+        //               <a class="article-cover-img-modify">编辑</a>
+        //               <a class="article-cover-img-replace">替换</a>
+        //             </div>
+        //             <i class="article-cover-delete"></i>
+        //           </div>
+        //   有无封面的判据：.article-cover-img-wrap 里的 img 存在且 src 非空
+        const getCoverImgSrc = () => {
+          const wrap = document.querySelector('.article-cover-img-wrap');
+          if (!wrap) return '';
+          const img = wrap.querySelector('img');
+          if (!img) return '';
+          return String(img.getAttribute('src') || img.src || '').trim();
+        };
+        const findCoverTrigger = () => Array.from(
+          document.querySelectorAll('.article-cover-add, [class*="cover-add"]')
+        ).find(visible);
+        // 已有封面时的「替换」入口。两个坑都是上一版栽过的：
+        //   ① 它是 <a>，不是 button/div/span —— 按标签名找永远找不到
+        //   ② 菜单一般要 hover 才显示，visible() 会判 false —— 所以不能用 visible 过滤，先 hover 再直接点
+        const findCoverReplaceTrigger = async () => {
+          const wrap = document.querySelector('.article-cover-img-wrap');
+          if (!wrap || !getCoverImgSrc()) return null;
+          try {
+            wrap.scrollIntoView({ behavior: 'auto', block: 'center' });
+            ['mouseover', 'mouseenter', 'mousemove'].forEach((type) => {
+              wrap.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+            });
+          } catch (_) {}
+          await delay(400);
+          return wrap.querySelector('.article-cover-img-replace')
+            || wrap.querySelector('.article-cover-img-modify')
+            || null;
+        };
+        let coverTrigger = findCoverTrigger();
+        // 多给几次机会：抽屉关闭有动画、插图后布局回流也需要时间
+        for (let i = 0; i < 4 && !coverTrigger; i++) {
+          await delay(700);
+          coverTrigger = findCoverTrigger();
+        }
+        // 找不到「添加」：头条已拿正文首图自动设了封面（正文插图能进去之后才出现的新情况），改点「替换」
+        let coverEntry = coverTrigger ? 'add' : '';
+        if (!coverTrigger) {
+          coverTrigger = await findCoverReplaceTrigger();
+          if (coverTrigger) coverEntry = 'replace';
+        }
+        if (!coverTrigger) {
+          // 🔎 取证：分清是「按钮存在但被隐藏」（布局/抽屉问题）还是「按钮压根没有」（已有封面）
+          const scene = {
+            drawerOpen: !!findOpenImageDrawer(),
+            // 用真实判据取证：有 src 却走到这里，说明「替换」入口没拿到（hover 没生效或结构变了）
+            coverSrc: getCoverImgSrc().slice(0, 100),
+            hasWrap: !!document.querySelector('.article-cover-img-wrap'),
+            hasReplaceLink: !!document.querySelector('.article-cover-img-replace')
+          };
+          try {
+            const root = document.querySelector('.article-cover, .pgc-edit-cell, [class*="article-cover"]');
+            scene.rootFound = !!root;
+            if (root) {
+              const st = window.getComputedStyle(root);
+              const rect = root.getBoundingClientRect();
+              scene.rootVisible = !(st.display === 'none' || st.visibility === 'hidden')
+                && rect.width >= 2 && rect.height >= 2;
+              scene.rootSize = Math.round(rect.width) + 'x' + Math.round(rect.height);
+              scene.rootClass = String(root.className || '').slice(0, 120);
+              scene.coverImgs = root.querySelectorAll('img').length;
+              scene.buttons = Array.from(root.querySelectorAll('button, [class*="btn"], [class*="add"]'))
+                .map((b) => (b.textContent || '').trim())
+                .filter((t) => t && t.length <= 10).slice(0, 10);
+              scene.rootHtml = String(root.innerHTML || '').slice(0, 500);
+            }
+            // 全页 cover-add 候选（不论可见与否）：有候选但 0x0/display:none = 被隐藏；无候选 = 不存在
+            scene.addCandidates = Array.from(
+              document.querySelectorAll('.article-cover-add, [class*="cover-add"]')
+            ).map((el) => {
+              const st = window.getComputedStyle(el);
+              const r = el.getBoundingClientRect();
+              return String(el.className || '').slice(0, 50)
+                + '|' + st.display + '|' + Math.round(r.width) + 'x' + Math.round(r.height);
+            }).slice(0, 6);
+          } catch (e) { scene.error = e.message; }
+          return {
+            ok: false,
+            reason: 'cover-trigger-not-found',
+            hint: scene.drawerOpen ? 'image-drawer-still-open' : '',
+            scene
+          };
+        }
+        // 记下替换前的封面 src：replace 场景封面本来就有图，
+        // waitForCoverReady 那种「有没有图」的判据会立刻 ready → 假成功。必须看 src 变没变
+        const coverSrcBefore = getCoverImgSrc();
+        // 点击前快照已有的 file input：封面上传口是点击后才挂载的，取「新增的那个」最准。
+        // 否则可能命中正文图片抽屉残留在 DOM 里的 input（抽屉关闭 ≠ DOM 卸载），
+        // 结果把封面塞进正文上传口
+        const inputsBefore = new Set(Array.from(document.querySelectorAll('input[type="file"]')));
         coverTrigger.click();
         await delay(900);
-        const fileInput = Array.from(document.querySelectorAll('input[type="file"]')).find(el => {
+        // 🚨 封面抽屉默认停在「正文图片」tab（正文有图时头条让你从正文挑封面），
+        //    那个 tab 只有缩略图、没有上传口；「上传图片」tab 未激活时内容压根不渲染，
+        //    input[type=file] 根本不存在 —— 不是没点到本地上传，是那个口还没被创建出来。
+        //    2026-09-02 用户实测 DOM 坐实。必须先切 tab，再等 input 挂载。
+        let coverTabSwitched = false;
+        for (let i = 0; i < 6; i++) {
+          const drawer = findAnyOpenDrawer();
+          if (drawer) {
+            coverTabSwitched = await ensureUploadTabActive(drawer);
+            if (coverTabSwitched) break;
+          }
+          await delay(400);
+        }
+        await delay(500);
+        const acceptsImage = (el) => {
+          if (!el || el.disabled) return false;
           const accept = (el.getAttribute('accept') || '').toLowerCase();
-          return accept.includes('image') || accept.includes('png') || accept.includes('jpg') || accept === 'image/*';
-        }) || document.querySelector('input[type="file"]');
-        if (!fileInput) return { ok: false, reason: 'cover-file-input-not-found' };
+          if (!accept) return true;
+          return accept.includes('image') || accept.includes('png') || accept.includes('jpg');
+        };
+        let fileInput = null;
+        let coverInputRoute = '';
+        for (let i = 0; i < 8; i++) {
+          const all = Array.from(document.querySelectorAll('input[type="file"]'));
+          fileInput = all.find((el) => !inputsBefore.has(el) && acceptsImage(el)) || null;
+          if (fileInput) { coverInputRoute = 'new-after-click'; break; }
+          fileInput = all.find((el) => acceptsImage(el)
+            && el.closest('.article-cover, .article-cover-images, [class*="cover"]')) || null;
+          if (fileInput) { coverInputRoute = 'cover-scoped'; break; }
+          // tab 切换可能慢一拍或没切成，中途再补一次
+          if (i === 2 || i === 5) {
+            const retryDrawer = findAnyOpenDrawer();
+            if (retryDrawer) coverTabSwitched = await ensureUploadTabActive(retryDrawer) || coverTabSwitched;
+          }
+          await delay(400);
+        }
+        if (!fileInput) {
+          // 最后才退回全页第一个（保持旧行为，避免无谓回归）
+          fileInput = Array.from(document.querySelectorAll('input[type="file"]')).find(acceptsImage)
+            || document.querySelector('input[type="file"]');
+          coverInputRoute = fileInput ? 'page-fallback' : '';
+        }
+        if (!fileInput) {
+          // 🔎 取证：tab 到底切没切成、抽屉里有哪几个 tab、哪个是 active
+          const tabScene = {};
+          try {
+            const drawer = findAnyOpenDrawer();
+            tabScene.drawerFound = !!drawer;
+            if (drawer) {
+              tabScene.tabs = Array.from(drawer.querySelectorAll('.byte-tabs-header-title'))
+                .map((el) => (el.textContent || '').trim()
+                  + ((el.className || '').includes('active') ? '(active)' : ''));
+              tabScene.inputInDrawer = drawer.querySelectorAll('input[type="file"]').length;
+            }
+            tabScene.inputOnPage = document.querySelectorAll('input[type="file"]').length;
+          } catch (e) { tabScene.error = e.message; }
+          return {
+            ok: false,
+            reason: 'cover-file-input-not-found',
+            entry: coverEntry,
+            tabSwitched: coverTabSwitched,
+            tabScene
+          };
+        }
         const file = await ensureCoverFile();
-        if (!file) return { ok: false, reason: coverUrl ? 'cover-download-failed' : 'cover-missing' };
+        if (!file) {
+          return {
+            ok: false,
+            reason: coverUrl ? 'cover-download-failed' : 'cover-missing',
+            entry: coverEntry
+          };
+        }
         const dt = new DataTransfer();
         dt.items.add(file);
         fileInput.files = dt.files;
+        // React 受控 input：不重置 _valueTracker，change 会被当成「值没变」直接丢掉。
+        // 「替换封面」正是二次写入同一个 input 的场景，这里尤其不能省
+        if (fileInput._valueTracker) fileInput._valueTracker.setValue('');
         fileInput.dispatchEvent(new Event('change', { bubbles: true }));
         await delay(1200);
         const modalConfirmBtn = findButton((t) => t === '确定' || t === '完成' || t === '使用', true);
@@ -8425,15 +8697,41 @@ function buildToutiaoBarePublishScript(payload) {
           clickButton(modalConfirmBtn);
           await delay(1000);
         }
+        if (coverEntry === 'replace') {
+          // 替换的终态校验：src 必须真的变了，「有图」不算数（本来就有）
+          const replaceStart = Date.now();
+          let replaced = false;
+          let uploadErr = '';
+          while (Date.now() - replaceStart < 15000) {
+            const nowSrc = getCoverImgSrc();
+            if (nowSrc && nowSrc !== coverSrcBefore) { replaced = true; break; }
+            uploadErr = findCoverUploadError();
+            if (uploadErr) break;
+            await delay(600);
+          }
+          if (!replaced) {
+            return {
+              ok: false,
+              reason: 'cover-replace-not-applied',
+              hint: uploadErr || findVisibleHint(),
+              entry: coverEntry,
+              inputRoute: coverInputRoute,
+              srcBefore: coverSrcBefore.slice(0, 80)
+            };
+          }
+          return { ok: true, entry: coverEntry, inputRoute: coverInputRoute, replaced: true };
+        }
         const coverState = await waitForCoverReady(12000);
         if (!coverState.ready) {
           return {
             ok: false,
             reason: coverState.error ? 'cover-invalid' : 'cover-not-ready',
-            hint: coverState.error || findVisibleHint()
+            hint: coverState.error || findVisibleHint(),
+            entry: coverEntry,
+            inputRoute: coverInputRoute
           };
         }
-        return { ok: true };
+        return { ok: true, entry: coverEntry, inputRoute: coverInputRoute };
       };
       const trySetSchedule = async (sendSet, sendTime) => {
         if (+sendSet !== 2 || !sendTime) return { ok: true, skipped: true };
@@ -8650,6 +8948,544 @@ function buildToutiaoBarePublishScript(payload) {
         return diag;
       };
 
+      // ===== 【FIX_TOUTIAO_BARE_CONTENT_IMAGES】正文图片：分段写入 + 原生上传 =====
+      // 头条 paste 会把外链 <img> 整个剥掉，只认自家 CDN 的图，所以图片必须走它自己的上传口。
+      // 实现移植自 2026-09-01 被回退的注入版（commit 00966f4），下述注释里的坑位均为当时实测所得。
+      const CONTENT_IMAGES_ENABLED = ${FIX_TOUTIAO_BARE_CONTENT_IMAGES};
+      // 2026-09-02 实测补充：正文图实际落在 image-tt-private.toutiao.com（~tplv-obj.image），
+      // 封面落在 image-tt-private.toutiao.com（~tplv-tt-cover-v2.image）—— 旧名单全都不匹配，
+      // 导致 hostedFinal 恒为 0。故补 toutiao.com 主域（页面域名不会出现在 img src 上，无误判风险）
+      const TOUTIAO_IMAGE_HOST_RE = /(toutiaoimg|byteimg|pstatp|toutiaocdn|bytedance|toutiao\\.com|ixigua)/i;
+      const isHostedImage = (src) => {
+        const value = String(src || '').trim();
+        if (!value) return false;
+        // blob:/data: 是本地预览态，不代表已转存到头条 CDN，不能算数
+        if (/^(blob:|data:)/i.test(value)) return false;
+        return TOUTIAO_IMAGE_HOST_RE.test(value);
+      };
+      const getEditorImages = (editorEl) => {
+        if (!editorEl) return [];
+        // 再兜一层，防止封面缩略图被计入正文图片数
+        return Array.from(editorEl.querySelectorAll('img'))
+          .filter((img) => !img.closest('.article-cover, .article-cover-images'));
+      };
+      // 🔢 计数一律按 src 去重：2026-09-02 实测头条一张插图在 DOM 里会渲染出多个 <img>
+      //（同一个 src 出现两次，页面上只显示一张，用户已确认）。按元素个数数会得到 2、4、6…，
+      // 判据虽然是增量比较不受影响，但诊断数字会误导人，排查时容易被带偏。
+      const countUniqueImages = (editorEl) => {
+        const set = new Set();
+        getEditorImages(editorEl).forEach((img) => {
+          const src = String(img.getAttribute('src') || img.src || '').trim();
+          if (src) set.add(src);
+        });
+        return set.size;
+      };
+      const countHostedImages = (editorEl) => {
+        const set = new Set();
+        getEditorImages(editorEl).forEach((img) => {
+          const src = String(img.getAttribute('src') || img.src || '').trim();
+          if (isHostedImage(src)) set.add(src);
+        });
+        return set.size;
+      };
+      // 主进程预下好的正文图（bare 窗口没有 preload，页面里下不了图），按 src 查表
+      const contentImageMap = new Map();
+      try {
+        (payload.contentImages || []).forEach((item) => {
+          if (item && item.src && item.data) contentImageMap.set(item.src, item);
+        });
+      } catch (_) {}
+      const buildFileFromContentImage = (src, index) => {
+        const item = contentImageMap.get(src);
+        if (!item) return null;
+        const binary = atob(item.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const type = item.contentType || 'image/jpeg';
+        let ext = '.jpg';
+        if (type.includes('png')) ext = '.png';
+        else if (type.includes('webp')) ext = '.webp';
+        else if (type.includes('gif')) ext = '.gif';
+        else if (type.includes('bmp')) ext = '.bmp';
+        return new File([bytes], 'toutiao-content-' + index + ext, { type });
+      };
+      // 🚨 把选区塌陷到文档末尾 —— 追加内容（正文段 / 插图）前必须做。
+      // 2026-09-01 实测现场（草稿保存接口连拍）：
+      //   35:24 content=<ol><li>77 字代码</li></ol>          → 正文写入成功
+      //   35:28 content=<ol><li><br></li></ol> + <img 头条图床>  word_cnt=0
+      // 头条插图走 PM 的 replaceSelection，选区此时还覆盖着正文（清空时的 selectNodeContents
+      // 残留 / 抽屉抢焦点后 PM 回落到全选），于是「插图」变成「用图替换正文」。
+      // 多段追加同理：不塌陷，后一段会吃掉前一段。
+      const collapseSelectionToDocEnd = (editorEl, opts) => {
+        const options = opts || {};
+        const result = { pm: false, dom: false, kind: '' };
+        try {
+          const view = getPmView(editorEl);
+          if (view && view.state && view.state.selection) {
+            const state = view.state;
+            const Ctor = state.selection.constructor;
+            result.kind = (Ctor && Ctor.name) || '';
+            // Selection.atEnd / Selection.near 是 prosemirror-state 的静态方法，子类继承可用
+            let sel = null;
+            if (typeof Ctor.atEnd === 'function') sel = Ctor.atEnd(state.doc);
+            else if (typeof Ctor.near === 'function') sel = Ctor.near(state.doc.resolve(state.doc.content.size));
+            if (sel) {
+              view.dispatch(state.tr.setSelection(sel));
+              result.pm = true;
+            }
+          }
+        } catch (_) {}
+        // 抽屉开着时不要抢 DOM 焦点（可能把抽屉关掉），只动 PM 选区
+        if (options.domFocus !== false) {
+          try {
+            editorEl.focus();
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editorEl);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            result.dom = true;
+          } catch (_) {}
+        }
+        return result;
+      };
+      // 追加语义的粘贴（图片链路专用，不动上面那个 pasteHtmlIntoEditor，保证纯文本路径零回归）
+      const pasteHtmlAppend = (editorEl, html, plainText) => {
+        collapseSelectionToDocEnd(editorEl);
+        return pasteHtmlIntoEditor(editorEl, html, plainText);
+      };
+      // 清空：execCommand 清不掉图片这类 atom 节点时，降级到 PM 模型层 delete。
+      // 🚨 全程不用 innerHTML=''：那会让 PM model 与 DOM 脱节，后续 paste 必炸 RangeError
+      const clearEditorDeep = async (editorEl) => {
+        const cleared = await clearEditorSafely(editorEl);
+        if (cleared && getEditorImages(editorEl).length === 0) return true;
+        try {
+          const view = getPmView(editorEl);
+          if (view && view.state && view.state.doc.content.size > 0) {
+            view.dispatch(view.state.tr.delete(0, view.state.doc.content.size));
+            await delay(300);
+            const afterPm = (editorEl.innerText || editorEl.textContent || '').trim();
+            if (!afterPm && getEditorImages(editorEl).length === 0) return true;
+          }
+        } catch (_) {}
+        return false;
+      };
+      // 头条正文图片抽屉（点工具栏图片按钮后弹出，与封面共用 byte-drawer 组件）：
+      //   .byte-drawer-inner > tabs[上传图片|免费正版图片|热点图库|我的素材]
+      //   「上传图片」默认就是激活态，file input 已经在 DOM 里：
+      //     button.upload-btn > .btn-upload-handle.upload-handler > input[type=file][accept=image/*]
+      // ⚠️ 绝对不能点「本地上传」/「扫码上传」按钮：这类按钮内部是 inputRef.click()，
+      //    会弹出系统原生文件对话框，Electron 窗口当场悬死（本项目有卡窗前科）。
+      //    input 本来就在 DOM 里，直接塞 files 即可。
+      const findOpenImageDrawer = () => {
+        const drawers = Array.from(document.querySelectorAll('.byte-drawer-inner, .byte-drawer'));
+        return drawers.filter((el) => {
+          if (!visible(el)) return false;
+          if (el.closest('.article-cover, .article-cover-images')) return false;
+          return !!el.querySelector('input[type="file"]');
+        }).pop() || null;
+      };
+      // ⚠️ 正文图 input 必须排除封面的，否则正文图会被塞进封面上传口。
+      //    input 自身是 0x0，不能用可见性判
+      const findBodyImageInput = () => {
+        const acceptOk = (input) => {
+          if (!input || input.disabled) return false;
+          const accept = (input.getAttribute('accept') || '').toLowerCase();
+          if (!accept) return true;
+          return accept.includes('image') || accept.includes('png') || accept.includes('jpg');
+        };
+        const drawer = findOpenImageDrawer();
+        if (drawer) {
+          const inDrawer = Array.from(drawer.querySelectorAll('input[type="file"]')).filter(acceptOk);
+          // 优先真正的上传按钮口，拖拽口（#upload-drag-input）作次选
+          const primary = inDrawer.find((el) => el.closest('.btn-upload-handle, .upload-handler'));
+          if (primary) return primary;
+          if (inDrawer[0]) return inDrawer[0];
+        }
+        const list = Array.from(document.querySelectorAll('input[type="file"]')).filter((input) => {
+          if (!acceptOk(input)) return false;
+          return !input.closest('.article-cover, .article-cover-images, [class*="cover"]');
+        });
+        return list[0] || null;
+      };
+      // 头条正文图片按钮是纯 SVG 图标按钮，没有任何文字/title/aria-label：
+      //   <div class="syl-toolbar-tool image static"><div><button class="syl-toolbar-button">
+      // 按文案匹配（/图片|插图/）永远匹配不到，只能认类名
+      const IMAGE_TOOL_SELECTORS = [
+        '.syl-toolbar-tool.image.static button',
+        '.syl-toolbar-tool.image button',
+        '.syl-toolbar-tool.image.static',
+        '.syl-toolbar-tool.image'
+      ];
+      const findImageToolbarTrigger = () => {
+        for (const selector of IMAGE_TOOL_SELECTORS) {
+          const hit = Array.from(document.querySelectorAll(selector))
+            .find((el) => el && !el.closest('.article-cover, .article-cover-images'));
+          if (hit) return { el: hit, selector };
+        }
+        const byText = Array.from(document.querySelectorAll('button, [role="button"], [class*="menu-item"]'))
+          .find((el) => {
+            if (!visible(el)) return false;
+            if (el.closest('.article-cover, .article-cover-images')) return false;
+            const label = [el.textContent, el.getAttribute('title'), el.getAttribute('aria-label')]
+              .filter(Boolean).join(' ').trim();
+            if (!label || label.length > 12) return false;
+            return /图片|插图|image/i.test(label);
+          });
+        return byText ? { el: byText, selector: 'text-fallback' } : null;
+      };
+      // 只切「上传图片」标签页（且仅在它不是激活态时）。绝不碰「本地上传」「扫码上传」按钮
+      const ensureUploadTabActive = async (drawer) => {
+        const scope = drawer || document;
+        const titles = Array.from(scope.querySelectorAll('.byte-tabs-header-title'));
+        const target = titles.find((el) => (el.textContent || '').trim() === '上传图片');
+        if (!target) return false;
+        if ((target.className || '').includes('active')) return true;
+        try { target.click(); } catch (_) {}
+        await delay(600);
+        return true;
+      };
+      const ensureBodyImageInput = async (editorEl, diag) => {
+        const note = (key, value) => { if (diag) diag[key] = value; };
+        let input = findBodyImageInput();
+        if (input) {
+          note('inputRoute', 'already-present');
+          return input;
+        }
+        // 工具栏通常要编辑器获得焦点后才可用
+        try { if (editorEl) editorEl.focus(); } catch (_) {}
+        await delay(200);
+        const trigger = findImageToolbarTrigger();
+        note('imageToolSelector', trigger ? trigger.selector : 'not-found');
+        if (!trigger) {
+          note('inputRoute', 'trigger-not-found');
+          return null;
+        }
+        try { trigger.el.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+        await delay(150);
+        try { trigger.el.click(); } catch (_) {}
+        await delay(900);
+        for (let i = 0; i < 10; i++) {
+          // 没 input 时 findOpenImageDrawer 认不出抽屉，退回 findAnyOpenDrawer 才切得了 tab
+          const drawer = findOpenImageDrawer() || findAnyOpenDrawer();
+          if (drawer && (i === 0 || i === 2)) await ensureUploadTabActive(drawer);
+          input = findBodyImageInput();
+          if (input) {
+            note('inputRoute', drawer ? 'drawer-input' : 'toolbar-click');
+            note('drawerOpened', !!drawer);
+            return input;
+          }
+          await delay(500);
+        }
+        note('drawerOpened', !!(findOpenImageDrawer() || findAnyOpenDrawer()));
+        note('inputRoute', 'input-not-found-after-click');
+        return null;
+      };
+      // 抽屉里传完图后要点确认才会插进正文（未上传前无 footer，确认按钮是后出现的）
+      // 确认按钮按优先级挑：「下一步」可能是裁剪流程的中间步而非插入，不能和「确定」平等对待
+      const CONFIRM_TEXT_PRIORITY = ['确定', '确认', '插入', '完成', '下一步'];
+      const confirmImageDrawer = async (drawer, diag) => {
+        if (!drawer) return false;
+        const start = Date.now();
+        while (Date.now() - start < 25000) {
+          const thumbs = drawer.querySelectorAll('.upload-image-wrapper img, .upload-image-wrapper [class*="item"]');
+          const candidates = Array.from(drawer.querySelectorAll('button')).filter((el) => {
+            if (!visible(el) || el.disabled) return false;
+            const text = (el.textContent || '').trim();
+            if (!text || text.length > 6) return false;
+            return !/取消|关闭|返回|删除|重新/.test(text);
+          });
+          let btn = null;
+          for (const want of CONFIRM_TEXT_PRIORITY) {
+            btn = candidates.find((el) => (el.textContent || '').trim() === want);
+            if (btn) break;
+          }
+          if (!btn) {
+            btn = candidates.find((el) => /确定|确认|插入|完成|下一步/.test((el.textContent || '').trim()));
+          }
+          if (btn && thumbs.length > 0) {
+            if (diag) diag.confirmButtonText = (btn.textContent || '').trim();
+            try { btn.scrollIntoView({ behavior: 'auto', block: 'center' }); } catch (_) {}
+            try { btn.click(); } catch (_) { clickElement(btn); }
+            await delay(900);
+            return true;
+          }
+          await delay(600);
+        }
+        if (diag) diag.confirmTimeoutScene = snapshotImageScene(null);
+        return false;
+      };
+      // 🚨 抽屉是覆盖层，不关掉会把后面的封面上传和发布按钮全挡住。
+      //    2026-09-02 实测事故：图片上传超时后抽屉留在页面上，封面触发器被遮挡判为不可见 →
+      //    cover-trigger-not-found → 封面失败直接 return → 发布按钮压根没被点，整篇发不出去。
+      //    所以图片链路无论成败，收尾都必须确保抽屉关闭。
+      const closeImageDrawer = async () => {
+        let drawer = findOpenImageDrawer();
+        if (!drawer) return 'not-open';
+        const closeBtn = drawer.querySelector('.byte-drawer-close, [class*="drawer-close"]')
+          || Array.from(drawer.querySelectorAll('button')).find((el) => {
+            const t = (el.textContent || '').trim();
+            return t === '取消' || t === '关闭';
+          });
+        if (closeBtn) {
+          try { closeBtn.click(); } catch (_) {}
+          await delay(700);
+          if (!findOpenImageDrawer()) return 'close-btn';
+        }
+        try {
+          document.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+          }));
+        } catch (_) {}
+        await delay(700);
+        if (!findOpenImageDrawer()) return 'escape';
+        const mask = document.querySelector('.byte-drawer-mask, [class*="drawer-mask"]');
+        if (mask) {
+          try { mask.click(); } catch (_) {}
+          await delay(700);
+          if (!findOpenImageDrawer()) return 'mask';
+        }
+        return 'still-open';
+      };
+      // 上传失败时把现场记下来，免得下一轮还得靠猜（诊断随 logs 落进 bare-result 转储）
+      const snapshotImageScene = (editorEl) => {
+        const scene = {};
+        try {
+          scene.editor = editorEl
+            ? (editorEl.tagName + '.' + String(editorEl.className || '').slice(0, 60))
+            : 'null';
+          const imgs = getEditorImages(editorEl);
+          scene.imgCount = imgs.length;
+          scene.uniqueImgCount = countUniqueImages(editorEl); // 按 src 去重＝实际几张图
+          scene.imgSrcs = imgs.slice(0, 5)
+            .map((im) => String(im.getAttribute('src') || im.src || '').slice(0, 90));
+          // 排查「同一张图出现两次」：看它们各自挂在什么节点下
+          //（头条正式插图节点是 .pgc-img，若另一个是预览/占位节点，这里能一眼看出来）
+          scene.imgParents = imgs.slice(0, 5).map((im) => {
+            const p = im.parentElement;
+            const gp = p && p.parentElement;
+            return String((gp && gp.className) || '?').slice(0, 28)
+              + ' > ' + String((p && p.className) || '?').slice(0, 28)
+              + ' > img.' + String(im.className || '').slice(0, 18);
+          });
+          const drawer = findOpenImageDrawer();
+          scene.drawerOpen = !!drawer;
+          if (drawer) {
+            scene.drawerButtons = Array.from(drawer.querySelectorAll('button'))
+              .map((b) => (b.textContent || '').trim())
+              .filter((t) => t && t.length <= 10)
+              .slice(0, 12);
+            scene.thumbs = drawer.querySelectorAll(
+              '.upload-image-wrapper img, .upload-image-wrapper [class*="item"]'
+            ).length;
+          }
+          // 编辑器外是否有新图（插错了位置的话能看出来）
+          scene.docImgCount = document.querySelectorAll('img').length;
+        } catch (e) {
+          scene.error = e.message;
+        }
+        return scene;
+      };
+      // ⚠️ 抽屉刚打开、或停在没有上传口的 tab 时，里面还没有 input[type=file]，
+      //    findOpenImageDrawer 就认不出它 → 拿不到 drawer → 没法切 tab → 死锁。
+      //    这个版本不要求有 input，专门用来「先找到抽屉再切 tab」。
+      //    2026-09-02 用户实测：封面抽屉默认激活「正文图片」tab（正文有图时头条让你从正文挑封面），
+      //    「上传图片」tab 未激活时内容是空 div，压根不渲染，自然也没有 input。
+      const findAnyOpenDrawer = () => {
+        const list = Array.from(document.querySelectorAll(
+          '.byte-drawer-content, .byte-drawer-inner, .byte-drawer'
+        )).filter((el) => visible(el) && !!el.querySelector('.byte-tabs-header-title'));
+        return list.pop() || null;
+      };
+      const uploadImageIntoEditor = async (editorEl, src, index, diag) => {
+        const hostedBefore = countHostedImages(editorEl);
+        const imgBefore = countUniqueImages(editorEl);
+        const textBefore = (editorEl.innerText || editorEl.textContent || '').trim().length;
+        const file = buildFileFromContentImage(src, index);
+        // 主进程没下下来的图（403/超时/超预算）压根不会下发，这里直接跳过该图
+        if (!file) throw new Error('image-not-downloaded');
+        const input = await ensureBodyImageInput(editorEl, diag);
+        if (!input) throw new Error('body-image-input-not-found');
+        // 🚨 插图前必须塌陷选区，否则这张图会把已写入的正文整段替换掉
+        const selBefore = collapseSelectionToDocEnd(editorEl);
+        if (diag) {
+          diag.selectionBeforeUpload = (selBefore.kind || 'no-pm')
+            + (selBefore.pm ? '→collapsed' : '→pm-unavailable');
+        }
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        // React 受控 input：不重置 _valueTracker，change 会被当成「值没变」直接丢掉
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        await delay(1200);
+        // 抽屉模式：等缩略图出现 → 点确认插入；无抽屉说明是直插模式，跳过
+        const drawer = findOpenImageDrawer();
+        if (drawer) {
+          // 抽屉交互可能又把选区带回全选，点确认前再塌陷一次（不抢 DOM 焦点，免得关掉抽屉）
+          collapseSelectionToDocEnd(editorEl, { domFocus: false });
+          const confirmed = await confirmImageDrawer(drawer, diag);
+          if (diag) diag.drawerConfirmed = (diag.drawerConfirmed || 0) + (confirmed ? 1 : 0);
+        }
+        // 判据说明（2026-09-02 修正）：切段时正文里的 <img> 已被切成独立图片段，写进编辑器的
+        // html 段不含任何 img —— 所以编辑器里新增的 img 必然是本次上传的结果，不存在
+        // 「被未转存外链骗成假成功」的风险。旧版只认 countHostedImages，一旦头条插入后的 src
+        // 是 blob: 预览态或用了白名单外的新域名，就会数不到而超时（实测 uploaded:0 的根因之一）。
+        // 阶段一：等 img 出现 = 插入成功；阶段二：尽力等它转存到头条 CDN，等不到也放行并记诊断。
+        const start = Date.now();
+        let inserted = false;
+        while (Date.now() - start < 30000) {
+          if (countHostedImages(editorEl) > hostedBefore) { inserted = true; break; }
+          if (countUniqueImages(editorEl) > imgBefore) { inserted = true; break; }
+          await delay(600);
+        }
+        if (!inserted) {
+          // 超时了：把现场拍下来（编辑器里到底有没有 img、src 长什么样、抽屉还开着没、有哪些按钮）
+          if (diag) diag.timeoutScene = snapshotImageScene(editorEl);
+          throw new Error('body-image-upload-timeout');
+        }
+        const hostedStart = Date.now();
+        while (Date.now() - hostedStart < 20000) {
+          if (countHostedImages(editorEl) > hostedBefore) break;
+          await delay(700);
+        }
+        if (diag && countHostedImages(editorEl) <= hostedBefore) {
+          // 图插进去了但没落到头条 CDN：可能还在转存，也可能白名单漏了新域名 —— 留证据
+          diag.insertedNotHosted = (diag.insertedNotHosted || 0) + 1;
+          diag.notHostedScene = snapshotImageScene(editorEl);
+        }
+        await delay(500);
+        const textAfter = (editorEl.innerText || editorEl.textContent || '').trim().length;
+        // 图进来了但字少了 → 选区塌陷没生效，记下来交给外层补写兜底
+        if (diag && textBefore > 0 && textAfter < textBefore * 0.8) {
+          diag.textEaten = (diag.textEaten || 0) + 1;
+          diag.textEatenDetail = textBefore + '→' + textAfter;
+        }
+        return true;
+      };
+      // 把正文按 <img> 切成「HTML 段 / 图片段」，逐段按原顺序写入。
+      // 🔢 切段必须把祖先容器（<ol>/<ul>/<blockquote>…）重建到每一段上，不能只丢出裸 <li>。
+      //    2026-09-02 实测教训：早先版本剥掉容器只留裸 <li>，指望头条 paste 自动补包 ——
+      //    它确实补了，但补成了 <ul>：裸 <li> 不携带任何「有序」信息，编辑器只能按无序处理，
+      //    用户的有序列表全变成了圆点。容器得我们自己带上。
+      //    被图片打断的 <ol> 还要用 start 接续编号，否则后一段又从 1 开始数。
+      const buildContentSegments = (html) => {
+        const segments = [];
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        // 记录每个 <ol> 已输出过多少个 <li>，供后续分段接续 start
+        const olConsumed = new Map();
+        const wrapWithAncestors = (innerHtml, ancestors) => {
+          let out = innerHtml;
+          for (let i = ancestors.length - 1; i >= 0; i--) {
+            const source = ancestors[i];
+            const shell = source.cloneNode(false); // 只要标签和属性，不要子节点
+            shell.innerHTML = out;
+            if (shell.tagName === 'OL') {
+              const consumed = olConsumed.get(source) || 0;
+              if (consumed > 0) shell.setAttribute('start', String(consumed + 1));
+              olConsumed.set(source, consumed + shell.children.length);
+            }
+            out = shell.outerHTML;
+          }
+          return out;
+        };
+        // 每层递归持有自己的 buffer：子容器的内容不能混进父层的段里
+        const walk = (node, ancestors) => {
+          let buffer = document.createElement('div');
+          const flush = () => {
+            const inner = buffer.innerHTML.trim();
+            buffer = document.createElement('div');
+            if (!inner) return;
+            const wrapped = wrapWithAncestors(inner, ancestors);
+            const probe = document.createElement('div');
+            probe.innerHTML = wrapped;
+            segments.push({
+              type: 'html',
+              html: wrapped,
+              text: (probe.innerText || probe.textContent || '').trim()
+            });
+          };
+          Array.from(node.childNodes).forEach((child) => {
+            if (child.nodeType === 1 && child.tagName === 'IMG') {
+              flush();
+              const src = (child.getAttribute('src') || '').trim();
+              if (src && !/^data:/i.test(src)) segments.push({ type: 'image', src });
+              return;
+            }
+            if (child.nodeType === 1 && child.querySelector && child.querySelector('img')) {
+              // 容器内含图 → 先把本层已积累的内容按本层容器输出，再带着这层容器递归进去
+              flush();
+              walk(child, ancestors.concat([child]));
+              return;
+            }
+            buffer.appendChild(child.cloneNode(true));
+          });
+          flush();
+        };
+        walk(temp, []);
+        return segments;
+      };
+      const fillContentWithImages = async (editorEl, rawHtml, plainText) => {
+        const diag = {
+          touched: false, expected: 0, uploaded: 0, hostedFinal: 0,
+          textLength: 0, segments: '', errors: []
+        };
+        const html = (typeof rawHtml === 'string' && /[<>]/.test(rawHtml)) ? rawHtml.trim() : '';
+        if (!html) return { ok: false, diag };
+        const segments = buildContentSegments(html);
+        const imageSegments = segments.filter((s) => s.type === 'image');
+        diag.expected = imageSegments.length;
+        // 没图 → 原样交回给既有路径处理，编辑器一个字节都没动
+        if (imageSegments.length === 0) return { ok: false, diag };
+        diag.segments = segments.map((s) => s.type).join('|');
+        diag.downloaded = contentImageMap.size;
+        const expectedLength = String(plainText || '').trim().length;
+
+        diag.touched = true;
+        await clearEditorDeep(editorEl);
+        const textHtmlWritten = [];
+        let imageIndex = 0;
+        for (const segment of segments) {
+          if (segment.type === 'html') {
+            pasteHtmlAppend(editorEl, segment.html, segment.text);
+            textHtmlWritten.push(segment.html);
+            await delay(900);
+            continue;
+          }
+          imageIndex++;
+          try {
+            await uploadImageIntoEditor(editorEl, segment.src, imageIndex, diag);
+            diag.uploaded++;
+          } catch (e) {
+            // 单张图失败只跳过该张，绝不阻断整篇发布
+            diag.errors.push({ src: String(segment.src || '').slice(0, 160), message: e.message });
+          }
+        }
+        // 🚨 收尾必须关抽屉：它是覆盖层，留着会挡住封面触发器和发布按钮（2026-09-02 事故根因）
+        diag.drawerClosed = await closeImageDrawer();
+        diag.hostedFinal = countHostedImages(editorEl);
+        let finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+        // 兜底：插图仍然把正文吃掉了（选区塌陷没生效）→ 把文字补回末尾。
+        // 顺序会退化成「图在前、文字在后」，但远好过发出去只有图没有字
+        if (textHtmlWritten.length > 0 && expectedLength > 0 && finalTextLength < expectedLength * 0.5) {
+          diag.textRepairAttempted = true;
+          diag.textBeforeRepair = finalTextLength;
+          pasteHtmlAppend(editorEl, textHtmlWritten.join(''), plainText);
+          await delay(1200);
+          finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+          diag.hostedFinal = countHostedImages(editorEl);
+          diag.textRepaired = finalTextLength >= expectedLength * 0.5;
+        }
+        diag.textLength = finalTextLength;
+        // 判定：文字必须达标（纯图片文章 expectedLength=0 时看有没有图）。
+        // 图全失败但文字在 → 仍算成功，按用户要求不因图片失败拖垮整篇
+        const textOk = expectedLength === 0 ? true : finalTextLength >= expectedLength * 0.5;
+        diag.ok = textOk && (finalTextLength > 0 || diag.hostedFinal > 0);
+        return { ok: diag.ok, diag };
+      };
+
       const title = normalizeTitle(payload.rawTitle);
       const content = normalizeContent(payload.rawContent, payload.intro, title);
       const logs = [];
@@ -8677,6 +9513,37 @@ function buildToutiaoBarePublishScript(payload) {
         return { success: false, reason: 'editor-not-ready', href: location.href, logs };
       }
 
+      // 🚧 开场先清遮罩：页面刚打开时可能残留抽屉遮罩层（用户 2026-09-02 实测：还没填文本就有
+      //    .byte-drawer-mask.fade-enter-done）。遮罩是全屏覆盖层，会拦截后续所有点击 ——
+      //    标题、正文、封面、发布全废，而且元素本身照样「可见」（visible() 不看遮挡），
+      //    表现出来就是「每一步都说找到了元素、点了，但页面毫无反应」，极难排查。
+      const dismissStartupMask = async () => {
+        const findMask = () => Array.from(document.querySelectorAll(
+          '.byte-drawer-mask, [class*="drawer-mask"], .byte-modal-mask, [class*="modal-mask"]'
+        )).find(visible);
+        if (!findMask()) return 'none';
+        const steps = [];
+        for (let i = 0; i < 3; i++) {
+          const mask = findMask();
+          if (!mask) break;
+          try { mask.click(); } catch (_) {}
+          steps.push('click');
+          await delay(500);
+          if (!findMask()) break;
+          try {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+            }));
+          } catch (_) {}
+          steps.push('esc');
+          await delay(500);
+        }
+        const left = findMask();
+        return (left ? 'still-present:' : 'dismissed:') + steps.join('>');
+      };
+      const startupMask = await dismissStartupMask();
+      if (startupMask !== 'none') push('startup-mask', { result: startupMask });
+
       titleInput.focus();
       setNativeValue(titleInput, title);
       try {
@@ -8693,11 +9560,60 @@ function buildToutiaoBarePublishScript(payload) {
       push('title-filled', { value: titleInput.value || '' });
 
       editor.focus();
-      editor.innerHTML = '';
-      for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
-        const p = document.createElement('p');
-        p.textContent = line;
-        editor.appendChild(p);
+      // 🖼️ 正文含图片时优先走「分段写入」：文字段粘贴 + 图片段原生上传。
+      //    头条的 paste 会把外链 <img> 整个剥掉，光靠粘贴图片必丢（2026-09-02 实测铁证：
+      //    lists:1 listItems:2 全都进去了，唯独装图的那个 li 里面的 img 没了）
+      let contentWrittenAsHtml = false;
+      let imageRouteTouched = false;
+      if (CONTENT_IMAGES_ENABLED) {
+        try {
+          const imgResult = await fillContentWithImages(editor, payload.rawContent, content);
+          imageRouteTouched = !!imgResult.diag.touched;
+          if (imgResult.diag.expected > 0) push('content-images', imgResult.diag);
+          if (imgResult.ok) contentWrittenAsHtml = true;
+        } catch (e) {
+          // 图片链路整体异常也不阻断发布，下面的既有路径会把正文按纯文本写进去
+          push('content-images-error', { message: e.message });
+        }
+      }
+      // 🧱 富文本走粘贴：让头条自己解析 <ol>/<li>/加粗/链接。
+      //    纯文本内容仍走原有逐行 <p> 写入，行为完全不变（零回归）。
+      const richAttempted = !contentWrittenAsHtml && htmlHasRichStructure(payload.rawContent);
+      if (richAttempted) {
+        await clearEditorDeep(editor);
+        pasteHtmlIntoEditor(editor, payload.rawContent, content);
+        await delay(1200);
+        const writtenText = (editor.innerText || editor.textContent || '').trim();
+        // 校验文本量：粘贴被平台拒收/半途失败时不能让正文残缺，宁可回退纯文本
+        contentWrittenAsHtml = writtenText.length > 0
+          && writtenText.length >= Math.floor(content.length * 0.5);
+        push('content-paste', {
+          used: contentWrittenAsHtml,
+          writtenLength: writtenText.length,
+          expectedLength: content.length,
+          lists: editor.querySelectorAll('ol, ul').length,
+          listItems: editor.querySelectorAll('li').length,
+          bolds: editor.querySelectorAll('strong, b').length,
+          links: editor.querySelectorAll('a[href]').length
+        });
+        if (!contentWrittenAsHtml) {
+          await clearEditorSafely(editor);
+        }
+      }
+      if (!contentWrittenAsHtml) {
+        // 已经动过 paste 链路时不能再 innerHTML=''（同样会让 PM model 脱节）；
+        // 没动过则保持原样，确保纯文本场景与改动前逐字节一致
+        if (richAttempted || imageRouteTouched) {
+          // 图片链路动过编辑器时同样不能 innerHTML=''（PM model 会与 DOM 脱节）
+          await clearEditorDeep(editor);
+        } else {
+          editor.innerHTML = '';
+        }
+        for (const line of content.split('\\n').map(s => s.trim()).filter(Boolean)) {
+          const p = document.createElement('p');
+          p.textContent = line;
+          editor.appendChild(p);
+        }
       }
       editor.dispatchEvent(new InputEvent('input', {
         bubbles: true, cancelable: true, inputType: 'insertText', data: content
@@ -8705,7 +9621,12 @@ function buildToutiaoBarePublishScript(payload) {
       editor.dispatchEvent(new Event('change', { bubbles: true }));
       editor.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
       await delay(900);
-      push('content-filled', { length: (editor.innerText || '').trim().length });
+      push('content-filled', {
+        length: (editor.innerText || '').trim().length,
+        hostedImages: countHostedImages(editor),
+        mode: (imageRouteTouched && contentWrittenAsHtml) ? 'image-segments'
+          : (contentWrittenAsHtml ? 'html-paste' : (richAttempted ? 'plain-fallback' : 'plain-text'))
+      });
 
       // 🔗 补回链接（失败不阻断发布，诊断信息随 logs 落入 bare-result 转储）
       try {
@@ -8769,17 +9690,19 @@ function buildToutiaoBarePublishScript(payload) {
           const toast = readToast();
           if (toast) {
             lastToast = toast;
-            if (/成功|已设置|已预约|定时/.test(toast) && !/失败|错误/.test(toast)) {
-              return { success: true, reason: 'schedule-toast-success', toast, href, logs, publishId: payload.publishId };
-            }
-            if (/失败|错误|无效|请先|过期/.test(toast)) {
+            if (isFailureNotice(toast)) {
               return { success: false, reason: 'schedule-toast-error', toast, href, logs };
+            }
+            if (isSuccessNotice(toast)) {
+              return { success: true, reason: 'schedule-toast-success', toast, href, logs, publishId: payload.publishId };
             }
           }
         }
         return { success: false, reason: 'schedule-result-timeout', toast: lastToast, href: location.href, logs };
       }
-
+  
+      //return;
+  
       let publishBtn = null;
       for (let i = 0; i < 8; i++) {
         publishBtn =
@@ -8836,11 +9759,11 @@ function buildToutiaoBarePublishScript(payload) {
         const toast = readToast();
         if (toast) {
           lastToast = toast;
-          if (/发布成功|提交成功|成功/.test(toast)) {
-            return { success: true, reason: 'toast-success', toast, href, logs, publishId: payload.publishId };
-          }
-          if (/失败|错误|异常|不能为空|请先|违规|超限|驳回/.test(toast)) {
+          if (isFailureNotice(toast)) {
             return { success: false, reason: 'toast-failed', toast, href, logs, publishId: payload.publishId };
+          }
+          if (isSuccessNotice(toast)) {
+            return { success: true, reason: 'toast-success', toast, href, logs, publishId: payload.publishId };
           }
         }
         const hint = findVisibleHint();
@@ -8943,6 +9866,66 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
       payload.coverData = coverDownload.data;
       payload.coverContentType = coverDownload.contentType || 'image/jpeg';
       payload.coverSize = coverDownload.size || 0;
+    }
+    // 【FIX_TOUTIAO_BARE_CONTENT_IMAGES】预下载正文图片。
+    // bare 窗口不挂 preload，页面里拿不到 browserAPI.downloadImage，只能主进程下好随脚本一起下发。
+    // 单张失败只跳过该张、绝不阻断整篇发布（与封面不同：封面是头条必填项，正文图不是）。
+    if (FIX_TOUTIAO_BARE_CONTENT_IMAGES) {
+      const extracted = extractToutiaoContentImageUrls(payload.rawContent);
+      const contentImages = [];
+      const contentImageFailures = [];
+      let base64Budget = 0;
+      // 累计体积保护：payload 要 JSON 序列化进 executeJavaScript 的脚本文本，
+      // 图特别多的稿件会把脚本撑到几十 MB、注入变得极慢。超预算的图跳过并记诊断（不限制张数）
+      const BASE64_BUDGET_LIMIT = 50 * 1024 * 1024;
+      for (const imageUrl of extracted.list) {
+        if (base64Budget >= BASE64_BUDGET_LIMIT) {
+          contentImageFailures.push({ src: imageUrl.slice(0, 160), error: 'payload-budget-exceeded' });
+          continue;
+        }
+        let downloaded = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          downloaded = await downloadImageAsBase64(imageUrl);
+          if (downloaded.success) break;
+          if (attempt < 3) await new Promise((r) => setTimeout(r, 1500));
+        }
+        if (downloaded && downloaded.success && downloaded.data) {
+          contentImages.push({
+            src: imageUrl,
+            data: downloaded.data,
+            contentType: downloaded.contentType || 'image/jpeg',
+            size: downloaded.size || 0
+          });
+          base64Budget += String(downloaded.data).length;
+        } else {
+          contentImageFailures.push({
+            src: imageUrl.slice(0, 160),
+            error: (downloaded && downloaded.error) || 'unknown'
+          });
+          console.warn('[Toutiao Bare Publish] ⚠️ 正文图片下载失败（跳过该图，不阻断发布）:', {
+            windowId,
+            src: imageUrl,
+            error: (downloaded && downloaded.error) || 'unknown'
+          });
+        }
+      }
+      payload.contentImages = contentImages;
+      payload.contentImageDiag = {
+        found: extracted.list.length,
+        downloaded: contentImages.length,
+        failures: contentImageFailures,
+        skippedSrc: extracted.skipped
+      };
+      if (extracted.list.length > 0 || extracted.skipped.length > 0) {
+        console.log('[Toutiao Bare Publish] 🖼️ 正文图片预下载完成:', {
+          windowId,
+          found: extracted.list.length,
+          downloaded: contentImages.length,
+          failed: contentImageFailures.length,
+          skipped: extracted.skipped.length,
+          base64KB: Math.round(base64Budget / 1024)
+        });
+      }
     }
     console.log('[Toutiao Bare Publish] 开始自动发布:', {
       windowId,

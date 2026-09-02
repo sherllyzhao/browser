@@ -14,2326 +14,2362 @@ let hasProcessed = false;
  */
 
 (async function () {
-  'use strict';
+    'use strict';
 
-  // ===========================
-  // 🔑 检查 common.js 依赖并提供降级实现
-  // ===========================
-  if (typeof window.getRandomDelayMs !== "function") {
-    console.warn("[视频号发布] ⚠️ common.js 未正确加载，使用降级实现");
-    window.getRandomDelayMs = function (ms, jitterMs) {
-      const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
-      const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
-      const resolvedJitterMs = hasCustomJitter
-        ? Math.max(0, Math.floor(Number(jitterMs)))
-        : Math.max(80, Math.round(baseMs * 0.35));
-      return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
-    };
-  }
-
-  // ⏱ 脚本启动时间戳（用于后续耗时分析）
-  const __SCRIPT_START_TIME__ = Date.now();
-  const __LOG_PREFIX__ = '[视频号发布]';
-
-  // ===========================
-  // 入口日志：脚本开始执行
-  // ===========================
-  console.log('═══════════════════════════════════════');
-  console.log(`${__LOG_PREFIX__} 🚀 脚本开始执行`);
-  console.log(`${__LOG_PREFIX__} 📍 URL: ${window.location.href}`);
-  console.log(`${__LOG_PREFIX__} 📄 document.readyState: ${document.readyState}`);
-  console.log(`${__LOG_PREFIX__} 🕐 时间: ${new Date().toLocaleString()}`);
-  console.log(`${__LOG_PREFIX__} 🌐 UA: ${navigator.userAgent.slice(0, 80)}...`);
-  console.log(`${__LOG_PREFIX__} 🖼 body 存在: ${!!document.body}`);
-  if (document.body) {
-    console.log(`${__LOG_PREFIX__} 📊 body.innerHTML 长度: ${document.body.innerHTML.length}`);
-    console.log(`${__LOG_PREFIX__} 📊 body.innerText 长度: ${(document.body.innerText || '').length}`);
-  }
-  console.log('═══════════════════════════════════════');
-
-  // ===========================
-  // 防止脚本重复注入
-  // ===========================
-  if (window.__SHIPINHAO_SCRIPT_LOADED__) {
-    console.log(`${__LOG_PREFIX__} ⚠️ 脚本已经加载过，跳过重复注入 (首次加载: ${window.__SHIPINHAO_SCRIPT_LOAD_TIME__ || '未知'})`);
-    return;
-  }
-
-  // ===========================
-  // 关键依赖检查
-  // ===========================
-  console.log(`${__LOG_PREFIX__} 🔍 依赖检查:`);
-  console.log(`${__LOG_PREFIX__}   - window.browserAPI: ${!!window.browserAPI ? '✅' : '❌'}`);
-  console.log(`${__LOG_PREFIX__}   - window.hidePageAndShowMask: ${typeof window.hidePageAndShowMask === 'function' ? '✅' : '❌'}`);
-  console.log(`${__LOG_PREFIX__}   - window.checkPageStateAndReload: ${typeof window.checkPageStateAndReload === 'function' ? '✅' : '❌'}`);
-  console.log(`${__LOG_PREFIX__}   - window.checkBlankPageAndReload: ${typeof window.checkBlankPageAndReload === 'function' ? '✅' : '❌'}`);
-  console.log(`${__LOG_PREFIX__}   - window.waitForElement: ${typeof window.waitForElement === 'function' ? '✅' : '❌'}`);
-  console.log(`${__LOG_PREFIX__}   - window.retryOperation: ${typeof window.retryOperation === 'function' ? '✅' : '❌'}`);
-
-  // ===========================
-  // 视频号发布页不主动盖遮罩
-  // ===========================
-  try {
-    if (typeof window.showPageAndHideMask === 'function') {
-      window.showPageAndHideMask();
+    // ===========================
+    // 🔑 检查 common.js 依赖并提供降级实现
+    // ===========================
+    if (typeof window.getRandomDelayMs !== "function") {
+        console.warn("[视频号发布] ⚠️ common.js 未正确加载，使用降级实现");
+        window.getRandomDelayMs = function (ms, jitterMs) {
+            const baseMs = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms))) : 0;
+            const hasCustomJitter = jitterMs !== null && typeof jitterMs !== "undefined" && Number.isFinite(Number(jitterMs));
+            const resolvedJitterMs = hasCustomJitter
+                ? Math.max(0, Math.floor(Number(jitterMs)))
+                : Math.max(80, Math.round(baseMs * 0.35));
+            return baseMs + Math.floor(Math.random() * (resolvedJitterMs + 1));
+        };
     }
-    console.log(`${__LOG_PREFIX__} 📍 [step 1/4] 视频号发布页保持可见，避免上传中被白色遮罩盖住`);
-  } catch (e) {
-    console.error(`${__LOG_PREFIX__} ❌ [step 1/4] 清理遮罩失败:`, e);
-  }
 
-  // ===========================
-  // 页面状态检查 - 防止异常渲染
-  // ===========================
-  if (typeof window.checkPageStateAndReload === 'function') {
-    const stateResult = window.checkPageStateAndReload('视频号发布');
-    console.log(`${__LOG_PREFIX__} 🔍 [step 2/4] checkPageStateAndReload 结果: ${stateResult ? '✅ 通过' : '❌ 不通过，终止脚本'}`);
-    if (!stateResult) {
-      return;
+    // ⏱ 脚本启动时间戳（用于后续耗时分析）
+    const __SCRIPT_START_TIME__ = Date.now();
+    const __LOG_PREFIX__ = '[视频号发布]';
+
+    // ===========================
+    // 入口日志：脚本开始执行
+    // ===========================
+    console.log('═══════════════════════════════════════');
+    console.log(`${__LOG_PREFIX__} 🚀 脚本开始执行`);
+    console.log(`${__LOG_PREFIX__} 📍 URL: ${window.location.href}`);
+    console.log(`${__LOG_PREFIX__} 📄 document.readyState: ${document.readyState}`);
+    console.log(`${__LOG_PREFIX__} 🕐 时间: ${new Date().toLocaleString()}`);
+    console.log(`${__LOG_PREFIX__} 🌐 UA: ${navigator.userAgent.slice(0, 80)}...`);
+    console.log(`${__LOG_PREFIX__} 🖼 body 存在: ${!!document.body}`);
+    if (document.body) {
+        console.log(`${__LOG_PREFIX__} 📊 body.innerHTML 长度: ${document.body.innerHTML.length}`);
+        console.log(`${__LOG_PREFIX__} 📊 body.innerText 长度: ${(document.body.innerText || '').length}`);
     }
-  } else {
-    console.warn(`${__LOG_PREFIX__} ⚠️ [step 2/4] checkPageStateAndReload 不可用，跳过页面状态检查`);
-  }
+    console.log('═══════════════════════════════════════');
 
-  window.__SHIPINHAO_SCRIPT_LOADED__ = true;
-  window.__SHIPINHAO_SCRIPT_LOAD_TIME__ = new Date().toLocaleString();
-
-  const logShipinhaoPublishSnapshot = (tag) => {
-    const currentWujie = document.querySelector('wujie-app');
-    const shadowRoot = currentWujie && currentWujie.shadowRoot ? currentWujie.shadowRoot : null;
-    const realSelectors = [
-      '.post-short-title-wrap',
-      '.input-editor',
-      '.form-btns',
-      '.weui-desktop-btn',
-      '.post-time-wrap',
-      '.ant-progress-text',
-      '.ant-progress',
-      '.upload-wrapper',
-      '#fullScreenVideo'
-    ];
-    const hit = realSelectors.find(s => {
-      if (document.querySelector(s)) return true;
-      if (shadowRoot && shadowRoot.querySelector(s)) return true;
-      return false;
-    });
-
-    console.log(`${__LOG_PREFIX__} 🛡 [${tag}] 发布页快照:`, {
-      url: window.location.href,
-      readyState: document.readyState,
-      wujieApp: !!currentWujie,
-      shadowRoot: !!shadowRoot,
-      shadowChildren: shadowRoot ? shadowRoot.childElementCount : 0,
-      hit: hit || '无'
-    });
-  };
-
-  // ===========================
-  // 🔑 视频号白屏诊断（只记录，不自动刷新）
-  // ===========================
-  console.log(`${__LOG_PREFIX__} 🛡 [step 3/4] 启动白屏诊断（禁用自动刷新）`);
-  try {
-    // 快速快照 wujie-app 当前状态
-    const currentWujie = document.querySelector('wujie-app');
-    if (currentWujie) {
-      console.log(`${__LOG_PREFIX__}   - 当前 wujie-app.shadowRoot: ${!!currentWujie.shadowRoot}`);
-      if (currentWujie.shadowRoot) {
-        console.log(`${__LOG_PREFIX__}   - 当前 shadowRoot 子元素数量: ${currentWujie.shadowRoot.childElementCount || 0}`);
-      }
+    // ===========================
+    // 防止脚本重复注入
+    // ===========================
+    if (window.__SHIPINHAO_SCRIPT_LOADED__) {
+        console.log(`${__LOG_PREFIX__} ⚠️ 脚本已经加载过，跳过重复注入 (首次加载: ${window.__SHIPINHAO_SCRIPT_LOAD_TIME__ || '未知'})`);
+        return;
     }
-    logShipinhaoPublishSnapshot('首检 T+0s');
-  } catch (e) {
-    console.error(`${__LOG_PREFIX__} 🛡 [首检] 执行异常:`, e);
-  }
 
-  setTimeout(() => {
+    // ===========================
+    // 关键依赖检查
+    // ===========================
+    console.log(`${__LOG_PREFIX__} 🔍 依赖检查:`);
+    console.log(`${__LOG_PREFIX__}   - window.browserAPI: ${!!window.browserAPI ? '✅' : '❌'}`);
+    console.log(`${__LOG_PREFIX__}   - window.hidePageAndShowMask: ${typeof window.hidePageAndShowMask === 'function' ? '✅' : '❌'}`);
+    console.log(`${__LOG_PREFIX__}   - window.checkPageStateAndReload: ${typeof window.checkPageStateAndReload === 'function' ? '✅' : '❌'}`);
+    console.log(`${__LOG_PREFIX__}   - window.checkBlankPageAndReload: ${typeof window.checkBlankPageAndReload === 'function' ? '✅' : '❌'}`);
+    console.log(`${__LOG_PREFIX__}   - window.waitForElement: ${typeof window.waitForElement === 'function' ? '✅' : '❌'}`);
+    console.log(`${__LOG_PREFIX__}   - window.retryOperation: ${typeof window.retryOperation === 'function' ? '✅' : '❌'}`);
+
+    // ===========================
+    // 视频号发布页不主动盖遮罩
+    // ===========================
     try {
-      logShipinhaoPublishSnapshot('复检 T+8s');
-    } catch (e) {
-      console.error(`${__LOG_PREFIX__} 🛡 [复检 T+8s] 执行异常:`, e);
-    }
-  }, window.getRandomDelayMs(8000));
-
-  setTimeout(() => {
-    try {
-      logShipinhaoPublishSnapshot('二检 T+18s');
-    } catch (e) {
-      console.error(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 执行异常:`, e);
-    }
-  }, window.getRandomDelayMs(18000));
-
-  // 显示操作提示横幅
-  if (typeof showOperationBanner === 'function') {
-    try {
-      showOperationBanner('正在自动发布中，请勿操作此页面...');
-      console.log(`${__LOG_PREFIX__} 📢 [step 4/4] showOperationBanner 已调用`);
-    } catch (e) {
-      console.error(`${__LOG_PREFIX__} ❌ [step 4/4] showOperationBanner 调用失败:`, e);
-    }
-  } else {
-    console.warn(`${__LOG_PREFIX__} ⚠️ [step 4/4] showOperationBanner 不可用，跳过横幅显示`);
-  }
-
-  console.log('═══════════════════════════════════════');
-  console.log(`${__LOG_PREFIX__} ✅ 视频号发布脚本初始化完成`);
-  console.log(`${__LOG_PREFIX__} 📍 当前 URL: ${window.location.href}`);
-  console.log(`${__LOG_PREFIX__} ⏱ 初始化耗时: ${Date.now() - __SCRIPT_START_TIME__}ms`);
-  console.log('═══════════════════════════════════════');
-
-  // 检查 common.js 是否已加载
-  if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
-    console.error(`${__LOG_PREFIX__} ❌ common.js 未加载！脚本可能无法正常工作`);
-  } else {
-    console.log(`${__LOG_PREFIX__} ✅ common.js 已加载，工具函数可用`);
-  }
-
-  // ===========================
-  // 1. 从 URL 获取发布数据
-  // ===========================
-
-  const urlParams = new URLSearchParams(window.location.search);
-  const companyId = await window.browserAPI.getGlobalData('company_id');
-  const transferId = urlParams.get('transfer_id');
-
-  // 获取当前窗口 ID（用于窗口专属的 localStorage key，避免多窗口冲突）
-  let currentWindowId = null;
-  try {
-    currentWindowId = await window.browserAPI.getWindowId();
-    console.log('[视频号发布] 当前窗口 ID:', currentWindowId);
-  } catch (e) {
-    console.error('[视频号发布] ❌ 获取窗口 ID 失败:', e);
-  }
-
-  // 获取窗口专属的 localStorage key
-  const getPublishDataKey = () => `SHIPINHAO_PUBLISH_DATA_${currentWindowId || 'default'}`;
-  const getPublishUrlKey = () => `SHIPINHAO_PUBLISH_URL_${currentWindowId || 'default'}`;
-
-  const sleep = (ms) => window.delay(ms);
-
-  async function waitForUploadCompleteBeforeForm(tag = '上传后填表前') {
-    const timeoutMs = 5 * 60 * 1000;
-    const startedAt = Date.now();
-    let lastProgress = '';
-    let emptySnapshotCount = 0;
-
-    console.log(`[视频号发布] ⏳ ${tag}: 等待视频上传完成后再填写表单，避免上传中操作导致页面白屏`);
-
-    while (Date.now() - startedAt < timeoutMs) {
-      const wujieApp = document.querySelector('wujie-app');
-      const shadowRoot = wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
-      const searchRoot = shadowRoot || (!wujieApp ? document : null);
-
-      if (!searchRoot) {
-        console.log(`[视频号发布] ⏳ ${tag}: wujie shadowRoot 未就绪，继续等待`);
-        await sleep(2000);
-        continue;
-      }
-
-      const errorTip = searchRoot.querySelector(".upload-error, .error-tip, [class*='error']");
-      const errorText = (errorTip && errorTip.textContent || '').trim();
-      if (errorText && (errorText.includes('失败') || errorText.includes('错误') || errorText.toLowerCase().includes('error'))) {
-        throw new Error('视频上传失败: ' + errorText.substring(0, 80));
-      }
-
-      const progressText = searchRoot.querySelector('.ant-progress-text');
-      const progress = (progressText && progressText.textContent || '').trim();
-      const video = searchRoot.querySelector('#fullScreenVideo');
-      const hasVideo = !!(video && video.src);
-
-      if (progress && progress !== lastProgress) {
-        lastProgress = progress;
-        emptySnapshotCount = 0;
-        console.log(`[视频号发布] 📊 ${tag}: 当前上传进度 ${progress}`);
-      }
-
-      if (progress === '100%' || progress === '100') {
-        console.log(`[视频号发布] ✅ ${tag}: 上传进度 100%，继续填写表单`);
-        await sleep(1000);
-        return true;
-      }
-
-      if (!progress && hasVideo) {
-        console.log(`[视频号发布] ✅ ${tag}: 进度条已消失且视频元素存在，继续填写表单`);
-        await sleep(1000);
-        return true;
-      }
-
-      if (!progress && !hasVideo) {
-        emptySnapshotCount++;
-        if (emptySnapshotCount === 1 || emptySnapshotCount % 10 === 0) {
-          console.log(`[视频号发布] ⏳ ${tag}: 暂未看到进度/视频，继续等待`, {
-            shadowChildren: shadowRoot ? shadowRoot.childElementCount || 0 : 0,
-            root: shadowRoot ? 'shadowRoot' : 'document',
-            elapsed: Date.now() - startedAt
-          });
+        if (typeof window.showPageAndHideMask === 'function') {
+            window.showPageAndHideMask();
         }
-      }
-
-      await sleep(2000);
+        console.log(`${__LOG_PREFIX__} 📍 [step 1/4] 视频号发布页保持可见，避免上传中被白色遮罩盖住`);
+    } catch (e) {
+        console.error(`${__LOG_PREFIX__} ❌ [step 1/4] 清理遮罩失败:`, e);
     }
 
-    throw new Error(`${tag}: 等待视频上传完成超时`);
-  }
-
-  console.log('[视频号发布] URL 参数:', {
-    companyId,
-    transferId,
-    windowId: currentWindowId
-  });
-
-  // 存储发布数据到全局
-  window.__AUTH_DATA__ = {
-    companyId,
-    transferId,
-    timestamp: Date.now()
-  };
-
-  // ===========================
-  // 2. 暴露全局方法供手动调用
-  // ===========================
-
-  window.__SHIPINHAO_AUTH__ = {
-    // 发送发布成功消息
-    notifySuccess: () => {
-      sendMessageToParent('发布成功');
-    },
-
-    // 发送自定义消息
-    sendMessage: (message) => {
-      sendMessageToParent(message);
-    },
-
-    // 获取发布数据
-    getAuthData: () => window.__AUTH_DATA__,
-  };
-
-  // ===========================
-  // 4. 显示调试信息横幅
-  // ===========================
-
-  // ===========================
-  // 5. 接收来自父窗口的消息（必须在发送 页面加载完成 之前注册！）
-  // ===========================
-  console.log('[视频号发布] 注册消息监听器...');
-
-  if (!window.browserAPI) {
-    console.error('[视频号发布] ❌ browserAPI 不可用！');
-  } else {
-    console.log('[视频号发布] ✅ browserAPI 可用');
-
-    if (!window.browserAPI.onMessageFromHome) {
-      console.error('[视频号发布] ❌ browserAPI.onMessageFromHome 不可用！');
+    // ===========================
+    // 页面状态检查 - 防止异常渲染
+    // ===========================
+    if (typeof window.checkPageStateAndReload === 'function') {
+        const stateResult = window.checkPageStateAndReload('视频号发布');
+        console.log(`${__LOG_PREFIX__} 🔍 [step 2/4] checkPageStateAndReload 结果: ${stateResult ? '✅ 通过' : '❌ 不通过，终止脚本'}`);
+        if (!stateResult) {
+            return;
+        }
     } else {
-      console.log('[视频号发布] ✅ browserAPI.onMessageFromHome 可用，正在注册...');
-
-      window.browserAPI.onMessageFromHome(async (message) => {
-        try {
-          console.log('═══════════════════════════════════════');
-          console.log('[视频号发布] 🎉 收到来自父窗口的消息!');
-          console.log('[视频号发布] 消息类型:', typeof message);
-          console.log('[视频号发布] 消息内容:', message);
-          console.log('[视频号发布] 消息.type:', message?.type);
-          console.log('[视频号发布] 消息.data:', message?.data);
-          console.log('═══════════════════════════════════════');
-
-          // 接收完整的发布数据（直接传递，不使用 IndexedDB）
-          if (message.type === 'publish-data') {
-            console.log('[视频号发布] ✅ 收到发布数据:', message.data);
-
-            // 使用公共方法检查 windowId 是否匹配
-            const isMatch = await checkWindowIdMatch(message, '[视频号发布]');
-            if (!isMatch) return;
-
-            // 使用公共方法解析消息数据
-            const messageData = parseMessageData(message.data, '[视频号发布]');
-            if (!messageData) return;
-
-            // 视频号发布窗口的账号 session 已在主进程打开窗口前恢复。
-            // 这里如果再 restoreSessionAndReload，会在收到 publish-data 后立刻刷新页面，打断扫码/重登流程。
-            if (typeof savePublishDataToGlobalStorage === 'function') {
-              await savePublishDataToGlobalStorage(messageData, '[视频号发布]');
-            } else if (window.browserAPI?.getWindowId && window.browserAPI?.setGlobalData) {
-              const windowId = await window.browserAPI.getWindowId();
-              if (windowId) {
-                await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
-                console.log('[视频号发布] 💾 已用兜底方式保存发布数据到 globalData, windowId:', windowId);
-              }
-            }
-            console.log('[视频号发布] ⏭️ 跳过页面侧 restoreSessionAndReload，避免发布页二次刷新');
-
-            // 防重复检查
-            if (isProcessing) {
-              console.warn('[视频号发布] ⚠️ 正在处理中，忽略重复消息');
-              return;
-            }
-            if (hasProcessed) {
-              console.warn('[视频号发布] ⚠️ 已经处理过，忽略重复消息');
-              return;
-            }
-
-            // 标记为正在处理
-            isProcessing = true;
-
-            // 更新全局变量
-            if (message.data) {
-              console.log("🚀 ~  ~ messageData: ", messageData);
-              window.__AUTH_DATA__ = {
-                ...window.__AUTH_DATA__,
-                message: messageData,
-                receivedAt: Date.now()
-              };
-              console.log('[视频号发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
-
-              // 💾 保存数据到 localStorage（用于授权跳转后恢复）
-              try {
-                // 确保存储的是 JSON 字符串，避免对象直接存储变成 "[object Object]"
-                const dataToStore = typeof messageData === 'string' ? messageData : JSON.stringify(messageData);
-                localStorage.setItem(getPublishDataKey(), dataToStore);
-                console.log('[视频号发布] 💾 数据已保存到 localStorage, key:', getPublishDataKey());
-              } catch (e) {
-                console.error('[视频号发布] ❌ 保存数据失败:', e);
-              }
-
-              // 🔖 保存当前发布页URL（用于授权跳转后返回）
-              try {
-                localStorage.setItem(getPublishUrlKey(), window.location.href);
-                console.log('[视频号发布] 🔖 已保存发布页URL:', window.location.href, 'key:', getPublishUrlKey());
-              } catch (e) {
-                console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
-              }
-
-              // 🔖 同时保存发布页 URL 到 globalData（备份，防止 localStorage 被登录页清空）
-              try {
-                if (currentWindowId) {
-                  await window.browserAPI.setGlobalData(`SHIPINHAO_PUBLISH_URL_${currentWindowId}`, window.location.href);
-                  console.log('[视频号发布] 🔖 已保存发布页URL到 globalData');
-                }
-              } catch (e) {
-                console.error('[视频号发布] ❌ 保存发布页URL到 globalData 失败:', e);
-              }
-
-              // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
-              const currentUrl = window.location.href;
-              const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
-              if (!isPublishPage) {
-                console.log('[视频号发布] ⏭️ 当前不是发布页，跳过上传流程，URL:', currentUrl);
-                isProcessing = false;
-                return;
-              }
-
-              // 🔑 采集昵称并更新到 publishData（用于关窗保存）
-              try {
-                console.log('[视频号发布] 🔍 开始采集昵称...');
-                await window.delay(1500); // 等待页面渲染
-                const nicknameEle = document.querySelector('.finder-nickname, .weui-desktop-account__nickname');
-                console.log('[视频号发布] 📋 昵称元素:', nicknameEle);
-                const nickFromDom = nicknameEle ? nicknameEle.innerText.trim() : '';
-                console.log('[视频号发布] 📝 采集到昵称:', nickFromDom || '(空)');
-
-                if (nickFromDom && messageData.element) {
-                  messageData.element.nickname = nickFromDom;
-                  if (!messageData.element.account_info) messageData.element.account_info = {};
-                  messageData.element.account_info.nickname = nickFromDom;
-                  // 重新保存到 globalData
-                  if (currentWindowId) {
-                    await window.browserAPI.setGlobalData(`publish_data_window_${currentWindowId}`, messageData);
-                    console.log('[视频号发布] ✅ 已采集并更新昵称到 publishData:', nickFromDom);
-                  }
-                } else {
-                  console.warn('[视频号发布] ⚠️ 未采集到昵称或 messageData.element 不存在');
-                }
-              } catch (e) {
-                console.warn('[视频号发布] ⚠️ 采集昵称失败:', e && e.message);
-              }
-
-              // 等待wujie-app元素
-              const wujieApp = await waitForElement("wujie-app", 15000);
-              if (wujieApp) {
-                // 检测视频是否已经上传完成
-                let videoAlreadyUploaded = false;
-                try {
-                  const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
-                  if (fullScreenVideo && fullScreenVideo.src) {
-                    videoAlreadyUploaded = true;
-                  }
-                  // 如果视频已上传，跳过上传流程
-                  if (!videoAlreadyUploaded) {
-                    // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
-                    try {
-                      if (wujieApp && wujieApp.shadowRoot) {
-                        // 在Shadow DOM中查找上传按钮
-                        const uploadButtonSelectors = [
-                          '.upload-wrapper button',
-                          '.upload-btn',
-                          'button.upload',
-                          '.video-upload-btn',
-                          '[class*="upload"] button',
-                          'button[class*="upload"]'
-                        ];
-
-                        let uploadButtonClicked = false;
-                        for (const selector of uploadButtonSelectors) {
-                          try {
-                            const uploadButton = wujieApp.shadowRoot.querySelector(selector);
-                            if (uploadButton) {
-                              //alert(`找到上传按钮: ${selector}`);
-                              uploadButton.click();
-                              uploadButtonClicked = true;
-                              await window.delay(1000);
-                              break;
-                            }
-                          } catch (error) {
-                            // 继续尝试下一个选择器
-                          }
-                        }
-
-                        if (!uploadButtonClicked) {
-                          //alert('未在Shadow DOM中找到上传按钮，直接查找input元素');
-                        }
-                      }
-                    } catch (error) {
-                      //alert('点击上传按钮失败: ' + error.message);
-                    }
-
-                    // 方式2: 查找并设置input元素
-                    let uploadInput = null;
-                    let retryCount = 0;
-                    const maxRetries = 20; // 最大重试20次
-
-                    // alert(`Starting upload input search in Shadow DOM. Will retry up to ${maxRetries} times.`);
-
-                    while (!uploadInput && retryCount < maxRetries) {
-                      const currentAttempt = retryCount + 1;
-                      // alert(`=== ATTEMPT ${currentAttempt}/${maxRetries} ===
-                      // Searching for upload input in Shadow DOM...`);
-
-                      try {
-                        // 复用外层的 wujieApp 变量
-                        if (!wujieApp.shadowRoot) {
-                          // alert('wujie-app has no shadow root, trying to access iframe directly');
-                          // 如果没有Shadow DOM，尝试直接查找iframe
-                          uploadInput = await waitForElement('input[type="file"]', 3000);
-                        } else {
-                          // 深入Shadow DOM查找
-                          uploadInput = await deepShadowSearch(wujieApp, 'input[type="file"]', 3);
-                        }
-
-                        if (uploadInput) {
-                          break; // 找到元素后退出循环
-                        }
-                      } catch (error) {
-                        // 超时错误是预期的，继续重试
-                        // alert(`❌ ATTEMPT ${currentAttempt} FAILED
-                        // Error: ${error.message}
-                        // Will retry in 2 seconds...`);
-                      }
-
-                      // 只有在未找到元素时才增加重试计数和等待
-                      if (!uploadInput) {
-                        retryCount++;
-                        if (retryCount < maxRetries) {
-                          // alert(`🔄 RETRYING... (${retryCount}/${maxRetries})
-                          // Waiting 2 seconds before next attempt`);
-                          await window.delay(2000); // 重试前等待2秒
-                        } else {
-                          // alert(`❌ MAX RETRIES REACHED
-                          // Failed to find upload input after ${maxRetries} attempts`);
-                        }
-                      }
-                    }
-
-                    if (!uploadInput) {
-                      console.log('未找到上传input元素');
-                    } else {
-                      // 执行文件上传
-                      await uploadVideo(messageData, wujieApp.shadowRoot);
-                      await waitForUploadCompleteBeforeForm('消息发布流程');
-                    }
-                  }
-                } catch (error) {
-                  // 视频下载/上传失败，调用失败接口
-                  console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
-                  const publishId = messageData?.video?.dyPlatform?.id;
-                  if (publishId) {
-                    await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
-                  }
-                  await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-                  isProcessing = false;
-                  return;
-                }
-              } else {
-                // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
-                try {
-                  await uploadVideo(messageData);
-                  await waitForUploadCompleteBeforeForm('消息发布流程');
-                } catch (error) {
-                  console.log('[视频号发布] ❌ 视频上传失败:', error);
-                  const publishId = messageData?.video?.dyPlatform?.id;
-                  if (publishId) {
-                    await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
-                  }
-                  await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-                  isProcessing = false;
-                  return;
-                }
-              }
-              try {
-                await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-              } catch (e) {
-                console.log('[视频号发布] ❌ 填写表单数据失败:', e);
-              }
-
-              console.log('[视频号发布] 📤 准备发送数据到接口...');
-              console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-              // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
-              // 窗口会在 publishApi 完成后自动关闭
-            }
-
-            // 重置处理标志（无论成功或失败）
-            isProcessing = false;
-            console.log('[视频号发布] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
-          }
-        } catch (error) {
-          console.error('[视频号发布] ❌ 消息处理出错，但不影响页面渲染:', error);
-          isProcessing = false; // 重置标志
-        }
-      });
-
-      console.log('[视频号发布] ✅ 消息监听器注册成功');
+        console.warn(`${__LOG_PREFIX__} ⚠️ [step 2/4] checkPageStateAndReload 不可用，跳过页面状态检查`);
     }
-  }
 
-  // ===========================
-  // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）
-  // ===========================
+    window.__SHIPINHAO_SCRIPT_LOADED__ = true;
+    window.__SHIPINHAO_SCRIPT_LOAD_TIME__ = new Date().toLocaleString();
 
-  // 页面加载完成后向父窗口发送消息
-  console.log('[视频号发布] 页面加载完成，发送 页面加载完成 消息');
+    const logShipinhaoPublishSnapshot = (tag) => {
+        const currentWujie = document.querySelector('wujie-app');
+        const shadowRoot = currentWujie && currentWujie.shadowRoot ? currentWujie.shadowRoot : null;
+        const realSelectors = [
+            '.post-short-title-wrap',
+            '.input-editor',
+            '.form-btns',
+            '.weui-desktop-btn',
+            '.post-time-wrap',
+            '.ant-progress-text',
+            '.ant-progress',
+            '.upload-wrapper',
+            '#fullScreenVideo'
+        ];
+        const hit = realSelectors.find(s => {
+            if (document.querySelector(s)) return true;
+            if (shadowRoot && shadowRoot.querySelector(s)) return true;
+            return false;
+        });
 
-  // 🔑 隐藏 loading 界面，显示页面内容
-  if (typeof window.showPageAndHideMask === 'function') {
-    window.showPageAndHideMask();
-    console.log('[视频号发布] ✅ 已隐藏 loading 界面，显示页面内容');
-  }
+        console.log(`${__LOG_PREFIX__} 🛡 [${tag}] 发布页快照:`, {
+            url: window.location.href,
+            readyState: document.readyState,
+            wujieApp: !!currentWujie,
+            shadowRoot: !!shadowRoot,
+            shadowChildren: shadowRoot ? shadowRoot.childElementCount : 0,
+            hit: hit || '无'
+        });
+    };
 
-  sendMessageToParent('页面加载完成');
-
-  console.log('═══════════════════════════════════════');
-  console.log('✅ 视频号发布脚本初始化完成');
-  console.log('📝 全局方法: window.__SHIPINHAO_AUTH__');
-  console.log('  - notifySuccess()  : 发送发布成功消息');
-  console.log('  - sendMessage(msg) : 发送自定义消息');
-  console.log('  - getAuthData()    : 获取发布数据');
-  console.log('═══════════════════════════════════════');
-
-  // ===========================
-  // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
-  // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
-  // 视频号接口需要 POST + query params + JSON body，照抄 creator 脚本的调用方式。
-  // ===========================
-  const probeShipinhaoLogin = async () => {
+    // ===========================
+    // 🔑 视频号白屏诊断（只记录，不自动刷新）
+    // ===========================
+    console.log(`${__LOG_PREFIX__} 🛡 [step 3/4] 启动白屏诊断（禁用自动刷新）`);
     try {
-      const aid = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || '';
-      const logFinderId = localStorage.getItem('finder_username') || '';
-      if (!aid || !logFinderId) return 'unknown';
-      const params = new URLSearchParams({
-        _aid: aid,
-        _rid: String(Date.now()).slice(0, 10),
-        _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
-      });
-      const body = {
-        timestamp: String(Date.now()),
-        _log_finder_id: logFinderId,
-        _log_finder_uin: '',
-        pluginSessionId: null,
-        rawKeyBuff: null,
-        reqScene: 7,
-        scene: 7
-      };
-      const res = await fetch(
-        `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          credentials: 'include'
+        // 快速快照 wujie-app 当前状态
+        const currentWujie = document.querySelector('wujie-app');
+        if (currentWujie) {
+            console.log(`${__LOG_PREFIX__}   - 当前 wujie-app.shadowRoot: ${!!currentWujie.shadowRoot}`);
+            if (currentWujie.shadowRoot) {
+                console.log(`${__LOG_PREFIX__}   - 当前 shadowRoot 子元素数量: ${currentWujie.shadowRoot.childElementCount || 0}`);
+            }
         }
-      );
-      if (!res.ok) return 'unknown';
-      const json = await res.json();
-      const d = json && json.data;
-      if (d && (d.finderUser || d.userAttr)) return 'logged-in';
-      // 有结构但取不到 finderUser/userAttr 才算掉登录
-      if (json && typeof json === 'object' && ('errCode' in json || 'errMsg' in json || 'ret' in json)) {
-        return 'logged-out';
-      }
-      return 'unknown';
+        logShipinhaoPublishSnapshot('首检 T+0s');
     } catch (e) {
-      return 'unknown';
-    }
-  };
-
-  const sphLoginState = await probeShipinhaoLogin();
-  console.log('[视频号发布] 🔐 发布前登录态探测:', sphLoginState);
-  if (sphLoginState === 'logged-out') {
-    if (typeof window.startPublishLoginWatch === 'function') {
-      window.startPublishLoginWatch('视频号', {
-        probeLoggedIn: async () => (await probeShipinhaoLogin()) === 'logged-in'
-      });
-      return;
-    }
-    console.warn('[视频号发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
-  }
-
-  // ===========================
-  // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
-  // ===========================
-  await (async () => {
-    // 如果已经在处理或已处理完成，跳过
-    if (isProcessing || hasProcessed) {
-      console.log('[视频号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
-      return;
+        console.error(`${__LOG_PREFIX__} 🛡 [首检] 执行异常:`, e);
     }
 
-    // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
-    const currentUrl = window.location.href;
-    const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
-    if (!isPublishPage) {
-      console.log('[视频号发布] ⏭️ 当前不是发布页，跳过全局存储读取，URL:', currentUrl);
-      return;
+    setTimeout(() => {
+        try {
+            logShipinhaoPublishSnapshot('复检 T+8s');
+        } catch (e) {
+            console.error(`${__LOG_PREFIX__} 🛡 [复检 T+8s] 执行异常:`, e);
+        }
+    }, window.getRandomDelayMs(8000));
+
+    setTimeout(() => {
+        try {
+            logShipinhaoPublishSnapshot('二检 T+18s');
+        } catch (e) {
+            console.error(`${__LOG_PREFIX__} 🛡 [二检 T+18s] 执行异常:`, e);
+        }
+    }, window.getRandomDelayMs(18000));
+
+    // 显示操作提示横幅
+    if (typeof showOperationBanner === 'function') {
+        try {
+            showOperationBanner('正在自动发布中，请勿操作此页面...');
+            console.log(`${__LOG_PREFIX__} 📢 [step 4/4] showOperationBanner 已调用`);
+        } catch (e) {
+            console.error(`${__LOG_PREFIX__} ❌ [step 4/4] showOperationBanner 调用失败:`, e);
+        }
+    } else {
+        console.warn(`${__LOG_PREFIX__} ⚠️ [step 4/4] showOperationBanner 不可用，跳过横幅显示`);
     }
 
+    console.log('═══════════════════════════════════════');
+    console.log(`${__LOG_PREFIX__} ✅ 视频号发布脚本初始化完成`);
+    console.log(`${__LOG_PREFIX__} 📍 当前 URL: ${window.location.href}`);
+    console.log(`${__LOG_PREFIX__} ⏱ 初始化耗时: ${Date.now() - __SCRIPT_START_TIME__}ms`);
+    console.log('═══════════════════════════════════════');
+
+    // 检查 common.js 是否已加载
+    if (typeof waitForElement === 'undefined' || typeof retryOperation === 'undefined') {
+        console.error(`${__LOG_PREFIX__} ❌ common.js 未加载！脚本可能无法正常工作`);
+    } else {
+        console.log(`${__LOG_PREFIX__} ✅ common.js 已加载，工具函数可用`);
+    }
+
+    // ===========================
+    // 1. 从 URL 获取发布数据
+    // ===========================
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const companyId = await window.browserAPI.getGlobalData('company_id');
+    const transferId = urlParams.get('transfer_id');
+
+    // 获取当前窗口 ID（用于窗口专属的 localStorage key，避免多窗口冲突）
+    let currentWindowId = null;
     try {
-      // 获取当前窗口 ID
-      const windowId = await window.browserAPI.getWindowId();
-      console.log('[视频号发布] 检查全局存储，窗口 ID:', windowId);
-
-      if (!windowId) {
-        console.log('[视频号发布] ❌ 无法获取窗口 ID');
-        return;
-      }
-
-      // 检查是否有恢复 cookies 后保存的发布数据
-      const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
-      console.log('[视频号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
-
-      if (publishData && !isProcessing && !hasProcessed) {
-        console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
-
-        // 🔑 不再立即删除数据，改为在发布完成后删除
-        // 这样如果登录跳转后跳回来，数据仍然可用
-        // 使用 hasProcessed 标记防止重复处理
-        console.log('[视频号发布] 📝 保留 publish_data_window_' + windowId + ' 数据，待发布完成后清理');
-
-        // 标记为正在处理
-        isProcessing = true;
-
-        // 更新全局变量
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: publishData,
-          source: 'cookieRestore',
-          windowId: windowId,
-          receivedAt: Date.now()
-        };
-
-        // 等待wujie-app元素
-        const wujieApp = await waitForElement("wujie-app", 15000);
-        if (wujieApp) {
-          let videoAlreadyUploaded = false;
-          try {
-            const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
-            if (fullScreenVideo && fullScreenVideo.src) {
-              videoAlreadyUploaded = true;
-            }
-            if (!videoAlreadyUploaded) {
-              await uploadVideo(publishData, wujieApp.shadowRoot);
-              await waitForUploadCompleteBeforeForm('全局数据恢复流程');
-            }
-          } catch (error) {
-            console.log('[视频号发布] ❌ 视频上传失败:', error);
-            const publishId = publishData?.video?.dyPlatform?.id;
-            if (publishId) {
-              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
-            }
-            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-            isProcessing = false;
-            return;
-          }
-        } else {
-          try {
-            await uploadVideo(publishData);
-            await waitForUploadCompleteBeforeForm('全局数据恢复流程');
-          } catch (error) {
-            console.log('[视频号发布] ❌ 视频上传失败:', error);
-            const publishId = publishData?.video?.dyPlatform?.id;
-            if (publishId) {
-              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
-            }
-            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-            isProcessing = false;
-            return;
-          }
-        }
-
-        try {
-          await retryOperation(async () => await fillFormData(publishData), 3, 2000);
-        } catch (e) {
-          console.log('[视频号发布] ❌ 填写表单数据失败:', e);
-        }
-
-        console.log('[视频号发布] 📤 准备发送数据到接口...');
-        console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-        isProcessing = false;
-      }
-    } catch (error) {
-      console.error('[视频号发布] ❌ 从全局存储读取数据失败:', error);
+        currentWindowId = await window.browserAPI.getWindowId();
+        console.log('[视频号发布] 当前窗口 ID:', currentWindowId);
+    } catch (e) {
+        console.error('[视频号发布] ❌ 获取窗口 ID 失败:', e);
     }
-  })();
 
-  // ===========================
-  // 8. 检查是否有保存的发布数据（授权跳转恢复 - localStorage）
-  // ===========================
-  setTimeout(async () => {
-    try {
-      const savedData = localStorage.getItem(getPublishDataKey());
-      console.log('[视频号发布] 🔍 检查恢复数据, key:', getPublishDataKey(), ', 数据:', savedData ? '有' : '无');
+    // 获取窗口专属的 localStorage key
+    const getPublishDataKey = () => `SHIPINHAO_PUBLISH_DATA_${currentWindowId || 'default'}`;
+    const getPublishUrlKey = () => `SHIPINHAO_PUBLISH_URL_${currentWindowId || 'default'}`;
 
-      // 跳过恢复：如果已经在处理或已处理完成
-      if (isProcessing || hasProcessed) {
-        console.log('[视频号发布] ℹ️ 已在处理中或已完成，跳过恢复');
-        return;
-      }
+    const sleep = (ms) => window.delay(ms);
 
-      if (savedData) {
-        // 验证数据格式：必须是有效的 JSON 且不是 "[object Object]"
-        if (savedData === '[object Object]' || savedData.startsWith('[object ')) {
-          console.warn('[视频号发布] ⚠️ 检测到无效的旧数据，清除并跳过恢复');
-          localStorage.removeItem(getPublishDataKey());
-          return;
-        }
+    async function waitForUploadCompleteBeforeForm(tag = '上传后填表前') {
+        const timeoutMs = 5 * 60 * 1000;
+        const startedAt = Date.now();
+        let lastProgress = '';
+        let emptySnapshotCount = 0;
 
-        console.log('[视频号发布] 🔄 检测到保存的发布数据，准备恢复...');
-        const messageData = JSON.parse(savedData);
+        console.log(`[视频号发布] ⏳ ${tag}: 等待视频上传完成后再填写表单，避免上传中操作导致页面白屏`);
 
-        // 额外验证：检查解析后的数据是否有必要字段
-        if (!messageData || typeof messageData !== 'object') {
-          console.warn('[视频号发布] ⚠️ 恢复的数据无效，清除并跳过');
-          localStorage.removeItem(getPublishDataKey());
-          return;
-        }
+        while (Date.now() - startedAt < timeoutMs) {
+            const wujieApp = document.querySelector('wujie-app');
+            const shadowRoot = wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
+            const searchRoot = shadowRoot || (!wujieApp ? document : null);
 
-        console.log('[视频号发布] 📦 恢复的数据:', messageData);
-
-        // 标记为正在处理
-        isProcessing = true;
-
-        // 更新全局变量
-        window.__AUTH_DATA__ = {
-          ...window.__AUTH_DATA__,
-          message: messageData,
-          recoveredAt: Date.now()
-        };
-
-        // 执行上传流程（复制原来的上传逻辑）
-        const wujieApp = await waitForElement("wujie-app", 15000);
-        if (wujieApp) {
-          let videoAlreadyUploaded = false;
-          try {
-            const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
-            if (fullScreenVideo && fullScreenVideo.src) {
-              videoAlreadyUploaded = true;
+            if (!searchRoot) {
+                console.log(`[视频号发布] ⏳ ${tag}: wujie shadowRoot 未就绪，继续等待`);
+                await sleep(2000);
+                continue;
             }
-            if (!videoAlreadyUploaded) {
-              await uploadVideo(messageData, wujieApp.shadowRoot);
-              await waitForUploadCompleteBeforeForm('localStorage恢复流程');
+
+            const errorTip = searchRoot.querySelector(".upload-error, .error-tip, [class*='error']");
+            const errorText = (errorTip && errorTip.textContent || '').trim();
+            if (errorText && (errorText.includes('失败') || errorText.includes('错误') || errorText.toLowerCase().includes('error'))) {
+                throw new Error('视频上传失败: ' + errorText.substring(0, 80));
             }
-          } catch (error) {
-            // 视频下载/上传失败，调用失败接口
-            console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
-            const publishId = messageData?.video?.dyPlatform?.id;
-            if (publishId) {
-              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+
+            const progressText = searchRoot.querySelector('.ant-progress-text');
+            const progress = (progressText && progressText.textContent || '').trim();
+            const video = searchRoot.querySelector('#fullScreenVideo');
+            const hasVideo = !!(video && video.src);
+
+            if (progress && progress !== lastProgress) {
+                lastProgress = progress;
+                emptySnapshotCount = 0;
+                console.log(`[视频号发布] 📊 ${tag}: 当前上传进度 ${progress}`);
             }
-            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-            isProcessing = false;
-            return;
-          }
-        } else {
-          // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
-          try {
-            await uploadVideo(messageData);
-            await waitForUploadCompleteBeforeForm('localStorage恢复流程');
-          } catch (error) {
-            console.log('[视频号发布] ❌ 视频上传失败:', error);
-            const publishId = messageData?.video?.dyPlatform?.id;
-            if (publishId) {
-              await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+
+            if (progress === '100%' || progress === '100') {
+                console.log(`[视频号发布] ✅ ${tag}: 上传进度 100%，继续填写表单`);
+                await sleep(1000);
+                return true;
             }
-            await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
-            isProcessing = false;
-            return;
-          }
+
+            if (!progress && hasVideo) {
+                console.log(`[视频号发布] ✅ ${tag}: 进度条已消失且视频元素存在，继续填写表单`);
+                await sleep(1000);
+                return true;
+            }
+
+            if (!progress && !hasVideo) {
+                emptySnapshotCount++;
+                if (emptySnapshotCount === 1 || emptySnapshotCount % 10 === 0) {
+                    console.log(`[视频号发布] ⏳ ${tag}: 暂未看到进度/视频，继续等待`, {
+                        shadowChildren: shadowRoot ? shadowRoot.childElementCount || 0 : 0,
+                        root: shadowRoot ? 'shadowRoot' : 'document',
+                        elapsed: Date.now() - startedAt
+                    });
+                }
+            }
+
+            await sleep(2000);
         }
 
-        try {
-          await retryOperation(async () => await fillFormData(messageData), 3, 2000);
-        } catch (e) {
-          console.log('[视频号发布] ❌ 填写表单数据失败:', e);
-        }
-
-        console.log('[视频号发布] 📤 恢复数据后准备发送数据到接口...');
-        console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
-
-        // 重置处理标志
-        isProcessing = false;
-      } else {
-        console.log('[视频号发布] ℹ️ 没有需要恢复的数据');
-      }
-    } catch (error) {
-      console.error('[视频号发布] ❌ 恢复数据失败:', error);
-      // 如果是 JSON 解析错误，清除无效数据
-      if (error instanceof SyntaxError) {
-        console.warn('[视频号发布] ⚠️ 数据格式错误，清除无效数据');
-        try {
-          localStorage.removeItem(getPublishDataKey());
-        } catch (e) {
-          // 忽略
-        }
-      }
-      isProcessing = false;
+        throw new Error(`${tag}: 等待视频上传完成超时`);
     }
-  }, window.getRandomDelayMs(2000)); // 延迟2秒，等待页面完全加载
+
+    console.log('[视频号发布] URL 参数:', {
+        companyId,
+        transferId,
+        windowId: currentWindowId
+    });
+
+    // 存储发布数据到全局
+    window.__AUTH_DATA__ = {
+        companyId,
+        transferId,
+        timestamp: Date.now()
+    };
+
+    // ===========================
+    // 2. 暴露全局方法供手动调用
+    // ===========================
+
+    window.__SHIPINHAO_AUTH__ = {
+        // 发送发布成功消息
+        notifySuccess: () => {
+            sendMessageToParent('发布成功');
+        },
+
+        // 发送自定义消息
+        sendMessage: (message) => {
+            sendMessageToParent(message);
+        },
+
+        // 获取发布数据
+        getAuthData: () => window.__AUTH_DATA__,
+    };
+
+    // ===========================
+    // 4. 显示调试信息横幅
+    // ===========================
+
+    // ===========================
+    // 5. 接收来自父窗口的消息（必须在发送 页面加载完成 之前注册！）
+    // ===========================
+    console.log('[视频号发布] 注册消息监听器...');
+
+    if (!window.browserAPI) {
+        console.error('[视频号发布] ❌ browserAPI 不可用！');
+    } else {
+        console.log('[视频号发布] ✅ browserAPI 可用');
+
+        if (!window.browserAPI.onMessageFromHome) {
+            console.error('[视频号发布] ❌ browserAPI.onMessageFromHome 不可用！');
+        } else {
+            console.log('[视频号发布] ✅ browserAPI.onMessageFromHome 可用，正在注册...');
+
+            window.browserAPI.onMessageFromHome(async (message) => {
+                try {
+                    console.log('═══════════════════════════════════════');
+                    console.log('[视频号发布] 🎉 收到来自父窗口的消息!');
+                    console.log('[视频号发布] 消息类型:', typeof message);
+                    console.log('[视频号发布] 消息内容:', message);
+                    console.log('[视频号发布] 消息.type:', message?.type);
+                    console.log('[视频号发布] 消息.data:', message?.data);
+                    console.log('═══════════════════════════════════════');
+
+                    // 接收完整的发布数据（直接传递，不使用 IndexedDB）
+                    if (message.type === 'publish-data') {
+                        console.log('[视频号发布] ✅ 收到发布数据:', message.data);
+
+                        // 使用公共方法检查 windowId 是否匹配
+                        const isMatch = await checkWindowIdMatch(message, '[视频号发布]');
+                        if (!isMatch) return;
+
+                        // 使用公共方法解析消息数据
+                        const messageData = parseMessageData(message.data, '[视频号发布]');
+                        if (!messageData) return;
+
+                        // 视频号发布窗口的账号 session 已在主进程打开窗口前恢复。
+                        // 这里如果再 restoreSessionAndReload，会在收到 publish-data 后立刻刷新页面，打断扫码/重登流程。
+                        if (typeof savePublishDataToGlobalStorage === 'function') {
+                            await savePublishDataToGlobalStorage(messageData, '[视频号发布]');
+                        } else if (window.browserAPI?.getWindowId && window.browserAPI?.setGlobalData) {
+                            const windowId = await window.browserAPI.getWindowId();
+                            if (windowId) {
+                                await window.browserAPI.setGlobalData(`publish_data_window_${windowId}`, messageData);
+                                console.log('[视频号发布] 💾 已用兜底方式保存发布数据到 globalData, windowId:', windowId);
+                            }
+                        }
+                        console.log('[视频号发布] ⏭️ 跳过页面侧 restoreSessionAndReload，避免发布页二次刷新');
+
+                        // 防重复检查
+                        if (isProcessing) {
+                            console.warn('[视频号发布] ⚠️ 正在处理中，忽略重复消息');
+                            return;
+                        }
+                        if (hasProcessed) {
+                            console.warn('[视频号发布] ⚠️ 已经处理过，忽略重复消息');
+                            return;
+                        }
+
+                        // 标记为正在处理
+                        isProcessing = true;
+
+                        // 更新全局变量
+                        if (message.data) {
+                            console.log("🚀 ~  ~ messageData: ", messageData);
+                            window.__AUTH_DATA__ = {
+                                ...window.__AUTH_DATA__,
+                                message: messageData,
+                                receivedAt: Date.now()
+                            };
+                            console.log('[视频号发布] ✅ 发布数据已更新:', window.__AUTH_DATA__);
+
+                            // 💾 保存数据到 localStorage（用于授权跳转后恢复）
+                            try {
+                                // 确保存储的是 JSON 字符串，避免对象直接存储变成 "[object Object]"
+                                const dataToStore = typeof messageData === 'string' ? messageData : JSON.stringify(messageData);
+                                localStorage.setItem(getPublishDataKey(), dataToStore);
+                                console.log('[视频号发布] 💾 数据已保存到 localStorage, key:', getPublishDataKey());
+                            } catch (e) {
+                                console.error('[视频号发布] ❌ 保存数据失败:', e);
+                            }
+
+                            // 🔖 保存当前发布页URL（用于授权跳转后返回）
+                            try {
+                                localStorage.setItem(getPublishUrlKey(), window.location.href);
+                                console.log('[视频号发布] 🔖 已保存发布页URL:', window.location.href, 'key:', getPublishUrlKey());
+                            } catch (e) {
+                                console.error('[视频号发布] ❌ 保存发布页URL失败:', e);
+                            }
+
+                            // 🔖 同时保存发布页 URL 到 globalData（备份，防止 localStorage 被登录页清空）
+                            try {
+                                if (currentWindowId) {
+                                    await window.browserAPI.setGlobalData(`SHIPINHAO_PUBLISH_URL_${currentWindowId}`, window.location.href);
+                                    console.log('[视频号发布] 🔖 已保存发布页URL到 globalData');
+                                }
+                            } catch (e) {
+                                console.error('[视频号发布] ❌ 保存发布页URL到 globalData 失败:', e);
+                            }
+
+                            // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+                            const currentUrl = window.location.href;
+                            const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+                            if (!isPublishPage) {
+                                console.log('[视频号发布] ⏭️ 当前不是发布页，跳过上传流程，URL:', currentUrl);
+                                isProcessing = false;
+                                return;
+                            }
+
+                            // 🔑 采集昵称并更新到 publishData（用于关窗保存）
+                            try {
+                                console.log('[视频号发布] 🔍 开始采集昵称...');
+                                await window.delay(1500); // 等待页面渲染
+                                const nicknameEle = document.querySelector('.finder-nickname, .weui-desktop-account__nickname');
+                                console.log('[视频号发布] 📋 昵称元素:', nicknameEle);
+                                const nickFromDom = nicknameEle ? nicknameEle.innerText.trim() : '';
+                                console.log('[视频号发布] 📝 采集到昵称:', nickFromDom || '(空)');
+
+                                if (nickFromDom && messageData.element) {
+                                    messageData.element.nickname = nickFromDom;
+                                    if (!messageData.element.account_info) messageData.element.account_info = {};
+                                    messageData.element.account_info.nickname = nickFromDom;
+                                    // 重新保存到 globalData
+                                    if (currentWindowId) {
+                                        await window.browserAPI.setGlobalData(`publish_data_window_${currentWindowId}`, messageData);
+                                        console.log('[视频号发布] ✅ 已采集并更新昵称到 publishData:', nickFromDom);
+                                    }
+                                } else {
+                                    console.warn('[视频号发布] ⚠️ 未采集到昵称或 messageData.element 不存在');
+                                }
+                            } catch (e) {
+                                console.warn('[视频号发布] ⚠️ 采集昵称失败:', e && e.message);
+                            }
+
+                            // 等待wujie-app元素
+                            const wujieApp = await waitForElement("wujie-app", 15000);
+                            if (wujieApp) {
+                                // 检测视频是否已经上传完成
+                                let videoAlreadyUploaded = false;
+                                try {
+                                    const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+                                    if (fullScreenVideo && fullScreenVideo.src) {
+                                        videoAlreadyUploaded = true;
+                                    }
+                                    // 如果视频已上传，跳过上传流程
+                                    if (!videoAlreadyUploaded) {
+                                        // 方式1: 先尝试点击上传按钮（在Shadow DOM中）
+                                        try {
+                                            if (wujieApp && wujieApp.shadowRoot) {
+                                                // 在Shadow DOM中查找上传按钮
+                                                const uploadButtonSelectors = [
+                                                    '.upload-wrapper button',
+                                                    '.upload-btn',
+                                                    'button.upload',
+                                                    '.video-upload-btn',
+                                                    '[class*="upload"] button',
+                                                    'button[class*="upload"]'
+                                                ];
+
+                                                let uploadButtonClicked = false;
+                                                for (const selector of uploadButtonSelectors) {
+                                                    try {
+                                                        const uploadButton = wujieApp.shadowRoot.querySelector(selector);
+                                                        if (uploadButton) {
+                                                            //alert(`找到上传按钮: ${selector}`);
+                                                            uploadButton.click();
+                                                            uploadButtonClicked = true;
+                                                            await window.delay(1000);
+                                                            break;
+                                                        }
+                                                    } catch (error) {
+                                                        // 继续尝试下一个选择器
+                                                    }
+                                                }
+
+                                                if (!uploadButtonClicked) {
+                                                    //alert('未在Shadow DOM中找到上传按钮，直接查找input元素');
+                                                }
+                                            }
+                                        } catch (error) {
+                                            //alert('点击上传按钮失败: ' + error.message);
+                                        }
+
+                                        // 方式2: 查找并设置input元素
+                                        let uploadInput = null;
+                                        let retryCount = 0;
+                                        const maxRetries = 20; // 最大重试20次
+
+                                        // alert(`Starting upload input search in Shadow DOM. Will retry up to ${maxRetries} times.`);
+
+                                        while (!uploadInput && retryCount < maxRetries) {
+                                            const currentAttempt = retryCount + 1;
+                                            // alert(`=== ATTEMPT ${currentAttempt}/${maxRetries} ===
+                                            // Searching for upload input in Shadow DOM...`);
+
+                                            try {
+                                                // 复用外层的 wujieApp 变量
+                                                if (!wujieApp.shadowRoot) {
+                                                    // alert('wujie-app has no shadow root, trying to access iframe directly');
+                                                    // 如果没有Shadow DOM，尝试直接查找iframe
+                                                    uploadInput = await waitForElement('input[type="file"]', 3000);
+                                                } else {
+                                                    // 深入Shadow DOM查找
+                                                    uploadInput = await deepShadowSearch(wujieApp, 'input[type="file"]', 3);
+                                                }
+
+                                                if (uploadInput) {
+                                                    break; // 找到元素后退出循环
+                                                }
+                                            } catch (error) {
+                                                // 超时错误是预期的，继续重试
+                                                // alert(`❌ ATTEMPT ${currentAttempt} FAILED
+                                                // Error: ${error.message}
+                                                // Will retry in 2 seconds...`);
+                                            }
+
+                                            // 只有在未找到元素时才增加重试计数和等待
+                                            if (!uploadInput) {
+                                                retryCount++;
+                                                if (retryCount < maxRetries) {
+                                                    // alert(`🔄 RETRYING... (${retryCount}/${maxRetries})
+                                                    // Waiting 2 seconds before next attempt`);
+                                                    await window.delay(2000); // 重试前等待2秒
+                                                } else {
+                                                    // alert(`❌ MAX RETRIES REACHED
+                                                    // Failed to find upload input after ${maxRetries} attempts`);
+                                                }
+                                            }
+                                        }
+
+                                        if (!uploadInput) {
+                                            console.log('未找到上传input元素');
+                                        } else {
+                                            // 执行文件上传
+                                            await uploadVideo(messageData, wujieApp.shadowRoot);
+                                            await waitForUploadCompleteBeforeForm('消息发布流程');
+                                        }
+                                    }
+                                } catch (error) {
+                                    // 视频下载/上传失败，调用失败接口
+                                    console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
+                                    const publishId = messageData?.video?.dyPlatform?.id;
+                                    if (publishId) {
+                                        await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                                    }
+                                    await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                                    isProcessing = false;
+                                    return;
+                                }
+                            } else {
+                                // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
+                                try {
+                                    await uploadVideo(messageData);
+                                    await waitForUploadCompleteBeforeForm('消息发布流程');
+                                } catch (error) {
+                                    console.log('[视频号发布] ❌ 视频上传失败:', error);
+                                    const publishId = messageData?.video?.dyPlatform?.id;
+                                    if (publishId) {
+                                        await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                                    }
+                                    await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                                    isProcessing = false;
+                                    return;
+                                }
+                            }
+                            try {
+                                await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+                            } catch (e) {
+                                console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+                            }
+
+                            console.log('[视频号发布] 📤 准备发送数据到接口...');
+                            console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+                            // 注意：不在这里关闭窗口，因为 publishApi 内部有异步的统计接口调用
+                            // 窗口会在 publishApi 完成后自动关闭
+                        }
+
+                        // 重置处理标志（无论成功或失败）
+                        isProcessing = false;
+                        console.log('[视频号发布] 处理完成，isProcessing=false, hasProcessed=', hasProcessed);
+                    }
+                } catch (error) {
+                    console.error('[视频号发布] ❌ 消息处理出错，但不影响页面渲染:', error);
+                    isProcessing = false; // 重置标志
+                }
+            });
+
+            console.log('[视频号发布] ✅ 消息监听器注册成功');
+        }
+    }
+
+    // ===========================
+    // 6. 页面加载完成向父窗口发送消息（必须在监听器注册之后！）
+    // ===========================
+
+    // 页面加载完成后向父窗口发送消息
+    console.log('[视频号发布] 页面加载完成，发送 页面加载完成 消息');
+
+    // 🔑 隐藏 loading 界面，显示页面内容
+    if (typeof window.showPageAndHideMask === 'function') {
+        window.showPageAndHideMask();
+        console.log('[视频号发布] ✅ 已隐藏 loading 界面，显示页面内容');
+    }
+
+    sendMessageToParent('页面加载完成');
+
+    console.log('═══════════════════════════════════════');
+    console.log('✅ 视频号发布脚本初始化完成');
+    console.log('📝 全局方法: window.__SHIPINHAO_AUTH__');
+    console.log('  - notifySuccess()  : 发送发布成功消息');
+    console.log('  - sendMessage(msg) : 发送自定义消息');
+    console.log('  - getAuthData()    : 获取发布数据');
+    console.log('═══════════════════════════════════════');
+
+    // ===========================
+    // 🔐 发布前登录态检测：掉登录就停窗等用户重新登录
+    // 必须放在消息监听器注册之后再 await，否则父窗口 publish-data 会在等待期间丢掉。
+    // 视频号接口需要 POST + query params + JSON body，照抄 creator 脚本的调用方式。
+    // ===========================
+    const probeShipinhaoLogin = async () => {
+        try {
+            const aid = localStorage.getItem('_rx:aid') || localStorage.getItem('_ml:aid') || '';
+            const logFinderId = localStorage.getItem('finder_username') || '';
+            if (!aid || !logFinderId) return 'unknown';
+            const params = new URLSearchParams({
+                _aid: aid,
+                _rid: String(Date.now()).slice(0, 10),
+                _pageUrl: 'https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform'
+            });
+            const body = {
+                timestamp: String(Date.now()),
+                _log_finder_id: logFinderId,
+                _log_finder_uin: '',
+                pluginSessionId: null,
+                rawKeyBuff: null,
+                reqScene: 7,
+                scene: 7
+            };
+            const res = await fetch(
+                `https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data?${params}`,
+                {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                    credentials: 'include'
+                }
+            );
+            if (!res.ok) return 'unknown';
+            const json = await res.json();
+            const d = json && json.data;
+            if (d && (d.finderUser || d.userAttr)) return 'logged-in';
+            // 有结构但取不到 finderUser/userAttr 才算掉登录
+            if (json && typeof json === 'object' && ('errCode' in json || 'errMsg' in json || 'ret' in json)) {
+                return 'logged-out';
+            }
+            return 'unknown';
+        } catch (e) {
+            return 'unknown';
+        }
+    };
+
+    const sphLoginState = await probeShipinhaoLogin();
+    console.log('[视频号发布] 🔐 发布前登录态探测:', sphLoginState);
+    if (sphLoginState === 'logged-out') {
+        if (typeof window.startPublishLoginWatch === 'function') {
+            window.startPublishLoginWatch('视频号', {
+                probeLoggedIn: async () => (await probeShipinhaoLogin()) === 'logged-in'
+            });
+            return;
+        }
+        console.warn('[视频号发布] ⚠️ startPublishLoginWatch 不可用，跳过停窗等待，继续发布流程');
+    }
+
+    // ===========================
+    // 7. 检查是否是恢复 cookies 后的刷新（立即执行）
+    // ===========================
+    await (async () => {
+        // 如果已经在处理或已处理完成，跳过
+        if (isProcessing || hasProcessed) {
+            console.log('[视频号发布] ⏭️ 已在处理中或已完成，跳过全局存储读取');
+            return;
+        }
+
+        // 🔑 检查当前 URL 是否是发布页（避免在跳转后的错误页面执行）
+        const currentUrl = window.location.href;
+        const isPublishPage = currentUrl.includes('/platform/post/create') || currentUrl.includes('/post/create');
+        if (!isPublishPage) {
+            console.log('[视频号发布] ⏭️ 当前不是发布页，跳过全局存储读取，URL:', currentUrl);
+            return;
+        }
+
+        try {
+            // 获取当前窗口 ID
+            const windowId = await window.browserAPI.getWindowId();
+            console.log('[视频号发布] 检查全局存储，窗口 ID:', windowId);
+
+            if (!windowId) {
+                console.log('[视频号发布] ❌ 无法获取窗口 ID');
+                return;
+            }
+
+            // 检查是否有恢复 cookies 后保存的发布数据
+            const publishData = await window.browserAPI.getGlobalData(`publish_data_window_${windowId}`);
+            console.log('[视频号发布] 📦 从全局存储读取 publish_data_window_' + windowId + ':', publishData ? '有数据' : '无数据');
+
+            if (publishData && !isProcessing && !hasProcessed) {
+                console.log('[视频号发布] ✅ 检测到恢复 cookies 后的数据，开始处理...');
+
+                // 🔑 不再立即删除数据，改为在发布完成后删除
+                // 这样如果登录跳转后跳回来，数据仍然可用
+                // 使用 hasProcessed 标记防止重复处理
+                console.log('[视频号发布] 📝 保留 publish_data_window_' + windowId + ' 数据，待发布完成后清理');
+
+                // 标记为正在处理
+                isProcessing = true;
+
+                // 更新全局变量
+                window.__AUTH_DATA__ = {
+                    ...window.__AUTH_DATA__,
+                    message: publishData,
+                    source: 'cookieRestore',
+                    windowId: windowId,
+                    receivedAt: Date.now()
+                };
+
+                // 等待wujie-app元素
+                const wujieApp = await waitForElement("wujie-app", 15000);
+                if (wujieApp) {
+                    let videoAlreadyUploaded = false;
+                    try {
+                        const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+                        if (fullScreenVideo && fullScreenVideo.src) {
+                            videoAlreadyUploaded = true;
+                        }
+                        if (!videoAlreadyUploaded) {
+                            await uploadVideo(publishData, wujieApp.shadowRoot);
+                            await waitForUploadCompleteBeforeForm('全局数据恢复流程');
+                        }
+                    } catch (error) {
+                        console.log('[视频号发布] ❌ 视频上传失败:', error);
+                        const publishId = publishData?.video?.dyPlatform?.id;
+                        if (publishId) {
+                            await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                        }
+                        await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                        isProcessing = false;
+                        return;
+                    }
+                } else {
+                    try {
+                        await uploadVideo(publishData);
+                        await waitForUploadCompleteBeforeForm('全局数据恢复流程');
+                    } catch (error) {
+                        console.log('[视频号发布] ❌ 视频上传失败:', error);
+                        const publishId = publishData?.video?.dyPlatform?.id;
+                        if (publishId) {
+                            await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                        }
+                        await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                        isProcessing = false;
+                        return;
+                    }
+                }
+
+                try {
+                    await retryOperation(async () => await fillFormData(publishData), 3, 2000);
+                } catch (e) {
+                    console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+                }
+
+                console.log('[视频号发布] 📤 准备发送数据到接口...');
+                console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+                isProcessing = false;
+            }
+        } catch (error) {
+            console.error('[视频号发布] ❌ 从全局存储读取数据失败:', error);
+        }
+    })();
+
+    // ===========================
+    // 8. 检查是否有保存的发布数据（授权跳转恢复 - localStorage）
+    // ===========================
+    setTimeout(async () => {
+        try {
+            const savedData = localStorage.getItem(getPublishDataKey());
+            console.log('[视频号发布] 🔍 检查恢复数据, key:', getPublishDataKey(), ', 数据:', savedData ? '有' : '无');
+
+            // 跳过恢复：如果已经在处理或已处理完成
+            if (isProcessing || hasProcessed) {
+                console.log('[视频号发布] ℹ️ 已在处理中或已完成，跳过恢复');
+                return;
+            }
+
+            if (savedData) {
+                // 验证数据格式：必须是有效的 JSON 且不是 "[object Object]"
+                if (savedData === '[object Object]' || savedData.startsWith('[object ')) {
+                    console.warn('[视频号发布] ⚠️ 检测到无效的旧数据，清除并跳过恢复');
+                    localStorage.removeItem(getPublishDataKey());
+                    return;
+                }
+
+                console.log('[视频号发布] 🔄 检测到保存的发布数据，准备恢复...');
+                const messageData = JSON.parse(savedData);
+
+                // 额外验证：检查解析后的数据是否有必要字段
+                if (!messageData || typeof messageData !== 'object') {
+                    console.warn('[视频号发布] ⚠️ 恢复的数据无效，清除并跳过');
+                    localStorage.removeItem(getPublishDataKey());
+                    return;
+                }
+
+                console.log('[视频号发布] 📦 恢复的数据:', messageData);
+
+                // 标记为正在处理
+                isProcessing = true;
+
+                // 更新全局变量
+                window.__AUTH_DATA__ = {
+                    ...window.__AUTH_DATA__,
+                    message: messageData,
+                    recoveredAt: Date.now()
+                };
+
+                // 执行上传流程（复制原来的上传逻辑）
+                const wujieApp = await waitForElement("wujie-app", 15000);
+                if (wujieApp) {
+                    let videoAlreadyUploaded = false;
+                    try {
+                        const fullScreenVideo = wujieApp.shadowRoot?.querySelector('#fullScreenVideo');
+                        if (fullScreenVideo && fullScreenVideo.src) {
+                            videoAlreadyUploaded = true;
+                        }
+                        if (!videoAlreadyUploaded) {
+                            await uploadVideo(messageData, wujieApp.shadowRoot);
+                            await waitForUploadCompleteBeforeForm('localStorage恢复流程');
+                        }
+                    } catch (error) {
+                        // 视频下载/上传失败，调用失败接口
+                        console.log('[视频号发布] ❌ 检测视频是否已经上传完成失败:', error);
+                        const publishId = messageData?.video?.dyPlatform?.id;
+                        if (publishId) {
+                            await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                        }
+                        await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                        isProcessing = false;
+                        return;
+                    }
+                } else {
+                    // wujieApp 不存在，直接上传视频（不使用 Shadow DOM）
+                    try {
+                        await uploadVideo(messageData);
+                        await waitForUploadCompleteBeforeForm('localStorage恢复流程');
+                    } catch (error) {
+                        console.log('[视频号发布] ❌ 视频上传失败:', error);
+                        const publishId = messageData?.video?.dyPlatform?.id;
+                        if (publishId) {
+                            await sendStatisticsError(publishId, error.message || '视频上传失败', '视频号发布');
+                        }
+                        await closeWindowWithMessage('视频上传失败，刷新数据', 1000);
+                        isProcessing = false;
+                        return;
+                    }
+                }
+
+                try {
+                    await retryOperation(async () => await fillFormData(messageData), 3, 2000);
+                } catch (e) {
+                    console.log('[视频号发布] ❌ 填写表单数据失败:', e);
+                }
+
+                console.log('[视频号发布] 📤 恢复数据后准备发送数据到接口...');
+                console.log('[视频号发布] ✅ 发布流程已启动，等待 publishApi 完成...');
+
+                // 重置处理标志
+                isProcessing = false;
+            } else {
+                console.log('[视频号发布] ℹ️ 没有需要恢复的数据');
+            }
+        } catch (error) {
+            console.error('[视频号发布] ❌ 恢复数据失败:', error);
+            // 如果是 JSON 解析错误，清除无效数据
+            if (error instanceof SyntaxError) {
+                console.warn('[视频号发布] ⚠️ 数据格式错误，清除无效数据');
+                try {
+                    localStorage.removeItem(getPublishDataKey());
+                } catch (e) {
+                    // 忽略
+                }
+            }
+            isProcessing = false;
+        }
+    }, window.getRandomDelayMs(2000)); // 延迟2秒，等待页面完全加载
 
 })();
 
 function getShipinhaoShadowRoot() {
-  const wujieApp = document.querySelector('wujie-app');
-  return wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
+    const wujieApp = document.querySelector('wujie-app');
+    return wujieApp && wujieApp.shadowRoot ? wujieApp.shadowRoot : null;
 }
 
 function getShipinhaoElementText(element) {
-  return String(element?.textContent || element?.innerText || '').replace(/\s+/g, ' ').trim();
+    return String(element?.textContent || element?.innerText || '').replace(/\s+/g, ' ').trim();
 }
 
 function normalizeShipinhaoShortTitle(rawTitle, fallbackText = '') {
-  const title = String(rawTitle || fallbackText || '').replace(/\s+/g, ' ').trim();
-  const titleChars = Array.from(title);
-  if (titleChars.length <= 16) {
-    return title;
-  }
+    const title = String(rawTitle || fallbackText || '').replace(/\s+/g, ' ').trim();
+    const titleChars = Array.from(title);
+    if (titleChars.length <= 16) {
+        return title;
+    }
 
-  const shortTitle = titleChars.slice(0, 16).join('').trim();
-  console.warn('[视频号发布] ⚠️ 短标题超过16字，已自动截断:', {
-    originalLength: titleChars.length,
-    shortLength: Array.from(shortTitle).length,
-    shortTitle
-  });
-  return shortTitle;
+    const shortTitle = titleChars.slice(0, 16).join('').trim();
+    console.warn('[视频号发布] ⚠️ 短标题超过16字，已自动截断:', {
+        originalLength: titleChars.length,
+        shortLength: Array.from(shortTitle).length,
+        shortTitle
+    });
+    return shortTitle;
 }
 
 function isShipinhaoElementVisible(element) {
-  if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false;
 
-  const rect = element.getBoundingClientRect();
-  if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
 
-  try {
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-      return false;
+    try {
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+        }
+    } catch (_) {
+        // ignore style read failure
     }
-  } catch (_) {
-    // ignore style read failure
-  }
 
-  return true;
+    return true;
 }
 
 function isShipinhaoButtonDisabled(button) {
-  if (!button) return true;
-  const className = String(button.className || '');
-  return !!button.disabled
-    || button.getAttribute('disabled') !== null
-    || button.getAttribute('aria-disabled') === 'true'
-    || className.includes('disabled')
-    || className.includes('weui-desktop-btn_disabled');
+    if (!button) return true;
+    const className = String(button.className || '');
+    return !!button.disabled
+        || button.getAttribute('disabled') !== null
+        || button.getAttribute('aria-disabled') === 'true'
+        || className.includes('disabled')
+        || className.includes('weui-desktop-btn_disabled');
 }
 
 function getShipinhaoPublishButtonCandidates() {
-  const shadowRoot = getShipinhaoShadowRoot();
-  const roots = [shadowRoot, document].filter(Boolean);
-  const selectors = [
-    '.form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn',
-    '.form-btns .weui-desktop-btn',
-    '.form-btns button',
-    '.form-btns [role="button"]',
-    'button.weui-desktop-btn',
-    '.weui-desktop-btn'
-  ];
-  const seen = new Set();
-  const candidates = [];
+    const shadowRoot = getShipinhaoShadowRoot();
+    const roots = [shadowRoot, document].filter(Boolean);
+    const selectors = [
+        '.form-btns .weui-desktop-popover__wrp:nth-last-of-type(1) .weui-desktop-btn',
+        '.form-btns .weui-desktop-btn',
+        '.form-btns button',
+        '.form-btns [role="button"]',
+        'button.weui-desktop-btn',
+        '.weui-desktop-btn'
+    ];
+    const seen = new Set();
+    const candidates = [];
 
-  for (const root of roots) {
-    for (const selector of selectors) {
-      try {
-        root.querySelectorAll(selector).forEach(element => {
-          if (seen.has(element)) return;
-          seen.add(element);
-          candidates.push(element);
-        });
-      } catch (_) {
-        // ignore selector failure
-      }
+    for (const root of roots) {
+        for (const selector of selectors) {
+            try {
+                root.querySelectorAll(selector).forEach(element => {
+                    if (seen.has(element)) return;
+                    seen.add(element);
+                    candidates.push(element);
+                });
+            } catch (_) {
+                // ignore selector failure
+            }
+        }
     }
-  }
 
-  return candidates;
+    return candidates;
 }
 
 function isLikelyShipinhaoPublishButton(button, publishTime) {
-  const text = getShipinhaoElementText(button);
-  if (!text) return false;
+    const text = getShipinhaoElementText(button);
+    if (!text) return false;
 
-  const excludedKeywords = ['草稿', '保存', '预览', '取消', '返回', '关闭'];
-  if (excludedKeywords.some(keyword => text.includes(keyword))) {
-    return false;
-  }
+    const excludedKeywords = ['草稿', '保存', '预览', '取消', '返回', '关闭'];
+    if (excludedKeywords.some(keyword => text.includes(keyword))) {
+        return false;
+    }
 
-  if (+publishTime === 2 && (text.includes('定时') || text.includes('预约'))) {
-    return true;
-  }
+    if (+publishTime === 2 && (text.includes('定时') || text.includes('预约'))) {
+        return true;
+    }
 
-  return text.includes('发表') || text.includes('发布') || text.includes('提交');
+    return text.includes('发表') || text.includes('发布') || text.includes('提交');
 }
 
 function findShipinhaoPublishButton(publishTime) {
-  const candidates = getShipinhaoPublishButtonCandidates();
-  const visibleCandidates = candidates.filter(isShipinhaoElementVisible);
-  const enabledCandidates = visibleCandidates.filter(candidate => !isShipinhaoButtonDisabled(candidate));
-  const publishTextCandidates = enabledCandidates.filter(candidate => isLikelyShipinhaoPublishButton(candidate, publishTime));
+    const candidates = getShipinhaoPublishButtonCandidates();
+    const visibleCandidates = candidates.filter(isShipinhaoElementVisible);
+    const enabledCandidates = visibleCandidates.filter(candidate => !isShipinhaoButtonDisabled(candidate));
+    const publishTextCandidates = enabledCandidates.filter(candidate => isLikelyShipinhaoPublishButton(candidate, publishTime));
 
-  if (+publishTime === 2) {
-    const scheduleButton = publishTextCandidates.find(candidate => {
-      const text = getShipinhaoElementText(candidate);
-      return text.includes('定时') || text.includes('预约');
-    });
-    if (scheduleButton) return scheduleButton;
-  }
-
-  if (publishTextCandidates.length > 0) {
-    return publishTextCandidates[publishTextCandidates.length - 1];
-  }
-
-  const footerButtons = enabledCandidates.filter(candidate => {
-    try {
-      return !!candidate.closest('.form-btns');
-    } catch (_) {
-      return false;
+    if (+publishTime === 2) {
+        const scheduleButton = publishTextCandidates.find(candidate => {
+            const text = getShipinhaoElementText(candidate);
+            return text.includes('定时') || text.includes('预约');
+        });
+        if (scheduleButton) return scheduleButton;
     }
-  });
 
-  return footerButtons.length > 0 ? footerButtons[footerButtons.length - 1] : null;
+    if (publishTextCandidates.length > 0) {
+        return publishTextCandidates[publishTextCandidates.length - 1];
+    }
+
+    const footerButtons = enabledCandidates.filter(candidate => {
+        try {
+            return !!candidate.closest('.form-btns');
+        } catch (_) {
+            return false;
+        }
+    });
+
+    return footerButtons.length > 0 ? footerButtons[footerButtons.length - 1] : null;
 }
 
 function describeShipinhaoButtonCandidate(button) {
-  return {
-    text: getShipinhaoElementText(button).slice(0, 40),
-    disabled: isShipinhaoButtonDisabled(button),
-    visible: isShipinhaoElementVisible(button),
-    className: String(button?.className || '').slice(0, 120)
-  };
+    return {
+        text: getShipinhaoElementText(button).slice(0, 40),
+        disabled: isShipinhaoButtonDisabled(button),
+        visible: isShipinhaoElementVisible(button),
+        className: String(button?.className || '').slice(0, 120)
+    };
 }
 
 function collectShipinhaoBlockingErrorTexts() {
-  const shadowRoot = getShipinhaoShadowRoot();
-  const roots = [shadowRoot, document].filter(Boolean);
-  const errorTexts = [];
+    const shadowRoot = getShipinhaoShadowRoot();
+    const roots = [shadowRoot, document].filter(Boolean);
+    const errorTexts = [];
 
-  for (const root of roots) {
-    try {
-      root.querySelectorAll('.error-title').forEach(element => {
-        const text = getShipinhaoElementText(element);
-        if (text && !errorTexts.includes(text)) {
-          errorTexts.push(text);
+    for (const root of roots) {
+        try {
+            root.querySelectorAll('.error-title').forEach(element => {
+                const text = getShipinhaoElementText(element);
+                if (text && !errorTexts.includes(text)) {
+                    errorTexts.push(text);
+                }
+            });
+        } catch (_) {
+            // ignore selector failure
         }
-      });
-    } catch (_) {
-      // ignore selector failure
     }
-  }
 
-  return errorTexts;
+    return errorTexts;
 }
 
 function collectShipinhaoFormDiagnostics() {
-  const shadowRoot = getShipinhaoShadowRoot();
-  const roots = [shadowRoot, document].filter(Boolean);
-  const titleInput = (shadowRoot && shadowRoot.querySelector('.post-short-title-wrap input'))
-    || document.querySelector('.post-short-title-wrap input');
-  const introInput = (shadowRoot && shadowRoot.querySelector('.input-editor'))
-    || document.querySelector('.input-editor');
-  const progressText = (shadowRoot && shadowRoot.querySelector('.ant-progress-text'))
-    || document.querySelector('.ant-progress-text');
-  const video = (shadowRoot && shadowRoot.querySelector('#fullScreenVideo'))
-    || document.querySelector('#fullScreenVideo');
-  const errorSelectors = [
-    '.error-tip',
-    '[class*="error"]',
-    '[class*="warn"]',
-    '[class*="tip"]',
-    '.toptip-content span',
-    '.weui-desktop-form__tips',
-    '.weui-desktop-form__error'
-  ];
-  const errorKeywords = ['错误', '失败', '不能为空', '请输入', '最多', '超过', '上传', '审核', '违规', '不支持', '请选择', '必填', '不能', '不可', '限制'];
-  const errorTexts = collectShipinhaoBlockingErrorTexts();
+    const shadowRoot = getShipinhaoShadowRoot();
+    const roots = [shadowRoot, document].filter(Boolean);
+    const titleInput = (shadowRoot && shadowRoot.querySelector('.post-short-title-wrap input'))
+        || document.querySelector('.post-short-title-wrap input');
+    const introInput = (shadowRoot && shadowRoot.querySelector('.input-editor'))
+        || document.querySelector('.input-editor');
+    const progressText = (shadowRoot && shadowRoot.querySelector('.ant-progress-text'))
+        || document.querySelector('.ant-progress-text');
+    const video = (shadowRoot && shadowRoot.querySelector('#fullScreenVideo'))
+        || document.querySelector('#fullScreenVideo');
+    const errorSelectors = [
+        '.error-tip',
+        '[class*="error"]',
+        '[class*="warn"]',
+        '[class*="tip"]',
+        '.toptip-content span',
+        '.weui-desktop-form__tips',
+        '.weui-desktop-form__error'
+    ];
+    const errorKeywords = ['错误', '失败', '不能为空', '请输入', '最多', '超过', '上传', '审核', '违规', '不支持', '请选择', '必填', '不能', '不可', '限制'];
+    const errorTexts = collectShipinhaoBlockingErrorTexts();
 
-  for (const root of roots) {
-    for (const selector of errorSelectors) {
-      try {
-        root.querySelectorAll(selector).forEach(element => {
-          const text = getShipinhaoElementText(element);
-          if (!text || text.length > 180) return;
-          if (!errorKeywords.some(keyword => text.includes(keyword))) return;
-          if (!errorTexts.includes(text)) {
-            errorTexts.push(text);
-          }
-        });
-      } catch (_) {
-        // ignore selector failure
-      }
+    for (const root of roots) {
+        for (const selector of errorSelectors) {
+            try {
+                root.querySelectorAll(selector).forEach(element => {
+                    const text = getShipinhaoElementText(element);
+                    if (!text || text.length > 180) return;
+                    if (!errorKeywords.some(keyword => text.includes(keyword))) return;
+                    if (!errorTexts.includes(text)) {
+                        errorTexts.push(text);
+                    }
+                });
+            } catch (_) {
+                // ignore selector failure
+            }
+        }
     }
-  }
 
-  return {
-    title: titleInput?.value || '未获取到',
-    titleLength: titleInput?.value?.length || 0,
-    intro: (introInput?.textContent || '未获取到').substring(0, 100),
-    introLength: introInput?.textContent?.length || 0,
-    uploadProgress: getShipinhaoElementText(progressText) || '无进度元素',
-    videoHasSrc: !!video?.src,
-    videoReadyState: typeof video?.readyState === 'number' ? video.readyState : '未获取到',
-    platformErrors: errorTexts.length > 0 ? errorTexts.slice(0, 10) : '无错误提示',
-    buttonCandidates: getShipinhaoPublishButtonCandidates().slice(0, 8).map(describeShipinhaoButtonCandidate)
-  };
+    return {
+        title: titleInput?.value || '未获取到',
+        titleLength: titleInput?.value?.length || 0,
+        intro: (introInput?.textContent || '未获取到').substring(0, 100),
+        introLength: introInput?.textContent?.length || 0,
+        uploadProgress: getShipinhaoElementText(progressText) || '无进度元素',
+        videoHasSrc: !!video?.src,
+        videoReadyState: typeof video?.readyState === 'number' ? video.readyState : '未获取到',
+        platformErrors: errorTexts.length > 0 ? errorTexts.slice(0, 10) : '无错误提示',
+        buttonCandidates: getShipinhaoPublishButtonCandidates().slice(0, 8).map(describeShipinhaoButtonCandidate)
+    };
 }
 
 async function waitForShipinhaoPublishButton(options = {}) {
-  const {
-    timeoutMs = 90000,
-    intervalMs = 2000,
-    publishTime = 0,
-    label = '发布按钮'
-  } = options;
-  const startedAt = Date.now();
-  let retryCount = 0;
+    const {
+        timeoutMs = 90000,
+        intervalMs = 2000,
+        publishTime = 0,
+        label = '发布按钮'
+    } = options;
+    const startedAt = Date.now();
+    let retryCount = 0;
 
-  while (Date.now() - startedAt < timeoutMs) {
-    const publishButton = findShipinhaoPublishButton(publishTime);
-    if (publishButton) {
-      console.log(`[视频号发布] ✅ ${label}已可用（第${retryCount + 1}次检测）:`, describeShipinhaoButtonCandidate(publishButton));
-      return publishButton;
+    while (Date.now() - startedAt < timeoutMs) {
+        const publishButton = findShipinhaoPublishButton(publishTime);
+        if (publishButton) {
+            console.log(`[视频号发布] ✅ ${label}已可用（第${retryCount + 1}次检测）:`, describeShipinhaoButtonCandidate(publishButton));
+            return publishButton;
+        }
+
+        retryCount++;
+        if (retryCount === 1 || retryCount % 5 === 0) {
+            console.log(`[视频号发布] ⏳ ${label}仍不可用，继续等待... (${retryCount})`, collectShipinhaoFormDiagnostics());
+        }
+        await window.delay(intervalMs);
     }
 
-    retryCount++;
-    if (retryCount === 1 || retryCount % 5 === 0) {
-      console.log(`[视频号发布] ⏳ ${label}仍不可用，继续等待... (${retryCount})`, collectShipinhaoFormDiagnostics());
-    }
-    await window.delay(intervalMs);
-  }
-
-  throw new Error(`${label}等待超时: ${JSON.stringify(collectShipinhaoFormDiagnostics())}`);
+    throw new Error(`${label}等待超时: ${JSON.stringify(collectShipinhaoFormDiagnostics())}`);
 }
 
 // ===========================
 // 7. 发布视频到视频号
 // ===========================
 async function publishApi(dataObj) {
-  // 防止重复执行
-  if (publishRunning) {
-    return;
-  }
-
-  const publishId = dataObj.video.dyPlatform.id;
-
-  // 🔑 提前获取窗口ID和存储key，供整个函数使用
-  let myWindowId = null;
-  try {
-    myWindowId = await window.browserAPI.getWindowId();
-  } catch (e) {
-    console.error('[视频号发布] ❌ 获取窗口ID失败:', e);
-  }
-  const storageKey = myWindowId ? `PUBLISH_SUCCESS_DATA_${myWindowId}` : 'PUBLISH_SUCCESS_DATA';
-  const publishDataKey = myWindowId ? `SHIPINHAO_PUBLISH_DATA_${myWindowId}` : 'SHIPINHAO_PUBLISH_DATA_default';
-
-  try {
-    // 标记发布正在进行
-    publishRunning = true;
-
-    // ===========================
-    // 检测视频上传进度是否完成
-    // ===========================
-    console.log('[视频号发布] ⏳ 等待视频上传完成...');
-    await retryOperation(async () => {
-      // 🔑 首先检测是否有上传错误提示
-      const errorTip = await waitForShadowElement("wujie-app", ".upload-error, .error-tip, [class*='error']", 500).catch(() => null);
-      if (errorTip && errorTip.textContent && errorTip.textContent.trim()) {
-        const errorText = errorTip.textContent.trim();
-        if (errorText.includes('失败') || errorText.includes('错误') || errorText.includes('error')) {
-          throw new Error('视频上传失败: ' + errorText.substring(0, 50));
-        }
-      }
-
-      // 在 Shadow DOM 中查找上传进度元素
-      const progressText = await waitForShadowElement("wujie-app", ".ant-progress-text", 1000).catch(() => null);
-
-      if (progressText) {
-        const text = (progressText.textContent || '').trim();
-        console.log('[视频号发布] 📊 当前上传进度:', text);
-        // 如果进度不是 100%，继续等待
-        if (text !== '100%' && text !== '100') {
-          throw new Error('视频正在上传中: ' + text);
-        }
-        console.log('[视频号发布] ✅ 上传进度 100%');
-      } else {
-        // 元素不存在也认为上传完成
-        console.log('[视频号发布] ✅ 上传进度元素已消失，上传完成');
-      }
-      return true;
-    }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
-
-    // ===========================
-    // 检测视频是否上传完成
-    // ===========================
-    console.log('[视频号发布] 🎬 开始检测视频上传状态...');
-
-    const videoReady = await retryOperation(async () => {
-      // 在 Shadow DOM 中查找视频元素
-      const video = await waitForShadowElement("wujie-app", "#fullScreenVideo", 5000);
-
-      if (!video) {
-        throw new Error('Video element #fullScreenVideo not found');
-      }
-
-      console.log('[视频号发布] 📹 视频状态 - src:', video.src ? '有' : '无', ', readyState:', video.readyState, ', duration:', video.duration);
-
-      // 检查视频是否有 src
-      if (!video.src) {
-        throw new Error('视频没有链接');
-      }
-
-      // 检查视频是否可以播放 (readyState >= 2 表示有足够数据可以播放)
-      if (video.readyState < 2) {
-        throw new Error('视频未准备好播放，readyState=' + video.readyState);
-      }
-
-      // 检查视频时长是否有效
-      if (isNaN(video.duration) || video.duration <= 0) {
-        throw new Error('视频时长无效： ' + video.duration);
-      }
-
-      console.log('[视频号发布] ✅ 视频已上传完成，可以播放');
-      return true;
-    }, 30, 3000); // 最多重试30次，每次间隔3秒（共90秒超时）
-
-    if (!videoReady) {
-      throw new Error('视频上传未完成，无法发布');
-    }
-
-    console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
-
-    // 自定义封面
-    // 🏷️ 版本水印：打包版会强制从 OBS 远程拉脚本（script-manager.js:45 无条件强开），
-    //    本地改了没重新上传就永远跑旧代码。这行日志就是判断"跑的到底是哪一版"的唯一凭据
-    console.log('[视频号发布][自定义封面图] 🏷️ 代码版本: COVER_UPLOAD_FIX_v4 (朝向选图 + 推荐气泡→直接编辑 + 双坑位去重 + 网络层证据 + 跨realm构造 + 无证据不点确认)');
-    const customCoverList = dataObj.element.cover2
-    /* const customCoverList = [
-      "https://images.china9.cn/attachment/2026-08-28/LnBvF4NtrF5cuClAXr5Oqx6QapSaIR1h0FQafdIg.jpg",
-      "https://oss.lcweb01.cn/jzt/6012/image/20240423/b69ee1fc9c97c888f1af6ff05da0e018.jpeg"
-    ]; */
-    // 并行预加载所有封面图片，获取真实宽高。
-    // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
-    // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
-    const coverPromises = customCoverList.map((coverUrl, i) => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        let settled = false;
-        const done = (v, why) => {
-          if (settled) return;
-          settled = true;
-          if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
-          resolve(v);
-        };
-        const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
-        img.onload = () => {
-          clearTimeout(timer);
-          done({
-            url: coverUrl,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            ratio: img.naturalWidth / img.naturalHeight
-          });
-        };
-        img.onerror = () => {
-          clearTimeout(timer);
-          done(null, '失败(404/跨域?)');
-        };
-        img.src = coverUrl;
-      });
-    });
-
-    const loadedCovers = await Promise.all(coverPromises);
-
-    // 纵封面
-    // 🔑 waitForShadowElement 超时是 reject 不是 resolve(null)，不 catch 的话下面的
-    //    if (coverY) 是永远走不到的死代码，元素找不到会直接把整个 publishApi 掀掉
-    const coverY = await waitForShadowElement("wujie-app", ".vertical-img-wrap", 5000).catch(() => null);
-    const coverX = await waitForShadowElement("wujie-app", ".horizon-cover-wrap", 5000).catch(() => null);
-    const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
-
-    // 把文件写进 React 托管的 <input type="file">。
-    // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
-    //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
-    //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
-    //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
-    //    common.js 的 uploadFileToInput 没有这一步，所以这里不能图省事去用它。
-    const fireFileInput = (input, file) => {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      input.files = dt.files;
-
-      if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
-        input._valueTracker.setValue('');
-      }
-      input.dispatchEvent(new Event('input', {bubbles: true}));
-      input.dispatchEvent(new Event('change', {bubbles: true}));
-
-      // 只能证明"文件确实挂到 input 上了"，不代表 React 接住了，后面还要看预览
-      return !!(input.files && input.files.length === 1);
-    };
-
-    // 坑位当前缩略图签名：上传前后各取一次，用来判断封面到底换没换。
-    // 「弹窗关了」不等于「封面生效了」——平台 beforeUpload 拒收时照样关窗
-    const readCoverSlotSignature = (slot) => {
-      if (!slot) return '';
-      try {
-        const img = slot.querySelector('img');
-        if (img && img.src) return img.src;
-        const bg = window.getComputedStyle(slot).backgroundImage;
-        if (bg && bg !== 'none') return bg;
-        return String(slot.innerHTML || '').slice(0, 200);
-      } catch (_) {
-        return '';
-      }
-    };
-
-    // 弹窗内所有图片地址，用作"预览有没有渲染出来"的基线
-    const readDialogImageSignature = (dialogEl) => {
-      if (!dialogEl) return '';
-      try {
-        return Array.from(dialogEl.querySelectorAll('img'))
-            .map(img => img.src || '')
-            .filter(Boolean)
-            .join('|');
-      } catch (_) {
-        return '';
-      }
-    };
-
-    // 在弹窗范围内按文案找按钮（可见 + 未禁用）。
-    // 绝不"取最后一个按钮"——那样很容易点到取消或弹窗外的控件
-    const findShipinhaoDialogButton = (dialogEl, keywords) => {
-      if (!dialogEl) return null;
-      try {
-        const buttons = Array.from(dialogEl.querySelectorAll('button, .weui-desktop-btn, [role="button"]'));
-        return buttons.find(btn => {
-          const text = getShipinhaoElementText(btn);
-          return text
-              && keywords.some(keyword => text.includes(keyword))
-              && isShipinhaoElementVisible(btn)
-              && !isShipinhaoButtonDisabled(btn);
-        }) || null;
-      } catch (_) {
-        return null;
-      }
-    };
-
-    // ── 无界(wujie)沙箱定位 ──
-    // 官方文档：「将子应用的 js 注入主应用同域的 iframe 中运行」「不用修改主应用 window 任何属性」。
-    // 也就是 DOM 挂在主文档的 shadow root，跑 JS 的却是另一个 window。两个后果都很致命：
-    //   1. hook 主 window 的 XHR/fetch 抓不到子应用发出的上传请求 → 探针恒失灵 → 一直"超时放行"
-    //   2. 主 window 造的 File 过不了子应用 `x instanceof File` 的校验（跨 realm 恒 false）
-    //      → 组件 beforeUpload 直接拒收，文件挂上了、日志全 ✅、图却没传
-    const getWujieSandboxWindow = () => {
-      let sameOriginFallback = null;
-      try {
-        for (const frame of Array.from(document.querySelectorAll('iframe'))) {
-          try {
-            const win = frame.contentWindow;
-            if (!win || !win.document) continue; // 跨域访问 document 会抛，被 catch 掉
-            // 无界会往沙箱 iframe 注入私有变量，这是最准的指纹
-            if (win.__WUJIE || win.__WUJIE_PUBLIC_PATH__ || win.$wujie) return win;
-            if (!sameOriginFallback && typeof win.File === 'function') sameOriginFallback = win;
-          } catch (_) {
-            // 跨域 iframe，跳过
-          }
-        }
-      } catch (_) {
-        // ignore
-      }
-      return sameOriginFallback;
-    };
-
-    // 用子应用所在 realm 的构造器造 File，绕开 instanceof 跨 realm 判定失败
-    const buildCoverFile = (realmWin, blob, name, type) => {
-      const W = realmWin && typeof realmWin.File === 'function' ? realmWin : window;
-      try {
-        return { file: new W.File([blob], name, { type }), realm: W === window ? 'main' : 'wujie-iframe' };
-      } catch (e) {
-        return { file: new File([blob], name, { type }), realm: 'main(realm构造失败已回退)' };
-      }
-    };
-
-    // ── 网络层上传监控 —— 判"图真的传上去了"唯一扛得住的证据 ──
-    // DOM 启发式在这条链路上已经被证伪一次了（预览没变化照样点了确认）。
-    // 计数对象统一挂主 window，两个 realm 的 hook 写同一份账。
-    const installUploadMonitor = (win, tag) => {
-      if (!win) return false;
-      try {
-        if (win.__sphUploadMonitorInstalled) return true; // 幂等：SPA 重复注入会套娃，计数翻倍
-        win.__sphUploadMonitorInstalled = true;
-      } catch (_) {
-        return false;
-      }
-
-      const stats = (window.__sphUploadStats = window.__sphUploadStats
-          || { inflight: 0, done: 0, lastUrl: '', realms: [] });
-      stats.realms.push(tag);
-
-      // 🔑 跨 realm 安全的类型判定：instanceof 认原型链，跨 realm 恒 false；
-      //    Object.prototype.toString 走 Symbol.toStringTag，跟 realm 无关
-      const isBinaryBody = (body) => {
-        if (!body) return false;
-        const t = Object.prototype.toString.call(body);
-        return t === '[object FormData]' || t === '[object Blob]' || t === '[object File]'
-            || t === '[object ArrayBuffer]' || ArrayBuffer.isView(body);
-      };
-      // 判窄一点：判宽了会把页面心跳算进来，inflight 永远 >0 就白等满超时
-      const isUploadReq = (method, url, body) => {
-        if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
-        if (/upload|\/tos|\/file\/|cdn|mmfinder|resupload/i.test(String(url || ''))) return true;
-        return isBinaryBody(body);
-      };
-      const begin = (url) => {
-        stats.inflight++;
-        stats.lastUrl = String(url || '').slice(0, 120);
-      };
-      const end = () => {
-        stats.inflight = Math.max(0, stats.inflight - 1);
-        stats.done++;
-      };
-
-      try {
-        const OrigOpen = win.XMLHttpRequest.prototype.open;
-        const OrigSend = win.XMLHttpRequest.prototype.send;
-        win.XMLHttpRequest.prototype.open = function (method, url) {
-          try {
-            this.__sphMethod = method;
-            this.__sphUrl = url;
-          } catch (_) {}
-          return OrigOpen.apply(this, arguments);
-        };
-        win.XMLHttpRequest.prototype.send = function (body) {
-          try {
-            if (isUploadReq(this.__sphMethod, this.__sphUrl, body)) {
-              begin(this.__sphUrl);
-              // loadend 覆盖 load/error/abort/timeout 四种收尾，不漏也不重复减
-              this.addEventListener('loadend', end, { once: true });
-            }
-          } catch (_) {}
-          return OrigSend.apply(this, arguments);
-        };
-      } catch (e) {
-        console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} XHR 监控安装失败:`, e && e.message);
-      }
-
-      try {
-        const origFetch = win.fetch;
-        if (typeof origFetch === 'function') {
-          win.fetch = function (input, init) {
-            let counted = false;
-            try {
-              const url = typeof input === 'string' ? input : (input && input.url) || '';
-              const method = (init && init.method) || (input && input.method) || 'GET';
-              if (isUploadReq(method, url, init && init.body)) {
-                begin(url);
-                counted = true;
-              }
-            } catch (_) {}
-            const p = origFetch.apply(this, arguments);
-            if (!counted || !p || typeof p.then !== 'function') return p;
-            return p.then(r => { end(); return r; }, e => { end(); throw e; });
-          };
-        }
-      } catch (e) {
-        console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} fetch 监控安装失败:`, e && e.message);
-      }
-      return true;
-    };
-
-    // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
-    // "新增的 http 图"是不依赖网络 hook 的第二条硬证据 —— 服务端回填 CDN url 才会出现，
-    // 本地预览是 blob:，两者能干净区分
-    const uploadBaseline = (dialogEl) => {
-      const s = window.__sphUploadStats || { done: 0 };
-      let httpImgs = new Set();
-      try {
-        httpImgs = new Set(
-            Array.from((dialogEl || document).querySelectorAll('img'))
-                .map(i => i.src)
-                .filter(u => /^https?:/i.test(u))
-        );
-      } catch (_) {}
-      return { done: s.done, httpImgs };
-    };
-
-    // 等"图真的传完"，而不是"文件刚被组件接住"。证据按可信度排序，命中即放行
-    const waitCoverUploadSettled = async (dialogEl, baseline, { min = 1200, timeout = 20000 } = {}) => {
-      const stats = () => window.__sphUploadStats || { inflight: 0, done: 0, lastUrl: '' };
-      const newHttpImg = () => {
-        try {
-          return Array.from(dialogEl.querySelectorAll('img'))
-              .map(i => i.src)
-              .find(u => /^https?:/i.test(u) && !baseline.httpImgs.has(u));
-        } catch (_) {
-          return null;
-        }
-      };
-      // 放行前复查：分片上传（申请 token → 传分片 → commit）两段之间会短暂 inflight=0，
-      // 直接放行就正好卡在中间那一刻。等 900ms 看有没有新请求接上
-      const confirmIdle = async () => {
-        for (let i = 0; i < 3; i++) {
-          await delay(300);
-          if (stats().inflight > 0) return false;
-        }
-        return true;
-      };
-
-      const start = Date.now();
-      await delay(min); // 地板时间：刚派完 change 时请求还没发出去，立刻采样必然假放行
-
-      while (Date.now() - start < timeout) {
-        const s = stats();
-        if (s.inflight === 0) {
-          if (s.done > baseline.done && await confirmIdle()) {
-            return { ok: true, evidence: `上传请求已完成(${s.done - baseline.done}个, 末个: ${s.lastUrl})` };
-          }
-          const cdn = newHttpImg();
-          if (cdn && await confirmIdle()) {
-            return { ok: true, evidence: `服务端已回填图片(${String(cdn).slice(0, 80)})` };
-          }
-        }
-        await delay(500);
-      }
-      const s = stats();
-      return { ok: false, evidence: `等满 ${timeout}ms 无证据 (inflight=${s.inflight}, 新增完成=${s.done - baseline.done})` };
-    };
-
-    // ── 单个封面坑位的完整处理 ──
-    // 纵封面和横封面逻辑完全相同，只有坑位元素和文案不同。
-    // 之前是整段复制粘贴，复制出来那份里的 coverY 忘了改成 coverX ——
-    // 算的是横向坑位的比值、选的是横向该用的图，点开的却是纵向坑位的弹窗，
-    // 于是横封面永远设不上、纵封面还被改了第二遍。
-    // 抽成函数后只有一个 slot 变量，这类"改漏一处"的 bug 从结构上就不可能再发生。
-
-    // 等弹窗真正关闭。两个坑位共用同一个弹窗选择器，上一个没关干净就点下一个，
-    // waitForShadowElement 会立刻命中残留的旧弹窗 —— 第二张图就传进第一个坑位里去了。
-    // 这是单坑位时不会暴露、双坑位必踩的坑
-    const waitCoverDialogClosed = async (timeout = 8000) => {
-      const start = Date.now();
-      while (Date.now() - start < timeout) {
-        let dlg = null;
-        try {
-          const root = getShipinhaoShadowRoot();
-          dlg = root && root.querySelector('.edit-cover-dialog-container .weui-desktop-dialog');
-        } catch (_) {
-          // ignore
-        }
-        if (!dlg || !isShipinhaoElementVisible(dlg)) return true;
-        await delay(300);
-      }
-      return false;
-    };
-
-    // 关掉弹窗，别让它挡住后面的发布按钮
-    const closeCoverDialog = async (dialog, LOG) => {
-      const cancelBtn = findShipinhaoDialogButton(dialog, ['取消', '关闭'])
-          || dialog.querySelector('.weui-desktop-dialog__close, [class*="close"]');
-      if (cancelBtn) {
-        console.log(`${LOG} 🖱️ 关闭封面弹窗:`, getShipinhaoElementText(cancelBtn) || '(关闭按钮)');
-        cancelBtn.click();
-      } else {
-        console.warn(
-            `${LOG} ⚠️ 没找到取消/关闭按钮，弹窗可能会挡住发布按钮。当前按钮文案:`,
-            Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
-                .map(btn => getShipinhaoElementText(btn))
-                .filter(Boolean)
-                .join(' | ') || '(一个都没有)'
-        );
-      }
-      await waitCoverDialogClosed();
-    };
-
-    const applyCustomCoverToSlot = async (slot, slotLabel) => {
-      // 所有日志都带坑位标识 —— 两个坑位跑同一套流程，不标就没法从日志分辨是谁
-      const LOG = `[视频号发布][自定义封面图][${slotLabel}]`;
-      if (!slot) {
-        console.log(`${LOG} ⏭️ 坑位元素不存在，跳过`);
-        return false;
-      }
-
-      const rect = slot.getBoundingClientRect();
-      const ratio = rect.width / rect.height;
-
-      // 🔑 只看朝向，不看比值差。
-      //    原来用 |图比值 - 坑位比值| > 1.5 过滤，两头都不对：
-      //      · 太严：3:4 坑位(0.75) 配 9:16 图(0.56) 明明该配，某些尺寸却被差值挡掉
-      //      · 也太松：3:4 坑位(0.75) 配 16:9 图(1.78) 差值才 1.03，横图照样塞进竖坑位
-      //    ratio 是个双曲的量（竖图挤在 0~1，横图铺开到 1~∞），拿它做线性距离本来就不成立。
-      //    正解是先按朝向分桶，桶内再用比值近似度排序当 tie-break
-      const orientationOf = (r) => (r > 1.05 ? '横' : r < 0.95 ? '纵' : '方');
-      const slotOrientation = orientationOf(ratio);
-      const orientationFits = (coverOrientation) =>
-          coverOrientation === slotOrientation           // 朝向一致
-          || coverOrientation === '方'                    // 近正方图两个坑位都能用
-          || slotOrientation === '方';
-
-      // 先选图、再开弹窗。反过来的话选不到图就空指针崩在 best.cover.url 上，
-      // 而且弹窗已经开了没人关，会一直挡住后面的发布按钮
-      let best = null;
-      for (const cover of loadedCovers) {
-        if (!cover || usedCovers.has(cover.url)) continue;
-        if (!orientationFits(orientationOf(cover.ratio))) continue;
-        const diff = Math.abs(cover.ratio - ratio);
-        if (!best || diff < best.diff) best = { cover, diff };
-      }
-
-      // 朝向一张都不匹配时，不空手而归 —— 有图能用就用，总比让平台拿视频帧凑强。
-      // 宽松兜底是刻意设计：判据宁可放过，也别把本来能成的坑位直接毙掉
-      if (!best) {
-        for (const cover of loadedCovers) {
-          if (!cover || usedCovers.has(cover.url)) continue;
-          const diff = Math.abs(cover.ratio - ratio);
-          if (!best || diff < best.diff) best = { cover, diff, orientationMismatch: true };
-        }
-        if (best) {
-          console.warn(
-              `${LOG} ⚠️ 没有${slotOrientation}向封面，退而用${orientationOf(best.cover.ratio)}向的凑`
-              + `（坑位比值 ${ratio.toFixed(2)} / 图片比值 ${best.cover.ratio.toFixed(2)}），平台可能会自动裁剪`
-          );
-        }
-      }
-
-      if (!best) {
-        // 逐张说明为什么没选上，省得再靠猜（现在只剩"作废"和"被前面坑位用掉"两种）
-        const why = loadedCovers
-            .map((c, i) =>
-                !c ? `#${i + 1} 预加载作废`
-                    : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
-                        : `#${i + 1} ${orientationOf(c.ratio)}向(${c.ratio.toFixed(2)})`
-            )
-            .join(' | ');
-        console.log(
-            `${LOG} ⏭️ 坑位${slotOrientation}向(比值 ${ratio.toFixed(2)})没有任何可用封面，跳过。逐张原因: ${why}`
-        );
-        return false;
-      }
-
-      const coverUrl = best.cover.url;
-      usedCovers.add(coverUrl);
-      // 早期失败（弹窗没开 / 没有 input / 下载失败）就把这张图还回去，
-      // 否则另一个坑位会因为"已被前面坑位用掉"而无图可用。
-      // 但"传了 3 次都没落地"不还 —— 同一张图换个坑位大概率同样失败，白烧 60 秒
-      const releaseCover = () => usedCovers.delete(coverUrl);
-
-      console.log(
-          `${LOG} 🎯 选中封面 (坑位${slotOrientation}向 ${ratio.toFixed(2)}`
-          + ` / 图片${orientationOf(best.cover.ratio)}向 ${best.cover.ratio.toFixed(2)}`
-          + ` ${best.cover.width}×${best.cover.height}):`,
-          coverUrl
-      );
-
-      const slotSignatureBefore = readCoverSlotSignature(slot);
-      slot.click();
-
-      // 🔑 点坑位后不是直接出弹窗，而是先弹「使用此素材作为封面？」推荐气泡（ant-popover）。
-      //    必须点「直接编辑」才会出上传弹窗。另一个按钮「使用素材」是 primary 主按钮，
-      //    按"点主按钮/点第一个"去找必点错（那等于用了平台推荐的视频帧）—— 只能用文案锚定。
-      //    ⚠️ ant-popover 是 portal 出去的：无界会把 document.body.appendChild 代理进
-      //    webcomponent，所以正常在 shadow root 里；但万一漏到主文档，这里两个作用域都找一遍
-      const findPopoverWrap = () => {
-        const selector = '.ant-popover-inner-content .img-recommend-wrap, .img-recommend-wrap';
-        for (const root of [getShipinhaoShadowRoot(), document]) {
-          try {
-            const hit = root && root.querySelector(selector);
-            if (hit && isShipinhaoElementVisible(hit)) return hit;
-          } catch (_) {
-            // ignore
-          }
-        }
-        return null;
-      };
-
-      let popover = null;
-      const popoverDeadline = Date.now() + 8000;
-      while (Date.now() < popoverDeadline) {
-        popover = findPopoverWrap();
-        if (popover) break;
-        await delay(300);
-      }
-
-      if (popover) {
-        const directEditBtn = Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
-            .find(btn => getShipinhaoElementText(btn) === '直接编辑');
-        if (directEditBtn) {
-          console.log(`${LOG} 🖱️ 点「直接编辑」进入封面编辑弹窗`);
-          directEditBtn.click();
-          await delay(1500);
-        } else {
-          console.warn(
-              `${LOG} ⚠️ 推荐气泡里没找到「直接编辑」，当前按钮:`,
-              Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
-                  .map(btn => getShipinhaoElementText(btn))
-                  .filter(Boolean)
-                  .join(' | ') || '(一个都没有)'
-          );
-        }
-      } else {
-        console.log(`${LOG} ⏭️ 没出现推荐气泡（可能直接进了编辑弹窗），继续等弹窗`);
-      }
-
-      const dialog = await waitForShadowElement(
-          "wujie-app",
-          ".edit-cover-dialog-container .weui-desktop-dialog",
-          10000
-      ).catch(() => null);
-
-      if (!dialog) {
-        console.warn(`${LOG} ⚠️ 封面编辑弹窗未出现，跳过自定义封面`);
-        releaseCover();
-        return false;
-      }
-
-      const uploadBtn = await waitForShadowElement(
-          "wujie-app",
-          ".single-cover-uploader-wrap input[type='file']",
-          5000
-      ).catch(() => null);
-
-      if (!uploadBtn) {
-        console.warn(`${LOG} ⚠️ 弹窗里没找到 upload input，跳过自定义封面`);
-        releaseCover();
-        await closeCoverDialog(dialog, LOG);
-        return false;
-      }
-
-      console.log(`${LOG} 📥 开始下载封面:`, coverUrl);
-      let downloadResult = null;
-      try {
-        downloadResult = await downloadFile(coverUrl, "image/png");
-      } catch (e) {
-        console.error(`${LOG} ❌ 封面下载抛异常:`, e && e.message);
-      }
-      if (!downloadResult?.blob) {
-        // 下载失败不该把整篇发布掀掉：关掉弹窗、跳过这个坑位，发布继续
-        console.error(`${LOG} ❌ 封面图片下载结果为空，放弃该坑位的自定义封面`);
-        releaseCover();
-        await closeCoverDialog(dialog, LOG);
-        return false;
-      }
-
-      const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
-          .toLowerCase()
-          .split(";", 1)[0]
-          .trim();
-      const fileType = /^image\/(png|jpe?g)$/.test(contentType)
-          ? contentType.replace("image/jpg", "image/jpeg")
-          : "image/png";
-      const extension = fileType === "image/jpeg" ? "jpg" : "png";
-
-      // 上传前先把监控装好。子应用跑在无界 iframe 里，只装主 window 是抓不到它的请求的
-      const sandboxWin = getWujieSandboxWindow();
-      const monitorOnMain = installUploadMonitor(window, 'main');
-      const monitorOnSandbox = sandboxWin ? installUploadMonitor(sandboxWin, 'wujie-iframe') : false;
-      const monitorReady = monitorOnMain || monitorOnSandbox;
-      console.log(`${LOG} 🛰️ 上传监控:`, {
-        无界沙箱: sandboxWin ? '已定位' : '未找到(将退回宽松判据)',
-        主window: monitorOnMain,
-        沙箱window: monitorOnSandbox,
-        已装realm: (window.__sphUploadStats || {}).realms || [],
-      });
-
-      // 每次重试都重造 File：被组件拒收过的对象再塞一次没有意义
-      const makeFile = () => buildCoverFile(
-          sandboxWin,
-          downloadResult.blob,
-          `sph-cover-${Date.now()}.${extension}`,
-          fileType
-      );
-
-      let uploadSettled = null;
-      let lastFileInfo = null;
-      const MAX_ATTEMPT = 3;
-
-      for (let attempt = 1; attempt <= MAX_ATTEMPT; attempt++) {
-        // input 可能被 React 重建，每轮重新取，别拿着旧引用死磕
-        const input = attempt === 1
-            ? uploadBtn
-            : (await waitForShadowElement(
-                "wujie-app",
-                ".single-cover-uploader-wrap input[type='file']",
-                5000
-            ).catch(() => null)) || uploadBtn;
-
-        const { file, realm } = makeFile();
-        lastFileInfo = { name: file.name, type: file.type, size: file.size, realm };
-
-        const baseline = uploadBaseline(dialog);
-        const dialogImagesBefore = readDialogImageSignature(dialog);
-
-        // 🔑 必须用 fireFileInput 而不是 common.js 的 uploadFileToInput：
-        //    后者不重置 React 的 _valueTracker，change 会被当成"值没变"丢掉。
-        //    这一点在重试时尤其致命 —— 第二次写同一个 input 必然被吃掉
-        if (!fireFileInput(input, file)) {
-          console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次文件写入失败，重试`);
-          continue;
-        }
-        console.log(`${LOG} 📤 第 ${attempt}/${MAX_ATTEMPT} 次已写入，等上传落地:`, lastFileInfo);
-
-        const settled = await waitCoverUploadSettled(dialog, baseline, { timeout: 20000 });
-        if (settled.ok) {
-          uploadSettled = settled;
-          console.log(`${LOG} ✅ 上传已落地（第 ${attempt} 次）:`, settled.evidence);
-          break;
-        }
-
-        // 监控没装上时判据本就不可信，不能拿它去否定一次可能成功的上传
-        if (!monitorReady && readDialogImageSignature(dialog) !== dialogImagesBefore) {
-          uploadSettled = { ok: true, evidence: '监控未就绪，退回"弹窗预览有变化"的宽松判据放行' };
-          console.warn(`${LOG} ⚠️ ${uploadSettled.evidence}`);
-          break;
-        }
-        console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次没拿到上传证据: ${settled.evidence}`);
-      }
-
-      if (!uploadSettled) {
-        // 没传上就点确认 = 拿一张没换成的封面把弹窗关掉，是纯粹的假 ✅。
-        // 改成点「取消」收摊：封面用平台自动截图，发布流程继续往下走
-        console.error(`${LOG} ❌ 三次都没能把封面传上去，放弃自定义封面（改用平台默认封面）`, lastFileInfo);
-        await closeCoverDialog(dialog, LOG);
-        return false;
-      }
-
-      // 只有确认图真传上去了，才点确认让封面生效
-      const confirmBtn = findShipinhaoDialogButton(dialog, ['确定', '确认', '完成', '保存']);
-      if (!confirmBtn) {
-        console.warn(
-            `${LOG} ⚠️ 没找到弹窗确认按钮，当前弹窗按钮文案:`,
-            Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
-                .map(btn => getShipinhaoElementText(btn))
-                .filter(Boolean)
-                .join(' | ') || '(一个都没有)'
-        );
-      } else {
-        console.log(`${LOG} 🖱️ 点击弹窗按钮:`, getShipinhaoElementText(confirmBtn));
-        confirmBtn.click();
-        await delay(2000);
-      }
-
-      // 弹窗必须确认关闭再交给下一个坑位，否则下一个坑位会命中这个残留弹窗
-      if (!await waitCoverDialogClosed()) {
-        console.warn(`${LOG} ⚠️ 点完确认弹窗仍未关闭，下一个坑位可能受影响`);
-      }
-
-      // 终态校验：坑位缩略图变了才算真换上。
-      // ⚠️ 这条判据单独用并不可信 —— 平台把视频帧重新裁一次，缩略图照样会变
-      //    （实测 isCustomCover:false 时缩略图也变了）。真正的门闸是上面的网络层证据，
-      //    这里只做补充告警，不 throw
-      const slotSignatureAfter = readCoverSlotSignature(slot);
-      if (slotSignatureAfter && slotSignatureAfter !== slotSignatureBefore) {
-        console.log(`${LOG} ✅ 坑位缩略图已变化，封面确认生效`);
-      } else {
-        console.warn(`${LOG} ❌ 上传有证据但坑位缩略图没变，封面可能仍未应用:`, {
-          before: String(slotSignatureBefore).slice(0, 120),
-          after: String(slotSignatureAfter).slice(0, 120),
-          上传证据: uploadSettled.evidence,
-        });
-      }
-      return true;
-    };
-
-    console.log('[视频号发布][自定义封面图] 📐 坑位情况:', {
-      纵向: coverY ? '已找到' : '未找到',
-      横向: coverX ? '已找到' : '未找到',
-      可用封面: `${loadedCovers.filter(Boolean).length}/${loadedCovers.length}`,
-    });
-
-    // 🔑 两个坑位必须串行：它们共用同一个弹窗选择器，并行跑会互相抢弹窗
-    const coverYOk = await applyCustomCoverToSlot(coverY, '纵向');
-    const coverXOk = await applyCustomCoverToSlot(coverX, '横向');
-    console.log('[视频号发布][自定义封面图] 🏁 封面设置结束:', {
-      纵向: coverYOk ? '已设置' : '未设置',
-      横向: coverXOk ? '已设置' : '未设置',
-    });
-
-    //return;
-
-    // 检测表单是否有错误提示
-    await delay(1000);
-    const blockingErrors = collectShipinhaoBlockingErrorTexts();
-    if (blockingErrors.length > 0) {
-      // 走错误上报
-      const errorStr = '表单有错误提示：' + blockingErrors.join(', ');
-      await sendStatisticsError(publishId, errorStr || '表单有错误', '视频号发布');
-      throw new Error(errorStr);
-    }
-    await delay(1000);
-
-    // 等待发布按钮可用。视频号页面按钮结构会变化，按文本和状态综合定位。
-    const publishBtn = await waitForShipinhaoPublishButton({
-      timeoutMs: 120000,
-      intervalMs: 2000,
-      publishTime: dataObj.video?.formData?.send_set,
-      label: '发布按钮'
-    });
-
-    // 等待按钮事件绑定完成
-    await delay(800);
-
-    // 🔑 视频号成功后会直接跳转页面，必须在点击前保存数据
-    // 否则跳转后 publishApi 的后续代码不会执行
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({ publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" }));
-      console.log('[视频号发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
-
-      // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
-      if (window.browserAPI && window.browserAPI.setGlobalData && myWindowId) {
-        await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${myWindowId}`, { publishId: publishId, taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
-        console.log('[视频号发布] 💾 已保存 publishId 到 globalData');
-      }
-    } catch (e) {
-      console.error('[视频号发布] ❌ 保存 publishId 失败:', e);
-    }
-
-    // 生产环境：必须点击发布按钮
-    console.log('[视频号发布] ✅ 生产环境确认，准备点击发布按钮...');
-
-    const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
-
-    if (!clickResult.success) {
-      console.log('[视频号发布] ❌ 点击发布按钮失败:', clickResult.message);
-      // 清除提前保存的数据
-      localStorage.removeItem('PUBLISH_SUCCESS_DATA');
-      // 发送失败统计
-      await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '视频号发布');
-      publishRunning = false;
-      throw new Error('发布按钮点击失败: ' + clickResult.message);
-    }
-
-    // 点击成功
-    console.log('[视频号发布] ✅ 发布按钮已点击');
-    // 成功统计仅由成功页或本地明确成功确认发送，避免点击成功抢占真实结果的去重锁。
-    console.log('[视频号发布] 📨 平台提示:', clickResult.message);
-
-    // 开发环境弹窗显示平台提示信息
-    if (window.browserAPI && window.browserAPI.isProduction === false) {
-      alert(`视频号发布结果：\n\n${clickResult.message}`);
-    }
-
-    // 视频号：只要页面跳转就是成功，不需要检测提示内容
-    // 点击后直接进入等待页面跳转的逻辑
-
-    // 等待页面跳转到成功页，超时 30 秒
-    console.log('[视频号发布] ⏳ 等待跳转到成功页（90秒超时）...');
-    const currentUrl = window.location.href;
-    const startTime = Date.now();
-    const timeout = 90000; // 90秒：对齐全平台，网慢兜底，避免误报超时失败
-    // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
-    let lastToastMessage = clickResult.message || '';
-
-    while (Date.now() - startTime < timeout) {
-      await delay(2000); // 每 2 秒检查一次
-
-      // 检查 URL 是否变化（页面跳转 = 发布成功）
-      if (window.location.href !== currentUrl) {
-        console.log('[视频号发布] ✅ 检测到页面跳转，发布成功');
-        // 清除发布数据
-        localStorage.removeItem(publishDataKey);
-        // 标记已完成
-        hasProcessed = true;
-        publishRunning = false;
-        // 🔑 关闭窗口（发布成功）
-        await closeWindowWithMessage('发布成功，刷新数据', 1000);
-        return; // 页面已跳转，由 publish-success.js 处理统计接口
-      }
-
-      // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
-      if (!localStorage.getItem(storageKey)) {
-        console.log('[视频号发布] ✅ 数据已被成功页处理，跳过后续检测');
-        hasProcessed = true;
-        publishRunning = false;
-        // 🔑 关闭窗口（成功页已处理）
-        await closeWindowWithMessage('发布成功，刷新数据', 1000);
+    // 防止重复执行
+    if (publishRunning) {
         return;
-      }
+    }
 
-      // 检测是否出现提示，记录消息内容（用于超时后的错误信息）
-      // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
-      const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
-      try {
-        const toptipSpan = await waitForShadowElement("wujie-app", ".toptip-content span", 500);
-        if (toptipSpan) {
-          const text = (toptipSpan.textContent || '').trim();
-          const isSuccess = successKeywords.some(keyword => text.includes(keyword));
-          if (text && !isSuccess) {
-            lastToastMessage = text;
-            console.log('[视频号发布] 📨 检测到提示:', text);
-          } else if (isSuccess) {
-            console.log('[视频号发布] ✅ 检测到成功提示，忽略:', text);
-          }
+    const publishId = dataObj.video.dyPlatform.id;
+
+    // 🔑 提前获取窗口ID和存储key，供整个函数使用
+    let myWindowId = null;
+    try {
+        myWindowId = await window.browserAPI.getWindowId();
+    } catch (e) {
+        console.error('[视频号发布] ❌ 获取窗口ID失败:', e);
+    }
+    const storageKey = myWindowId ? `PUBLISH_SUCCESS_DATA_${myWindowId}` : 'PUBLISH_SUCCESS_DATA';
+    const publishDataKey = myWindowId ? `SHIPINHAO_PUBLISH_DATA_${myWindowId}` : 'SHIPINHAO_PUBLISH_DATA_default';
+
+    try {
+        // 标记发布正在进行
+        publishRunning = true;
+
+        // ===========================
+        // 检测视频上传进度是否完成
+        // ===========================
+        console.log('[视频号发布] ⏳ 等待视频上传完成...');
+        await retryOperation(async () => {
+            // 🔑 首先检测是否有上传错误提示
+            const errorTip = await waitForShadowElement("wujie-app", ".upload-error, .error-tip, [class*='error']", 500).catch(() => null);
+            if (errorTip && errorTip.textContent && errorTip.textContent.trim()) {
+                const errorText = errorTip.textContent.trim();
+                if (errorText.includes('失败') || errorText.includes('错误') || errorText.includes('error')) {
+                    throw new Error('视频上传失败: ' + errorText.substring(0, 50));
+                }
+            }
+
+            // 在 Shadow DOM 中查找上传进度元素
+            const progressText = await waitForShadowElement("wujie-app", ".ant-progress-text", 1000).catch(() => null);
+
+            if (progressText) {
+                const text = (progressText.textContent || '').trim();
+                console.log('[视频号发布] 📊 当前上传进度:', text);
+                // 如果进度不是 100%，继续等待
+                if (text !== '100%' && text !== '100') {
+                    throw new Error('视频正在上传中: ' + text);
+                }
+                console.log('[视频号发布] ✅ 上传进度 100%');
+            } else {
+                // 元素不存在也认为上传完成
+                console.log('[视频号发布] ✅ 上传进度元素已消失，上传完成');
+            }
+            return true;
+        }, 150, 2000); // 最多重试 150 次，每次间隔 2 秒，共 5 分钟
+
+        // ===========================
+        // 检测视频是否上传完成
+        // ===========================
+        console.log('[视频号发布] 🎬 开始检测视频上传状态...');
+
+        const videoReady = await retryOperation(async () => {
+            // 在 Shadow DOM 中查找视频元素
+            const video = await waitForShadowElement("wujie-app", "#fullScreenVideo", 5000);
+
+            if (!video) {
+                throw new Error('Video element #fullScreenVideo not found');
+            }
+
+            console.log('[视频号发布] 📹 视频状态 - src:', video.src ? '有' : '无', ', readyState:', video.readyState, ', duration:', video.duration);
+
+            // 检查视频是否有 src
+            if (!video.src) {
+                throw new Error('视频没有链接');
+            }
+
+            // 检查视频是否可以播放 (readyState >= 2 表示有足够数据可以播放)
+            if (video.readyState < 2) {
+                throw new Error('视频未准备好播放，readyState=' + video.readyState);
+            }
+
+            // 检查视频时长是否有效
+            if (isNaN(video.duration) || video.duration <= 0) {
+                throw new Error('视频时长无效： ' + video.duration);
+            }
+
+            console.log('[视频号发布] ✅ 视频已上传完成，可以播放');
+            return true;
+        }, 30, 3000); // 最多重试30次，每次间隔3秒（共90秒超时）
+
+        if (!videoReady) {
+            throw new Error('视频上传未完成，无法发布');
         }
-      } catch (e) {
-        // 忽略检测错误
-      }
+
+        console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
+
+        try {
+            // 自定义封面
+            // 🏷️ 版本水印：打包版会强制从 OBS 远程拉脚本（script-manager.js:45 无条件强开），
+            //    本地改了没重新上传就永远跑旧代码。这行日志就是判断"跑的到底是哪一版"的唯一凭据
+            console.log('[视频号发布][自定义封面图] 🏷️ 代码版本: COVER_UPLOAD_FIX_v4 (朝向选图 + 推荐气泡→直接编辑 + 双坑位去重 + 网络层证据 + 跨realm构造 + 无证据不点确认)');
+            const customCoverList = dataObj.element.cover2
+            if(!customCoverList || customCoverList.length === 0) {
+                console.log('[视频号发布][自定义封面图] ⚠️ 未配置自定义封面图，跳过');
+                return;
+            }
+
+            /* const customCoverList = [
+              "https://images.china9.cn/attachment/2026-08-28/LnBvF4NtrF5cuClAXr5Oqx6QapSaIR1h0FQafdIg.jpg",
+              "https://oss.lcweb01.cn/jzt/6012/image/20240423/b69ee1fc9c97c888f1af6ff05da0e018.jpeg"
+            ]; */
+            // 并行预加载所有封面图片，获取真实宽高。
+            // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
+            // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
+            const coverPromises = customCoverList.map((coverUrl, i) => {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    let settled = false;
+                    const done = (v, why) => {
+                        if (settled) return;
+                        settled = true;
+                        if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
+                        resolve(v);
+                    };
+                    const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
+                    img.onload = () => {
+                        clearTimeout(timer);
+                        done({
+                            url: coverUrl,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight,
+                            ratio: img.naturalWidth / img.naturalHeight
+                        });
+                    };
+                    img.onerror = () => {
+                        clearTimeout(timer);
+                        done(null, '失败(404/跨域?)');
+                    };
+                    img.src = coverUrl;
+                });
+            });
+
+            const loadedCovers = await Promise.all(coverPromises);
+
+            // 纵封面
+            // 🔑 waitForShadowElement 超时是 reject 不是 resolve(null)，不 catch 的话下面的
+            //    if (coverY) 是永远走不到的死代码，元素找不到会直接把整个 publishApi 掀掉
+            const coverY = await waitForShadowElement("wujie-app", ".vertical-img-wrap", 5000).catch(() => null);
+            const coverX = await waitForShadowElement("wujie-app", ".horizon-cover-wrap", 5000).catch(() => null);
+            const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
+
+            // 把文件写进 React 托管的 <input type="file">。
+            // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
+            //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
+            //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
+            //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
+            //    common.js 的 uploadFileToInput 没有这一步，所以这里不能图省事去用它。
+            const fireFileInput = (input, file) => {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                input.files = dt.files;
+
+                if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
+                    input._valueTracker.setValue('');
+                }
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+
+                // 只能证明"文件确实挂到 input 上了"，不代表 React 接住了，后面还要看预览
+                return !!(input.files && input.files.length === 1);
+            };
+
+            // 坑位当前缩略图签名：上传前后各取一次，用来判断封面到底换没换。
+            // 「弹窗关了」不等于「封面生效了」——平台 beforeUpload 拒收时照样关窗
+            const readCoverSlotSignature = (slot) => {
+                if (!slot) return '';
+                try {
+                    const img = slot.querySelector('img');
+                    if (img && img.src) return img.src;
+                    const bg = window.getComputedStyle(slot).backgroundImage;
+                    if (bg && bg !== 'none') return bg;
+                    return String(slot.innerHTML || '').slice(0, 200);
+                } catch (_) {
+                    return '';
+                }
+            };
+
+            // 弹窗内所有图片地址，用作"预览有没有渲染出来"的基线
+            const readDialogImageSignature = (dialogEl) => {
+                if (!dialogEl) return '';
+                try {
+                    return Array.from(dialogEl.querySelectorAll('img'))
+                        .map(img => img.src || '')
+                        .filter(Boolean)
+                        .join('|');
+                } catch (_) {
+                    return '';
+                }
+            };
+
+            // 在弹窗范围内按文案找按钮（可见 + 未禁用）。
+            // 绝不"取最后一个按钮"——那样很容易点到取消或弹窗外的控件
+            const findShipinhaoDialogButton = (dialogEl, keywords) => {
+                if (!dialogEl) return null;
+                try {
+                    const buttons = Array.from(dialogEl.querySelectorAll('button, .weui-desktop-btn, [role="button"]'));
+                    return buttons.find(btn => {
+                        const text = getShipinhaoElementText(btn);
+                        return text
+                            && keywords.some(keyword => text.includes(keyword))
+                            && isShipinhaoElementVisible(btn)
+                            && !isShipinhaoButtonDisabled(btn);
+                    }) || null;
+                } catch (_) {
+                    return null;
+                }
+            };
+
+            // ── 无界(wujie)沙箱定位 ──
+            // 官方文档：「将子应用的 js 注入主应用同域的 iframe 中运行」「不用修改主应用 window 任何属性」。
+            // 也就是 DOM 挂在主文档的 shadow root，跑 JS 的却是另一个 window。两个后果都很致命：
+            //   1. hook 主 window 的 XHR/fetch 抓不到子应用发出的上传请求 → 探针恒失灵 → 一直"超时放行"
+            //   2. 主 window 造的 File 过不了子应用 `x instanceof File` 的校验（跨 realm 恒 false）
+            //      → 组件 beforeUpload 直接拒收，文件挂上了、日志全 ✅、图却没传
+            const getWujieSandboxWindow = () => {
+                let sameOriginFallback = null;
+                try {
+                    for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+                        try {
+                            const win = frame.contentWindow;
+                            if (!win || !win.document) continue; // 跨域访问 document 会抛，被 catch 掉
+                            // 无界会往沙箱 iframe 注入私有变量，这是最准的指纹
+                            if (win.__WUJIE || win.__WUJIE_PUBLIC_PATH__ || win.$wujie) return win;
+                            if (!sameOriginFallback && typeof win.File === 'function') sameOriginFallback = win;
+                        } catch (_) {
+                            // 跨域 iframe，跳过
+                        }
+                    }
+                } catch (_) {
+                    // ignore
+                }
+                return sameOriginFallback;
+            };
+
+            // 用子应用所在 realm 的构造器造 File，绕开 instanceof 跨 realm 判定失败
+            const buildCoverFile = (realmWin, blob, name, type) => {
+                const W = realmWin && typeof realmWin.File === 'function' ? realmWin : window;
+                try {
+                    return {file: new W.File([blob], name, {type}), realm: W === window ? 'main' : 'wujie-iframe'};
+                } catch (e) {
+                    return {file: new File([blob], name, {type}), realm: 'main(realm构造失败已回退)'};
+                }
+            };
+
+            // ── 网络层上传监控 —— 判"图真的传上去了"唯一扛得住的证据 ──
+            // DOM 启发式在这条链路上已经被证伪一次了（预览没变化照样点了确认）。
+            // 计数对象统一挂主 window，两个 realm 的 hook 写同一份账。
+            const installUploadMonitor = (win, tag) => {
+                if (!win) return false;
+                try {
+                    if (win.__sphUploadMonitorInstalled) return true; // 幂等：SPA 重复注入会套娃，计数翻倍
+                    win.__sphUploadMonitorInstalled = true;
+                } catch (_) {
+                    return false;
+                }
+
+                const stats = (window.__sphUploadStats = window.__sphUploadStats
+                    || {inflight: 0, done: 0, lastUrl: '', realms: []});
+                stats.realms.push(tag);
+
+                // 🔑 跨 realm 安全的类型判定：instanceof 认原型链，跨 realm 恒 false；
+                //    Object.prototype.toString 走 Symbol.toStringTag，跟 realm 无关
+                const isBinaryBody = (body) => {
+                    if (!body) return false;
+                    const t = Object.prototype.toString.call(body);
+                    return t === '[object FormData]' || t === '[object Blob]' || t === '[object File]'
+                        || t === '[object ArrayBuffer]' || ArrayBuffer.isView(body);
+                };
+                // 判窄一点：判宽了会把页面心跳算进来，inflight 永远 >0 就白等满超时
+                const isUploadReq = (method, url, body) => {
+                    if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
+                    if (/upload|\/tos|\/file\/|cdn|mmfinder|resupload/i.test(String(url || ''))) return true;
+                    return isBinaryBody(body);
+                };
+                const begin = (url) => {
+                    stats.inflight++;
+                    stats.lastUrl = String(url || '').slice(0, 120);
+                };
+                const end = () => {
+                    stats.inflight = Math.max(0, stats.inflight - 1);
+                    stats.done++;
+                };
+
+                try {
+                    const OrigOpen = win.XMLHttpRequest.prototype.open;
+                    const OrigSend = win.XMLHttpRequest.prototype.send;
+                    win.XMLHttpRequest.prototype.open = function (method, url) {
+                        try {
+                            this.__sphMethod = method;
+                            this.__sphUrl = url;
+                        } catch (_) {
+                        }
+                        return OrigOpen.apply(this, arguments);
+                    };
+                    win.XMLHttpRequest.prototype.send = function (body) {
+                        try {
+                            if (isUploadReq(this.__sphMethod, this.__sphUrl, body)) {
+                                begin(this.__sphUrl);
+                                // loadend 覆盖 load/error/abort/timeout 四种收尾，不漏也不重复减
+                                this.addEventListener('loadend', end, {once: true});
+                            }
+                        } catch (_) {
+                        }
+                        return OrigSend.apply(this, arguments);
+                    };
+                } catch (e) {
+                    console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} XHR 监控安装失败:`, e && e.message);
+                }
+
+                try {
+                    const origFetch = win.fetch;
+                    if (typeof origFetch === 'function') {
+                        win.fetch = function (input, init) {
+                            let counted = false;
+                            try {
+                                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                                const method = (init && init.method) || (input && input.method) || 'GET';
+                                if (isUploadReq(method, url, init && init.body)) {
+                                    begin(url);
+                                    counted = true;
+                                }
+                            } catch (_) {
+                            }
+                            const p = origFetch.apply(this, arguments);
+                            if (!counted || !p || typeof p.then !== 'function') return p;
+                            return p.then(r => {
+                                end();
+                                return r;
+                            }, e => {
+                                end();
+                                throw e;
+                            });
+                        };
+                    }
+                } catch (e) {
+                    console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} fetch 监控安装失败:`, e && e.message);
+                }
+                return true;
+            };
+
+            // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
+            // "新增的 http 图"是不依赖网络 hook 的第二条硬证据 —— 服务端回填 CDN url 才会出现，
+            // 本地预览是 blob:，两者能干净区分
+            const uploadBaseline = (dialogEl) => {
+                const s = window.__sphUploadStats || {done: 0};
+                let httpImgs = new Set();
+                try {
+                    httpImgs = new Set(
+                        Array.from((dialogEl || document).querySelectorAll('img'))
+                            .map(i => i.src)
+                            .filter(u => /^https?:/i.test(u))
+                    );
+                } catch (_) {
+                }
+                return {done: s.done, httpImgs};
+            };
+
+            // 等"图真的传完"，而不是"文件刚被组件接住"。证据按可信度排序，命中即放行
+            const waitCoverUploadSettled = async (dialogEl, baseline, {min = 1200, timeout = 20000} = {}) => {
+                const stats = () => window.__sphUploadStats || {inflight: 0, done: 0, lastUrl: ''};
+                const newHttpImg = () => {
+                    try {
+                        return Array.from(dialogEl.querySelectorAll('img'))
+                            .map(i => i.src)
+                            .find(u => /^https?:/i.test(u) && !baseline.httpImgs.has(u));
+                    } catch (_) {
+                        return null;
+                    }
+                };
+                // 放行前复查：分片上传（申请 token → 传分片 → commit）两段之间会短暂 inflight=0，
+                // 直接放行就正好卡在中间那一刻。等 900ms 看有没有新请求接上
+                const confirmIdle = async () => {
+                    for (let i = 0; i < 3; i++) {
+                        await delay(300);
+                        if (stats().inflight > 0) return false;
+                    }
+                    return true;
+                };
+
+                const start = Date.now();
+                await delay(min); // 地板时间：刚派完 change 时请求还没发出去，立刻采样必然假放行
+
+                while (Date.now() - start < timeout) {
+                    const s = stats();
+                    if (s.inflight === 0) {
+                        if (s.done > baseline.done && await confirmIdle()) {
+                            return {
+                                ok: true,
+                                evidence: `上传请求已完成(${s.done - baseline.done}个, 末个: ${s.lastUrl})`
+                            };
+                        }
+                        const cdn = newHttpImg();
+                        if (cdn && await confirmIdle()) {
+                            return {ok: true, evidence: `服务端已回填图片(${String(cdn).slice(0, 80)})`};
+                        }
+                    }
+                    await delay(500);
+                }
+                const s = stats();
+                return {
+                    ok: false,
+                    evidence: `等满 ${timeout}ms 无证据 (inflight=${s.inflight}, 新增完成=${s.done - baseline.done})`
+                };
+            };
+
+            // ── 单个封面坑位的完整处理 ──
+            // 纵封面和横封面逻辑完全相同，只有坑位元素和文案不同。
+            // 之前是整段复制粘贴，复制出来那份里的 coverY 忘了改成 coverX ——
+            // 算的是横向坑位的比值、选的是横向该用的图，点开的却是纵向坑位的弹窗，
+            // 于是横封面永远设不上、纵封面还被改了第二遍。
+            // 抽成函数后只有一个 slot 变量，这类"改漏一处"的 bug 从结构上就不可能再发生。
+
+            // 等弹窗真正关闭。两个坑位共用同一个弹窗选择器，上一个没关干净就点下一个，
+            // waitForShadowElement 会立刻命中残留的旧弹窗 —— 第二张图就传进第一个坑位里去了。
+            // 这是单坑位时不会暴露、双坑位必踩的坑
+            const waitCoverDialogClosed = async (timeout = 8000) => {
+                const start = Date.now();
+                while (Date.now() - start < timeout) {
+                    let dlg = null;
+                    try {
+                        const root = getShipinhaoShadowRoot();
+                        dlg = root && root.querySelector('.edit-cover-dialog-container .weui-desktop-dialog');
+                    } catch (_) {
+                        // ignore
+                    }
+                    if (!dlg || !isShipinhaoElementVisible(dlg)) return true;
+                    await delay(300);
+                }
+                return false;
+            };
+
+            // 关掉弹窗，别让它挡住后面的发布按钮
+            const closeCoverDialog = async (dialog, LOG) => {
+                const cancelBtn = findShipinhaoDialogButton(dialog, ['取消', '关闭'])
+                    || dialog.querySelector('.weui-desktop-dialog__close, [class*="close"]');
+                if (cancelBtn) {
+                    console.log(`${LOG} 🖱️ 关闭封面弹窗:`, getShipinhaoElementText(cancelBtn) || '(关闭按钮)');
+                    cancelBtn.click();
+                } else {
+                    console.warn(
+                        `${LOG} ⚠️ 没找到取消/关闭按钮，弹窗可能会挡住发布按钮。当前按钮文案:`,
+                        Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
+                            .map(btn => getShipinhaoElementText(btn))
+                            .filter(Boolean)
+                            .join(' | ') || '(一个都没有)'
+                    );
+                }
+                await waitCoverDialogClosed();
+            };
+
+            const applyCustomCoverToSlot = async (slot, slotLabel) => {
+                // 所有日志都带坑位标识 —— 两个坑位跑同一套流程，不标就没法从日志分辨是谁
+                const LOG = `[视频号发布][自定义封面图][${slotLabel}]`;
+                if (!slot) {
+                    console.log(`${LOG} ⏭️ 坑位元素不存在，跳过`);
+                    return false;
+                }
+
+                const rect = slot.getBoundingClientRect();
+                const ratio = rect.width / rect.height;
+
+                // 🔑 只看朝向，不看比值差。
+                //    原来用 |图比值 - 坑位比值| > 1.5 过滤，两头都不对：
+                //      · 太严：3:4 坑位(0.75) 配 9:16 图(0.56) 明明该配，某些尺寸却被差值挡掉
+                //      · 也太松：3:4 坑位(0.75) 配 16:9 图(1.78) 差值才 1.03，横图照样塞进竖坑位
+                //    ratio 是个双曲的量（竖图挤在 0~1，横图铺开到 1~∞），拿它做线性距离本来就不成立。
+                //    正解是先按朝向分桶，桶内再用比值近似度排序当 tie-break
+                const orientationOf = (r) => (r > 1.05 ? '横' : r < 0.95 ? '纵' : '方');
+                const slotOrientation = orientationOf(ratio);
+                const orientationFits = (coverOrientation) =>
+                    coverOrientation === slotOrientation           // 朝向一致
+                    || coverOrientation === '方'                    // 近正方图两个坑位都能用
+                    || slotOrientation === '方';
+
+                // 先选图、再开弹窗。反过来的话选不到图就空指针崩在 best.cover.url 上，
+                // 而且弹窗已经开了没人关，会一直挡住后面的发布按钮
+                let best = null;
+                for (const cover of loadedCovers) {
+                    if (!cover || usedCovers.has(cover.url)) continue;
+                    if (!orientationFits(orientationOf(cover.ratio))) continue;
+                    const diff = Math.abs(cover.ratio - ratio);
+                    if (!best || diff < best.diff) best = {cover, diff};
+                }
+
+                // 朝向一张都不匹配时，不空手而归 —— 有图能用就用，总比让平台拿视频帧凑强。
+                // 宽松兜底是刻意设计：判据宁可放过，也别把本来能成的坑位直接毙掉
+                if (!best) {
+                    for (const cover of loadedCovers) {
+                        if (!cover || usedCovers.has(cover.url)) continue;
+                        const diff = Math.abs(cover.ratio - ratio);
+                        if (!best || diff < best.diff) best = {cover, diff, orientationMismatch: true};
+                    }
+                    if (best) {
+                        console.warn(
+                            `${LOG} ⚠️ 没有${slotOrientation}向封面，退而用${orientationOf(best.cover.ratio)}向的凑`
+                            + `（坑位比值 ${ratio.toFixed(2)} / 图片比值 ${best.cover.ratio.toFixed(2)}），平台可能会自动裁剪`
+                        );
+                    }
+                }
+
+                if (!best) {
+                    // 逐张说明为什么没选上，省得再靠猜（现在只剩"作废"和"被前面坑位用掉"两种）
+                    const why = loadedCovers
+                        .map((c, i) =>
+                            !c ? `#${i + 1} 预加载作废`
+                                : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
+                                    : `#${i + 1} ${orientationOf(c.ratio)}向(${c.ratio.toFixed(2)})`
+                        )
+                        .join(' | ');
+                    console.log(
+                        `${LOG} ⏭️ 坑位${slotOrientation}向(比值 ${ratio.toFixed(2)})没有任何可用封面，跳过。逐张原因: ${why}`
+                    );
+                    return false;
+                }
+
+                const coverUrl = best.cover.url;
+                usedCovers.add(coverUrl);
+                // 早期失败（弹窗没开 / 没有 input / 下载失败）就把这张图还回去，
+                // 否则另一个坑位会因为"已被前面坑位用掉"而无图可用。
+                // 但"传了 3 次都没落地"不还 —— 同一张图换个坑位大概率同样失败，白烧 60 秒
+                const releaseCover = () => usedCovers.delete(coverUrl);
+
+                console.log(
+                    `${LOG} 🎯 选中封面 (坑位${slotOrientation}向 ${ratio.toFixed(2)}`
+                    + ` / 图片${orientationOf(best.cover.ratio)}向 ${best.cover.ratio.toFixed(2)}`
+                    + ` ${best.cover.width}×${best.cover.height}):`,
+                    coverUrl
+                );
+
+                const slotSignatureBefore = readCoverSlotSignature(slot);
+                slot.click();
+
+                // 🔑 点坑位后不是直接出弹窗，而是先弹「使用此素材作为封面？」推荐气泡（ant-popover）。
+                //    必须点「直接编辑」才会出上传弹窗。另一个按钮「使用素材」是 primary 主按钮，
+                //    按"点主按钮/点第一个"去找必点错（那等于用了平台推荐的视频帧）—— 只能用文案锚定。
+                //    ⚠️ ant-popover 是 portal 出去的：无界会把 document.body.appendChild 代理进
+                //    webcomponent，所以正常在 shadow root 里；但万一漏到主文档，这里两个作用域都找一遍
+                const findPopoverWrap = () => {
+                    const selector = '.ant-popover-inner-content .img-recommend-wrap, .img-recommend-wrap';
+                    for (const root of [getShipinhaoShadowRoot(), document]) {
+                        try {
+                            const hit = root && root.querySelector(selector);
+                            if (hit && isShipinhaoElementVisible(hit)) return hit;
+                        } catch (_) {
+                            // ignore
+                        }
+                    }
+                    return null;
+                };
+
+                let popover = null;
+                const popoverDeadline = Date.now() + 8000;
+                while (Date.now() < popoverDeadline) {
+                    popover = findPopoverWrap();
+                    if (popover) break;
+                    await delay(300);
+                }
+
+                if (popover) {
+                    const directEditBtn = Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
+                        .find(btn => getShipinhaoElementText(btn) === '直接编辑');
+                    if (directEditBtn) {
+                        console.log(`${LOG} 🖱️ 点「直接编辑」进入封面编辑弹窗`);
+                        directEditBtn.click();
+                        await delay(1500);
+                    } else {
+                        console.warn(
+                            `${LOG} ⚠️ 推荐气泡里没找到「直接编辑」，当前按钮:`,
+                            Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
+                                .map(btn => getShipinhaoElementText(btn))
+                                .filter(Boolean)
+                                .join(' | ') || '(一个都没有)'
+                        );
+                    }
+                } else {
+                    console.log(`${LOG} ⏭️ 没出现推荐气泡（可能直接进了编辑弹窗），继续等弹窗`);
+                }
+
+                const dialog = await waitForShadowElement(
+                    "wujie-app",
+                    ".edit-cover-dialog-container .weui-desktop-dialog",
+                    10000
+                ).catch(() => null);
+
+                if (!dialog) {
+                    console.warn(`${LOG} ⚠️ 封面编辑弹窗未出现，跳过自定义封面`);
+                    releaseCover();
+                    return false;
+                }
+
+                const uploadBtn = await waitForShadowElement(
+                    "wujie-app",
+                    ".single-cover-uploader-wrap input[type='file']",
+                    5000
+                ).catch(() => null);
+
+                if (!uploadBtn) {
+                    console.warn(`${LOG} ⚠️ 弹窗里没找到 upload input，跳过自定义封面`);
+                    releaseCover();
+                    await closeCoverDialog(dialog, LOG);
+                    return false;
+                }
+
+                console.log(`${LOG} 📥 开始下载封面:`, coverUrl);
+                let downloadResult = null;
+                try {
+                    downloadResult = await downloadFile(coverUrl, "image/png");
+                } catch (e) {
+                    console.error(`${LOG} ❌ 封面下载抛异常:`, e && e.message);
+                }
+                if (!downloadResult?.blob) {
+                    // 下载失败不该把整篇发布掀掉：关掉弹窗、跳过这个坑位，发布继续
+                    console.error(`${LOG} ❌ 封面图片下载结果为空，放弃该坑位的自定义封面`);
+                    releaseCover();
+                    await closeCoverDialog(dialog, LOG);
+                    return false;
+                }
+
+                const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
+                    .toLowerCase()
+                    .split(";", 1)[0]
+                    .trim();
+                const fileType = /^image\/(png|jpe?g)$/.test(contentType)
+                    ? contentType.replace("image/jpg", "image/jpeg")
+                    : "image/png";
+                const extension = fileType === "image/jpeg" ? "jpg" : "png";
+
+                // 上传前先把监控装好。子应用跑在无界 iframe 里，只装主 window 是抓不到它的请求的
+                const sandboxWin = getWujieSandboxWindow();
+                const monitorOnMain = installUploadMonitor(window, 'main');
+                const monitorOnSandbox = sandboxWin ? installUploadMonitor(sandboxWin, 'wujie-iframe') : false;
+                const monitorReady = monitorOnMain || monitorOnSandbox;
+                console.log(`${LOG} 🛰️ 上传监控:`, {
+                    无界沙箱: sandboxWin ? '已定位' : '未找到(将退回宽松判据)',
+                    主window: monitorOnMain,
+                    沙箱window: monitorOnSandbox,
+                    已装realm: (window.__sphUploadStats || {}).realms || [],
+                });
+
+                // 每次重试都重造 File：被组件拒收过的对象再塞一次没有意义
+                const makeFile = () => buildCoverFile(
+                    sandboxWin,
+                    downloadResult.blob,
+                    `sph-cover-${Date.now()}.${extension}`,
+                    fileType
+                );
+
+                let uploadSettled = null;
+                let lastFileInfo = null;
+                const MAX_ATTEMPT = 3;
+
+                for (let attempt = 1; attempt <= MAX_ATTEMPT; attempt++) {
+                    // input 可能被 React 重建，每轮重新取，别拿着旧引用死磕
+                    const input = attempt === 1
+                        ? uploadBtn
+                        : (await waitForShadowElement(
+                        "wujie-app",
+                        ".single-cover-uploader-wrap input[type='file']",
+                        5000
+                    ).catch(() => null)) || uploadBtn;
+
+                    const {file, realm} = makeFile();
+                    lastFileInfo = {name: file.name, type: file.type, size: file.size, realm};
+
+                    const baseline = uploadBaseline(dialog);
+                    const dialogImagesBefore = readDialogImageSignature(dialog);
+
+                    // 🔑 必须用 fireFileInput 而不是 common.js 的 uploadFileToInput：
+                    //    后者不重置 React 的 _valueTracker，change 会被当成"值没变"丢掉。
+                    //    这一点在重试时尤其致命 —— 第二次写同一个 input 必然被吃掉
+                    if (!fireFileInput(input, file)) {
+                        console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次文件写入失败，重试`);
+                        continue;
+                    }
+                    console.log(`${LOG} 📤 第 ${attempt}/${MAX_ATTEMPT} 次已写入，等上传落地:`, lastFileInfo);
+
+                    const settled = await waitCoverUploadSettled(dialog, baseline, {timeout: 20000});
+                    if (settled.ok) {
+                        uploadSettled = settled;
+                        console.log(`${LOG} ✅ 上传已落地（第 ${attempt} 次）:`, settled.evidence);
+                        break;
+                    }
+
+                    // 监控没装上时判据本就不可信，不能拿它去否定一次可能成功的上传
+                    if (!monitorReady && readDialogImageSignature(dialog) !== dialogImagesBefore) {
+                        uploadSettled = {ok: true, evidence: '监控未就绪，退回"弹窗预览有变化"的宽松判据放行'};
+                        console.warn(`${LOG} ⚠️ ${uploadSettled.evidence}`);
+                        break;
+                    }
+                    console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次没拿到上传证据: ${settled.evidence}`);
+                }
+
+                if (!uploadSettled) {
+                    // 没传上就点确认 = 拿一张没换成的封面把弹窗关掉，是纯粹的假 ✅。
+                    // 改成点「取消」收摊：封面用平台自动截图，发布流程继续往下走
+                    console.error(`${LOG} ❌ 三次都没能把封面传上去，放弃自定义封面（改用平台默认封面）`, lastFileInfo);
+                    await closeCoverDialog(dialog, LOG);
+                    return false;
+                }
+
+                // 只有确认图真传上去了，才点确认让封面生效
+                const confirmBtn = findShipinhaoDialogButton(dialog, ['确定', '确认', '完成', '保存']);
+                if (!confirmBtn) {
+                    console.warn(
+                        `${LOG} ⚠️ 没找到弹窗确认按钮，当前弹窗按钮文案:`,
+                        Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
+                            .map(btn => getShipinhaoElementText(btn))
+                            .filter(Boolean)
+                            .join(' | ') || '(一个都没有)'
+                    );
+                } else {
+                    console.log(`${LOG} 🖱️ 点击弹窗按钮:`, getShipinhaoElementText(confirmBtn));
+                    confirmBtn.click();
+                    await delay(2000);
+                }
+
+                // 弹窗必须确认关闭再交给下一个坑位，否则下一个坑位会命中这个残留弹窗
+                if (!await waitCoverDialogClosed()) {
+                    console.warn(`${LOG} ⚠️ 点完确认弹窗仍未关闭，下一个坑位可能受影响`);
+                }
+
+                // 终态校验：坑位缩略图变了才算真换上。
+                // ⚠️ 这条判据单独用并不可信 —— 平台把视频帧重新裁一次，缩略图照样会变
+                //    （实测 isCustomCover:false 时缩略图也变了）。真正的门闸是上面的网络层证据，
+                //    这里只做补充告警，不 throw
+                const slotSignatureAfter = readCoverSlotSignature(slot);
+                if (slotSignatureAfter && slotSignatureAfter !== slotSignatureBefore) {
+                    console.log(`${LOG} ✅ 坑位缩略图已变化，封面确认生效`);
+                } else {
+                    console.warn(`${LOG} ❌ 上传有证据但坑位缩略图没变，封面可能仍未应用:`, {
+                        before: String(slotSignatureBefore).slice(0, 120),
+                        after: String(slotSignatureAfter).slice(0, 120),
+                        上传证据: uploadSettled.evidence,
+                    });
+                }
+                return true;
+            };
+
+            console.log('[视频号发布][自定义封面图] 📐 坑位情况:', {
+                纵向: coverY ? '已找到' : '未找到',
+                横向: coverX ? '已找到' : '未找到',
+                可用封面: `${loadedCovers.filter(Boolean).length}/${loadedCovers.length}`,
+            });
+
+            // 🔑 两个坑位必须串行：它们共用同一个弹窗选择器，并行跑会互相抢弹窗
+            const coverYOk = await applyCustomCoverToSlot(coverY, '纵向');
+            const coverXOk = await applyCustomCoverToSlot(coverX, '横向');
+            console.log('[视频号发布][自定义封面图] 🏁 封面设置结束:', {
+                纵向: coverYOk ? '已设置' : '未设置',
+                横向: coverXOk ? '已设置' : '未设置',
+            });
+        } catch (e) {
+            console.error('[视频号发布][自定义封面图] ❌ 设置封面失败:', e);
+        }
+        //return;
+
+        // 检测表单是否有错误提示
+        await delay(1000);
+        const blockingErrors = collectShipinhaoBlockingErrorTexts();
+        if (blockingErrors.length > 0) {
+            // 走错误上报
+            const errorStr = '表单有错误提示：' + blockingErrors.join(', ');
+            await sendStatisticsError(publishId, errorStr || '表单有错误', '视频号发布');
+            throw new Error(errorStr);
+        }
+        await delay(1000);
+
+        // 等待发布按钮可用。视频号页面按钮结构会变化，按文本和状态综合定位。
+        const publishBtn = await waitForShipinhaoPublishButton({
+            timeoutMs: 120000,
+            intervalMs: 2000,
+            publishTime: dataObj.video?.formData?.send_set,
+            label: '发布按钮'
+        });
+
+        // 等待按钮事件绑定完成
+        await delay(800);
+
+        // 🔑 视频号成功后会直接跳转页面，必须在点击前保存数据
+        // 否则跳转后 publishApi 的后续代码不会执行
+        try {
+            localStorage.setItem(storageKey, JSON.stringify({
+                publishId: publishId,
+                taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+            }));
+            console.log('[视频号发布] 💾 已提前保存 publishId 到 localStorage:', publishId, 'key:', storageKey);
+
+            // 🔑 同时保存到 globalData（更可靠，不受域名隔离限制）
+            if (window.browserAPI && window.browserAPI.setGlobalData && myWindowId) {
+                await window.browserAPI.setGlobalData(`PUBLISH_SUCCESS_DATA_${myWindowId}`, {
+                    publishId: publishId,
+                    taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                });
+                console.log('[视频号发布] 💾 已保存 publishId 到 globalData');
+            }
+        } catch (e) {
+            console.error('[视频号发布] ❌ 保存 publishId 失败:', e);
+        }
+
+        // 生产环境：必须点击发布按钮
+        console.log('[视频号发布] ✅ 生产环境确认，准备点击发布按钮...');
+
+        const clickResult = await clickWithRetry(publishBtn, 3, 500, true); // 启用消息捕获
+
+        if (!clickResult.success) {
+            console.log('[视频号发布] ❌ 点击发布按钮失败:', clickResult.message);
+            // 清除提前保存的数据
+            localStorage.removeItem('PUBLISH_SUCCESS_DATA');
+            // 发送失败统计
+            await sendStatisticsError(publishId, clickResult.message || '点击发布按钮失败', '视频号发布');
+            publishRunning = false;
+            throw new Error('发布按钮点击失败: ' + clickResult.message);
+        }
+
+        // 点击成功
+        console.log('[视频号发布] ✅ 发布按钮已点击');
+        // 成功统计仅由成功页或本地明确成功确认发送，避免点击成功抢占真实结果的去重锁。
+        console.log('[视频号发布] 📨 平台提示:', clickResult.message);
+
+        // 开发环境弹窗显示平台提示信息
+        if (window.browserAPI && window.browserAPI.isProduction === false) {
+            alert(`视频号发布结果：\n\n${clickResult.message}`);
+        }
+
+        // 视频号：只要页面跳转就是成功，不需要检测提示内容
+        // 点击后直接进入等待页面跳转的逻辑
+
+        // 等待页面跳转到成功页，超时 30 秒
+        console.log('[视频号发布] ⏳ 等待跳转到成功页（90秒超时）...');
+        const currentUrl = window.location.href;
+        const startTime = Date.now();
+        const timeout = 90000; // 90秒：对齐全平台，网慢兜底，避免误报超时失败
+        // 🔑 用 clickResult.message 作为初始值，避免超时时丢失已捕获的提示
+        let lastToastMessage = clickResult.message || '';
+
+        while (Date.now() - startTime < timeout) {
+            await delay(2000); // 每 2 秒检查一次
+
+            // 检查 URL 是否变化（页面跳转 = 发布成功）
+            if (window.location.href !== currentUrl) {
+                console.log('[视频号发布] ✅ 检测到页面跳转，发布成功');
+                // 清除发布数据
+                localStorage.removeItem(publishDataKey);
+                // 标记已完成
+                hasProcessed = true;
+                publishRunning = false;
+                // 🔑 关闭窗口（发布成功）
+                await closeWindowWithMessage('发布成功，刷新数据', 1000);
+                return; // 页面已跳转，由 publish-success.js 处理统计接口
+            }
+
+            // 检查 PUBLISH_SUCCESS_DATA 是否已被 publish-success.js 删除
+            if (!localStorage.getItem(storageKey)) {
+                console.log('[视频号发布] ✅ 数据已被成功页处理，跳过后续检测');
+                hasProcessed = true;
+                publishRunning = false;
+                // 🔑 关闭窗口（成功页已处理）
+                await closeWindowWithMessage('发布成功，刷新数据', 1000);
+                return;
+            }
+
+            // 检测是否出现提示，记录消息内容（用于超时后的错误信息）
+            // 🔑 过滤掉成功消息，避免将成功消息作为错误信息上报
+            const successKeywords = ['成功', '发布成功', '提交成功', '上传成功'];
+            try {
+                const toptipSpan = await waitForShadowElement("wujie-app", ".toptip-content span", 500);
+                if (toptipSpan) {
+                    const text = (toptipSpan.textContent || '').trim();
+                    const isSuccess = successKeywords.some(keyword => text.includes(keyword));
+                    if (text && !isSuccess) {
+                        lastToastMessage = text;
+                        console.log('[视频号发布] 📨 检测到提示:', text);
+                    } else if (isSuccess) {
+                        console.log('[视频号发布] ✅ 检测到成功提示，忽略:', text);
+                    }
+                }
+            } catch (e) {
+                // 忽略检测错误
+            }
+        }
+
+        // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
+        if (!localStorage.getItem(storageKey)) {
+            console.log('[视频号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
+            hasProcessed = true;
+            publishRunning = false;
+            // 🔑 关闭窗口（成功页已处理）
+            await closeWindowWithMessage('发布成功，刷新数据', 1000);
+            return;
+        }
+
+        // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐视频号：点击已提交、平台未跳转但也无明确失败提示）
+        //    视频号 lastToastMessage 可能含中性提示，故用失败关键词判定「明确失败」，只有命中才判失败，避免误报。
+        const SPH_FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
+        const sphHasExplicitFailure = lastToastMessage && SPH_FAIL_KEYWORDS.some(k => lastToastMessage.includes(k));
+        if (!sphHasExplicitFailure) {
+            console.log('[视频号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');
+            localStorage.removeItem(storageKey);
+            localStorage.removeItem(publishDataKey);
+            hasProcessed = true;
+            publishRunning = false;
+            await sendStatistics(publishId, '视频号发布', {taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"});
+            await closeWindowWithMessage('发布成功，刷新数据', 1000);
+            return;
+        }
+
+        // 真正的超时失败
+        console.log('[视频号发布] ❌ 等待超时（90秒），判定发布失败');
+        localStorage.removeItem(storageKey);
+        localStorage.removeItem(publishDataKey);
+        hasProcessed = true;
+        publishRunning = false;
+        await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '视频号发布');
+        await closeWindowWithMessage('发布失败，刷新数据', 1000);
+
+    } catch (error) {
+        console.log('[视频号发布] publishApi 错误:', error);
+        // 清除提前保存的数据
+        localStorage.removeItem(storageKey);
+        // 发送失败统计
+        await sendStatisticsError(publishId, error.message || '发布过程出错', '视频号发布');
+        publishRunning = false;
+        // 即使出错也尝试关闭窗口
+        await closeWindowWithMessage('发布失败，刷新数据', 1000);
     }
-
-    // 超时未跳转 - 再次检查是否已被 publish-success.js 处理
-    if (!localStorage.getItem(storageKey)) {
-      console.log('[视频号发布] ✅ 超时但数据已被成功页处理，跳过错误统计');
-      hasProcessed = true;
-      publishRunning = false;
-      // 🔑 关闭窗口（成功页已处理）
-      await closeWindowWithMessage('发布成功，刷新数据', 1000);
-      return;
-    }
-
-    // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐视频号：点击已提交、平台未跳转但也无明确失败提示）
-    //    视频号 lastToastMessage 可能含中性提示，故用失败关键词判定「明确失败」，只有命中才判失败，避免误报。
-    const SPH_FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
-    const sphHasExplicitFailure = lastToastMessage && SPH_FAIL_KEYWORDS.some(k => lastToastMessage.includes(k));
-    if (!sphHasExplicitFailure) {
-      console.log('[视频号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');
-      localStorage.removeItem(storageKey);
-      localStorage.removeItem(publishDataKey);
-      hasProcessed = true;
-      publishRunning = false;
-      await sendStatistics(publishId, '视频号发布', { taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default" });
-      await closeWindowWithMessage('发布成功，刷新数据', 1000);
-      return;
-    }
-
-    // 真正的超时失败
-    console.log('[视频号发布] ❌ 等待超时（90秒），判定发布失败');
-    localStorage.removeItem(storageKey);
-    localStorage.removeItem(publishDataKey);
-    hasProcessed = true;
-    publishRunning = false;
-    await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '视频号发布');
-    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-
-  } catch (error) {
-    console.log('[视频号发布] publishApi 错误:', error);
-    // 清除提前保存的数据
-    localStorage.removeItem(storageKey);
-    // 发送失败统计
-    await sendStatisticsError(publishId, error.message || '发布过程出错', '视频号发布');
-    publishRunning = false;
-    // 即使出错也尝试关闭窗口
-    await closeWindowWithMessage('发布失败，刷新数据', 1000);
-  }
 }
 
 // 填写表单数据
 async function fillFormData(dataObj) {
     console.log("🚀 ~ fillFormData ~ dataObj: ", dataObj);
-  // 防止并发执行
-  if (fillFormRunning) {
-    // alert('⚠️ fillFormData already running, skipping');
-    return;
-  }
+    // 防止并发执行
+    if (fillFormRunning) {
+        // alert('⚠️ fillFormData already running, skipping');
+        return;
+    }
 
-  fillFormRunning = true;
+    fillFormRunning = true;
 
-  const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
-      ? window.resolvePublishTaskToken(dataObj, '发布')
-      : (typeof window.buildPublishTaskToken === 'function'
-          ? window.buildPublishTaskToken(dataObj, '发布')
-          : 'task_default');
-  if (typeof window.setCurrentPublishTaskToken === 'function') {
-      window.setCurrentPublishTaskToken(publishTaskToken);
-  } else {
-      window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
-  }
+    const publishTaskToken = typeof window.resolvePublishTaskToken === 'function'
+        ? window.resolvePublishTaskToken(dataObj, '发布')
+        : (typeof window.buildPublishTaskToken === 'function'
+            ? window.buildPublishTaskToken(dataObj, '发布')
+            : 'task_default');
+    if (typeof window.setCurrentPublishTaskToken === 'function') {
+        window.setCurrentPublishTaskToken(publishTaskToken);
+    } else {
+        window.__CURRENT_PUBLISH_TASK_TOKEN__ = publishTaskToken;
+    }
 
 
-  // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
-  const executeAllFormSteps = async () => {
-    const titleAndIntro = dataObj.video.video.sendlog;
-    // alert(JSON.stringify(titleAndIntro));
+    // 🔴 将所有核心填表逻辑包装在一个函数中，便于外层兜底重试
+    const executeAllFormSteps = async () => {
+        const titleAndIntro = dataObj.video.video.sendlog;
+        // alert(JSON.stringify(titleAndIntro));
 
-    // 等待wujie-app
-    const wujieApp = await waitForElement("wujie-app", 10000);
+        // 等待wujie-app
+        const wujieApp = await waitForElement("wujie-app", 10000);
 
-    // 填写简介 - 针对可编辑div的特殊处理（带重试）
-    try {
-      await retryOperation(async () => {
-        // 首先检查是否已经填写过（通过全局标记）
-        if (introFilled) {
-          console.log('[视频号发布] 简介已填写过，跳过');
-          return; // 跳过重试
+        // 填写简介 - 针对可编辑div的特殊处理（带重试）
+        try {
+            await retryOperation(async () => {
+                // 首先检查是否已经填写过（通过全局标记）
+                if (introFilled) {
+                    console.log('[视频号发布] 简介已填写过，跳过');
+                    return; // 跳过重试
+                }
+
+                const introInput = await waitForShadowElement("wujie-app", ".input-editor", 5000);
+                const targetIntro = titleAndIntro.intro || '';
+                const targetContent = targetIntro.trim();
+
+                // alert(`Filling intro: ${titleAndIntro.intro || ''}`);
+
+                // 确保是真实的DOM元素
+                if (!introInput || typeof introInput.dispatchEvent !== 'function') {
+                    throw new Error('Invalid introInput element');
+                }
+
+                // 检查实际内容
+                const currentContent = (introInput.textContent || introInput.innerText || '').trim();
+
+                // 只有在标记未设置且内容不同时才填写
+                if (currentContent !== targetContent) {
+                    // 立即标记为已填写（在任何操作之前，防止并发）
+                    introFilled = true;
+
+                    // 先触发focus事件
+                    if (typeof introInput.focus === 'function') {
+                        introInput.focus();
+                    } else {
+                        introInput.dispatchEvent(new Event('focus', {bubbles: true}));
+                    }
+
+                    // 延迟执行，让React状态稳定
+                    await window.delay(300);
+
+                    // 清空现有内容，避免累积
+                    introInput.innerHTML = '';
+
+                    // 使用execCommand模拟真实用户输入（更可靠）
+                    if (titleAndIntro.intro) {
+                        let success = false;
+
+                        // 方法1: 尝试使用execCommand插入文本（最接近真实用户输入）
+                        try {
+                            // 设置选区到元素内部
+                            const selection = window.getSelection();
+                            const range = document.createRange();
+                            range.selectNodeContents(introInput);
+                            range.collapse(false); // 移动到末尾
+                            selection.removeAllRanges();
+                            selection.addRange(range);
+
+                            // 使用execCommand插入文本
+                            success = document.execCommand('insertText', false, titleAndIntro.intro);
+                        } catch (e) {
+                            // execCommand可能失败，继续尝试其他方法
+                        }
+
+                        // 方法2: 如果execCommand失败，使用innerHTML（参考xhs.js的做法）
+                        if (!success) {
+                            try {
+                                introInput.innerHTML = '<p>' + titleAndIntro.intro + '</p>';
+                            } catch (e) {
+                                // 如果innerHTML也失败，使用textContent作为最后手段
+                                introInput.textContent = titleAndIntro.intro;
+                            }
+                        }
+                    }
+
+                    // 等待内容设置完成
+                    await window.delay(100);
+
+                    // 触发完整的事件序列（关键！）
+                    // beforeinput事件
+                    introInput.dispatchEvent(new InputEvent('beforeinput', {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: 'insertText',
+                        data: titleAndIntro.intro || ''
+                    }));
+
+                    // input事件（最重要）
+                    introInput.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: 'insertText',
+                        data: titleAndIntro.intro || ''
+                    }));
+
+                    // change事件
+                    introInput.dispatchEvent(new Event('change', {bubbles: true}));
+
+                    // 触发composition事件（某些编辑器需要）
+                    introInput.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+                    introInput.dispatchEvent(new CompositionEvent('compositionupdate', {
+                        bubbles: true,
+                        data: titleAndIntro.intro || ''
+                    }));
+                    introInput.dispatchEvent(new CompositionEvent('compositionend', {
+                        bubbles: true,
+                        data: titleAndIntro.intro || ''
+                    }));
+
+                    // 再次触发input事件确保React捕获到变化
+                    await window.delay(100);
+                    introInput.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: 'insertText',
+                        data: titleAndIntro.intro || ''
+                    }));
+
+                    // 延迟后触发blur事件
+                    await window.delay(300);
+                    if (typeof introInput.blur === 'function') {
+                        introInput.blur();
+                    } else {
+                        introInput.dispatchEvent(new FocusEvent('blur', {bubbles: true}));
+                    }
+
+                    // 最后再延迟确保所有事件都被处理
+                    await window.delay(200);
+
+                    // 🔑 验证是否成功设置
+                    const updatedContent = (introInput.textContent || introInput.innerText || '').trim();
+                    if (updatedContent !== targetContent) {
+                        throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedContent.substring(0, 50)}..."`);
+                    }
+
+                    console.log('[视频号发布] ✅ 简介填写成功');
+                } else {
+                    // 内容已经正确，也标记为已填写
+                    introFilled = true;
+                    console.log('[视频号发布] 简介内容已正确，无需修改');
+                }
+            }, 5, 1000);
+        } catch (error) {
+            console.log('[视频号发布] ❌ 简介填写失败:', error.message);
         }
 
-        const introInput = await waitForShadowElement("wujie-app", ".input-editor", 5000);
-        const targetIntro = titleAndIntro.intro || '';
-        const targetContent = targetIntro.trim();
+        // 填写标题（带重试和验证）
+        try {
+            await retryOperation(async () => {
+                const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
 
-        // alert(`Filling intro: ${titleAndIntro.intro || ''}`);
+                // 确保是真实的DOM元素
+                if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
+                    throw new Error('Invalid titleInput element');
+                }
 
-        // 确保是真实的DOM元素
-        if (!introInput || typeof introInput.dispatchEvent !== 'function') {
-          throw new Error('Invalid introInput element');
+                // 先触发focus事件
+                if (typeof titleInput.focus === 'function') {
+                    titleInput.focus();
+                } else {
+                    titleInput.dispatchEvent(new Event('focus', {bubbles: true}));
+                }
+
+                // 延迟执行，让React状态稳定（关键！）
+                await window.delay(300);
+
+                const targetTitle = normalizeShipinhaoShortTitle(titleAndIntro.title, titleAndIntro.intro);
+                setNativeValue(titleInput, targetTitle);
+
+                // 额外触发input事件（xhs.js的做法）
+                titleInput.dispatchEvent(new Event('input', {bubbles: true}));
+
+                // 等待 React 更新
+                await window.delay(200);
+
+                // 🔑 验证是否成功设置
+                const currentValue = (titleInput.value || '').trim();
+                const expectedValue = targetTitle.trim();
+                if (currentValue !== expectedValue) {
+                    throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
+                }
+
+                console.log('[视频号发布] ✅ 标题设置成功:', currentValue);
+            }, 5, 1000);
+        } catch (error) {
+            console.log('[视频号发布] ❌ 标题填写失败:', error.message);
         }
 
-        // 检查实际内容
-        const currentContent = (introInput.textContent || introInput.innerText || '').trim();
-
-        // 只有在标记未设置且内容不同时才填写
-        if (currentContent !== targetContent) {
-          // 立即标记为已填写（在任何操作之前，防止并发）
-          introFilled = true;
-
-          // 先触发focus事件
-          if (typeof introInput.focus === 'function') {
-            introInput.focus();
-          } else {
-            introInput.dispatchEvent(new Event('focus', { bubbles: true }));
-          }
-
-          // 延迟执行，让React状态稳定
-          await window.delay(300);
-
-          // 清空现有内容，避免累积
-          introInput.innerHTML = '';
-
-          // 使用execCommand模拟真实用户输入（更可靠）
-          if (titleAndIntro.intro) {
-            let success = false;
-
-            // 方法1: 尝试使用execCommand插入文本（最接近真实用户输入）
+        // 设置发布时间（带重试）
+        const publishTime = dataObj.video.formData.send_set;
+        if (+publishTime === 2) {
             try {
-              // 设置选区到元素内部
-              const selection = window.getSelection();
-              const range = document.createRange();
-              range.selectNodeContents(introInput);
-              range.collapse(false); // 移动到末尾
-              selection.removeAllRanges();
-              selection.addRange(range);
+                await retryOperation(async () => {
+                    // 定时发布
+                    const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
+                    const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
 
-              // 使用execCommand插入文本
-              success = document.execCommand('insertText', false, titleAndIntro.intro);
-            } catch (e) {
-              // execCommand可能失败，继续尝试其他方法
+                    setNativeValue(immediateRadio, false);
+                    setNativeValue(scheduleRadio, true);
+
+                    // 设置日期时间
+                    await window.delay(500);
+                    const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
+
+                    // 多次设置确保生效
+                    for (let i = 0; i < 2; i++) {
+                        if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
+                            break;
+                        }
+                        await window.delay(300);
+                    }
+
+                    console.log('[视频号发布] ✅ 定时发布时间设置成功');
+                }, 5, 1000);
+            } catch (error) {
+                console.log('[视频号发布] ❌ 定时发布时间设置失败:', error.message);
             }
-
-            // 方法2: 如果execCommand失败，使用innerHTML（参考xhs.js的做法）
-            if (!success) {
-              try {
-                introInput.innerHTML = '<p>' + titleAndIntro.intro + '</p>';
-              } catch (e) {
-                // 如果innerHTML也失败，使用textContent作为最后手段
-                introInput.textContent = titleAndIntro.intro;
-              }
-            }
-          }
-
-          // 等待内容设置完成
-          await window.delay(100);
-
-          // 触发完整的事件序列（关键！）
-          // beforeinput事件
-          introInput.dispatchEvent(new InputEvent('beforeinput', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: titleAndIntro.intro || ''
-          }));
-
-          // input事件（最重要）
-          introInput.dispatchEvent(new InputEvent('input', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: titleAndIntro.intro || ''
-          }));
-
-          // change事件
-          introInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-          // 触发composition事件（某些编辑器需要）
-          introInput.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-          introInput.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: titleAndIntro.intro || '' }));
-          introInput.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: titleAndIntro.intro || '' }));
-
-          // 再次触发input事件确保React捕获到变化
-          await window.delay(100);
-          introInput.dispatchEvent(new InputEvent('input', {
-            bubbles: true,
-            cancelable: true,
-            inputType: 'insertText',
-            data: titleAndIntro.intro || ''
-          }));
-
-          // 延迟后触发blur事件
-          await window.delay(300);
-          if (typeof introInput.blur === 'function') {
-            introInput.blur();
-          } else {
-            introInput.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-          }
-
-          // 最后再延迟确保所有事件都被处理
-          await window.delay(200);
-
-          // 🔑 验证是否成功设置
-          const updatedContent = (introInput.textContent || introInput.innerText || '').trim();
-          if (updatedContent !== targetContent) {
-            throw new Error(`简介设置失败: 期望"${targetContent.substring(0, 50)}...", 实际"${updatedContent.substring(0, 50)}..."`);
-          }
-
-          console.log('[视频号发布] ✅ 简介填写成功');
-        } else {
-          // 内容已经正确，也标记为已填写
-          introFilled = true;
-          console.log('[视频号发布] 简介内容已正确，无需修改');
         }
-      }, 5, 1000);
-    } catch (error) {
-      console.log('[视频号发布] ❌ 简介填写失败:', error.message);
-    }
 
-    // 填写标题（带重试和验证）
+        // 等待表单填写完成（初始等待增加到8秒）
+        console.log('[视频号发布] ⏳ 等待表单验证（8秒）...');
+        await window.delay(8000);
+
+        // 发布按钮预检只做诊断，不在填表阶段直接判失败；真正等待放到 publishApi。
+        console.log('[视频号发布] 🔍 预检发布按钮状态...');
+        try {
+            await waitForShipinhaoPublishButton({
+                timeoutMs: 30000,
+                intervalMs: 2000,
+                publishTime,
+                label: '发布按钮预检'
+            });
+        } catch (buttonWaitError) {
+            console.warn('[视频号发布] ⚠️ 发布按钮预检未就绪，继续进入 publishApi 等待:', buttonWaitError.message);
+            console.warn('[视频号发布] 发布按钮预检诊断:', collectShipinhaoFormDiagnostics());
+        }
+
+        // 发布
+        await publishApi(dataObj);
+    };
+    // ===== 原有逻辑结束 =====
+
+    // 🔴 最外层兜底重试：即使单步骤重试都失败，外层还会重试整个流程2次
     try {
-      await retryOperation(async () => {
-        const titleInput = await waitForShadowElement("wujie-app", ".post-short-title-wrap input", 5000);
-
-        // 确保是真实的DOM元素
-        if (!titleInput || typeof titleInput.dispatchEvent !== 'function') {
-          throw new Error('Invalid titleInput element');
+        await retryOperation(executeAllFormSteps, 2, 3000);
+        console.log('[视频号发布] ✅ 所有表单填写完成');
+    } catch (finalError) {
+        console.error('[视频号发布] ❌ 填表流程失败（外层重试2次后）:', finalError);
+        stopErrorListener?.();
+        const publishId = dataObj?.video?.dyPlatform?.id;
+        if (publishId) {
+            await sendStatisticsError(publishId, finalError.message || '填写表单失败', '视频号发布');
         }
-
-        // 先触发focus事件
-        if (typeof titleInput.focus === 'function') {
-          titleInput.focus();
-        } else {
-          titleInput.dispatchEvent(new Event('focus', { bubbles: true }));
-        }
-
-        // 延迟执行，让React状态稳定（关键！）
-        await window.delay(300);
-
-        const targetTitle = normalizeShipinhaoShortTitle(titleAndIntro.title, titleAndIntro.intro);
-        setNativeValue(titleInput, targetTitle);
-
-        // 额外触发input事件（xhs.js的做法）
-        titleInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-        // 等待 React 更新
-        await window.delay(200);
-
-        // 🔑 验证是否成功设置
-        const currentValue = (titleInput.value || '').trim();
-        const expectedValue = targetTitle.trim();
-        if (currentValue !== expectedValue) {
-          throw new Error(`标题设置失败: 期望"${expectedValue}", 实际"${currentValue}"`);
-        }
-
-        console.log('[视频号发布] ✅ 标题设置成功:', currentValue);
-      }, 5, 1000);
-    } catch (error) {
-      console.log('[视频号发布] ❌ 标题填写失败:', error.message);
+        await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
+    } finally {
+        // 无论成功还是失败，都重置标记
+        fillFormRunning = false;
     }
-
-    // 设置发布时间（带重试）
-    const publishTime = dataObj.video.formData.send_set;
-    if (+publishTime === 2) {
-      try {
-        await retryOperation(async () => {
-          // 定时发布
-          const immediateRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='0']", 3000);
-          const scheduleRadio = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-radio-group input[type='radio'][value='1']", 3000);
-
-          setNativeValue(immediateRadio, false);
-          setNativeValue(scheduleRadio, true);
-
-          // 设置日期时间
-          await window.delay(500);
-          const dateInput = await waitForShadowElement("wujie-app", ".post-time-wrap .weui-desktop-picker__date input", 3000);
-
-          // 多次设置确保生效
-          for (let i = 0; i < 2; i++) {
-            if (setNativeValue(dateInput, dataObj.video.dyPlatform.send_time)) {
-              break;
-            }
-            await window.delay(300);
-          }
-
-          console.log('[视频号发布] ✅ 定时发布时间设置成功');
-        }, 5, 1000);
-      } catch (error) {
-        console.log('[视频号发布] ❌ 定时发布时间设置失败:', error.message);
-      }
-    }
-
-    // 等待表单填写完成（初始等待增加到8秒）
-    console.log('[视频号发布] ⏳ 等待表单验证（8秒）...');
-    await window.delay(8000);
-
-    // 发布按钮预检只做诊断，不在填表阶段直接判失败；真正等待放到 publishApi。
-    console.log('[视频号发布] 🔍 预检发布按钮状态...');
-    try {
-      await waitForShipinhaoPublishButton({
-        timeoutMs: 30000,
-        intervalMs: 2000,
-        publishTime,
-        label: '发布按钮预检'
-      });
-    } catch (buttonWaitError) {
-      console.warn('[视频号发布] ⚠️ 发布按钮预检未就绪，继续进入 publishApi 等待:', buttonWaitError.message);
-      console.warn('[视频号发布] 发布按钮预检诊断:', collectShipinhaoFormDiagnostics());
-    }
-
-    // 发布
-    await publishApi(dataObj);
-  };
-  // ===== 原有逻辑结束 =====
-
-  // 🔴 最外层兜底重试：即使单步骤重试都失败，外层还会重试整个流程2次
-  try {
-    await retryOperation(executeAllFormSteps, 2, 3000);
-    console.log('[视频号发布] ✅ 所有表单填写完成');
-  } catch (finalError) {
-    console.error('[视频号发布] ❌ 填表流程失败（外层重试2次后）:', finalError);
-    stopErrorListener?.();
-    const publishId = dataObj?.video?.dyPlatform?.id;
-    if (publishId) {
-      await sendStatisticsError(publishId, finalError.message || '填写表单失败', '视频号发布');
-    }
-    await closeWindowWithMessage('填写表单失败，刷新数据', 1000);
-  } finally {
-    // 无论成功还是失败，都重置标记
-    fillFormRunning = false;
-  }
 }
 

@@ -151,6 +151,11 @@ async function runPublish(app, publishTitle, publishContent, mode = 'immediate')
           return true;
         };
 
+        const NOTICE_FAILURE_RE = /失败|错误|异常|不能为空|请先|违规|超限|驳回|无效|过期|不可用|不符合|未通过|已用尽|账号.*异常|账号.*限制/;
+        const NOTICE_SUCCESS_RE = /发布成功|提交成功|成功|已设置|已预约|定时/;
+        const isFailureNotice = (text) => NOTICE_FAILURE_RE.test(String(text || ''));
+        const isSuccessNotice = (text) => NOTICE_SUCCESS_RE.test(String(text || '')) && !isFailureNotice(text);
+
         const findVisibleHint = () => {
           const selectors = [
             '.byte-form-item-help',
@@ -170,7 +175,7 @@ async function runPublish(app, publishTitle, publishContent, mode = 'immediate')
               if (!visible(el)) continue;
               const t = textOf(el);
               if (!t || t.length > 180) continue;
-              if (/标题不能为空|还需输入|封面|失败|错误|请先/.test(t)) return t;
+              if (/标题不能为空|还需输入|封面/.test(t) || isFailureNotice(t)) return t;
             }
           }
           return '';
@@ -435,11 +440,11 @@ async function runPublish(app, publishTitle, publishContent, mode = 'immediate')
 
           const toast = readToast();
           if (toast) {
-            if (/发布成功|提交成功|成功/.test(toast)) {
-              return { success: true, reason: 'toast-success', toast, href, logs };
-            }
-            if (/失败|错误|异常|不能为空|请先|违规|超限|驳回/.test(toast)) {
+            if (isFailureNotice(toast)) {
               return { success: false, reason: 'toast-failed', toast, href, logs };
+            }
+            if (isSuccessNotice(toast)) {
+              return { success: true, reason: 'toast-success', toast, href, logs };
             }
           }
 
