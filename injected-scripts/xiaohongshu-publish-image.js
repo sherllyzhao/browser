@@ -1284,6 +1284,17 @@ if (location.search.includes("published=true")) {
                 return;
             }
 
+            // 【特性开关】FIX_XIAOHONGSHU_FAILURE_REPORT：按成功收口前先问一遍失败探针。
+            // 上面的轮询只看当前 DOM，而 toast 约 3 秒就消失；探针里的失败信号是持久的，
+            // 漏掉它就会把「平台明确拒绝」记成成功——这正是本次事故的最后一环。
+            if (!lastFailureMessage && window.isFeatureEnabled?.("FIX_XIAOHONGSHU_FAILURE_REPORT")) {
+                const probedFailure = String(xhsLatestPublishFailure || window.__XHS_LATEST_PUBLISH_FAILURE__ || "").trim();
+                if (probedFailure) {
+                    lastFailureMessage = probedFailure;
+                    console.error("[小红书发布] ❌ 超时兜底命中失败探针，拒绝按成功收口:", probedFailure);
+                }
+            }
+
             if (!lastFailureMessage) {
                 await completeXhsPublishAsSuccess(publishId, windowId, "点击已成功但平台未跳转成功页");
                 return;
