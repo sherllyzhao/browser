@@ -31,6 +31,26 @@ if (location.search.includes("published=true")) {
         return text;
     }
 
+    // 开发环境展示平台返回文案。
+    // 【特性开关】FIX_XIAOHONGSHU_FAILURE_REPORT：原先直接 alert，同步阻塞 JS 线程，
+    // 点确定之前后续失败检测与上报一步都跑不了；等点掉时 toast 已消失（d-toast 约 3 秒），
+    // 90 秒轮询全落空 → 走超时兜底按成功收口，明确失败被记成成功。改为非阻塞 toast。
+    function showXhsDevPublishResult(message) {
+        const text = String(message || "").trim();
+        if (!text) return;
+        if (!(window.browserAPI && window.browserAPI.isProduction === false)) return;
+        if (!window.isFeatureEnabled?.("FIX_XIAOHONGSHU_FAILURE_REPORT")) {
+            alert(`小红书发布结果：\n\n${text}`);
+            return;
+        }
+        console.log("[小红书发布] 🧪 开发环境平台返回:", text);
+        try {
+            window.showPublishToast?.(`小红书发布结果：${text}`, isXhsFailureText(text) ? "error" : "info", 6000);
+        } catch (e) {
+            console.warn("[小红书发布] ⚠️ 开发环境提示展示失败:", e.message);
+        }
+    }
+
     function extractXhsPublishFailure(payload, depth = 0, seen = new WeakSet()) {
         if (payload === null || typeof payload === "undefined" || depth > 4) return "";
         if (typeof payload === "string") {
@@ -1185,10 +1205,27 @@ if (location.search.includes("published=true")) {
             // 成功统计仅由成功页或本地明确成功确认发送，避免点击成功抢占真实结果的去重锁。
             console.log("[小红书发布] 📨 平台提示:", clickResult.message);
 
-            // 开发环境弹窗显示平台提示信息
-            if (window.browserAPI && window.browserAPI.isProduction === false) {
-                alert(`小红书发布结果：\n\n${clickResult.message}`);
+            // 【特性开关】FIX_XIAOHONGSHU_FAILURE_REPORT：
+            // clickWithTrustedRetry(captureMessage=true) 读到的 toast，是「因违反社区规范禁止发笔记」
+            // 这类拒绝唯一及时的证据——小红书前端自己 catch 了 HTTPBizError，网络层 hook 与
+            // unhandledrejection 都抓不到。原先按「提示词不统一无法判断」整条丢弃，拖到 90 秒轮询
+            // 再去 DOM 里捞，那时 toast 早已消失，最终被超时兜底记成成功。改为拿到就分类。
+            if (window.isFeatureEnabled?.("FIX_XIAOHONGSHU_FAILURE_REPORT")) {
+                const clickFailureText = setXhsPublishFailure(clickResult.message, "click-toast");
+                if (clickFailureText) {
+                    console.error("[小红书发布] ❌ 点击后立即判定发布失败:", clickFailureText);
+                    showXhsDevPublishResult(clickResult.message);
+                    hasProcessed = true;
+                    await clearPublishSuccessData(windowId);
+                    await sendStatisticsError(publishId, clickFailureText, "小红书发布");
+                    publishRunning = false;
+                    await closeWindowWithMessage("发布失败，刷新数据", 1000);
+                    return;
+                }
             }
+
+            // 开发环境提示平台返回文案（非阻塞，原 alert 会把后续失败检测整条卡死）
+            showXhsDevPublishResult(clickResult.message);
 
             // 等待页面稳定
             await delay(2000);

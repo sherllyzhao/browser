@@ -291,6 +291,14 @@ if (typeof window.uploadVideo === "function"
         tests: 'test-upgrade-cleanup-logs.js（14 项全过）'
       },
 
+      FIX_XIAOHONGSHU_FAILURE_REPORT: {
+        enabled: true,
+        version: '1.2.20',
+        risk: 'low',
+        files: ['xiaohongshu-publish.js:publishApi', 'xiaohongshu-publish.js:selectScheduledTime', 'xiaohongshu-publish-image.js:publishApi', 'xiaohongshu-publish-image.js:selectScheduledTime'],
+        description: '小红书弹「因违反社区规范禁止发笔记」，脚本日志打了「平台提示: …」，后台却没有失败记录。四处根因：①clickWithTrustedRetry(captureMessage=true) 已经把 toast 读出来了，却按「各平台提示词不统一无法判断」整条丢弃，直接当已提交；②开发环境用 alert 展示该文案，同步阻塞把后续失败检测与上报一起卡死；③等 alert 点掉后 toast 早已消失（d-toast 约 3 秒），90 秒轮询只看当前 DOM 全部落空 → 走 !lastFailureMessage 分支按成功收口，明确失败被记成成功；④定时发布路径检测到错误只打一行「不发送统计」，成功失败都不报，后台整条任务静默。修复：点击后立刻用既有 isXhsFailureText 分类 clickResult.message，命中即上报失败并关窗；alert 换成非阻塞 toast；超时收口前补查失败探针；定时路径补 sendStatisticsError。网络层捕获（fetch hook 白名单窄、未 hook XHR）本次不动',
+        tests: 'test-xiaohongshu-failure-report.js'
+      },
 
       // 【预留】未来的修复/功能添加在下方
       // NEW_FEATURE_TEMPLATE: {
