@@ -36,7 +36,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：如果禁用此项，不会保存优化上报的缓存数据，但不会崩溃
       FIX_PAGEHIDE_PROMISE_CRASH: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'high',
         files: ['common.js:3172', 'common.js:3218'],  // 修改位置
         description: '移除 pagehide 事件中的 Promise.catch() 链'
@@ -51,7 +51,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退"缺少 accountId 一律禁用兜底"旧行为（main.js 侧另有同名常量开关）
       FIX_SOHU_AUTH_IDENTITY_BINDING: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: ['souhuhao-creator.js:shinfo成功后', 'main.js:migrateCookiesToPersistent搜狐分支', 'main.js:hydrateSohuhaoAccountSessionFromRecentPersistentSession'],
         description: '搜狐授权身份绑定：新授权无后台记录ID时按登录身份匹配放行最近授权预热'
@@ -65,7 +65,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧正则（易误判）+ 单次命中即触发回退
       FIX_TENGXUN_IMAGE_FALSE_POSITIVE: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['tengxvnhao-publish.js:getTxhEditorImageFailureText', 'tengxvnhao-publish.js:验证循环(数值达标优先判成功)', 'tengxvnhao-publish.js:clearEditor(selectAll+delete温和清空)'],
         description: '腾讯号图片误判修复：数值达标优先于失败文本 + 进行中文案排除 + 二次确认 + 编辑器友好清空防RangeError'
@@ -91,7 +91,7 @@ if (typeof window.uploadVideo === "function"
       //       但窗口内刷新的 token 不落库）；未登记平台自动退回宽名单，行为不变
       FIX_STRICT_LOGIN_CREDENTIAL_GUARD: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'high',
         files: ['domain-config.js:platformSessionCredentialCookies', 'main.js:hasSessionCredentialCookies', 'main.js:cookiesHaveLiveLoginCredential', 'main.js:hasValidLoginCookies', 'main.js:sessionDataHasValidLoginCookies', 'main.js:collectWindowSessionSaveContext回存守卫', 'main.js:buildEffectiveSessionRestoreData', 'main.js:关窗前登录态预检(两处close handler)', 'main.js:purgeLatestSessionCacheForAccount', 'main.js:ipc check-session-status', 'main.js:ipc check-account-login-status'],
         description: '全平台严格会话凭证口径：登出残留 cookie 不再误判为已登录，阻断死快照覆盖 + 判死清本地缓存 + 前端查登录态 IPC 同步收严并扩到全平台'
@@ -112,7 +112,7 @@ if (typeof window.uploadVideo === "function"
       //       清空只作用于知乎发布页编辑器，且清空失败会抛错交给重试，不会带着脏内容往下走。
       FIX_ZHIHU_CONTENT_DUPLICATE: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: ['zhihu-publish.js:clearZhihuEditor', 'zhihu-publish.js:pasteHtmlIntoEditor验证失败抛错', 'zhihu-publish.js:内容填写retryOperation回调开头清空', 'zhihu-publish.js:insertContentWithZhihuEditorFallback接返回值', 'zhihu-publish.js:fillFormData终态标志'],
         description: '知乎正文重复修复：重试前清空编辑器实现写入幂等 + 缺段不再静默吞掉 + 堵外层整篇重填隐患'
@@ -154,7 +154,7 @@ if (typeof window.uploadVideo === "function"
       //       所有加固都是"看清真相"而非"更激进操作"，不会影响已经能成功的坑位。
       FIX_DOUYIN_COVER_SLOT_GUARD: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: [
           'douyin-publish.js:__DOUYIN_MODAL_SELECTOR放宽+多候选打分',
@@ -181,7 +181,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：禁用后回退旧行为（fetch 预热 + 纯 cookie 形式判活）。主进程侧另有同名开关。
       FIX_XINLANG_LOGIN_ALIVE_PROBE: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: ['main.js:probeXinlangServerLoginState', 'main.js:warmup-session-navigation', 'main.js:hasValidLoginCookies', 'domain-config.js:xinlang名单', 'xinlang-creator.js:真实导航预热+账号session迁移', 'common.js:xinlang域名'],
         description: '新浪授权后掉登录：真实导航预热主站 + 服务端探活判死 + 补 weibo.cn 域 + 收严凭证名单'
@@ -189,7 +189,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_MANAGED_WINDOW_COOKIES_AS_SESSION: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: ['main.js:openManagedChildWindowInternal'],
         description: '内容管理入口只传 options.cookies 而主进程只认 sessionData，导致内容管理窗拿不到后台快照、只能用账号分区里的旧 cookie（重新授权也照样跳登录页）；开窗时归一为 sessionData，与发布共用同一条会话仲裁链路'
@@ -205,7 +205,7 @@ if (typeof window.uploadVideo === "function"
       // 风险：只增日志与一次重试，不改变上报内容与判定口径；禁用后回退为"采完就发"。
       FIX_XINLANG_AUTH_SNAPSHOT_SELFCHECK: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: [
           'xinlang-creator.js:summarizeXinlangCredential',
@@ -230,7 +230,7 @@ if (typeof window.uploadVideo === "function"
       //   FIX_XINLANG_PUBLISH_HOST_PROBE，误杀就先关它保留 201 判死。
       FIX_XINLANG_PUBLISH_HOST_PROBE: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: [
           'main.js:probeXinlangCreatorLoginState(201/过期文案判死)',
@@ -243,7 +243,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_XINLANG_NEWLOGIN_LANDING_GUARD: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['main.js:maybeMarkXinlangDeadOnLoginLanding', 'main.js:managed-window did-navigate/did-navigate-in-page'],
         description: '窗口被微博弹到 weibo.com/newlogin、/login*、/sso/* 时当场把该 session 判死并清 latest_session 缓存（授权窗排除），关窗不再回存死快照，下次开窗直接用后台好快照'
@@ -251,7 +251,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_WEIBO_NEWLOGIN_URL_PATTERN: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['main.js:GLOBAL_LOGIN_URL_PATTERNS', 'main.js:LOGIN_URL_PATTERNS ×2'],
         description: "把 '/newlogin' 补进三份通用登录页判据——'/login' 匹配不到 weibo.com/newlogin（login 前是 w 不是 /），导致新浪的登录页弹跳诊断日志、全平台死缓存清理、人工重登后即时回存三处全部失效"
@@ -259,7 +259,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_APP_LOG_OPEN_GUARD: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['main.js:openAppLogStream', 'main.js:cleanupOldVersionDataOnUpgrade'],
         description: 'app.log 打不开不再打死程序：日志流创建加 try/catch + on(error) 降级为只走控制台（原先 EPERM 以流 error 事件冒泡成 uncaughtException，弹「运行错误」）；升级清理不再删 app.log，避免第二实例删掉第一实例正在写的日志、以及 Windows 删除挂起导致后续 open 一律 EPERM'
@@ -267,7 +267,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_XIAOHONGSHU_SCHEDULE_PICKER_CLICK: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['xiaohongshu-publish.js:selectScheduledTime', 'xiaohongshu-publish-image.js:selectScheduledTime'],
         description: '小红书定时发布时间不对，两个根因：①开日历那一击是全脚本唯一手搓坐标点击（不走 nativeClickElement，没有命中校验+强制居中重试），打在 global-wrapper 上却返回 success，面板从不弹出；②日期单元格拿 --color-text-placeholder 当「邻月」判据，但它其实是「淡色文本态」，当月可选日同样带它 → 目标日被跳过，漏选只打一行 error 就继续点发布，于是按面板默认的当前时间发了出去。修复：多候选目标走 nativeClickElement、.date-picker-container 取可见那个、弹层检测结构锚定、当月单元格按 DOM 位置判定（第一个 1 号起单调递增到回落）、日期没选上直接中断、时间栏按项数认小时/分钟、发布前用输入框值做终态校验、失败补 sendStatisticsError'
@@ -275,7 +275,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_SESSION_RESTORE_BACKFLOW_GUARD: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'medium',
         files: ['main.js:matchAccountIdentity', 'main.js:evaluateSessionRestoreBackflow', 'main.js:stampWindowLoginFreshness', 'domain-config.js:platformIdentityCookies'],
         description: '发布任务把 cookies 快照冻在任务记录里，每次「重新发布」都拿同一份旧快照走清空恢复，把窗口内刚登上的新登录擦掉（新建任务取的是回存刷新过的快照所以正常）。两处根因：①身份 cookie 与会话凭证重叠（小红书 web_session/百家号 BDUSS/知乎 z_c0/搜狐 ppinf），同账号重新登录被判成「换账号」强制清空；②三条通往清空的路只比「是否不同」不比「谁更新」。修法：身份名单剔除会话凭证（剔空返回「无法验证」而非「换账号」）+ 给账号分区记持久化登录新鲜度戳，戳比传入快照新时拒绝清空。无戳/快照无时间戳/刚授权补齐流程一律保持旧行为',
@@ -284,7 +284,7 @@ if (typeof window.uploadVideo === "function"
 
       FIX_UPGRADE_CLEANUP_KEEP_LOGS: {
         enabled: true,
-        version: '1.2.19',
+        version: '1.2.21',
         risk: 'low',
         files: ['main.js:cleanupOldVersionDataOnUpgrade', 'main.js:pruneDiagnosticLogs'],
         description: '升级清理不再整目录 rmSync 掉 logs——session-diagnostic.log 是掉登录问题唯一的现场证据，而这类问题恰恰升级后才被发现，等于每次版本变更把排查线索清零（排查小红书掉登录时 logs/ 已空，只能读代码反推）。改为按保留期修剪：14 天内一律留着，超期的删，删完仍超 50MB 就从最旧的继续删',
@@ -293,11 +293,20 @@ if (typeof window.uploadVideo === "function"
 
       FIX_XIAOHONGSHU_FAILURE_REPORT: {
         enabled: true,
-        version: '1.2.20',
+        version: '1.2.21',
         risk: 'low',
         files: ['xiaohongshu-publish.js:publishApi', 'xiaohongshu-publish.js:selectScheduledTime', 'xiaohongshu-publish-image.js:publishApi', 'xiaohongshu-publish-image.js:selectScheduledTime'],
         description: '小红书弹「因违反社区规范禁止发笔记」，脚本日志打了「平台提示: …」，后台却没有失败记录。四处根因：①clickWithTrustedRetry(captureMessage=true) 已经把 toast 读出来了，却按「各平台提示词不统一无法判断」整条丢弃，直接当已提交；②开发环境用 alert 展示该文案，同步阻塞把后续失败检测与上报一起卡死；③等 alert 点掉后 toast 早已消失（d-toast 约 3 秒），90 秒轮询只看当前 DOM 全部落空 → 走 !lastFailureMessage 分支按成功收口，明确失败被记成成功；④定时发布路径检测到错误只打一行「不发送统计」，成功失败都不报，后台整条任务静默。修复：点击后立刻用既有 isXhsFailureText 分类 clickResult.message，命中即上报失败并关窗；alert 换成非阻塞 toast；超时收口前补查失败探针；定时路径补 sendStatisticsError。网络层捕获（fetch hook 白名单窄、未 hook XHR）本次不动',
         tests: 'test-xiaohongshu-failure-report.js'
+      },
+
+      FIX_MULTIPLATFORM_FAILURE_REPORT_P0: {
+        enabled: true,
+        version: '1.2.21',
+        risk: 'medium',
+        files: ['baijiahao-publish.js', 'souhuhao-publish.js', 'douyin-publish.js', 'shipinhao-publish.js'],
+        description: '全平台失败上报审计（8/8 平台）发现 4 个 P0 极高危缺陷，全部同源于小红书未修复前的模式。①百家号 FAIL_KEYWORDS 词表过窄，「今日发文已达上限」「内容含敏感信息」「标题重复」「操作过于频繁」都不含表中任一词 → 明确失败被上报成成功（1470-1481 与小红书缺陷④后果完全一致）；②搜狐号定时路径 confirm+alert 无人值守永久悬死（2313-2316 无特性开关、无超时兜底）；③百家号定时路径全不报（1149 提前报成功+四处失败出口无 sendStatisticsError+1212 点确定后不检测结果）；④抖音/视频号超时无失败即上报成功（douyin:2182-2188 / shipinhao:2052-2065，不查任何失败探针，「范式对齐小红书」注释对齐的是未修复前的版本）。修复：百家号词表扩充+定时路径补检测与上报、搜狐 confirm/alert 换非阻塞 toast+5 分钟超时强制收口、抖音/视频号超时收口前补查失败探针（参考小红书 FIX_XIAOHONGSHU_FAILURE_REPORT 实现）',
+        tests: 'test-multiplatform-failure-report-p0.js'
       },
 
       // 【预留】未来的修复/功能添加在下方

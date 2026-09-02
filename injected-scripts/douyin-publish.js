@@ -2176,10 +2176,23 @@ async function publishApi(dataObj) {
             return;
         }
 
+        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：抖音超时收口前补查失败探针
+        // 原逻辑：lastToastMessage 空即上报成功，但该变量只记轮询中捕获的失败提示
+        // 如果 toast 在 3 秒内消失（轮询间隙）或点击后立即出现（capturedErrors 有记录），会被漏捕
+        // 修复：超时收口前补查持久化失败探针，参考小红书实现
+        let finalFailureMessage = lastToastMessage;
+        if (!finalFailureMessage && window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+            const probed = typeof readPublishErrorProbe === 'function' ? readPublishErrorProbe() : null;
+            if (probed) {
+                finalFailureMessage = probed;
+                console.error('[抖音发布] ❌ 超时兜底命中失败探针:', probed);
+            }
+        }
+
         // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐小红书：点击已提交、平台未跳转但也无任何失败提示）
         //    抖音轮询中只把「真实平台失败提示」记入 lastToastMessage（成功/中性提示已被过滤排除），
         //    故 lastToastMessage 为空 = 全程未捕获明确失败 → 判成功，避免把「发成功了只是没跳转」误报为失败。
-        if (!lastToastMessage) {
+        if (!finalFailureMessage) {
             console.log('[抖音发布] ✅ 超时未捕获任何失败提示，点击发布已提交，视为发布成功');
             await reportDouyinPublishSuccess(publishId, windowId, 'timeout-no-failure');
             publishRunning = false;
@@ -2188,10 +2201,10 @@ async function publishApi(dataObj) {
         }
 
         // 真正的超时失败
-        const timeoutFailureMessage = getDouyinTimeoutFailureMessage(lastToastMessage, clickResult.message);
+        const timeoutFailureMessage = getDouyinTimeoutFailureMessage(finalFailureMessage, clickResult.message);
         console.log('[抖音发布] ❌ 等待超时（90秒），判定发布失败:', {
             timeoutFailureMessage,
-            lastToastMessage,
+            lastToastMessage: finalFailureMessage,
             clickMessage: clickResult.message || '',
             clickMode: clickResult.clickMode || '',
             startUrl: currentUrl,

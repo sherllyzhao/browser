@@ -1145,8 +1145,15 @@
                                   scheduledReleasesBtn.dispatchEvent(clickEvent);
                                   console.log('[百家号发布] ✅ 已点击定时发布（模拟鼠标事件）');
                                   await delay(2000);
-                                  // 检测有没有动态发布
-                                  await checkPublishResult(dataObj, true);
+
+                                  // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：百家号定时路径提前报成功修复
+                                  // 原逻辑：1149 立刻调用 checkPublishResult → 1472-1481 可能上报成功并关窗
+                                  // 此时定时时间尚未选择、确定按钮尚未点击，且 stopErrorListener 导致后续无监听
+                                  // 修复：将 checkPublishResult 移到 confirmBtn.click() 之后
+                                  if (!window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                    // 检测有没有动态发布（旧逻辑）
+                                    await checkPublishResult(dataObj, true);
+                                  }
                                   await delay(2000);
                                 //  检测有没有定时发布弹窗
                                   const scheduledReleasesModal = document.querySelector('.cheetah-modal-content');
@@ -1161,6 +1168,14 @@
                                       const timeConfig = parseSendTime(sendTime);
                                       if (!timeConfig) {
                                         console.error('[百家号发布] ❌ 解析定时时间失败');
+
+                                        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：定时失败出口补上报
+                                        if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                          await sendStatisticsError(publishIdForSuccess, '定时时间解析失败', '百家号发布', {
+                                            taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                          });
+                                        }
+
                                         stopErrorListener();
                                         await closeWindowWithMessage('定时时间解析失败', 1000);
                                         return;
@@ -1175,6 +1190,14 @@
 
                                       if (!timeSelectSuccess) {
                                         console.error('[百家号发布] ❌ 时间选择失败');
+
+                                        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：定时失败出口补上报
+                                        if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                          await sendStatisticsError(publishIdForSuccess, '定时时间选择失败', '百家号发布', {
+                                            taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                          });
+                                        }
+
                                         stopErrorListener();
                                         await closeWindowWithMessage('定时时间选择失败', 1000);
                                         return;
@@ -1207,15 +1230,42 @@
 
                                         confirmBtn.click();
 
-                                        // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
-                                        console.log('[百家号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
-                                        stopErrorListener();
-                                        stopSmsVerificationDetector();
+                                        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：定时发布点击后检测结果
+                                        // 原逻辑：只 stopErrorListener() + stopSmsVerificationDetector() 就走人
+                                        // 不像立即发布那样调 checkPublishResult() → 平台若拒绝定时发布，后台查无此事
+                                        // 修复：点击后调用 checkPublishResult 检测发布结果
+                                        if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                          console.log('[百家号发布] ✅ 等待定时发布结果检测');
+                                          await checkPublishResult(dataObj, true);
+                                        } else {
+                                          // 定时发布点击后会立即跳转到成功页，由 publish-success.js 处理
+                                          console.log('[百家号发布] ✅ 等待页面跳转到成功页（由 publish-success.js 处理）');
+                                          stopErrorListener();
+                                          stopSmsVerificationDetector();
+                                        }
                                       } else {
                                         console.error('[百家号发布] ❌ 未找到确定按钮');
+
+                                        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：定时失败出口补上报
+                                        if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                          await sendStatisticsError(publishIdForSuccess, '未找到定时发布确定按钮', '百家号发布', {
+                                            taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                          });
+                                          stopErrorListener();
+                                          await closeWindowWithMessage('定时发布失败', 1000);
+                                        }
                                       }
                                     } else {
                                       console.warn('[百家号发布] ⚠️ 未传入定时发布时间');
+
+                                      // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：定时失败出口补上报
+                                      if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                                        await sendStatisticsError(publishIdForSuccess, '未传入定时发布时间', '百家号发布', {
+                                          taskToken: window.__CURRENT_PUBLISH_TASK_TOKEN__ || "task_default"
+                                        });
+                                        stopErrorListener();
+                                        await closeWindowWithMessage('定时发布失败', 1000);
+                                      }
                                     }
                                   }
                                 }
@@ -1467,7 +1517,14 @@
     if (publishErrorMsg) {
       // ✅ 结果判定范式：捕获到提示但未命中"明确失败关键词"时，视为发布已提交成功
       // （避免平台只弹非失败提示 / 未跳转，导致"其实已发布成功"被误报为失败）
-      const FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
+      // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：百家号 FAIL_KEYWORDS 词表过窄，
+      // 「今日发文已达上限」「内容含敏感信息」「标题重复」「操作过于频繁」都不含旧表任一词，
+      // 会被 1472 判为「非失败」→ sendStatistics 上报成功并关窗（明确失败被记成成功，不可恢复）。
+      // 扩充词表：补充「上限」「敏感」「重复」「频繁」「质量」「账号异常」「违反」「禁止」「限流」「风控」「风险」。
+      const FAIL_KEYWORDS = window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")
+        ? ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽',
+           '上限', '敏感', '重复', '频繁', '质量', '账号异常', '违反', '禁止', '限流', '风控', '风险']
+        : ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
       const hasExplicitFailure = publishErrorMsg && FAIL_KEYWORDS.some(k => publishErrorMsg.includes(k));
       if (!hasExplicitFailure) {
         console.log('[百家号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');

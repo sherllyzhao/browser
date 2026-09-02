@@ -2049,10 +2049,27 @@ async function publishApi(dataObj) {
             return;
         }
 
+        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：视频号超时收口前补查失败探针
+        // 原逻辑：lastToastMessage 用 SPH_FAIL_KEYWORDS 判定失败，但该变量只记轮询中捕获的失败提示
+        // 如果 toast 在轮询间隙消失或点击后立即出现，会被漏捕
+        // 修复：超时收口前补查持久化失败探针，参考小红书实现
+        let finalFailureMessage = lastToastMessage;
+        if (!finalFailureMessage && window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+            const probed = typeof readPublishErrorProbe === 'function' ? readPublishErrorProbe() : null;
+            if (probed) {
+                finalFailureMessage = probed;
+                console.error('[视频号发布] ❌ 超时兜底命中失败探针:', probed);
+            }
+        }
+
         // 🔑 超时无明确失败提示 → 视为发布成功（范式对齐视频号：点击已提交、平台未跳转但也无明确失败提示）
         //    视频号 lastToastMessage 可能含中性提示，故用失败关键词判定「明确失败」，只有命中才判失败，避免误报。
-        const SPH_FAIL_KEYWORDS = ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
-        const sphHasExplicitFailure = lastToastMessage && SPH_FAIL_KEYWORDS.some(k => lastToastMessage.includes(k));
+        // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：扩展 SPH_FAIL_KEYWORDS（对齐小红书+百家号）
+        const SPH_FAIL_KEYWORDS = window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")
+            ? ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽',
+               '上限', '敏感', '重复', '频繁', '质量', '账号异常', '违反', '禁止', '限流', '风控', '风险']
+            : ['失败', '错误', '异常', '不能为空', '请先', '违规', '超限', '驳回', '不可用', '不符合', '未通过', '已用尽'];
+        const sphHasExplicitFailure = finalFailureMessage && SPH_FAIL_KEYWORDS.some(k => finalFailureMessage.includes(k));
         if (!sphHasExplicitFailure) {
             console.log('[视频号发布] ✅ 超时未捕获明确失败提示，点击发布已提交，视为发布成功');
             localStorage.removeItem(storageKey);
@@ -2070,7 +2087,7 @@ async function publishApi(dataObj) {
         localStorage.removeItem(publishDataKey);
         hasProcessed = true;
         publishRunning = false;
-        await sendStatisticsError(publishId, lastToastMessage || '发布超时，未跳转到成功页', '视频号发布');
+        await sendStatisticsError(publishId, finalFailureMessage || '发布超时，未跳转到成功页', '视频号发布');
         await closeWindowWithMessage('发布失败，刷新数据', 1000);
 
     } catch (error) {

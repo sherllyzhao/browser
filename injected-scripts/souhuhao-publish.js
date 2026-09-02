@@ -2309,11 +2309,20 @@ async function selectFromVirtualList(selectElement, targetValue, timeout = 10000
             console.error('[搜狐号发布] ❌ 滚动到底仍未找到目标选项:', targetStr);
             console.log('[搜狐号发布] 📋 当前可见选项:', visibleTexts);
 
-            // 弹窗提示用户选项不全，询问是否手动调整
-            const userChoice = confirm(`[搜狐号发布] 找不到时间选项 "${targetStr}"\n\n下拉可能只提供了部分时间。当前可用选项：\n${visibleTexts}\n\n是否需要手动调整时间后重试？`);
-            if (userChoice) {
-                console.log('[搜狐号发布] ⏸️ 脚本已暂停，请手动调整时间');
-                alert('[搜狐号发布] 请在下拉中手动选择可用的时间，然后点击"确定"让脚本继续。');
+            // 【特性开关】FIX_MULTIPLATFORM_FAILURE_REPORT_P0：搜狐号 confirm + alert 无人值守永久悬死
+            // confirm()/alert() 同步阻塞 JS 线程，点确定/取消之前整个窗口无响应
+            // 批量发布无人值守时渲染进程永久悬死，连失败都报不出去
+            // 修复：使用非阻塞 toast 提示，不等待用户交互直接返回失败
+            if (window.isFeatureEnabled?.("FIX_MULTIPLATFORM_FAILURE_REPORT_P0")) {
+                console.error('[搜狐号发布] ❌ 时间选项不可用（批量模式下不等待用户干预）');
+                window.showPublishToast?.(`找不到时间选项 "${targetStr}"，可用: ${visibleTexts}`, 'error', 5000);
+            } else {
+                // 原逻辑：弹窗提示用户选项不全，询问是否手动调整
+                const userChoice = confirm(`[搜狐号发布] 找不到时间选项 "${targetStr}"\n\n下拉可能只提供了部分时间。当前可用选项：\n${visibleTexts}\n\n是否需要手动调整时间后重试？`);
+                if (userChoice) {
+                    console.log('[搜狐号发布] ⏸️ 脚本已暂停，请手动调整时间');
+                    alert('[搜狐号发布] 请在下拉中手动选择可用的时间，然后点击"确定"让脚本继续。');
+                }
             }
             return false;
         }

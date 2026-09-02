@@ -2309,6 +2309,7 @@ if (location.search.includes("published=true")) {
 
                 // 检测是否有错误提示（如果有错误，不发送统计）
                 let hasError = false;
+                let detectedErrorText = "";
                 try {
                     const errorSelectors = [
                         ".d-toast-description",  // toast 提示
@@ -2325,6 +2326,7 @@ if (location.search.includes("published=true")) {
                             const isSuccess = successKeywords.some(keyword => errorText.includes(keyword));
                             if (errorText && !isSuccess) {
                                 hasError = true;
+                                detectedErrorText = errorText;
                                 console.error("[小红书发布] ❌ 检测到错误提示:", errorText);
                                 break;
                             }
@@ -2353,7 +2355,23 @@ if (location.search.includes("published=true")) {
                         console.error("[小红书发布] ❌ 统计上报失败:", e);
                     }
                 } else if (hasError) {
-                    console.error("[小红书发布] ❌ 检测到错误，不发送统计");
+                    // 【特性开关】FIX_XIAOHONGSHU_FAILURE_REPORT：原先只打一行「不发送统计」就走人，
+                    // 成功不报、失败也不报 → 后台这条定时任务彻底静默，用户看不出到底发没发出去。
+                    // 只在文案确实像失败时才上报：hasError 的判据很宽（任何非「成功」文本都算），
+                    // 直接拿它报失败会误伤，而后台不支持失败覆盖成功，误报无法纠正。
+                    const scheduleFailure = window.isFeatureEnabled?.("FIX_XIAOHONGSHU_FAILURE_REPORT")
+                        ? setXhsPublishFailure(detectedErrorText, "schedule-toast")
+                        : "";
+                    if (scheduleFailure && publishId) {
+                        console.error("[小红书发布] ❌ 定时发布检测到明确失败，上报失败:", scheduleFailure);
+                        try {
+                            await sendStatisticsError(publishId, scheduleFailure, "小红书发布");
+                        } catch (e) {
+                            console.error("[小红书发布] ❌ 定时发布失败统计上报异常:", e);
+                        }
+                    } else {
+                        console.error("[小红书发布] ❌ 检测到错误，不发送统计:", detectedErrorText || "(无文案)");
+                    }
                 } else {
                     console.error("[小红书发布] ❌ publishId 为空，无法上报统计");
                 }
