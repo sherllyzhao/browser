@@ -1244,674 +1244,677 @@ async function publishApi(dataObj) {
 
         console.log('[视频号发布] ✅ 视频检测通过，继续发布流程...');
 
-        try {
-            // 自定义封面
-            // 🏷️ 版本水印：打包版会强制从 OBS 远程拉脚本（script-manager.js:45 无条件强开），
-            //    本地改了没重新上传就永远跑旧代码。这行日志就是判断"跑的到底是哪一版"的唯一凭据
-            console.log('[视频号发布][自定义封面图] 🏷️ 代码版本: COVER_UPLOAD_FIX_v4 (朝向选图 + 推荐气泡→直接编辑 + 双坑位去重 + 网络层证据 + 跨realm构造 + 无证据不点确认)');
-            const customCoverList = dataObj.element.cover2
-            if(!customCoverList || customCoverList.length === 0) {
-                console.log('[视频号发布][自定义封面图] ⚠️ 未配置自定义封面图，跳过');
-                return;
-            }
-
-            /* const customCoverList = [
-              "https://images.china9.cn/attachment/2026-08-28/LnBvF4NtrF5cuClAXr5Oqx6QapSaIR1h0FQafdIg.jpg",
-              "https://oss.lcweb01.cn/jzt/6012/image/20240423/b69ee1fc9c97c888f1af6ff05da0e018.jpeg"
-            ]; */
-            // 并行预加载所有封面图片，获取真实宽高。
-            // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
-            // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
-            const coverPromises = customCoverList.map((coverUrl, i) => {
-                return new Promise((resolve) => {
-                    const img = new Image();
-                    let settled = false;
-                    const done = (v, why) => {
-                        if (settled) return;
-                        settled = true;
-                        if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
-                        resolve(v);
-                    };
-                    const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
-                    img.onload = () => {
-                        clearTimeout(timer);
-                        done({
-                            url: coverUrl,
-                            width: img.naturalWidth,
-                            height: img.naturalHeight,
-                            ratio: img.naturalWidth / img.naturalHeight
-                        });
-                    };
-                    img.onerror = () => {
-                        clearTimeout(timer);
-                        done(null, '失败(404/跨域?)');
-                    };
-                    img.src = coverUrl;
-                });
-            });
-
-            const loadedCovers = await Promise.all(coverPromises);
-
-            // 纵封面
-            // 🔑 waitForShadowElement 超时是 reject 不是 resolve(null)，不 catch 的话下面的
-            //    if (coverY) 是永远走不到的死代码，元素找不到会直接把整个 publishApi 掀掉
-            const coverY = await waitForShadowElement("wujie-app", ".vertical-img-wrap", 5000).catch(() => null);
-            const coverX = await waitForShadowElement("wujie-app", ".horizon-cover-wrap", 5000).catch(() => null);
-            const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
-
-            // 把文件写进 React 托管的 <input type="file">。
-            // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
-            //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
-            //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
-            //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
-            //    common.js 的 uploadFileToInput 没有这一步，所以这里不能图省事去用它。
-            const fireFileInput = (input, file) => {
-                const dt = new DataTransfer();
-                dt.items.add(file);
-                input.files = dt.files;
-
-                if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
-                    input._valueTracker.setValue('');
-                }
-                input.dispatchEvent(new Event('input', {bubbles: true}));
-                input.dispatchEvent(new Event('change', {bubbles: true}));
-
-                // 只能证明"文件确实挂到 input 上了"，不代表 React 接住了，后面还要看预览
-                return !!(input.files && input.files.length === 1);
-            };
-
-            // 坑位当前缩略图签名：上传前后各取一次，用来判断封面到底换没换。
-            // 「弹窗关了」不等于「封面生效了」——平台 beforeUpload 拒收时照样关窗
-            const readCoverSlotSignature = (slot) => {
-                if (!slot) return '';
-                try {
-                    const img = slot.querySelector('img');
-                    if (img && img.src) return img.src;
-                    const bg = window.getComputedStyle(slot).backgroundImage;
-                    if (bg && bg !== 'none') return bg;
-                    return String(slot.innerHTML || '').slice(0, 200);
-                } catch (_) {
-                    return '';
-                }
-            };
-
-            // 弹窗内所有图片地址，用作"预览有没有渲染出来"的基线
-            const readDialogImageSignature = (dialogEl) => {
-                if (!dialogEl) return '';
-                try {
-                    return Array.from(dialogEl.querySelectorAll('img'))
-                        .map(img => img.src || '')
-                        .filter(Boolean)
-                        .join('|');
-                } catch (_) {
-                    return '';
-                }
-            };
-
-            // 在弹窗范围内按文案找按钮（可见 + 未禁用）。
-            // 绝不"取最后一个按钮"——那样很容易点到取消或弹窗外的控件
-            const findShipinhaoDialogButton = (dialogEl, keywords) => {
-                if (!dialogEl) return null;
-                try {
-                    const buttons = Array.from(dialogEl.querySelectorAll('button, .weui-desktop-btn, [role="button"]'));
-                    return buttons.find(btn => {
-                        const text = getShipinhaoElementText(btn);
-                        return text
-                            && keywords.some(keyword => text.includes(keyword))
-                            && isShipinhaoElementVisible(btn)
-                            && !isShipinhaoButtonDisabled(btn);
-                    }) || null;
-                } catch (_) {
-                    return null;
-                }
-            };
-
-            // ── 无界(wujie)沙箱定位 ──
-            // 官方文档：「将子应用的 js 注入主应用同域的 iframe 中运行」「不用修改主应用 window 任何属性」。
-            // 也就是 DOM 挂在主文档的 shadow root，跑 JS 的却是另一个 window。两个后果都很致命：
-            //   1. hook 主 window 的 XHR/fetch 抓不到子应用发出的上传请求 → 探针恒失灵 → 一直"超时放行"
-            //   2. 主 window 造的 File 过不了子应用 `x instanceof File` 的校验（跨 realm 恒 false）
-            //      → 组件 beforeUpload 直接拒收，文件挂上了、日志全 ✅、图却没传
-            const getWujieSandboxWindow = () => {
-                let sameOriginFallback = null;
-                try {
-                    for (const frame of Array.from(document.querySelectorAll('iframe'))) {
-                        try {
-                            const win = frame.contentWindow;
-                            if (!win || !win.document) continue; // 跨域访问 document 会抛，被 catch 掉
-                            // 无界会往沙箱 iframe 注入私有变量，这是最准的指纹
-                            if (win.__WUJIE || win.__WUJIE_PUBLIC_PATH__ || win.$wujie) return win;
-                            if (!sameOriginFallback && typeof win.File === 'function') sameOriginFallback = win;
-                        } catch (_) {
-                            // 跨域 iframe，跳过
-                        }
-                    }
-                } catch (_) {
-                    // ignore
-                }
-                return sameOriginFallback;
-            };
-
-            // 用子应用所在 realm 的构造器造 File，绕开 instanceof 跨 realm 判定失败
-            const buildCoverFile = (realmWin, blob, name, type) => {
-                const W = realmWin && typeof realmWin.File === 'function' ? realmWin : window;
-                try {
-                    return {file: new W.File([blob], name, {type}), realm: W === window ? 'main' : 'wujie-iframe'};
-                } catch (e) {
-                    return {file: new File([blob], name, {type}), realm: 'main(realm构造失败已回退)'};
-                }
-            };
-
-            // ── 网络层上传监控 —— 判"图真的传上去了"唯一扛得住的证据 ──
-            // DOM 启发式在这条链路上已经被证伪一次了（预览没变化照样点了确认）。
-            // 计数对象统一挂主 window，两个 realm 的 hook 写同一份账。
-            const installUploadMonitor = (win, tag) => {
-                if (!win) return false;
-                try {
-                    if (win.__sphUploadMonitorInstalled) return true; // 幂等：SPA 重复注入会套娃，计数翻倍
-                    win.__sphUploadMonitorInstalled = true;
-                } catch (_) {
-                    return false;
+        coverStep: {
+            try {
+                // 自定义封面
+                // 🏷️ 版本水印：打包版会强制从 OBS 远程拉脚本（script-manager.js:45 无条件强开），
+                //    本地改了没重新上传就永远跑旧代码。这行日志就是判断"跑的到底是哪一版"的唯一凭据
+                console.log('[视频号发布][自定义封面图] 🏷️ 代码版本: COVER_UPLOAD_FIX_v4 (朝向选图 + 推荐气泡→直接编辑 + 双坑位去重 + 网络层证据 + 跨realm构造 + 无证据不点确认)');
+                const customCoverList = dataObj.element.cover2
+                if(!customCoverList || customCoverList.length === 0) {
+                    console.log('[视频号发布][自定义封面图] ⚠️ 未配置自定义封面图，跳过');
+                    break coverStep;
                 }
 
-                const stats = (window.__sphUploadStats = window.__sphUploadStats
-                    || {inflight: 0, done: 0, lastUrl: '', realms: []});
-                stats.realms.push(tag);
-
-                // 🔑 跨 realm 安全的类型判定：instanceof 认原型链，跨 realm 恒 false；
-                //    Object.prototype.toString 走 Symbol.toStringTag，跟 realm 无关
-                const isBinaryBody = (body) => {
-                    if (!body) return false;
-                    const t = Object.prototype.toString.call(body);
-                    return t === '[object FormData]' || t === '[object Blob]' || t === '[object File]'
-                        || t === '[object ArrayBuffer]' || ArrayBuffer.isView(body);
-                };
-                // 判窄一点：判宽了会把页面心跳算进来，inflight 永远 >0 就白等满超时
-                const isUploadReq = (method, url, body) => {
-                    if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
-                    if (/upload|\/tos|\/file\/|cdn|mmfinder|resupload/i.test(String(url || ''))) return true;
-                    return isBinaryBody(body);
-                };
-                const begin = (url) => {
-                    stats.inflight++;
-                    stats.lastUrl = String(url || '').slice(0, 120);
-                };
-                const end = () => {
-                    stats.inflight = Math.max(0, stats.inflight - 1);
-                    stats.done++;
-                };
-
-                try {
-                    const OrigOpen = win.XMLHttpRequest.prototype.open;
-                    const OrigSend = win.XMLHttpRequest.prototype.send;
-                    win.XMLHttpRequest.prototype.open = function (method, url) {
-                        try {
-                            this.__sphMethod = method;
-                            this.__sphUrl = url;
-                        } catch (_) {
-                        }
-                        return OrigOpen.apply(this, arguments);
-                    };
-                    win.XMLHttpRequest.prototype.send = function (body) {
-                        try {
-                            if (isUploadReq(this.__sphMethod, this.__sphUrl, body)) {
-                                begin(this.__sphUrl);
-                                // loadend 覆盖 load/error/abort/timeout 四种收尾，不漏也不重复减
-                                this.addEventListener('loadend', end, {once: true});
-                            }
-                        } catch (_) {
-                        }
-                        return OrigSend.apply(this, arguments);
-                    };
-                } catch (e) {
-                    console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} XHR 监控安装失败:`, e && e.message);
-                }
-
-                try {
-                    const origFetch = win.fetch;
-                    if (typeof origFetch === 'function') {
-                        win.fetch = function (input, init) {
-                            let counted = false;
-                            try {
-                                const url = typeof input === 'string' ? input : (input && input.url) || '';
-                                const method = (init && init.method) || (input && input.method) || 'GET';
-                                if (isUploadReq(method, url, init && init.body)) {
-                                    begin(url);
-                                    counted = true;
-                                }
-                            } catch (_) {
-                            }
-                            const p = origFetch.apply(this, arguments);
-                            if (!counted || !p || typeof p.then !== 'function') return p;
-                            return p.then(r => {
-                                end();
-                                return r;
-                            }, e => {
-                                end();
-                                throw e;
+                /* const customCoverList = [
+                  "https://images.china9.cn/attachment/2026-08-28/LnBvF4NtrF5cuClAXr5Oqx6QapSaIR1h0FQafdIg.jpg",
+                  "https://oss.lcweb01.cn/jzt/6012/image/20240423/b69ee1fc9c97c888f1af6ff05da0e018.jpeg"
+                ]; */
+                // 并行预加载所有封面图片，获取真实宽高。
+                // 必须带超时：new Image() 碰上不响应的地址既不 onload 也不 onerror，
+                // Promise.all 会永远挂着，整块封面设置卡死在这一行且毫无日志
+                const coverPromises = customCoverList.map((coverUrl, i) => {
+                    return new Promise((resolve) => {
+                        const img = new Image();
+                        let settled = false;
+                        const done = (v, why) => {
+                            if (settled) return;
+                            settled = true;
+                            if (!v) console.log(`[封面设置] ⚠️ 第 ${i + 1} 张封面预加载${why}，这张作废: ${coverUrl}`);
+                            resolve(v);
+                            };
+                        const timer = setTimeout(() => done(null, '超时(10秒)'), 10000);
+                        img.onload = () => {
+                            clearTimeout(timer);
+                            done({
+                                url: coverUrl,
+                                width: img.naturalWidth,
+                                height: img.naturalHeight,
+                                ratio: img.naturalWidth / img.naturalHeight
                             });
                         };
+                        img.onerror = () => {
+                            clearTimeout(timer);
+                            done(null, '失败(404/跨域?)');
+                        };
+                        img.src = coverUrl;
+                    });
+                });
+    
+                const loadedCovers = await Promise.all(coverPromises);
+    
+                // 纵封面
+                // 🔑 waitForShadowElement 超时是 reject 不是 resolve(null)，不 catch 的话下面的
+                //    if (coverY) 是永远走不到的死代码，元素找不到会直接把整个 publishApi 掀掉
+                const coverY = await waitForShadowElement("wujie-app", ".vertical-img-wrap", 5000).catch(() => null);
+                const coverX = await waitForShadowElement("wujie-app", ".horizon-cover-wrap", 5000).catch(() => null);
+                const usedCovers = new Set(); // 一张封面只用一次，防止两个坑位传同一张
+    
+                // 把文件写进 React 托管的 <input type="file">。
+                // 🔑 关键：React 给每个 input 挂了 _valueTracker 缓存上一次的 value，
+                //    change 冒上来时先跟缓存比对，"值没变"就直接把事件丢掉，onChange 根本不执行。
+                //    file input 的 value 又不允许代码写，所以只能把 tracker 手动打回空串，
+                //    它下次比较才会认为值变了。少了这一步，change 派了也是白派。
+                //    common.js 的 uploadFileToInput 没有这一步，所以这里不能图省事去用它。
+                const fireFileInput = (input, file) => {
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+                    input.files = dt.files;
+    
+                    if (input._valueTracker && typeof input._valueTracker.setValue === 'function') {
+                        input._valueTracker.setValue('');
                     }
-                } catch (e) {
-                    console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} fetch 监控安装失败:`, e && e.message);
-                }
-                return true;
-            };
-
-            // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
-            // "新增的 http 图"是不依赖网络 hook 的第二条硬证据 —— 服务端回填 CDN url 才会出现，
-            // 本地预览是 blob:，两者能干净区分
-            const uploadBaseline = (dialogEl) => {
-                const s = window.__sphUploadStats || {done: 0};
-                let httpImgs = new Set();
-                try {
-                    httpImgs = new Set(
-                        Array.from((dialogEl || document).querySelectorAll('img'))
-                            .map(i => i.src)
-                            .filter(u => /^https?:/i.test(u))
-                    );
-                } catch (_) {
-                }
-                return {done: s.done, httpImgs};
-            };
-
-            // 等"图真的传完"，而不是"文件刚被组件接住"。证据按可信度排序，命中即放行
-            const waitCoverUploadSettled = async (dialogEl, baseline, {min = 1200, timeout = 20000} = {}) => {
-                const stats = () => window.__sphUploadStats || {inflight: 0, done: 0, lastUrl: ''};
-                const newHttpImg = () => {
+                    input.dispatchEvent(new Event('input', {bubbles: true}));
+                    input.dispatchEvent(new Event('change', {bubbles: true}));
+    
+                    // 只能证明"文件确实挂到 input 上了"，不代表 React 接住了，后面还要看预览
+                    return !!(input.files && input.files.length === 1);
+                };
+    
+                // 坑位当前缩略图签名：上传前后各取一次，用来判断封面到底换没换。
+                // 「弹窗关了」不等于「封面生效了」——平台 beforeUpload 拒收时照样关窗
+                const readCoverSlotSignature = (slot) => {
+                    if (!slot) return '';
+                    try {
+                        const img = slot.querySelector('img');
+                        if (img && img.src) return img.src;
+                        const bg = window.getComputedStyle(slot).backgroundImage;
+                        if (bg && bg !== 'none') return bg;
+                        return String(slot.innerHTML || '').slice(0, 200);
+                    } catch (_) {
+                        return '';
+                    }
+                };
+    
+                // 弹窗内所有图片地址，用作"预览有没有渲染出来"的基线
+                const readDialogImageSignature = (dialogEl) => {
+                    if (!dialogEl) return '';
                     try {
                         return Array.from(dialogEl.querySelectorAll('img'))
-                            .map(i => i.src)
-                            .find(u => /^https?:/i.test(u) && !baseline.httpImgs.has(u));
+                            .map(img => img.src || '')
+                            .filter(Boolean)
+                            .join('|');
+                    } catch (_) {
+                        return '';
+                    }
+                };
+    
+                // 在弹窗范围内按文案找按钮（可见 + 未禁用）。
+                // 绝不"取最后一个按钮"——那样很容易点到取消或弹窗外的控件
+                const findShipinhaoDialogButton = (dialogEl, keywords) => {
+                    if (!dialogEl) return null;
+                    try {
+                        const buttons = Array.from(dialogEl.querySelectorAll('button, .weui-desktop-btn, [role="button"]'));
+                        return buttons.find(btn => {
+                            const text = getShipinhaoElementText(btn);
+                            return text
+                                && keywords.some(keyword => text.includes(keyword))
+                                && isShipinhaoElementVisible(btn)
+                                && !isShipinhaoButtonDisabled(btn);
+                        }) || null;
                     } catch (_) {
                         return null;
                     }
                 };
-                // 放行前复查：分片上传（申请 token → 传分片 → commit）两段之间会短暂 inflight=0，
-                // 直接放行就正好卡在中间那一刻。等 900ms 看有没有新请求接上
-                const confirmIdle = async () => {
-                    for (let i = 0; i < 3; i++) {
-                        await delay(300);
-                        if (stats().inflight > 0) return false;
-                    }
-                    return true;
-                };
-
-                const start = Date.now();
-                await delay(min); // 地板时间：刚派完 change 时请求还没发出去，立刻采样必然假放行
-
-                while (Date.now() - start < timeout) {
-                    const s = stats();
-                    if (s.inflight === 0) {
-                        if (s.done > baseline.done && await confirmIdle()) {
-                            return {
-                                ok: true,
-                                evidence: `上传请求已完成(${s.done - baseline.done}个, 末个: ${s.lastUrl})`
-                            };
-                        }
-                        const cdn = newHttpImg();
-                        if (cdn && await confirmIdle()) {
-                            return {ok: true, evidence: `服务端已回填图片(${String(cdn).slice(0, 80)})`};
-                        }
-                    }
-                    await delay(500);
-                }
-                const s = stats();
-                return {
-                    ok: false,
-                    evidence: `等满 ${timeout}ms 无证据 (inflight=${s.inflight}, 新增完成=${s.done - baseline.done})`
-                };
-            };
-
-            // ── 单个封面坑位的完整处理 ──
-            // 纵封面和横封面逻辑完全相同，只有坑位元素和文案不同。
-            // 之前是整段复制粘贴，复制出来那份里的 coverY 忘了改成 coverX ——
-            // 算的是横向坑位的比值、选的是横向该用的图，点开的却是纵向坑位的弹窗，
-            // 于是横封面永远设不上、纵封面还被改了第二遍。
-            // 抽成函数后只有一个 slot 变量，这类"改漏一处"的 bug 从结构上就不可能再发生。
-
-            // 等弹窗真正关闭。两个坑位共用同一个弹窗选择器，上一个没关干净就点下一个，
-            // waitForShadowElement 会立刻命中残留的旧弹窗 —— 第二张图就传进第一个坑位里去了。
-            // 这是单坑位时不会暴露、双坑位必踩的坑
-            const waitCoverDialogClosed = async (timeout = 8000) => {
-                const start = Date.now();
-                while (Date.now() - start < timeout) {
-                    let dlg = null;
+    
+                // ── 无界(wujie)沙箱定位 ──
+                // 官方文档：「将子应用的 js 注入主应用同域的 iframe 中运行」「不用修改主应用 window 任何属性」。
+                // 也就是 DOM 挂在主文档的 shadow root，跑 JS 的却是另一个 window。两个后果都很致命：
+                //   1. hook 主 window 的 XHR/fetch 抓不到子应用发出的上传请求 → 探针恒失灵 → 一直"超时放行"
+                //   2. 主 window 造的 File 过不了子应用 `x instanceof File` 的校验（跨 realm 恒 false）
+                //      → 组件 beforeUpload 直接拒收，文件挂上了、日志全 ✅、图却没传
+                const getWujieSandboxWindow = () => {
+                    let sameOriginFallback = null;
                     try {
-                        const root = getShipinhaoShadowRoot();
-                        dlg = root && root.querySelector('.edit-cover-dialog-container .weui-desktop-dialog');
+                        for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+                            try {
+                                const win = frame.contentWindow;
+                                if (!win || !win.document) continue; // 跨域访问 document 会抛，被 catch 掉
+                                // 无界会往沙箱 iframe 注入私有变量，这是最准的指纹
+                                if (win.__WUJIE || win.__WUJIE_PUBLIC_PATH__ || win.$wujie) return win;
+                                if (!sameOriginFallback && typeof win.File === 'function') sameOriginFallback = win;
+                            } catch (_) {
+                                // 跨域 iframe，跳过
+                            }
+                        }
                     } catch (_) {
                         // ignore
                     }
-                    if (!dlg || !isShipinhaoElementVisible(dlg)) return true;
-                    await delay(300);
-                }
-                return false;
-            };
-
-            // 关掉弹窗，别让它挡住后面的发布按钮
-            const closeCoverDialog = async (dialog, LOG) => {
-                const cancelBtn = findShipinhaoDialogButton(dialog, ['取消', '关闭'])
-                    || dialog.querySelector('.weui-desktop-dialog__close, [class*="close"]');
-                if (cancelBtn) {
-                    console.log(`${LOG} 🖱️ 关闭封面弹窗:`, getShipinhaoElementText(cancelBtn) || '(关闭按钮)');
-                    cancelBtn.click();
-                } else {
-                    console.warn(
-                        `${LOG} ⚠️ 没找到取消/关闭按钮，弹窗可能会挡住发布按钮。当前按钮文案:`,
-                        Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
-                            .map(btn => getShipinhaoElementText(btn))
-                            .filter(Boolean)
-                            .join(' | ') || '(一个都没有)'
-                    );
-                }
-                await waitCoverDialogClosed();
-            };
-
-            const applyCustomCoverToSlot = async (slot, slotLabel) => {
-                // 所有日志都带坑位标识 —— 两个坑位跑同一套流程，不标就没法从日志分辨是谁
-                const LOG = `[视频号发布][自定义封面图][${slotLabel}]`;
-                if (!slot) {
-                    console.log(`${LOG} ⏭️ 坑位元素不存在，跳过`);
-                    return false;
-                }
-
-                const rect = slot.getBoundingClientRect();
-                const ratio = rect.width / rect.height;
-
-                // 🔑 只看朝向，不看比值差。
-                //    原来用 |图比值 - 坑位比值| > 1.5 过滤，两头都不对：
-                //      · 太严：3:4 坑位(0.75) 配 9:16 图(0.56) 明明该配，某些尺寸却被差值挡掉
-                //      · 也太松：3:4 坑位(0.75) 配 16:9 图(1.78) 差值才 1.03，横图照样塞进竖坑位
-                //    ratio 是个双曲的量（竖图挤在 0~1，横图铺开到 1~∞），拿它做线性距离本来就不成立。
-                //    正解是先按朝向分桶，桶内再用比值近似度排序当 tie-break
-                const orientationOf = (r) => (r > 1.05 ? '横' : r < 0.95 ? '纵' : '方');
-                const slotOrientation = orientationOf(ratio);
-                const orientationFits = (coverOrientation) =>
-                    coverOrientation === slotOrientation           // 朝向一致
-                    || coverOrientation === '方'                    // 近正方图两个坑位都能用
-                    || slotOrientation === '方';
-
-                // 先选图、再开弹窗。反过来的话选不到图就空指针崩在 best.cover.url 上，
-                // 而且弹窗已经开了没人关，会一直挡住后面的发布按钮
-                let best = null;
-                for (const cover of loadedCovers) {
-                    if (!cover || usedCovers.has(cover.url)) continue;
-                    if (!orientationFits(orientationOf(cover.ratio))) continue;
-                    const diff = Math.abs(cover.ratio - ratio);
-                    if (!best || diff < best.diff) best = {cover, diff};
-                }
-
-                // 朝向一张都不匹配时，不空手而归 —— 有图能用就用，总比让平台拿视频帧凑强。
-                // 宽松兜底是刻意设计：判据宁可放过，也别把本来能成的坑位直接毙掉
-                if (!best) {
-                    for (const cover of loadedCovers) {
-                        if (!cover || usedCovers.has(cover.url)) continue;
-                        const diff = Math.abs(cover.ratio - ratio);
-                        if (!best || diff < best.diff) best = {cover, diff, orientationMismatch: true};
+                    return sameOriginFallback;
+                };
+    
+                // 用子应用所在 realm 的构造器造 File，绕开 instanceof 跨 realm 判定失败
+                const buildCoverFile = (realmWin, blob, name, type) => {
+                    const W = realmWin && typeof realmWin.File === 'function' ? realmWin : window;
+                    try {
+                        return {file: new W.File([blob], name, {type}), realm: W === window ? 'main' : 'wujie-iframe'};
+                    } catch (e) {
+                        return {file: new File([blob], name, {type}), realm: 'main(realm构造失败已回退)'};
                     }
-                    if (best) {
-                        console.warn(
-                            `${LOG} ⚠️ 没有${slotOrientation}向封面，退而用${orientationOf(best.cover.ratio)}向的凑`
-                            + `（坑位比值 ${ratio.toFixed(2)} / 图片比值 ${best.cover.ratio.toFixed(2)}），平台可能会自动裁剪`
+                };
+    
+                // ── 网络层上传监控 —— 判"图真的传上去了"唯一扛得住的证据 ──
+                // DOM 启发式在这条链路上已经被证伪一次了（预览没变化照样点了确认）。
+                // 计数对象统一挂主 window，两个 realm 的 hook 写同一份账。
+                const installUploadMonitor = (win, tag) => {
+                    if (!win) return false;
+                    try {
+                        if (win.__sphUploadMonitorInstalled) return true; // 幂等：SPA 重复注入会套娃，计数翻倍
+                        win.__sphUploadMonitorInstalled = true;
+                    } catch (_) {
+                        return false;
+                    }
+    
+                    const stats = (window.__sphUploadStats = window.__sphUploadStats
+                        || {inflight: 0, done: 0, lastUrl: '', realms: []});
+                    stats.realms.push(tag);
+    
+                    // 🔑 跨 realm 安全的类型判定：instanceof 认原型链，跨 realm 恒 false；
+                    //    Object.prototype.toString 走 Symbol.toStringTag，跟 realm 无关
+                    const isBinaryBody = (body) => {
+                        if (!body) return false;
+                        const t = Object.prototype.toString.call(body);
+                        return t === '[object FormData]' || t === '[object Blob]' || t === '[object File]'
+                            || t === '[object ArrayBuffer]' || ArrayBuffer.isView(body);
+                    };
+                    // 判窄一点：判宽了会把页面心跳算进来，inflight 永远 >0 就白等满超时
+                    const isUploadReq = (method, url, body) => {
+                        if (!/^(post|put)$/i.test(String(method || '').trim())) return false;
+                        if (/upload|\/tos|\/file\/|cdn|mmfinder|resupload/i.test(String(url || ''))) return true;
+                        return isBinaryBody(body);
+                    };
+                    const begin = (url) => {
+                        stats.inflight++;
+                        stats.lastUrl = String(url || '').slice(0, 120);
+                    };
+                    const end = () => {
+                        stats.inflight = Math.max(0, stats.inflight - 1);
+                        stats.done++;
+                    };
+    
+                    try {
+                        const OrigOpen = win.XMLHttpRequest.prototype.open;
+                        const OrigSend = win.XMLHttpRequest.prototype.send;
+                        win.XMLHttpRequest.prototype.open = function (method, url) {
+                            try {
+                                this.__sphMethod = method;
+                                this.__sphUrl = url;
+                            } catch (_) {
+                            }
+                            return OrigOpen.apply(this, arguments);
+                        };
+                        win.XMLHttpRequest.prototype.send = function (body) {
+                            try {
+                                if (isUploadReq(this.__sphMethod, this.__sphUrl, body)) {
+                                    begin(this.__sphUrl);
+                                    // loadend 覆盖 load/error/abort/timeout 四种收尾，不漏也不重复减
+                                    this.addEventListener('loadend', end, {once: true});
+                                }
+                            } catch (_) {
+                            }
+                            return OrigSend.apply(this, arguments);
+                        };
+                    } catch (e) {
+                        console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} XHR 监控安装失败:`, e && e.message);
+                    }
+    
+                    try {
+                        const origFetch = win.fetch;
+                        if (typeof origFetch === 'function') {
+                            win.fetch = function (input, init) {
+                                let counted = false;
+                                try {
+                                    const url = typeof input === 'string' ? input : (input && input.url) || '';
+                                    const method = (init && init.method) || (input && input.method) || 'GET';
+                                    if (isUploadReq(method, url, init && init.body)) {
+                                        begin(url);
+                                        counted = true;
+                                    }
+                                } catch (_) {
+                                }
+                                const p = origFetch.apply(this, arguments);
+                                if (!counted || !p || typeof p.then !== 'function') return p;
+                                return p.then(r => {
+                                    end();
+                                    return r;
+                                }, e => {
+                                    end();
+                                    throw e;
+                                });
+                            };
+                        }
+                    } catch (e) {
+                        console.log(`[视频号发布][自定义封面图] ⚠️ ${tag} fetch 监控安装失败:`, e && e.message);
+                    }
+                    return true;
+                };
+    
+                // 上传前的基线：请求完成数 + 弹窗里已有的 http 图片。
+                // "新增的 http 图"是不依赖网络 hook 的第二条硬证据 —— 服务端回填 CDN url 才会出现，
+                // 本地预览是 blob:，两者能干净区分
+                const uploadBaseline = (dialogEl) => {
+                    const s = window.__sphUploadStats || {done: 0};
+                    let httpImgs = new Set();
+                    try {
+                        httpImgs = new Set(
+                            Array.from((dialogEl || document).querySelectorAll('img'))
+                                .map(i => i.src)
+                                .filter(u => /^https?:/i.test(u))
                         );
+                    } catch (_) {
                     }
-                }
-
-                if (!best) {
-                    // 逐张说明为什么没选上，省得再靠猜（现在只剩"作废"和"被前面坑位用掉"两种）
-                    const why = loadedCovers
-                        .map((c, i) =>
-                            !c ? `#${i + 1} 预加载作废`
-                                : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
-                                    : `#${i + 1} ${orientationOf(c.ratio)}向(${c.ratio.toFixed(2)})`
-                        )
-                        .join(' | ');
-                    console.log(
-                        `${LOG} ⏭️ 坑位${slotOrientation}向(比值 ${ratio.toFixed(2)})没有任何可用封面，跳过。逐张原因: ${why}`
-                    );
-                    return false;
-                }
-
-                const coverUrl = best.cover.url;
-                usedCovers.add(coverUrl);
-                // 早期失败（弹窗没开 / 没有 input / 下载失败）就把这张图还回去，
-                // 否则另一个坑位会因为"已被前面坑位用掉"而无图可用。
-                // 但"传了 3 次都没落地"不还 —— 同一张图换个坑位大概率同样失败，白烧 60 秒
-                const releaseCover = () => usedCovers.delete(coverUrl);
-
-                console.log(
-                    `${LOG} 🎯 选中封面 (坑位${slotOrientation}向 ${ratio.toFixed(2)}`
-                    + ` / 图片${orientationOf(best.cover.ratio)}向 ${best.cover.ratio.toFixed(2)}`
-                    + ` ${best.cover.width}×${best.cover.height}):`,
-                    coverUrl
-                );
-
-                const slotSignatureBefore = readCoverSlotSignature(slot);
-                slot.click();
-
-                // 🔑 点坑位后不是直接出弹窗，而是先弹「使用此素材作为封面？」推荐气泡（ant-popover）。
-                //    必须点「直接编辑」才会出上传弹窗。另一个按钮「使用素材」是 primary 主按钮，
-                //    按"点主按钮/点第一个"去找必点错（那等于用了平台推荐的视频帧）—— 只能用文案锚定。
-                //    ⚠️ ant-popover 是 portal 出去的：无界会把 document.body.appendChild 代理进
-                //    webcomponent，所以正常在 shadow root 里；但万一漏到主文档，这里两个作用域都找一遍
-                const findPopoverWrap = () => {
-                    const selector = '.ant-popover-inner-content .img-recommend-wrap, .img-recommend-wrap';
-                    for (const root of [getShipinhaoShadowRoot(), document]) {
+                    return {done: s.done, httpImgs};
+                };
+    
+                // 等"图真的传完"，而不是"文件刚被组件接住"。证据按可信度排序，命中即放行
+                const waitCoverUploadSettled = async (dialogEl, baseline, {min = 1200, timeout = 20000} = {}) => {
+                    const stats = () => window.__sphUploadStats || {inflight: 0, done: 0, lastUrl: ''};
+                    const newHttpImg = () => {
                         try {
-                            const hit = root && root.querySelector(selector);
-                            if (hit && isShipinhaoElementVisible(hit)) return hit;
+                            return Array.from(dialogEl.querySelectorAll('img'))
+                                .map(i => i.src)
+                                .find(u => /^https?:/i.test(u) && !baseline.httpImgs.has(u));
+                        } catch (_) {
+                            return null;
+                        }
+                    };
+                    // 放行前复查：分片上传（申请 token → 传分片 → commit）两段之间会短暂 inflight=0，
+                    // 直接放行就正好卡在中间那一刻。等 900ms 看有没有新请求接上
+                    const confirmIdle = async () => {
+                        for (let i = 0; i < 3; i++) {
+                            await delay(300);
+                            if (stats().inflight > 0) return false;
+                        }
+                        return true;
+                    };
+    
+                    const start = Date.now();
+                    await delay(min); // 地板时间：刚派完 change 时请求还没发出去，立刻采样必然假放行
+    
+                    while (Date.now() - start < timeout) {
+                        const s = stats();
+                        if (s.inflight === 0) {
+                            if (s.done > baseline.done && await confirmIdle()) {
+                                return {
+                                    ok: true,
+                                    evidence: `上传请求已完成(${s.done - baseline.done}个, 末个: ${s.lastUrl})`
+                                };
+                            }
+                            const cdn = newHttpImg();
+                            if (cdn && await confirmIdle()) {
+                                return {ok: true, evidence: `服务端已回填图片(${String(cdn).slice(0, 80)})`};
+                            }
+                        }
+                        await delay(500);
+                    }
+                    const s = stats();
+                    return {
+                        ok: false,
+                        evidence: `等满 ${timeout}ms 无证据 (inflight=${s.inflight}, 新增完成=${s.done - baseline.done})`
+                    };
+                };
+    
+                // ── 单个封面坑位的完整处理 ──
+                // 纵封面和横封面逻辑完全相同，只有坑位元素和文案不同。
+                // 之前是整段复制粘贴，复制出来那份里的 coverY 忘了改成 coverX ——
+                // 算的是横向坑位的比值、选的是横向该用的图，点开的却是纵向坑位的弹窗，
+                // 于是横封面永远设不上、纵封面还被改了第二遍。
+                // 抽成函数后只有一个 slot 变量，这类"改漏一处"的 bug 从结构上就不可能再发生。
+    
+                // 等弹窗真正关闭。两个坑位共用同一个弹窗选择器，上一个没关干净就点下一个，
+                // waitForShadowElement 会立刻命中残留的旧弹窗 —— 第二张图就传进第一个坑位里去了。
+                // 这是单坑位时不会暴露、双坑位必踩的坑
+                const waitCoverDialogClosed = async (timeout = 8000) => {
+                    const start = Date.now();
+                    while (Date.now() - start < timeout) {
+                        let dlg = null;
+                        try {
+                            const root = getShipinhaoShadowRoot();
+                            dlg = root && root.querySelector('.edit-cover-dialog-container .weui-desktop-dialog');
                         } catch (_) {
                             // ignore
                         }
+                        if (!dlg || !isShipinhaoElementVisible(dlg)) return true;
+                        await delay(300);
                     }
-                    return null;
+                    return false;
                 };
-
-                let popover = null;
-                const popoverDeadline = Date.now() + 8000;
-                while (Date.now() < popoverDeadline) {
-                    popover = findPopoverWrap();
-                    if (popover) break;
-                    await delay(300);
-                }
-
-                if (popover) {
-                    const directEditBtn = Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
-                        .find(btn => getShipinhaoElementText(btn) === '直接编辑');
-                    if (directEditBtn) {
-                        console.log(`${LOG} 🖱️ 点「直接编辑」进入封面编辑弹窗`);
-                        directEditBtn.click();
-                        await delay(1500);
+    
+                // 关掉弹窗，别让它挡住后面的发布按钮
+                const closeCoverDialog = async (dialog, LOG) => {
+                    const cancelBtn = findShipinhaoDialogButton(dialog, ['取消', '关闭'])
+                        || dialog.querySelector('.weui-desktop-dialog__close, [class*="close"]');
+                    if (cancelBtn) {
+                        console.log(`${LOG} 🖱️ 关闭封面弹窗:`, getShipinhaoElementText(cancelBtn) || '(关闭按钮)');
+                        cancelBtn.click();
                     } else {
                         console.warn(
-                            `${LOG} ⚠️ 推荐气泡里没找到「直接编辑」，当前按钮:`,
-                            Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
+                            `${LOG} ⚠️ 没找到取消/关闭按钮，弹窗可能会挡住发布按钮。当前按钮文案:`,
+                            Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
                                 .map(btn => getShipinhaoElementText(btn))
                                 .filter(Boolean)
                                 .join(' | ') || '(一个都没有)'
                         );
                     }
-                } else {
-                    console.log(`${LOG} ⏭️ 没出现推荐气泡（可能直接进了编辑弹窗），继续等弹窗`);
-                }
-
-                const dialog = await waitForShadowElement(
-                    "wujie-app",
-                    ".edit-cover-dialog-container .weui-desktop-dialog",
-                    10000
-                ).catch(() => null);
-
-                if (!dialog) {
-                    console.warn(`${LOG} ⚠️ 封面编辑弹窗未出现，跳过自定义封面`);
-                    releaseCover();
-                    return false;
-                }
-
-                const uploadBtn = await waitForShadowElement(
-                    "wujie-app",
-                    ".single-cover-uploader-wrap input[type='file']",
-                    5000
-                ).catch(() => null);
-
-                if (!uploadBtn) {
-                    console.warn(`${LOG} ⚠️ 弹窗里没找到 upload input，跳过自定义封面`);
-                    releaseCover();
-                    await closeCoverDialog(dialog, LOG);
-                    return false;
-                }
-
-                console.log(`${LOG} 📥 开始下载封面:`, coverUrl);
-                let downloadResult = null;
-                try {
-                    downloadResult = await downloadFile(coverUrl, "image/png");
-                } catch (e) {
-                    console.error(`${LOG} ❌ 封面下载抛异常:`, e && e.message);
-                }
-                if (!downloadResult?.blob) {
-                    // 下载失败不该把整篇发布掀掉：关掉弹窗、跳过这个坑位，发布继续
-                    console.error(`${LOG} ❌ 封面图片下载结果为空，放弃该坑位的自定义封面`);
-                    releaseCover();
-                    await closeCoverDialog(dialog, LOG);
-                    return false;
-                }
-
-                const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
-                    .toLowerCase()
-                    .split(";", 1)[0]
-                    .trim();
-                const fileType = /^image\/(png|jpe?g)$/.test(contentType)
-                    ? contentType.replace("image/jpg", "image/jpeg")
-                    : "image/png";
-                const extension = fileType === "image/jpeg" ? "jpg" : "png";
-
-                // 上传前先把监控装好。子应用跑在无界 iframe 里，只装主 window 是抓不到它的请求的
-                const sandboxWin = getWujieSandboxWindow();
-                const monitorOnMain = installUploadMonitor(window, 'main');
-                const monitorOnSandbox = sandboxWin ? installUploadMonitor(sandboxWin, 'wujie-iframe') : false;
-                const monitorReady = monitorOnMain || monitorOnSandbox;
-                console.log(`${LOG} 🛰️ 上传监控:`, {
-                    无界沙箱: sandboxWin ? '已定位' : '未找到(将退回宽松判据)',
-                    主window: monitorOnMain,
-                    沙箱window: monitorOnSandbox,
-                    已装realm: (window.__sphUploadStats || {}).realms || [],
-                });
-
-                // 每次重试都重造 File：被组件拒收过的对象再塞一次没有意义
-                const makeFile = () => buildCoverFile(
-                    sandboxWin,
-                    downloadResult.blob,
-                    `sph-cover-${Date.now()}.${extension}`,
-                    fileType
-                );
-
-                let uploadSettled = null;
-                let lastFileInfo = null;
-                const MAX_ATTEMPT = 3;
-
-                for (let attempt = 1; attempt <= MAX_ATTEMPT; attempt++) {
-                    // input 可能被 React 重建，每轮重新取，别拿着旧引用死磕
-                    const input = attempt === 1
-                        ? uploadBtn
-                        : (await waitForShadowElement(
+                    await waitCoverDialogClosed();
+                };
+    
+                const applyCustomCoverToSlot = async (slot, slotLabel) => {
+                    // 所有日志都带坑位标识 —— 两个坑位跑同一套流程，不标就没法从日志分辨是谁
+                    const LOG = `[视频号发布][自定义封面图][${slotLabel}]`;
+                    if (!slot) {
+                        console.log(`${LOG} ⏭️ 坑位元素不存在，跳过`);
+                        return false;
+                    }
+    
+                    const rect = slot.getBoundingClientRect();
+                    const ratio = rect.width / rect.height;
+    
+                    // 🔑 只看朝向，不看比值差。
+                    //    原来用 |图比值 - 坑位比值| > 1.5 过滤，两头都不对：
+                    //      · 太严：3:4 坑位(0.75) 配 9:16 图(0.56) 明明该配，某些尺寸却被差值挡掉
+                    //      · 也太松：3:4 坑位(0.75) 配 16:9 图(1.78) 差值才 1.03，横图照样塞进竖坑位
+                    //    ratio 是个双曲的量（竖图挤在 0~1，横图铺开到 1~∞），拿它做线性距离本来就不成立。
+                    //    正解是先按朝向分桶，桶内再用比值近似度排序当 tie-break
+                    const orientationOf = (r) => (r > 1.05 ? '横' : r < 0.95 ? '纵' : '方');
+                    const slotOrientation = orientationOf(ratio);
+                    const orientationFits = (coverOrientation) =>
+                        coverOrientation === slotOrientation           // 朝向一致
+                        || coverOrientation === '方'                    // 近正方图两个坑位都能用
+                        || slotOrientation === '方';
+    
+                    // 先选图、再开弹窗。反过来的话选不到图就空指针崩在 best.cover.url 上，
+                    // 而且弹窗已经开了没人关，会一直挡住后面的发布按钮
+                    let best = null;
+                    for (const cover of loadedCovers) {
+                        if (!cover || usedCovers.has(cover.url)) continue;
+                        if (!orientationFits(orientationOf(cover.ratio))) continue;
+                        const diff = Math.abs(cover.ratio - ratio);
+                        if (!best || diff < best.diff) best = {cover, diff};
+                    }
+    
+                    // 朝向一张都不匹配时，不空手而归 —— 有图能用就用，总比让平台拿视频帧凑强。
+                    // 宽松兜底是刻意设计：判据宁可放过，也别把本来能成的坑位直接毙掉
+                    if (!best) {
+                        for (const cover of loadedCovers) {
+                            if (!cover || usedCovers.has(cover.url)) continue;
+                            const diff = Math.abs(cover.ratio - ratio);
+                            if (!best || diff < best.diff) best = {cover, diff, orientationMismatch: true};
+                        }
+                        if (best) {
+                            console.warn(
+                                `${LOG} ⚠️ 没有${slotOrientation}向封面，退而用${orientationOf(best.cover.ratio)}向的凑`
+                                + `（坑位比值 ${ratio.toFixed(2)} / 图片比值 ${best.cover.ratio.toFixed(2)}），平台可能会自动裁剪`
+                            );
+                        }
+                    }
+    
+                    if (!best) {
+                        // 逐张说明为什么没选上，省得再靠猜（现在只剩"作废"和"被前面坑位用掉"两种）
+                        const why = loadedCovers
+                            .map((c, i) =>
+                                !c ? `#${i + 1} 预加载作废`
+                                    : usedCovers.has(c.url) ? `#${i + 1} 已被前面坑位用掉`
+                                        : `#${i + 1} ${orientationOf(c.ratio)}向(${c.ratio.toFixed(2)})`
+                            )
+                            .join(' | ');
+                        console.log(
+                            `${LOG} ⏭️ 坑位${slotOrientation}向(比值 ${ratio.toFixed(2)})没有任何可用封面，跳过。逐张原因: ${why}`
+                        );
+                        return false;
+                    }
+    
+                    const coverUrl = best.cover.url;
+                    usedCovers.add(coverUrl);
+                    // 早期失败（弹窗没开 / 没有 input / 下载失败）就把这张图还回去，
+                    // 否则另一个坑位会因为"已被前面坑位用掉"而无图可用。
+                    // 但"传了 3 次都没落地"不还 —— 同一张图换个坑位大概率同样失败，白烧 60 秒
+                    const releaseCover = () => usedCovers.delete(coverUrl);
+    
+                    console.log(
+                        `${LOG} 🎯 选中封面 (坑位${slotOrientation}向 ${ratio.toFixed(2)}`
+                        + ` / 图片${orientationOf(best.cover.ratio)}向 ${best.cover.ratio.toFixed(2)}`
+                        + ` ${best.cover.width}×${best.cover.height}):`,
+                        coverUrl
+                    );
+    
+                    const slotSignatureBefore = readCoverSlotSignature(slot);
+                    slot.click();
+    
+                    // 🔑 点坑位后不是直接出弹窗，而是先弹「使用此素材作为封面？」推荐气泡（ant-popover）。
+                    //    必须点「直接编辑」才会出上传弹窗。另一个按钮「使用素材」是 primary 主按钮，
+                    //    按"点主按钮/点第一个"去找必点错（那等于用了平台推荐的视频帧）—— 只能用文案锚定。
+                    //    ⚠️ ant-popover 是 portal 出去的：无界会把 document.body.appendChild 代理进
+                    //    webcomponent，所以正常在 shadow root 里；但万一漏到主文档，这里两个作用域都找一遍
+                    const findPopoverWrap = () => {
+                        const selector = '.ant-popover-inner-content .img-recommend-wrap, .img-recommend-wrap';
+                        for (const root of [getShipinhaoShadowRoot(), document]) {
+                            try {
+                                const hit = root && root.querySelector(selector);
+                                if (hit && isShipinhaoElementVisible(hit)) return hit;
+                            } catch (_) {
+                                // ignore
+                            }
+                        }
+                        return null;
+                    };
+    
+                    let popover = null;
+                    const popoverDeadline = Date.now() + 8000;
+                    while (Date.now() < popoverDeadline) {
+                        popover = findPopoverWrap();
+                        if (popover) break;
+                        await delay(300);
+                    }
+    
+                    if (popover) {
+                        const directEditBtn = Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
+                            .find(btn => getShipinhaoElementText(btn) === '直接编辑');
+                        if (directEditBtn) {
+                            console.log(`${LOG} 🖱️ 点「直接编辑」进入封面编辑弹窗`);
+                            directEditBtn.click();
+                            await delay(1500);
+                        } else {
+                            console.warn(
+                                `${LOG} ⚠️ 推荐气泡里没找到「直接编辑」，当前按钮:`,
+                                Array.from(popover.querySelectorAll('button, .weui-desktop-btn'))
+                                    .map(btn => getShipinhaoElementText(btn))
+                                    .filter(Boolean)
+                                    .join(' | ') || '(一个都没有)'
+                            );
+                        }
+                    } else {
+                        console.log(`${LOG} ⏭️ 没出现推荐气泡（可能直接进了编辑弹窗），继续等弹窗`);
+                    }
+    
+                    const dialog = await waitForShadowElement(
+                        "wujie-app",
+                        ".edit-cover-dialog-container .weui-desktop-dialog",
+                        10000
+                    ).catch(() => null);
+    
+                    if (!dialog) {
+                        console.warn(`${LOG} ⚠️ 封面编辑弹窗未出现，跳过自定义封面`);
+                        releaseCover();
+                        return false;
+                    }
+    
+                    const uploadBtn = await waitForShadowElement(
                         "wujie-app",
                         ".single-cover-uploader-wrap input[type='file']",
                         5000
-                    ).catch(() => null)) || uploadBtn;
-
-                    const {file, realm} = makeFile();
-                    lastFileInfo = {name: file.name, type: file.type, size: file.size, realm};
-
-                    const baseline = uploadBaseline(dialog);
-                    const dialogImagesBefore = readDialogImageSignature(dialog);
-
-                    // 🔑 必须用 fireFileInput 而不是 common.js 的 uploadFileToInput：
-                    //    后者不重置 React 的 _valueTracker，change 会被当成"值没变"丢掉。
-                    //    这一点在重试时尤其致命 —— 第二次写同一个 input 必然被吃掉
-                    if (!fireFileInput(input, file)) {
-                        console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次文件写入失败，重试`);
-                        continue;
+                    ).catch(() => null);
+    
+                    if (!uploadBtn) {
+                        console.warn(`${LOG} ⚠️ 弹窗里没找到 upload input，跳过自定义封面`);
+                        releaseCover();
+                        await closeCoverDialog(dialog, LOG);
+                        return false;
                     }
-                    console.log(`${LOG} 📤 第 ${attempt}/${MAX_ATTEMPT} 次已写入，等上传落地:`, lastFileInfo);
-
-                    const settled = await waitCoverUploadSettled(dialog, baseline, {timeout: 20000});
-                    if (settled.ok) {
-                        uploadSettled = settled;
-                        console.log(`${LOG} ✅ 上传已落地（第 ${attempt} 次）:`, settled.evidence);
-                        break;
+    
+                    console.log(`${LOG} 📥 开始下载封面:`, coverUrl);
+                    let downloadResult = null;
+                    try {
+                        downloadResult = await downloadFile(coverUrl, "image/png");
+                    } catch (e) {
+                        console.error(`${LOG} ❌ 封面下载抛异常:`, e && e.message);
                     }
-
-                    // 监控没装上时判据本就不可信，不能拿它去否定一次可能成功的上传
-                    if (!monitorReady && readDialogImageSignature(dialog) !== dialogImagesBefore) {
-                        uploadSettled = {ok: true, evidence: '监控未就绪，退回"弹窗预览有变化"的宽松判据放行'};
-                        console.warn(`${LOG} ⚠️ ${uploadSettled.evidence}`);
-                        break;
+                    if (!downloadResult?.blob) {
+                        // 下载失败不该把整篇发布掀掉：关掉弹窗、跳过这个坑位，发布继续
+                        console.error(`${LOG} ❌ 封面图片下载结果为空，放弃该坑位的自定义封面`);
+                        releaseCover();
+                        await closeCoverDialog(dialog, LOG);
+                        return false;
                     }
-                    console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次没拿到上传证据: ${settled.evidence}`);
-                }
-
-                if (!uploadSettled) {
-                    // 没传上就点确认 = 拿一张没换成的封面把弹窗关掉，是纯粹的假 ✅。
-                    // 改成点「取消」收摊：封面用平台自动截图，发布流程继续往下走
-                    console.error(`${LOG} ❌ 三次都没能把封面传上去，放弃自定义封面（改用平台默认封面）`, lastFileInfo);
-                    await closeCoverDialog(dialog, LOG);
-                    return false;
-                }
-
-                // 只有确认图真传上去了，才点确认让封面生效
-                const confirmBtn = findShipinhaoDialogButton(dialog, ['确定', '确认', '完成', '保存']);
-                if (!confirmBtn) {
-                    console.warn(
-                        `${LOG} ⚠️ 没找到弹窗确认按钮，当前弹窗按钮文案:`,
-                        Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
-                            .map(btn => getShipinhaoElementText(btn))
-                            .filter(Boolean)
-                            .join(' | ') || '(一个都没有)'
-                    );
-                } else {
-                    console.log(`${LOG} 🖱️ 点击弹窗按钮:`, getShipinhaoElementText(confirmBtn));
-                    confirmBtn.click();
-                    await delay(2000);
-                }
-
-                // 弹窗必须确认关闭再交给下一个坑位，否则下一个坑位会命中这个残留弹窗
-                if (!await waitCoverDialogClosed()) {
-                    console.warn(`${LOG} ⚠️ 点完确认弹窗仍未关闭，下一个坑位可能受影响`);
-                }
-
-                // 终态校验：坑位缩略图变了才算真换上。
-                // ⚠️ 这条判据单独用并不可信 —— 平台把视频帧重新裁一次，缩略图照样会变
-                //    （实测 isCustomCover:false 时缩略图也变了）。真正的门闸是上面的网络层证据，
-                //    这里只做补充告警，不 throw
-                const slotSignatureAfter = readCoverSlotSignature(slot);
-                if (slotSignatureAfter && slotSignatureAfter !== slotSignatureBefore) {
-                    console.log(`${LOG} ✅ 坑位缩略图已变化，封面确认生效`);
-                } else {
-                    console.warn(`${LOG} ❌ 上传有证据但坑位缩略图没变，封面可能仍未应用:`, {
-                        before: String(slotSignatureBefore).slice(0, 120),
-                        after: String(slotSignatureAfter).slice(0, 120),
-                        上传证据: uploadSettled.evidence,
+    
+                    const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
+                        .toLowerCase()
+                        .split(";", 1)[0]
+                        .trim();
+                    const fileType = /^image\/(png|jpe?g)$/.test(contentType)
+                        ? contentType.replace("image/jpg", "image/jpeg")
+                        : "image/png";
+                    const extension = fileType === "image/jpeg" ? "jpg" : "png";
+    
+                    // 上传前先把监控装好。子应用跑在无界 iframe 里，只装主 window 是抓不到它的请求的
+                    const sandboxWin = getWujieSandboxWindow();
+                    const monitorOnMain = installUploadMonitor(window, 'main');
+                    const monitorOnSandbox = sandboxWin ? installUploadMonitor(sandboxWin, 'wujie-iframe') : false;
+                    const monitorReady = monitorOnMain || monitorOnSandbox;
+                    console.log(`${LOG} 🛰️ 上传监控:`, {
+                        无界沙箱: sandboxWin ? '已定位' : '未找到(将退回宽松判据)',
+                        主window: monitorOnMain,
+                        沙箱window: monitorOnSandbox,
+                        已装realm: (window.__sphUploadStats || {}).realms || [],
                     });
-                }
-                return true;
-            };
-
-            console.log('[视频号发布][自定义封面图] 📐 坑位情况:', {
-                纵向: coverY ? '已找到' : '未找到',
-                横向: coverX ? '已找到' : '未找到',
-                可用封面: `${loadedCovers.filter(Boolean).length}/${loadedCovers.length}`,
-            });
-
-            // 🔑 两个坑位必须串行：它们共用同一个弹窗选择器，并行跑会互相抢弹窗
-            const coverYOk = await applyCustomCoverToSlot(coverY, '纵向');
-            const coverXOk = await applyCustomCoverToSlot(coverX, '横向');
-            console.log('[视频号发布][自定义封面图] 🏁 封面设置结束:', {
-                纵向: coverYOk ? '已设置' : '未设置',
-                横向: coverXOk ? '已设置' : '未设置',
-            });
-        } catch (e) {
-            console.error('[视频号发布][自定义封面图] ❌ 设置封面失败:', e);
-        }
+    
+                    // 每次重试都重造 File：被组件拒收过的对象再塞一次没有意义
+                    const makeFile = () => buildCoverFile(
+                        sandboxWin,
+                        downloadResult.blob,
+                        `sph-cover-${Date.now()}.${extension}`,
+                        fileType
+                    );
+    
+                    let uploadSettled = null;
+                    let lastFileInfo = null;
+                    const MAX_ATTEMPT = 3;
+    
+                    for (let attempt = 1; attempt <= MAX_ATTEMPT; attempt++) {
+                        // input 可能被 React 重建，每轮重新取，别拿着旧引用死磕
+                        const input = attempt === 1
+                            ? uploadBtn
+                            : (await waitForShadowElement(
+                            "wujie-app",
+                            ".single-cover-uploader-wrap input[type='file']",
+                            5000
+                        ).catch(() => null)) || uploadBtn;
+    
+                        const {file, realm} = makeFile();
+                        lastFileInfo = {name: file.name, type: file.type, size: file.size, realm};
+    
+                        const baseline = uploadBaseline(dialog);
+                        const dialogImagesBefore = readDialogImageSignature(dialog);
+    
+                        // 🔑 必须用 fireFileInput 而不是 common.js 的 uploadFileToInput：
+                        //    后者不重置 React 的 _valueTracker，change 会被当成"值没变"丢掉。
+                        //    这一点在重试时尤其致命 —— 第二次写同一个 input 必然被吃掉
+                        if (!fireFileInput(input, file)) {
+                            console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次文件写入失败，重试`);
+                            continue;
+                        }
+                        console.log(`${LOG} 📤 第 ${attempt}/${MAX_ATTEMPT} 次已写入，等上传落地:`, lastFileInfo);
+    
+                        const settled = await waitCoverUploadSettled(dialog, baseline, {timeout: 20000});
+                        if (settled.ok) {
+                            uploadSettled = settled;
+                            console.log(`${LOG} ✅ 上传已落地（第 ${attempt} 次）:`, settled.evidence);
+                            break;
+                        }
+    
+                        // 监控没装上时判据本就不可信，不能拿它去否定一次可能成功的上传
+                        if (!monitorReady && readDialogImageSignature(dialog) !== dialogImagesBefore) {
+                            uploadSettled = {ok: true, evidence: '监控未就绪，退回"弹窗预览有变化"的宽松判据放行'};
+                            console.warn(`${LOG} ⚠️ ${uploadSettled.evidence}`);
+                            break;
+                        }
+                        console.warn(`${LOG} ⚠️ 第 ${attempt}/${MAX_ATTEMPT} 次没拿到上传证据: ${settled.evidence}`);
+                    }
+    
+                    if (!uploadSettled) {
+                        // 没传上就点确认 = 拿一张没换成的封面把弹窗关掉，是纯粹的假 ✅。
+                        // 改成点「取消」收摊：封面用平台自动截图，发布流程继续往下走
+                        console.error(`${LOG} ❌ 三次都没能把封面传上去，放弃自定义封面（改用平台默认封面）`, lastFileInfo);
+                        await closeCoverDialog(dialog, LOG);
+                        return false;
+                    }
+    
+                    // 只有确认图真传上去了，才点确认让封面生效
+                    const confirmBtn = findShipinhaoDialogButton(dialog, ['确定', '确认', '完成', '保存']);
+                    if (!confirmBtn) {
+                        console.warn(
+                            `${LOG} ⚠️ 没找到弹窗确认按钮，当前弹窗按钮文案:`,
+                            Array.from(dialog.querySelectorAll('button, .weui-desktop-btn, [role="button"]'))
+                                .map(btn => getShipinhaoElementText(btn))
+                                .filter(Boolean)
+                                .join(' | ') || '(一个都没有)'
+                        );
+                    } else {
+                        console.log(`${LOG} 🖱️ 点击弹窗按钮:`, getShipinhaoElementText(confirmBtn));
+                        confirmBtn.click();
+                        await delay(2000);
+                    }
+    
+                    // 弹窗必须确认关闭再交给下一个坑位，否则下一个坑位会命中这个残留弹窗
+                    if (!await waitCoverDialogClosed()) {
+                        console.warn(`${LOG} ⚠️ 点完确认弹窗仍未关闭，下一个坑位可能受影响`);
+                    }
+    
+                    // 终态校验：坑位缩略图变了才算真换上。
+                    // ⚠️ 这条判据单独用并不可信 —— 平台把视频帧重新裁一次，缩略图照样会变
+                    //    （实测 isCustomCover:false 时缩略图也变了）。真正的门闸是上面的网络层证据，
+                    //    这里只做补充告警，不 throw
+                    const slotSignatureAfter = readCoverSlotSignature(slot);
+                    if (slotSignatureAfter && slotSignatureAfter !== slotSignatureBefore) {
+                        console.log(`${LOG} ✅ 坑位缩略图已变化，封面确认生效`);
+                    } else {
+                        console.warn(`${LOG} ❌ 上传有证据但坑位缩略图没变，封面可能仍未应用:`, {
+                            before: String(slotSignatureBefore).slice(0, 120),
+                            after: String(slotSignatureAfter).slice(0, 120),
+                            上传证据: uploadSettled.evidence,
+                        });
+                    }
+                    return true;
+                };
+    
+                console.log('[视频号发布][自定义封面图] 📐 坑位情况:', {
+                    纵向: coverY ? '已找到' : '未找到',
+                    横向: coverX ? '已找到' : '未找到',
+                    可用封面: `${loadedCovers.filter(Boolean).length}/${loadedCovers.length}`,
+                });
+    
+                // 🔑 两个坑位必须串行：它们共用同一个弹窗选择器，并行跑会互相抢弹窗
+                const coverYOk = await applyCustomCoverToSlot(coverY, '纵向');
+                const coverXOk = await applyCustomCoverToSlot(coverX, '横向');
+                console.log('[视频号发布][自定义封面图] 🏁 封面设置结束:', {
+                    纵向: coverYOk ? '已设置' : '未设置',
+                    横向: coverXOk ? '已设置' : '未设置',
+                });
+            } catch (e) {
+                console.error('[视频号发布][自定义封面图] ❌ 设置封面失败:', e);
+            }
+        } // end coverStep
+        console.log('[视频号发布] ✅ 封面处理完成，继续发布流程');
         //return;
 
         // 检测表单是否有错误提示

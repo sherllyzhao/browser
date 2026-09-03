@@ -837,8 +837,9 @@ if (location.search.includes("published=true")) {
                     "https://images.china9.cn/attachment/2026-06-16/CR3XUbGEhafOuXFr7x1H08hyao6bKQMYZGzwo6o0.png",
                     "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
                 ]; */
-                const coverImageWrap = await waitForElement(".cover-plugin-preview", 3000);
-                if(coverImageWrap && customCoverList && customCoverList.length > 0){
+                if(customCoverList && customCoverList.length > 0){
+                    const coverImageWrap = await waitForElement(".cover-plugin-preview", 3000);
+                    if(coverImageWrap){
                     const coverImage = coverImageWrap.querySelector(".cover--row .default");
                     if(coverImage){
                         // CSS :hover 只能由真实鼠标命中触发，单纯 dispatchEvent 不会显示编辑入口。
@@ -993,6 +994,8 @@ if (location.search.includes("published=true")) {
                             await window.delay(1000);
                         }
                     }
+                } else {
+                    console.log("[小红书发布][自定义封面图] ⚠️ 未配置自定义封面图或 .cover-plugin-preview 不存在，跳过封面设置");
                 }
             }catch(error){
                 console.error("[小红书发布] ❌ 自定义封面图处理出错:", error);
