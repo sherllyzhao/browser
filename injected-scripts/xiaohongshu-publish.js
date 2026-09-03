@@ -838,164 +838,169 @@ if (location.search.includes("published=true")) {
                     "https://images.china9.cn/attachment/2026-06-16/wfnaYbuz0eVXKVcaIoc57KUlAwvB8BEyXzuaBtFz.png"
                 ]; */
                 if(customCoverList && customCoverList.length > 0){
-                    const coverImageWrap = await waitForElement(".cover-plugin-preview", 3000);
+                    // waitForElement 超时是 reject 而非返回 null（common.js:1152），
+                    // 不接 catch 的话下面 if(coverImageWrap) 是死代码，会直接跳到外层 catch 打「处理出错」。
+                    const coverImageWrap = await waitForElement(".cover-plugin-preview", 3000).catch(() => null);
                     if(coverImageWrap){
-                    const coverImage = coverImageWrap.querySelector(".cover--row .default");
-                    if(coverImage){
-                        // CSS :hover 只能由真实鼠标命中触发，单纯 dispatchEvent 不会显示编辑入口。
-                        const coverRect = coverImage.getBoundingClientRect();
-                        const coverX = Math.round(coverRect.left + coverRect.width / 2);
-                        const coverY = Math.round(coverRect.top + coverRect.height / 2);
-                        let nativeHoverResult = null;
+                        const coverImage = coverImageWrap.querySelector(".cover--row .default");
+                        if(coverImage){
+                            // CSS :hover 只能由真实鼠标命中触发，单纯 dispatchEvent 不会显示编辑入口。
+                            const coverRect = coverImage.getBoundingClientRect();
+                            const coverX = Math.round(coverRect.left + coverRect.width / 2);
+                            const coverY = Math.round(coverRect.top + coverRect.height / 2);
+                            let nativeHoverResult = null;
 
-                        if (typeof window.browserAPI?.nativeMouseHover === "function") {
-                            nativeHoverResult = await window.browserAPI.nativeMouseHover([
-                                { x: Math.max(1, coverX - 24), y: Math.max(1, coverY - 24), label: "away" },
-                                { x: coverX, y: coverY, label: "cover" },
-                            ], {
-                                intervalMs: 100,
-                                holdMs: 500,
-                                useSendInput: true,
-                                useCdp: true,
-                            });
-                        } else if (typeof window.browserAPI?.nativeMouseMove === "function") {
-                            nativeHoverResult = await window.browserAPI.nativeMouseMove(coverX, coverY, { enter: true });
+                            if (typeof window.browserAPI?.nativeMouseHover === "function") {
+                                nativeHoverResult = await window.browserAPI.nativeMouseHover([
+                                    { x: Math.max(1, coverX - 24), y: Math.max(1, coverY - 24), label: "away" },
+                                    { x: coverX, y: coverY, label: "cover" },
+                                ], {
+                                    intervalMs: 100,
+                                    holdMs: 500,
+                                    useSendInput: true,
+                                    useCdp: true,
+                                });
+                            } else if (typeof window.browserAPI?.nativeMouseMove === "function") {
+                                nativeHoverResult = await window.browserAPI.nativeMouseMove(coverX, coverY, { enter: true });
+                            }
+
+                            console.log("[小红书发布][自定义封面图] 🖱️ 封面 hover 结果:", nativeHoverResult);
+
+                            // 原生事件之外补发完整事件，兼容依赖 JS 监听器而非 CSS :hover 的实现。
+                            const eventInit = {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                clientX: coverX,
+                                clientY: coverY,
+                                screenX: window.screenX + coverX,
+                                screenY: window.screenY + coverY,
+                                buttons: 0,
+                            };
+                            for (const eventType of [
+                                "pointerover",
+                                "pointerenter",
+                                "pointermove",
+                                "mouseover",
+                                "mouseenter",
+                                "mousemove",
+                            ]) {
+                                const EventCtor = eventType.startsWith("pointer") ? PointerEvent : MouseEvent;
+                                coverImage.dispatchEvent(new EventCtor(eventType, {
+                                    ...eventInit,
+                                    pointerType: "mouse",
+                                    isPrimary: true,
+                                }));
+                            }
+
+                            // 入口可能已经在 DOM 中但仍处于 display:none，必须等待到真正可见。
+                            const changeBtn = await waitForElement(() => {
+                                const candidate = coverImageWrap.querySelector(".cover-edit-entry-text");
+                                if (!candidate || typeof candidate.getBoundingClientRect !== "function") return null;
+                                const rect = candidate.getBoundingClientRect();
+                                const style = window.getComputedStyle(candidate);
+                                return rect.width > 0
+                                && rect.height > 0
+                                && style.display !== "none"
+                                && style.visibility !== "hidden"
+                                && style.opacity !== "0"
+                                    ? candidate
+                                    : null;
+                            }, 3000, 100);
+                            if(changeBtn){
+                                const changeBtnClickResult = await nativeClickElement(changeBtn, {
+                                    logPrefix: "[小红书发布][自定义封面图]",
+                                    allowJsFallback: false,
+                                });
+                                if (!changeBtnClickResult.success) {
+                                    throw new Error(changeBtnClickResult.message || "自定义封面图更换按钮原生点击失败");
+                                }
+                                await delay(10000);
+                                // 弹窗里的上传控件是单文件 input，点击入口后再等待它挂载。
+                                const uploadInput = await waitForElement(() => {
+                                    const inputs = Array.from(document.querySelectorAll(
+                                        'input.upload-input[type="file"]'
+                                    )).filter(input => input.isConnected);
+                                    return inputs[inputs.length - 1] || null;
+                                }, 8000, 100);
+
+                                if (typeof downloadFile !== "function" || typeof uploadFileToInput !== "function") {
+                                    throw new Error("公共文件下载/上传函数不可用");
+                                }
+
+                                const coverUrl = customCoverList[0];
+                                if (!coverUrl) {
+                                    throw new Error("没有可上传的封面图片地址");
+                                }
+
+                                console.log("[小红书发布][自定义封面图] 📥 开始下载封面:", coverUrl);
+                                const downloadResult = await downloadFile(coverUrl, "image/png");
+                                if (!downloadResult?.blob) {
+                                    throw new Error("封面图片下载结果为空");
+                                }
+
+                                const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
+                                    .toLowerCase()
+                                    .split(";", 1)[0]
+                                    .trim();
+                                const fileType = /^image\/(png|jpe?g)$/.test(contentType)
+                                    ? contentType.replace("image/jpg", "image/jpeg")
+                                    : "image/png";
+                                const extension = fileType === "image/jpeg" ? "jpg" : "png";
+                                const file = new File(
+                                    [downloadResult.blob],
+                                    `xhs-cover-${Date.now()}.${extension}`,
+                                    { type: fileType }
+                                );
+
+                                const uploadResult = await uploadFileToInput(uploadInput, file);
+                                if (!uploadResult) {
+                                    throw new Error("封面文件写入 upload-input 失败");
+                                }
+                                console.log("[小红书发布][自定义封面图] ✅ 已写入封面文件:", {
+                                    name: file.name,
+                                    type: file.type,
+                                    size: file.size,
+                                    inputFiles: uploadInput.files?.length || 0,
+                                });
+
+                                // 给小红书的上传请求和预览渲染留时间，后续流程暂不点击发布按钮。
+                                await window.delay(1500);
+
+                                // 上传预览渲染后，点击当前 mojito 封面编辑弹窗底部的「完成」。
+                                const finishBtn = await waitForElement(() => {
+                                    const buttons = Array.from(document.querySelectorAll(
+                                        '#mojito-btn-container button.mojito-button, .d-modal-content button.mojito-button'
+                                    ));
+                                    return buttons.reverse().find(button => {
+                                        const text = (button.textContent || '').replace(/\s+/g, '');
+                                        const rect = button.getBoundingClientRect();
+                                        const style = window.getComputedStyle(button);
+                                        return text.includes('完成')
+                                            && rect.width > 0
+                                            && rect.height > 0
+                                            && style.display !== 'none'
+                                            && style.visibility !== 'hidden'
+                                            && style.opacity !== '0'
+                                            && !button.disabled;
+                                    }) || null;
+                                }, 5000, 100);
+                                const finishClickResult = await nativeClickElement(finishBtn, {
+                                    logPrefix: "[小红书发布][自定义封面图][完成]",
+                                    allowJsFallback: false,
+                                });
+                                if (!finishClickResult.success) {
+                                    throw new Error(finishClickResult.message || "封面编辑弹窗完成按钮点击失败");
+                                }
+                                console.log("[小红书发布][自定义封面图] ✅ 已点击封面编辑弹窗「完成」");
+                                await window.delay(1000);
+                            }
                         }
-
-                        console.log("[小红书发布][自定义封面图] 🖱️ 封面 hover 结果:", nativeHoverResult);
-
-                        // 原生事件之外补发完整事件，兼容依赖 JS 监听器而非 CSS :hover 的实现。
-                        const eventInit = {
-                            bubbles: true,
-                            cancelable: true,
-                            view: window,
-                            clientX: coverX,
-                            clientY: coverY,
-                            screenX: window.screenX + coverX,
-                            screenY: window.screenY + coverY,
-                            buttons: 0,
-                        };
-                        for (const eventType of [
-                            "pointerover",
-                            "pointerenter",
-                            "pointermove",
-                            "mouseover",
-                            "mouseenter",
-                            "mousemove",
-                        ]) {
-                            const EventCtor = eventType.startsWith("pointer") ? PointerEvent : MouseEvent;
-                            coverImage.dispatchEvent(new EventCtor(eventType, {
-                                ...eventInit,
-                                pointerType: "mouse",
-                                isPrimary: true,
-                            }));
-                        }
-
-                        // 入口可能已经在 DOM 中但仍处于 display:none，必须等待到真正可见。
-                        const changeBtn = await waitForElement(() => {
-                            const candidate = coverImageWrap.querySelector(".cover-edit-entry-text");
-                            if (!candidate || typeof candidate.getBoundingClientRect !== "function") return null;
-                            const rect = candidate.getBoundingClientRect();
-                            const style = window.getComputedStyle(candidate);
-                            return rect.width > 0
-                            && rect.height > 0
-                            && style.display !== "none"
-                            && style.visibility !== "hidden"
-                            && style.opacity !== "0"
-                                ? candidate
-                                : null;
-                        }, 3000, 100);
-                        if(changeBtn){
-                            const changeBtnClickResult = await nativeClickElement(changeBtn, {
-                                logPrefix: "[小红书发布][自定义封面图]",
-                                allowJsFallback: false,
-                            });
-                            if (!changeBtnClickResult.success) {
-                                throw new Error(changeBtnClickResult.message || "自定义封面图更换按钮原生点击失败");
-                            }
-                            await delay(10000);
-                            // 弹窗里的上传控件是单文件 input，点击入口后再等待它挂载。
-                            const uploadInput = await waitForElement(() => {
-                                const inputs = Array.from(document.querySelectorAll(
-                                    'input.upload-input[type="file"]'
-                                )).filter(input => input.isConnected);
-                                return inputs[inputs.length - 1] || null;
-                            }, 8000, 100);
-
-                            if (typeof downloadFile !== "function" || typeof uploadFileToInput !== "function") {
-                                throw new Error("公共文件下载/上传函数不可用");
-                            }
-
-                            const coverUrl = customCoverList[0];
-                            if (!coverUrl) {
-                                throw new Error("没有可上传的封面图片地址");
-                            }
-
-                            console.log("[小红书发布][自定义封面图] 📥 开始下载封面:", coverUrl);
-                            const downloadResult = await downloadFile(coverUrl, "image/png");
-                            if (!downloadResult?.blob) {
-                                throw new Error("封面图片下载结果为空");
-                            }
-
-                            const contentType = String(downloadResult.contentType || downloadResult.blob.type || "image/png")
-                                .toLowerCase()
-                                .split(";", 1)[0]
-                                .trim();
-                            const fileType = /^image\/(png|jpe?g)$/.test(contentType)
-                                ? contentType.replace("image/jpg", "image/jpeg")
-                                : "image/png";
-                            const extension = fileType === "image/jpeg" ? "jpg" : "png";
-                            const file = new File(
-                                [downloadResult.blob],
-                                `xhs-cover-${Date.now()}.${extension}`,
-                                { type: fileType }
-                            );
-
-                            const uploadResult = await uploadFileToInput(uploadInput, file);
-                            if (!uploadResult) {
-                                throw new Error("封面文件写入 upload-input 失败");
-                            }
-                            console.log("[小红书发布][自定义封面图] ✅ 已写入封面文件:", {
-                                name: file.name,
-                                type: file.type,
-                                size: file.size,
-                                inputFiles: uploadInput.files?.length || 0,
-                            });
-
-                            // 给小红书的上传请求和预览渲染留时间，后续流程暂不点击发布按钮。
-                            await window.delay(1500);
-
-                            // 上传预览渲染后，点击当前 mojito 封面编辑弹窗底部的「完成」。
-                            const finishBtn = await waitForElement(() => {
-                                const buttons = Array.from(document.querySelectorAll(
-                                    '#mojito-btn-container button.mojito-button, .d-modal-content button.mojito-button'
-                                ));
-                                return buttons.reverse().find(button => {
-                                    const text = (button.textContent || '').replace(/\s+/g, '');
-                                    const rect = button.getBoundingClientRect();
-                                    const style = window.getComputedStyle(button);
-                                    return text.includes('完成')
-                                        && rect.width > 0
-                                        && rect.height > 0
-                                        && style.display !== 'none'
-                                        && style.visibility !== 'hidden'
-                                        && style.opacity !== '0'
-                                        && !button.disabled;
-                                }) || null;
-                            }, 5000, 100);
-                            const finishClickResult = await nativeClickElement(finishBtn, {
-                                logPrefix: "[小红书发布][自定义封面图][完成]",
-                                allowJsFallback: false,
-                            });
-                            if (!finishClickResult.success) {
-                                throw new Error(finishClickResult.message || "封面编辑弹窗完成按钮点击失败");
-                            }
-                            console.log("[小红书发布][自定义封面图] ✅ 已点击封面编辑弹窗「完成」");
-                            await window.delay(1000);
-                        }
+                    } else {
+                        console.log("[小红书发布][自定义封面图] ⚠️ 未找到 .cover-plugin-preview 封面预览区，跳过封面设置");
                     }
                 } else {
-                    console.log("[小红书发布][自定义封面图] ⚠️ 未配置自定义封面图或 .cover-plugin-preview 不存在，跳过封面设置");
+                    console.log("[小红书发布][自定义封面图] ⚠️ 未配置自定义封面图（cover2 为空），跳过封面设置");
                 }
             }catch(error){
                 console.error("[小红书发布] ❌ 自定义封面图处理出错:", error);

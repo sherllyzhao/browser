@@ -90,6 +90,43 @@ const FIX_TOUTIAO_RICH_CONTENT = true;
 //   绝不阻断整篇发布；③主进程下载失败的图直接不下发，脚本侧无感。
 // 生产出问题改 false 重打包即可整体降级（回退旧行为：正文有图但图丢失）
 const FIX_TOUTIAO_BARE_CONTENT_IMAGES = true;
+// 【特性开关】2026-09-03 头条正文分段写入顺序错乱：真实现场 segments=image|html|html|image|html
+//（图→长代码段→我是分界线→图→尾部代码），第 2 段（683 字代码块）写完后凭空消失，文末兜底把
+// 它整段重贴到末尾 —— 用户看到的是「我是分界线 + 第二张图」整体上浮，紧贴第一张图。
+// 铁证（toutiao-bare-result-2026-09-03T02-27-16）：textBeforeRepair=489 ≈ 块3+块4+块5(490)，
+// 最终 textLength=1085 ≈ 全文一份(1097)，差值恰好是块2 —— 即那段代码从未落在它该在的位置。
+// 根因未确证（粘贴压根没进去 / 进去后被谁清掉），因为 pasteHtmlAppend 的返回值没人接、
+// 写完从不校验，属本项目「假 ✅ 家族」惯犯：日志全绿而内容其实不在。
+// 另注：09-02 两次全绿实测都是 segments=html|image（文字在前、只有一张图），
+//「图后面再粘文字」这条路今天才第一次被真实内容跑到。
+// 修法：①每段写完立刻校验文本增量，不达标就升级重试（重塌陷 → 先造尾部空段落 → insertHTML →
+//   纯文本兜底），把顺序修在原位；②文末兜底只补真正缺失的段，不再整篇重贴冲掉已在位的文字；
+//   ③每段现场落盘（写前/写后长度、走了哪条路、编辑器尾部签名），下次再错能直接区分
+//   「我们没写进去」和「写进去了又被抹掉」。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：写完不校验 + 整篇重贴兜底）
+const FIX_TOUTIAO_BARE_SEGMENT_VERIFY = true;
+// 【特性开关】2026-09-03 实时取证通道：bare 脚本的全部诊断只在 executeJavaScript **resolve 之后**
+// 才随 toutiao-bare-result 落盘 —— 用户看到写错了直接关窗，promise 永不 settle，
+// result / exception 一个都不写（实测 03-17-53 只有 before-run 没有 result，整轮零证据）。
+// 修法：主进程在执行脚本前挂 console-message 监听，把 bare 脚本 `[TT-LIVE]` 前缀的日志
+// 逐行 append 到 debug-dumps/toutiao-bare-live-*.log —— 边跑边落盘，中途关窗也留得下时间线。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：只在跑完时落盘）
+const FIX_TOUTIAO_BARE_LIVE_LOG = true;
+// 【特性开关】2026-09-03 分段写入「后一段吃掉前一段」的真根因：选区塌陷与粘贴在同一个 tick 里。
+// 用户实测复述：「传了第一张图后，写了文本，又删了，再传第二张图，然后把剩下的文本粘贴上」——
+// 即 683 字那段确实写进去了（09-03 上午的逐段校验生效了），随后被下一次写入整段吃掉，
+// 而它自己的指纹在编辑器里找得到 → 被判 landed → 不进缺失名单 → 只剩「总量不足」这条兜底
+// → 退回整篇重贴 → 顺序再次被毁（这就是用户看到的「把剩下的文本粘贴上」）。
+// 🔍 为什么塌陷没生效：头条 syl 编辑器 **不暴露 pmViewDesc**，getPmView 三条路全失败
+//（实测 selectionBeforeUpload:"no-pm→pm-unavailable"），所以 collapseSelectionToDocEnd 只改了
+// DOM 选区；而头条的 paste 走 ProseMirror，用的是 view.state.selection。PM 靠 document 上的
+// selectionchange 事件把 DOM 选区读进 state，而该事件是**异步**派发的 —— 我们塌陷完当场就
+// dispatch paste，PM 手里还是上一次写入留下的旧选区（覆盖着前一段），replaceSelection 于是
+// 「用新段替换掉前一段」。09-02 两次全绿是因为 segments=html|image 只写一个文字段，压根不需要塌陷。
+// 修法：塌陷后主动派发一次 selectionchange 并让出一个 macrotask，再用「选区之后还剩多少文字」
+// 的探针回读校验落点，不在末尾就重塌一次；探针结果落盘（selProbe）作为下次的判据。
+// 生产出问题改 false 重打包即可整体降级（回退旧行为：塌陷后同 tick 直接粘贴）
+const FIX_TOUTIAO_BARE_SELECTION_TICK = true;
 // 【特性开关】2026-08-18 腾讯内容管理窗口掉登录：判死清理（fix4/fix5）只保护发布窗口
 //（isPublishWindow 门槛），内容管理窗口（purpose='child'）恢复死 token 快照后：
 // ①服务端打回登录页但死 cookie 不清 → 扫码时新旧凭证混杂"登录后瞬间掉出" ②扫码成功后
@@ -8162,6 +8199,31 @@ function writeMainDebugDump(prefix, content) {
   }
 }
 
+// 【FIX_TOUTIAO_BARE_LIVE_LOG】头条 bare 脚本实时日志：建文件 + 逐行追加。
+// 与 writeMainDebugDump 的区别是「边跑边写」——脚本还没 return 就已经落盘，
+// 用户中途关窗（executeJavaScript 的 promise 永不 settle）时这是唯一的现场。
+function prepareToutiaoLiveLog(windowId, currentURL) {
+  try {
+    const dumpDir = path.join(app.getPath('userData'), 'debug-dumps');
+    if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(dumpDir, `toutiao-bare-live-${timestamp}.log`);
+    fs.writeFileSync(filePath, `# windowId=${windowId} url=${currentURL || ''}\n`, 'utf8');
+    console.log('[Toutiao Live Log] 实时日志:', filePath);
+    return filePath;
+  } catch (err) {
+    console.error('[Toutiao Live Log] 建文件失败:', err);
+    return '';
+  }
+}
+
+function appendToutiaoLiveLog(filePath, line) {
+  if (!filePath) return;
+  try {
+    fs.appendFileSync(filePath, `${new Date().toISOString()} ${line}\n`, 'utf8');
+  } catch (_) {}
+}
+
 function buildToutiaoBarePublishScript(payload) {
   return `
     (async () => {
@@ -8952,6 +9014,26 @@ function buildToutiaoBarePublishScript(payload) {
       // 头条 paste 会把外链 <img> 整个剥掉，只认自家 CDN 的图，所以图片必须走它自己的上传口。
       // 实现移植自 2026-09-01 被回退的注入版（commit 00966f4），下述注释里的坑位均为当时实测所得。
       const CONTENT_IMAGES_ENABLED = ${FIX_TOUTIAO_BARE_CONTENT_IMAGES};
+      // 【FIX_TOUTIAO_BARE_SEGMENT_VERIFY】分段写入的落地校验开关。关掉即回到「写完不校验、
+      // 缺文字就整篇重贴」的旧行为（顺序会退化成图在前字在后，但绝不会只有图没有字）
+      const SEGMENT_VERIFY_ENABLED = ${FIX_TOUTIAO_BARE_SEGMENT_VERIFY};
+      // 【FIX_TOUTIAO_BARE_SELECTION_TICK】塌陷选区后让出一个 macrotask，等 selectionchange 派发、
+      // ProseMirror 把新选区读进 state，再粘贴。关掉即回到「同 tick 塌陷+粘贴」的旧行为
+      const SELECTION_TICK_ENABLED = ${FIX_TOUTIAO_BARE_SELECTION_TICK};
+      // 【FIX_TOUTIAO_BARE_LIVE_LOG】边跑边把关键节点打到 console，主进程监听落盘。
+      // 中途关窗时 executeJavaScript 的 promise 永不 settle，这是唯一能留下的证据
+      const LIVE_LOG_ENABLED = ${FIX_TOUTIAO_BARE_LIVE_LOG};
+      const liveLog = (tag, obj) => {
+        if (!LIVE_LOG_ENABLED) return;
+        try {
+          // 截断：console-message 走 IPC，超长消息既慢又可能被截，诊断字段本身都很短
+          let body = JSON.stringify(obj === undefined ? null : obj);
+          if (body && body.length > 4000) body = body.slice(0, 4000) + '…<truncated>';
+          console.log('[TT-LIVE] ' + tag + ' ' + body);
+        } catch (_) {
+          try { console.log('[TT-LIVE] ' + tag + ' <unserializable>'); } catch (__) {}
+        }
+      };
       // 2026-09-02 实测补充：正文图实际落在 image-tt-private.toutiao.com（~tplv-obj.image），
       // 封面落在 image-tt-private.toutiao.com（~tplv-tt-cover-v2.image）—— 旧名单全都不匹配，
       // 导致 hostedFinal 恒为 0。故补 toutiao.com 主域（页面域名不会出现在 img src 上，无误判风险）
@@ -9050,10 +9132,50 @@ function buildToutiaoBarePublishScript(payload) {
         }
         return result;
       };
+      // 🔍 选区落点探针：从当前选区终点到编辑器末尾还剩多少非空白文字。
+      // 'at-end' 才是真的塌陷到了末尾；剩一堆文字说明选区还压在正文中间（或还是个覆盖正文的 Range），
+      // 这种状态下粘贴就是「用新内容替换旧内容」。这是分辨「塌陷生效了没」的唯一直接手段 ——
+      // 之前只能看 selectionBeforeUpload 里 PM 层是否可用（头条恒不可用），DOM 层做没做成从来没人回读过。
+      const selectionTailProbe = (editorEl) => {
+        try {
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) return 'no-range';
+          const range = sel.getRangeAt(0);
+          if (!editorEl.contains(range.endContainer)) return 'outside';
+          const probe = document.createRange();
+          probe.selectNodeContents(editorEl);
+          probe.setStart(range.endContainer, range.endOffset);
+          const rest = probe.toString().replace(/\\s+/g, '');
+          const prefix = range.collapsed ? '' : 'wide:';
+          return rest.length === 0 ? (prefix + 'at-end') : (prefix + 'tail-' + rest.length);
+        } catch (_) { return 'probe-error'; }
+      };
+      // 塌陷选区并**等它被 ProseMirror 认账**。
+      // 🚨 本次修复的核心：selectionchange 是异步事件，PM 靠它把 DOM 选区读进 view.state。
+      //    同 tick 内塌陷完就 dispatch paste，PM 手里还是上一次写入留下的旧选区 → 覆盖前一段。
+      //    手动派发一次 selectionchange 只是保险（浏览器自己也会派发），真正起作用的是 await 让出
+      //    macrotask；随后用探针回读校验，不在末尾就再塌一次。
+      const collapseSelectionSettled = async (editorEl, opts) => {
+        const result = collapseSelectionToDocEnd(editorEl, opts);
+        if (!SELECTION_TICK_ENABLED) return result;
+        try { document.dispatchEvent(new Event('selectionchange')); } catch (_) {}
+        await delay(60);
+        result.probe = selectionTailProbe(editorEl);
+        if (result.probe !== 'at-end') {
+          collapseSelectionToDocEnd(editorEl, opts);
+          try { document.dispatchEvent(new Event('selectionchange')); } catch (_) {}
+          await delay(90);
+          result.probe2 = selectionTailProbe(editorEl);
+        }
+        return result;
+      };
       // 追加语义的粘贴（图片链路专用，不动上面那个 pasteHtmlIntoEditor，保证纯文本路径零回归）
-      const pasteHtmlAppend = (editorEl, html, plainText) => {
-        collapseSelectionToDocEnd(editorEl);
-        return pasteHtmlIntoEditor(editorEl, html, plainText);
+      // ⚠️ 已改为 async：塌陷与粘贴之间必须让出一个 macrotask，否则 PM 用的是旧选区。
+      //    返回值带上选区探针，落盘后能直接看出「粘之前选区到底在哪」
+      const pasteHtmlAppend = async (editorEl, html, plainText) => {
+        const sel = await collapseSelectionSettled(editorEl);
+        const ok = pasteHtmlIntoEditor(editorEl, html, plainText);
+        return { ok, probe: sel.probe || '', probe2: sel.probe2 || '', pm: !!sel.pm };
       };
       // 清空：execCommand 清不掉图片这类 atom 节点时，降级到 PM 模型层 delete。
       // 🚨 全程不用 innerHTML=''：那会让 PM model 与 DOM 脱节，后续 paste 必炸 RangeError
@@ -9308,10 +9430,12 @@ function buildToutiaoBarePublishScript(payload) {
         const input = await ensureBodyImageInput(editorEl, diag);
         if (!input) throw new Error('body-image-input-not-found');
         // 🚨 插图前必须塌陷选区，否则这张图会把已写入的正文整段替换掉
-        const selBefore = collapseSelectionToDocEnd(editorEl);
+        const selBefore = await collapseSelectionSettled(editorEl);
         if (diag) {
           diag.selectionBeforeUpload = (selBefore.kind || 'no-pm')
-            + (selBefore.pm ? '→collapsed' : '→pm-unavailable');
+            + (selBefore.pm ? '→collapsed' : '→pm-unavailable')
+            + (selBefore.probe ? '|' + selBefore.probe : '')
+            + (selBefore.probe2 ? '→' + selBefore.probe2 : '');
         }
         const dt = new DataTransfer();
         dt.items.add(file);
@@ -9324,7 +9448,10 @@ function buildToutiaoBarePublishScript(payload) {
         const drawer = findOpenImageDrawer();
         if (drawer) {
           // 抽屉交互可能又把选区带回全选，点确认前再塌陷一次（不抢 DOM 焦点，免得关掉抽屉）
-          collapseSelectionToDocEnd(editorEl, { domFocus: false });
+          // ⚠️ domFocus:false 时只动 PM 选区，而头条 PM 不可用 —— 这一步在头条上实际是空转，
+          //    留着是因为无害且对别的编辑器有意义；真正的落点证据看下面的 probe
+          const selDrawer = await collapseSelectionSettled(editorEl, { domFocus: false });
+          if (diag) diag.selectionBeforeConfirm = selectionTailProbe(editorEl) + (selDrawer.pm ? '|pm' : '|no-pm');
           const confirmed = await confirmImageDrawer(drawer, diag);
           if (diag) diag.drawerConfirmed = (diag.drawerConfirmed || 0) + (confirmed ? 1 : 0);
         }
@@ -9427,6 +9554,146 @@ function buildToutiaoBarePublishScript(payload) {
         walk(temp, []);
         return segments;
       };
+      // ===== 【FIX_TOUTIAO_BARE_SEGMENT_VERIFY】分段落地校验 =====
+      // 文本长度口径：innerText 按 CSS 折叠空白（&nbsp; 粘进编辑器后成普通空格，连续的会被折叠），
+      // 而段落自带的 text 取自 detached div（不折叠）—— 落地增量必然略小于 want，判据必须留余量。
+      // 2026-09-03 实测比值：块2 683→607、块5 415→355，约 0.86~0.90，故阈值取 0.6 足够宽松。
+      const editorTextOf = (editorEl) => (editorEl.innerText || editorEl.textContent || '').trim();
+      const editorTextLen = (editorEl) => editorTextOf(editorEl).length;
+      // 🚨 主判据用「指纹出现次数」而不是长度增量，因为**重试非幂等**：
+      //    ProseMirror/头条的 paste 是插入不是覆盖，一旦把「其实已经进去了」判成没进去而重试，
+      //    这一段就会被贴两遍（本项目前科：知乎正文重复 FIX_ZHIHU_CONTENT_DUPLICATE）。
+      //    指纹计数能区分「一次都没进 / 进了一次 / 进了两遍」，只有 0 次才敢重试。
+      //    去空白比对：把 &nbsp;/折叠/换行差异全部消掉，比长度阈值可靠得多。
+      const textFingerprint = (text) => String(text || '').replace(/\\s+/g, '').slice(0, 16);
+      const editorTextNoWs = (editorEl) => editorTextOf(editorEl).replace(/\\s+/g, '');
+      const countOccurrences = (haystack, needle) => {
+        if (!needle) return 0;
+        let count = 0;
+        let idx = haystack.indexOf(needle);
+        while (idx !== -1) { count++; idx = haystack.indexOf(needle, idx + needle.length); }
+        return count;
+      };
+      // 编辑器尾部签名：最后 3 个块级子节点的「标签[有图]:文字长度」。
+      // 段落没落地时记一笔，用来区分「压根没插入」和「插到别处 / 被合进了图片壳」
+      const editorTailSig = (editorEl) => {
+        try {
+          return Array.from(editorEl.children).slice(-3).map((el) => {
+            const text = (el.innerText || el.textContent || '').trim();
+            return el.tagName.toLowerCase() + (el.querySelector('img') ? '[img]' : '') + ':' + text.length;
+          }).join(',') || 'empty';
+        } catch (_) { return 'sig-error'; }
+      };
+      // 在文档末尾补一个可落脚的空段落。
+      // 图片是 atom 块节点：紧跟其后的 DOM 光标可能落进 contenteditable=false 的图片壳里，
+      // PM 要么把它解析成该图的 NodeSelection（粘贴就变成「用文字替换这张图」），
+      // 要么判无效而沿用旧选区（粘贴落到别处或直接被丢）—— 先造个空段落就避开这个雷区
+      const ensureTrailingBlock = async (editorEl) => {
+        try {
+          await collapseSelectionSettled(editorEl);
+          document.execCommand('insertParagraph');
+          return true;
+        } catch (_) { return false; }
+      };
+      // 写一个文字段并校验它真的进去了；没进去就升级重试，把顺序修在原位。
+      // 🚨 这是本次修复的核心：旧代码 pasteHtmlAppend 的返回值没人接、写完从不回读，
+      //    段落静默丢失后只能靠文末整篇重贴兜底，顺序必然被毁。
+      // 降级阶梯（越往后越粗暴，但都保持「插在当前末尾」的语义，绝不改顺序）：
+      //   paste → 造尾部空段落再 paste → execCommand insertHTML → execCommand insertText（丢格式保顺序）
+      const writeHtmlSegmentVerified = async (editorEl, segment, order, diag) => {
+        const want = String(segment.text || '').trim().length;
+        const before = editorTextLen(editorEl);
+        const imgsBefore = countUniqueImages(editorEl);
+        const fingerprint = textFingerprint(segment.text);
+        // 基线出现次数：正文里可能本来就有同样的片段（同一段代码贴两处），
+        // 所以判据是「次数变多了」而不是「找得到」
+        const occBefore = countOccurrences(editorTextNoWs(editorEl), fingerprint);
+        const trace = { i: order, kind: 'html', want, before, after: before, gain: 0, route: '', imgs: imgsBefore };
+        // 段本身没文字（纯 <br>/空段落/只有属性的容器）→ 没有可校验的判据，
+        // 粘一次就走。绝不能让它触发重试，否则会往正文里塞出一堆空段落
+        const needVerify = SEGMENT_VERIFY_ENABLED && want > 0 && !!fingerprint;
+        const floor = want <= 8 ? Math.max(1, want - 2) : Math.ceil(want * 0.6);
+        const attempts = [
+          async () => {
+            const r = await pasteHtmlAppend(editorEl, segment.html, segment.text);
+            trace.sel = (r.probe || '') + (r.probe2 ? '→' + r.probe2 : '');
+            return 'paste';
+          },
+          async () => {
+            await ensureTrailingBlock(editorEl);
+            const r = await pasteHtmlAppend(editorEl, segment.html, segment.text);
+            trace.sel2 = (r.probe || '') + (r.probe2 ? '→' + r.probe2 : '');
+            return 'paste-after-block';
+          },
+          async () => {
+            await collapseSelectionSettled(editorEl);
+            document.execCommand('insertHTML', false, segment.html);
+            return 'insertHTML';
+          },
+          async () => {
+            await collapseSelectionSettled(editorEl);
+            document.execCommand('insertText', false, segment.text);
+            return 'insertText';
+          }
+        ];
+        const limit = needVerify ? attempts.length : 1;
+        for (let i = 0; i < limit; i++) {
+          let route = '';
+          try { route = await attempts[i](); } catch (e) { route = 'error:' + (e && e.message); }
+          await delay(i === 0 ? 900 : 1200);
+          const after = editorTextLen(editorEl);
+          trace.route = trace.route ? trace.route + '>' + route : route;
+          trace.after = after;
+          trace.gain = after - before;
+          if (!needVerify) break;
+          const occAfter = countOccurrences(editorTextNoWs(editorEl), fingerprint);
+          trace.occ = occAfter - occBefore;
+          // 贴重了：只可能是上一轮其实成功了却被判失败 —— 记下来（诊断用），并立刻停手不再加剧
+          if (occAfter > occBefore + 1) {
+            trace.duplicated = occAfter - occBefore - 1;
+            diag && (diag.segmentDuplicated = (diag.segmentDuplicated || 0) + trace.duplicated);
+          }
+          // 越写越少 = 这一贴把已有正文吃掉了（选区没塌陷成功），是最值钱的一条证据
+          if (after < before) trace.ate = (trace.ate || 0) + 1;
+          // 指纹进去了（或长度增量达标）就收手。⚠️ 只有「一次都没进去」才允许重试，
+          // 否则重试等于把这一段贴第二遍
+          if (occAfter > occBefore || after - before >= floor) { trace.landed = true; break; }
+          trace.landed = false;
+          trace.tail = editorTailSig(editorEl);
+        }
+        if (diag) {
+          // ⚠️ 盲区补一刀：光看「文字增量达标」判落地是不够的 —— 若这一贴的选区正好是
+          //    前一张图的 NodeSelection，头条会「用文字替换那张图」，文字照样增加、判据照样 ✅，
+          //    而图已经没了。图片数一旦下降必须留证，否则又是一个日志全绿的假成功。
+          trace.imgs = countUniqueImages(editorEl);
+          if (trace.imgs < imgsBefore) {
+            trace.killedImage = imgsBefore - trace.imgs;
+            diag.segmentKilledImage = (diag.segmentKilledImage || 0) + trace.killedImage;
+          }
+          diag.segmentTrace = diag.segmentTrace || [];
+          diag.segmentTrace.push(trace);
+          if (trace.landed === false) diag.segmentLost = (diag.segmentLost || 0) + 1;
+          if (trace.ate) diag.segmentAte = (diag.segmentAte || 0) + trace.ate;
+        }
+        // 边跑边落盘：中途关窗时这是唯一留得下的现场
+        liveLog('seg', trace);
+        return trace.landed !== false;
+      };
+      // 复查「已经判定落地的段」是不是还在编辑器里。
+      // 🚨 2026-09-03 实测教训：段落写进去了、指纹也在（判 landed），随后被**下一次写入**整段吃掉，
+      //    于是缺失名单是空的，文末只剩「总量不足 → 整篇重贴」这条路，顺序再次被毁。
+      //    每写一段（含图片段）就复查一次，掉了的重新入缺失名单 —— 至少内容不丢，且补写只补丢的那几段。
+      const recheckWrittenSegments = (editorEl, written, diag, atStep) => {
+        if (!SEGMENT_VERIFY_ENABLED || written.length === 0) return [];
+        const noWs = editorTextNoWs(editorEl);
+        const lost = written.filter((w) => w.fp && countOccurrences(noWs, w.fp) === 0);
+        if (lost.length > 0 && diag) {
+          diag.lostAfterWrite = diag.lostAfterWrite || [];
+          diag.lostAfterWrite.push({ at: atStep, lost: lost.map((w) => w.i).join(',') });
+          liveLog('lost-after', { at: atStep, lost: lost.map((w) => w.i) });
+        }
+        return lost;
+      };
       const fillContentWithImages = async (editorEl, rawHtml, plainText) => {
         const diag = {
           touched: false, expected: 0, uploaded: 0, hostedFinal: 0,
@@ -9446,15 +9713,28 @@ function buildToutiaoBarePublishScript(payload) {
         diag.touched = true;
         await clearEditorDeep(editorEl);
         const textHtmlWritten = [];
+        const missingSegments = [];
+        // 已判落地的文字段（带指纹），用于每步复查「它是不是又被后面的写入吃掉了」
+        const writtenTracked = [];
+        const markMissing = (segment) => {
+          if (!missingSegments.includes(segment)) missingSegments.push(segment);
+        };
         let imageIndex = 0;
+        let order = 0;
         for (const segment of segments) {
+          order++;
           if (segment.type === 'html') {
-            pasteHtmlAppend(editorEl, segment.html, segment.text);
+            const landed = await writeHtmlSegmentVerified(editorEl, segment, order, diag);
             textHtmlWritten.push(segment.html);
-            await delay(900);
+            if (!landed) markMissing(segment);
+            else writtenTracked.push({ i: order, fp: textFingerprint(segment.text), segment });
+            // 这一段可能顺手吃掉了前面的段（选区没塌陷到末尾时 paste 就是 replace）→ 立刻复查
+            recheckWrittenSegments(editorEl, writtenTracked, diag, 'html#' + order)
+              .forEach((w) => markMissing(w.segment));
             continue;
           }
           imageIndex++;
+          const textBeforeImage = editorTextLen(editorEl);
           try {
             await uploadImageIntoEditor(editorEl, segment.src, imageIndex, diag);
             diag.uploaded++;
@@ -9462,23 +9742,66 @@ function buildToutiaoBarePublishScript(payload) {
             // 单张图失败只跳过该张，绝不阻断整篇发布
             diag.errors.push({ src: String(segment.src || '').slice(0, 160), message: e.message });
           }
+          // 图片段也记一笔：下一段的 before 与本段的 after 一对，就能看出
+          // 「正文是在我们两次写入之间被谁抹掉的」还是「压根没写进去」
+          if (SEGMENT_VERIFY_ENABLED) {
+            const imgTrace = {
+              i: order, kind: 'image', before: textBeforeImage,
+              after: editorTextLen(editorEl), imgs: countUniqueImages(editorEl)
+            };
+            diag.segmentTrace = diag.segmentTrace || [];
+            diag.segmentTrace.push(imgTrace);
+            liveLog('seg', imgTrace);
+          }
+          // 插图同样会吃字（头条插图走 PM replaceSelection）→ 复查前面的段还在不在
+          recheckWrittenSegments(editorEl, writtenTracked, diag, 'image#' + order)
+            .forEach((w) => markMissing(w.segment));
         }
         // 🚨 收尾必须关抽屉：它是覆盖层，留着会挡住封面触发器和发布按钮（2026-09-02 事故根因）
         diag.drawerClosed = await closeImageDrawer();
         diag.hostedFinal = countHostedImages(editorEl);
-        let finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
-        // 兜底：插图仍然把正文吃掉了（选区塌陷没生效）→ 把文字补回末尾。
-        // 顺序会退化成「图在前、文字在后」，但远好过发出去只有图没有字
-        if (textHtmlWritten.length > 0 && expectedLength > 0 && finalTextLength < expectedLength * 0.5) {
+        let finalTextLength = editorTextLen(editorEl);
+        diag.tailSig = editorTailSig(editorEl);
+        // 兜底：文字没落到位（插图吃掉 / 粘贴没进去）→ 把缺的补回末尾。
+        // 🚫 不再无条件整篇重贴：2026-09-03 实测就是它把「我是分界线 + 第二张图」顶到了文章开头
+        //    ——已在位的段落又贴一遍，读者看到的顺序就全乱了。优先只补校验判定没落地的段；
+        //    只有「每段都说落地了、总量却还是不够」（有人在我们背后抹内容）才退回整篇重贴。
+        const shortOverall = expectedLength > 0 && finalTextLength < expectedLength * 0.5;
+        // ⚠️ 补写前用指纹再复核一遍：这段时间里头条可能异步把内容补渲染回来了。
+        //    重试非幂等 —— 补一段其实已经在的段落，正文就多出一份重复，比缺一段更难收拾
+        const stillMissing = missingSegments.filter((s) => {
+          const fp = textFingerprint(s.text);
+          return !fp || countOccurrences(editorTextNoWs(editorEl), fp) === 0;
+        });
+        if (SEGMENT_VERIFY_ENABLED && missingSegments.length > 0) {
+          diag.missingRecheck = missingSegments.length + '→' + stillMissing.length;
+        }
+        const repairMissingOnly = SEGMENT_VERIFY_ENABLED && stillMissing.length > 0;
+        const repairHtml = repairMissingOnly
+          ? stillMissing.map((s) => s.html).join('')
+          : (shortOverall ? textHtmlWritten.join('') : '');
+        const repairPlain = repairMissingOnly
+          ? stillMissing.map((s) => s.text).join('\\n')
+          : plainText;
+        if (textHtmlWritten.length > 0 && repairHtml && (shortOverall || repairMissingOnly)) {
           diag.textRepairAttempted = true;
+          diag.textRepairScope = repairMissingOnly ? ('missing-only:' + stillMissing.length) : 'all-segments';
           diag.textBeforeRepair = finalTextLength;
-          pasteHtmlAppend(editorEl, textHtmlWritten.join(''), plainText);
+          await pasteHtmlAppend(editorEl, repairHtml, repairPlain);
           await delay(1200);
-          finalTextLength = (editorEl.innerText || editorEl.textContent || '').trim().length;
+          finalTextLength = editorTextLen(editorEl);
           diag.hostedFinal = countHostedImages(editorEl);
-          diag.textRepaired = finalTextLength >= expectedLength * 0.5;
+          diag.tailSig = editorTailSig(editorEl);
+          diag.textRepaired = expectedLength === 0 ? true : finalTextLength >= expectedLength * 0.5;
         }
         diag.textLength = finalTextLength;
+        liveLog('fill-done', {
+          segments: diag.segments, uploaded: diag.uploaded, hostedFinal: diag.hostedFinal,
+          textLength: finalTextLength, expected: expectedLength,
+          lost: diag.segmentLost || 0, ate: diag.segmentAte || 0,
+          lostAfterWrite: diag.lostAfterWrite || [],
+          repairScope: diag.textRepairScope || 'none', tailSig: diag.tailSig
+        });
         // 判定：文字必须达标（纯图片文章 expectedLength=0 时看有没有图）。
         // 图全失败但文字在 → 仍算成功，按用户要求不因图片失败拖垮整篇
         const textOk = expectedLength === 0 ? true : finalTextLength >= expectedLength * 0.5;
@@ -9489,7 +9812,13 @@ function buildToutiaoBarePublishScript(payload) {
       const title = normalizeTitle(payload.rawTitle);
       const content = normalizeContent(payload.rawContent, payload.intro, title);
       const logs = [];
-      const push = (step, extra = {}) => logs.push({ step, ...extra, ts: Date.now() });
+      // 每条 push 同时实时落盘一份（liveLog），这样中途关窗也能看到跑到了哪一步
+      const push = (step, extra = {}) => {
+        const entry = { step, ...extra, ts: Date.now() };
+        logs.push(entry);
+        liveLog('step:' + step, extra);
+        return entry;
+      };
       push('start', {
         href: location.href,
         title,
@@ -9944,7 +10273,32 @@ async function maybeRunBareToutiaoPublish(targetWindow) {
       payload
     });
 
-    const result = await targetWindow.webContents.executeJavaScript(buildToutiaoBarePublishScript(payload), true);
+    // 【FIX_TOUTIAO_BARE_LIVE_LOG】边跑边落盘：executeJavaScript 的 promise 只在脚本 return 后才
+    // settle，用户中途关窗时 result / exception 一个都写不出（实测 2026-09-03 03-17-53 整轮零证据）。
+    // 监听 console-message 把 bare 脚本的 [TT-LIVE] 逐行 append 到独立 log，关窗也留得下时间线。
+    const liveLogPath = FIX_TOUTIAO_BARE_LIVE_LOG ? prepareToutiaoLiveLog(windowId, currentURL) : '';
+    // ⚠️ console-message 的回调签名跨 Electron 大版本变过：21 是 (event, level, message, line, source)，
+    //    30+ 改成单个事件对象（event.message）。两种都认，免得升级后静默失效。
+    const onBareConsole = (arg0, arg1, arg2) => {
+      const message = typeof arg2 === 'string'
+        ? arg2
+        : (arg0 && typeof arg0.message === 'string' ? arg0.message : '');
+      const at = message.indexOf('[TT-LIVE]');
+      if (at === -1) return;
+      appendToutiaoLiveLog(liveLogPath, message.slice(at + 10));
+    };
+    if (liveLogPath) {
+      try { targetWindow.webContents.on('console-message', onBareConsole); } catch (_) {}
+    }
+
+    let result;
+    try {
+      result = await targetWindow.webContents.executeJavaScript(buildToutiaoBarePublishScript(payload), true);
+    } finally {
+      if (liveLogPath) {
+        try { targetWindow.webContents.removeListener('console-message', onBareConsole); } catch (_) {}
+      }
+    }
     console.log('[Toutiao Bare Publish] 执行结果:', { windowId, result });
     writeMainDebugDump('toutiao-bare-result', {
       stage: 'result',
