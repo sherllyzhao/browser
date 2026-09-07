@@ -11,4 +11,5 @@ dist/
 /[{]
 .omc
 docs/debug
-/test-*
+test-*
+.claude/*
