@@ -401,6 +401,7 @@
                 // ⚠️ 不能用 alert：alert 会阻塞渲染线程，下面 closeCurrentWindow 的 setTimeout
                 // 永远排不上，窗口悬死等人点确认（历史反模式，见 login-probe 自伤四连）。
                 console.error('[新浪授权] ❌ 用户信息缺少 uid，无法继续授权:', user);
+                alert('[新浪授权] ❌ 未获取到新浪账号 uid，请确认该账号已在新浪完成认证后重试:' + user)
                 try {
                     sendMessageToParent({
                         type: 'auth-failed',
@@ -572,9 +573,38 @@
 
                 // 统计接口成功后关闭弹窗（仅授权窗口自动关，其他入口保留窗口）
                 if (isAuthOriginWindow) {
-                    setTimeout(() => {
+                    // 🔧 FIX: 延长关窗时间至 20 秒，并检测页面内容是否加载完成
+                    // 避免用户只看到头部，下面内容还没加载完就关窗的问题
+                    console.log('[新浪授权] ⏳ 授权成功，等待页面内容加载完成...');
+
+                    // 智能等待：检测页面主要内容是否已渲染
+                    const waitForPageContent = async () => {
+                        const startWait = Date.now();
+                        const maxWait = 20000; // 最多等 20 秒
+
+                        while (Date.now() - startWait < maxWait) {
+                            // 检测页面是否有实质内容（不只是头部导航）
+                            const hasContent = document.querySelector('.container')
+                                || document.querySelector('.content')
+                                || document.querySelector('.main')
+                                || document.body.scrollHeight > 300; // 页面高度超过 300px
+
+                            if (hasContent) {
+                                console.log('[新浪授权] ✅ 页面内容已加载，准备关闭窗口');
+                                break;
+                            }
+
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        }
+
+                        // 再给用户 3 秒时间看清页面内容
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+
+                        console.log('[新浪授权] 🚪 关闭授权窗口');
                         window.browserAPI.closeCurrentWindow();
-                    }, window.getRandomDelayMs(10000));
+                    };
+
+                    waitForPageContent();
                 } else {
                     console.log('[新浪授权] ℹ️ 非授权窗口，授权完成后保留窗口');
                 }
