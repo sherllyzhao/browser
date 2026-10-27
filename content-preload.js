@@ -1995,6 +1995,7 @@ function isSohuhaoAuthInjectablePage(rawUrl = '') {
     return url.hostname === 'mp.sohu.com'
       && (
         url.pathname === '/mpfe/v4/contentManagement/first/page'
+        || url.pathname === '/mpfe/v4/personalCenter/account'
         || url.pathname === '/mpfe/v4'
         || url.pathname === '/mpfe/v4/'
       );

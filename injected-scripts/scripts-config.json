@@ -1,13 +1,14 @@
 {
   "remoteConfig": {
     "enabled": false,
-    "baseUrl": "https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/v3/",
-    "devBaseUrl": "http://localhost:5173/injected-scripts/v3",
+    "baseUrl": "https://zcloud.obs.cn-north-4.myhuaweicloud.com/static/injected-scripts/",
+    "devBaseUrl": "http://localhost:5173/injected-scripts/",
     "cachePolicy": "no-cache",
     "timeout": 10000,
     "fallbackToLocal": true
   },
   "scripts": {
+    "https://mp.sohu.com/": ["souhuhao-login-watch.js"],
     "https://creator.douyin.com/creator-micro/home": ["common.js", "douyin-creator.js"],
     "https://lf-zt.douyin.com/*": ["common.js", "douyin-creator.js"],
     "https://creator.douyin.com/creator-micro/content/manage*": ["common.js", "publish-success.js"],
@@ -43,6 +44,7 @@
     "https://om.qq.com/main/creation/article*": ["common.js", "tengxvnhao-publish.js"],
     "https://mp.sohu.com/mpfe/v4/contentManagement/first/page*": ["common.js", "souhuhao-redirect.js", "souhuhao-creator.js"],
     "https://mp.sohu.com/mpfe/v4/login*": ["common.js", "souhuhao-creator.js"],
+    "https://mp.sohu.com/mpfe/v4/personalCenter/account?curTab=1": ["common.js", "souhuhao-creator.js"],
     "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle*": ["common.js", "souhuhao-publish.js"],
     "https://om.qq.com/main/management/articleManage": ["common.js", "publish-success.js"],
     "https://om.qq.com/main/management/articleManage*": ["common.js", "publish-success.js"],

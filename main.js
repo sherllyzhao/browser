@@ -4616,6 +4616,7 @@ function isSohuhaoAuthInjectablePageUrl(targetUrl = '') {
         /^\/mpfe\/v4\/?$/.test(parsed.pathname)
         || parsed.pathname === '/mpfe/v4/login'
         || parsed.pathname === '/mpfe/v4/contentManagement/first/page'
+        || parsed.pathname === '/mpfe/v4/personalCenter/account'
       );
   } catch (_) {
     const urlText = String(targetUrl || '');
@@ -4623,6 +4624,7 @@ function isSohuhaoAuthInjectablePageUrl(targetUrl = '') {
       && (
         urlText.includes('/login')
         || urlText.includes('/contentManagement/first/page')
+        || urlText.includes('/personalCenter/account')
         || /mp\.sohu\.com\/mpfe\/v4\/?(?:[?#].*)?$/.test(urlText)
       );
   }
